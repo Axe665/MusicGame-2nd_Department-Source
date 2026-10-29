@@ -1,0 +1,19 @@
+{
+  "name": "two-lane-rhythm-game",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A local two-lane rhythm game built with Electron and Canvas 2D.",
+  "license": "MIT",
+  "main": "desktop/main.js",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-packager . MusicGame --platform=win32 --arch=x64 --out=dist --overwrite --icon=desktop/icon.ico --ignore=\"^/dist\" --ignore=\"^/node_modules\" --ignore=\"^/.cache\" --ignore=\"^/.git\" --ignore=\"^/.github\" --ignore=\"^/docs\""
+  },
+  "devDependencies": {
+    "electron": "45.1.0",
+    "@electron/packager": "20.3.0"
+  }
+}
