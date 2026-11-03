@@ -490,7 +490,14 @@ func _judge_trace(note: Note, ms: float, beat: float, delta: float, mouse: Vecto
 			_add_log("MISS Trace #%d (no contact)" % note.id)
 		return
 	if String(chart.metadata.get("slide_mode", "follow")) == "maimai":
-		# 舞萌扫圈：头部按键后，只要在结束窗口内碰到轨迹就算完成，不要求累计距离。
+		# 舞萌扫圈：鼠标经过的轨迹抹掉，头部按键后只要结束窗口内仍碰到轨迹就完成。
+		if contact:
+			var sweep := _preview.trace_fraction(note, mouse, beat)
+			var sweep_frac := float(sweep.get("fraction", 0.0))
+			var sweep_prev := float(state.get("trace_frac", 0.0))
+			if sweep_frac > sweep_prev + 0.02:
+				_preview.cut_trace(note, sweep_prev, sweep_frac)
+				state["trace_frac"] = sweep_frac
 		if contact and ms >= end_ms - HIT_WINDOW_MS:
 			state["done"] = true
 			_hit_count += 1
