@@ -80,7 +80,7 @@ godot --path .
 ## 格式互通
 
 - **导入 `.osz`**：支持 osu!std 与 osu!taiko；circle → Tap、slider → Slide Trace/Hold、drumroll → Hold；spinner 跳过；多难度包会弹窗选择 `.osu`；导入报告列出保留/丢弃原因。
-- **导入 Simai**：支持舞萌 `maidata.txt`（`.zip` 或 `.txt`）；Tap/Hold/Slide→环上 Path/Break→加宽 Tap/Touch→Bell 会导入，双押只保留顺流向一侧，中心 Touch 跳过；复杂轨迹先近似为圆弧。
+- **导入 Simai**：支持舞萌 `maidata.txt`（`.zip` 或 `.txt`）；Tap/Hold/Slide→环上 Path/Break→加宽 Tap/Touch→Bell 会导入，双押只保留顺流向一侧，中心 Touch 跳过；复杂轨迹先近似为圆弧；音频导入时转成 OGG，避免 MP3 在部分驱动上静音。
 - **osu!std 混合层**：circle → 环上 Tap（连续 u、45–75° 宽度）；slider 用 B/L/C/P 判断方向和长度，能跟随的转成**环内平面 Slide Trace**，星头/圆环尾/轨迹一起出现，尾部只是轨迹终点、不单独判定；lazy/短/多重复转 Hold。没有 8 轨吸附，也没有全平面模式。
 - **宽度补偿**：Tap/Path 头宽按相邻角度差和时间差自动变宽（52–110°），密集流加宽、jump 收窄；这是无轨环用来吸收 osu 不可打配置的主要手段。
 - **taiko 映射**：don/kat 按 hitsound（whistle/clap = kat，finish = 大音符）分色；就近取 0/90/180/270 两车道，密集段（<0.32 拍）堆叠不甩圈；短滑条拆成拍点，长滑条（≥1.5 拍）→ Hold；spinner 跳过。

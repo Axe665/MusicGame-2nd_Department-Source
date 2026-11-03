@@ -345,3 +345,10 @@ static func _extract_assets(path: String, chart: Chart) -> void:
 			file.store_buffer(data)
 			file.close()
 	zip.close()
+	if not chart.audio_path.is_empty() and chart.audio_path.get_extension().to_lower() != "ogg":
+		# MP3 在部分音频驱动/解码器上会静音；导入时转成 OGG 更稳。
+		var ogg_path := folder + "track.ogg"
+		var output: Array = []
+		var code := OS.execute("ffmpeg", ["-y", "-i", ProjectSettings.globalize_path(chart.audio_path), "-vn", "-acodec", "libvorbis", "-q:a", "5", ProjectSettings.globalize_path(ogg_path)], output, true, false)
+		if code == 0 and FileAccess.file_exists(ogg_path):
+			chart.audio_path = ogg_path
