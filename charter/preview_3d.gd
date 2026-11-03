@@ -1728,7 +1728,7 @@ func _hold_node_screen(chart: Chart, note: Note, relative_beat: float, relative_
 func _draw_holds(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 	var ns := _note_scale()
 	var visible: Array[Note] = []
-	for note in chart.notes:
+	for note in _notes_in_range(chart, t - pre - 16.0, t + 0.3):
 		if note.type == "hold" and t >= note.beat - pre and t <= note.end_beat + 0.3:
 			visible.append(note)
 	visible.sort_custom(func(a: Note, b: Note) -> bool: return a.beat > b.beat)
@@ -1856,7 +1856,7 @@ func _draw_tap_note(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 func _draw_traces(canvas: Control, chart: Chart, t: float) -> void:
 	var pre := _pre_read_beats(chart, t)
 	var visible: Array[Note] = []
-	for note in chart.notes:
+	for note in _notes_in_range(chart, t - pre - 16.0, t + 0.5):
 		if note.type != "trace":
 			continue
 		var lead := pre if note.trace_style == "slider" else 0.5
