@@ -1334,13 +1334,13 @@ func trace_screen_points(note: Note, beat: float = 0.0, scale: float = 1.0) -> P
 	var chart := get_chart()
 	var grow := clampf(scale, 0.0, 1.0)
 	var center := project_design(Vector2.ZERO)
-	var mesh := _mesh_key(chart, beat) if chart != null else ""
+	var mesh := "%s|%s|%.0f|%.0f" % [_mesh_key(chart, beat) if chart != null else "", _last_view_key, size.x, size.y]
 	if mesh != _trace_cache_mesh:
 		_trace_cache_mesh = mesh
 		_trace_cache.clear()
 		_path_runs_cache.clear()
 	_path_runs_cache.clear()
-	var cache_key := "%d" % note.id
+	var cache_key := "%d|%s" % [note.id, mesh]
 	if grow >= 0.999 and _trace_cache.has(cache_key):
 		return _trace_cache[cache_key]
 	var points := PackedVector2Array()
@@ -1568,7 +1568,7 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 	var grow := clampf((t - (note.beat - pre)) / maxf(0.001, pre), 0.0, 1.0)
 	var ns := _note_scale()
 	var runs: Array[PackedVector2Array] = []
-	var cache_key := "%d" % note.id
+	var cache_key := "%d|%s|%.0f|%.0f" % [note.id, _last_view_key, size.x, size.y]
 	if grow >= 0.999 and _path_runs_cache.has(cache_key):
 		runs = _path_runs_cache[cache_key]
 	else:
