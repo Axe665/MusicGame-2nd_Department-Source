@@ -16,12 +16,22 @@ func segment_at(u: float) -> BoundarySegment:
 	var uu := fposmod(u, 1.0)
 	if is_equal_approx(u, 1.0):
 		uu = 0.0
-	for segment in sorted_segments():
+	# This is called for every ring sample. Find the first segment in u order
+	# without allocating and sorting the entire array for each point. Scan the
+	# live array so control-point edits and segment splits need no cache invalidation.
+	var found: BoundarySegment = null
+	var last: BoundarySegment = null
+	for segment in segments:
+		if last == null or segment.u0 > last.u0:
+			last = segment
 		if uu + 0.000001 >= segment.u0 and uu - 0.000001 <= segment.u1:
-			return segment
+			if found == null or segment.u0 < found.u0:
+				found = segment
+	if found != null:
+		return found
 	# A closed shape's u=1 seam belongs to the last segment.
 	if closed and uu <= 0.000001 and not segments.is_empty():
-		return sorted_segments()[-1]
+		return last
 	return null
 
 
@@ -36,9 +46,22 @@ func point_at(u: float) -> Dictionary:
 func sample_points(count: int) -> Array[Dictionary]:
 	var result: Array[Dictionary] = []
 	var safe_count := maxi(count, 2)
+	var sorted := sorted_segments()
+	var index := 0
 	for i in safe_count:
 		var u := float(i) / float(safe_count)
-		result.append(point_at(u))
+		# Samples and segments are both in u order: walk the segments once.
+		while index < sorted.size() and u - 0.000001 > sorted[index].u1:
+			index += 1
+		var segment: BoundarySegment = null
+		if index < sorted.size() and u + 0.000001 >= sorted[index].u0:
+			segment = sorted[index]
+		elif closed and i == 0 and not sorted.is_empty():
+			segment = sorted[-1]
+		if segment == null:
+			result.append({"point": Vector2.ZERO, "gap": true, "segment": null})
+		else:
+			result.append({"point": segment.point_at(segment.local_t(u)), "gap": segment.gap, "segment": segment})
 	return result
 
 

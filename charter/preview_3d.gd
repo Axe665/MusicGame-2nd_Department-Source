@@ -90,6 +90,9 @@ var _render_frame: int = 0
 var _tilt: Vector2 = Vector2.ZERO
 var _tilt_target: Vector2 = Vector2.ZERO
 var _force_3d_frame: bool = false
+var _boundary_frame_cache: BoundaryFrame = null
+var _max_design_radius: float = -1.0
+var _path_local_cache: Dictionary = {}
 
 var _drag_segment: int = -1
 var _drag_endpoint: int = -1
@@ -132,6 +135,18 @@ func _ready() -> void:
 func _exit_tree() -> void:
 	if not playtest_mode:
 		Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
+
+
+func set_suspended(suspended: bool) -> void:
+	set_process(not suspended)
+	if _subviewport == null:
+		return
+	if suspended:
+		_subviewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
+		_render_mode = SubViewport.UPDATE_DISABLED
+	else:
+		_force_3d_frame = use_3d_ring
+		_render_mode = -1
 
 
 func get_chart() -> Chart:
@@ -384,11 +399,11 @@ func _mesh_key(chart: Chart, beat: float) -> String:
 		if beat < event.start_beat:
 			continue
 		if beat <= event.end_beat:
-			parts.append("%s:m:%d" % [event.id, roundi(beat * 20.0)])
+			parts.append("%s:m:%.6f" % [event.id, beat])
 		elif event.end_behavior == "hold":
 			parts.append("%s:h" % event.id)
 		elif beat <= event.end_beat + event.restore_duration:
-			parts.append("%s:r:%d" % [event.id, roundi(beat * 20.0)])
+			parts.append("%s:r:%.6f" % [event.id, beat])
 		else:
 			parts.append("%s:p" % event.id)
 	if parts.is_empty():
@@ -453,15 +468,14 @@ func _update_transform(beat: float) -> bool:
 
 
 func _update_camera_fit(chart: Chart, zoom: float, ellipse: float) -> void:
-	var max_radius := 520.0
-	for shape in chart.sorted_shapes():
-		for i in 32:
-			var u := float(i) / 32.0
-			var data := shape.point_at(u)
-			var point: Vector2 = data.point
-			max_radius = maxf(max_radius, point.length())
+	if _max_design_radius < 0.0:
+		_max_design_radius = 520.0
+		for shape in chart.sorted_shapes():
+			for data in shape.sample_points(32):
+				var point: Vector2 = data.point
+				_max_design_radius = maxf(_max_design_radius, point.length())
 	var aspect := maxf(0.2, size.x / maxf(1.0, size.y))
-	var wanted := max_radius * maxf(0.5, zoom) * maxf(0.5, ellipse) * PREVIEW_MARGIN
+	var wanted := _max_design_radius * maxf(0.5, zoom) * maxf(0.5, ellipse) * PREVIEW_MARGIN
 	var distance := wanted / tan(deg_to_rad(_camera.fov * 0.5)) / minf(1.0, aspect)
 	distance = clampf(distance, 500.0, 6000.0)
 	_camera.position = Vector3(0, 0, distance)
@@ -469,7 +483,7 @@ func _update_camera_fit(chart: Chart, zoom: float, ellipse: float) -> void:
 
 
 func _update_ring_mesh(chart: Chart, beat: float) -> void:
-	var points := BoundaryRuntime.eval_shape(chart, beat, 256)
+	var points := _frame_for(chart, beat).sample_points(256)
 	_ring_mesh.mesh = _build_ribbon(points, RING_WIDTH, _ring_material)
 	_glow_mesh.mesh = _build_ribbon(points, GLOW_WIDTH, _glow_material)
 	_shadow_mesh.mesh = _build_ribbon(points, 30.0, _shadow_material)
@@ -657,6 +671,9 @@ func _update_video(chart: Chart, beat: float) -> void:
 
 
 func _on_chart_changed() -> void:
+	_boundary_frame_cache = null
+	_path_local_cache.clear()
+	_max_design_radius = -1.0
 	_mesh_dirty = true
 	_last_video_path = ""
 	_last_background_path = ""
@@ -667,11 +684,17 @@ func _on_chart_changed() -> void:
 
 
 func _on_chart_live_changed() -> void:
-	_mesh_dirty = true
-	_last_fit_key = ""
-	_last_mesh_key = ""
-	_force_3d_frame = true
-	queue_redraw()
+	_boundary_frame_cache = null
+	_path_local_cache.clear()
+	# Note/region drags only change the overlay. Boundary dragging marks the
+	# mesh dirty in _update_drag(), where the actual geometry is edited.
+	if _mesh_dirty:
+		_max_design_radius = -1.0
+		_last_fit_key = ""
+		_avg_radius_key = ""
+		_force_3d_frame = true
+	if _overlay != null:
+		_overlay.queue_redraw()
 
 
 func _on_selection_changed() -> void:
@@ -1092,7 +1115,7 @@ func _update_cursor() -> void:
 	if chart == null:
 		return
 	var t := get_time_beat()
-	var result := BoundaryRuntime.nearest_u(chart, t, mouse_screen, func(point: Vector2) -> Vector2: return project_design(point), 96)
+	var result := BoundaryRuntime.nearest_u(chart, t, mouse_screen, func(point: Vector2) -> Vector2: return project_design(point), 96, _frame_for(chart, t))
 	var u := float(result["u"])
 	var distance := float(result["distance"])
 	var center := project_design(Vector2.ZERO)
@@ -1141,11 +1164,24 @@ func project_design(point: Vector2) -> Vector2:
 	return _camera.unproject_position(world)
 
 
+func _frame_for(chart: Chart, beat: float) -> BoundaryFrame:
+	if _boundary_frame_cache == null or _boundary_frame_cache.chart != chart or _boundary_frame_cache.beat != beat:
+		if _boundary_frame_cache != null and _boundary_frame_cache.chart != chart:
+			_max_design_radius = -1.0
+			_path_local_cache.clear()
+		_boundary_frame_cache = BoundaryFrame.new(chart, beat, _boundary_frame_cache)
+	return _boundary_frame_cache
+
+
+func _boundary_point(chart: Chart, u: float, beat: float) -> Dictionary:
+	return _frame_for(chart, beat).point_at(u)
+
+
 func project_u(u: float, beat: float) -> Vector2:
 	var chart := get_chart()
 	if chart == null:
 		return Vector2(INF, INF)
-	var data := BoundaryRuntime.eval_point(chart, u, beat)
+	var data := _boundary_point(chart, u, beat)
 	if bool(data.get("gap", false)):
 		return Vector2(INF, INF)
 	return project_design(data.point)
@@ -1207,7 +1243,7 @@ func _draw_flat_stage(canvas: Control, chart: Chart, t: float) -> void:
 
 
 func _draw_flat_ring(canvas: Control, chart: Chart, t: float) -> void:
-	var points := BoundaryRuntime.eval_shape(chart, t, 192)
+	var points := _frame_for(chart, t).sample_points(192)
 	var run := PackedVector2Array()
 	for item in points:
 		if bool(item.get("gap", false)):
@@ -1305,7 +1341,7 @@ func _arc_points_scaled(angle: float, width: float, beat: float, steps: int, sca
 
 
 func _arc_point_scaled(angle: float, beat: float, scale: float) -> Vector2:
-	var data := BoundaryRuntime.eval_point(get_chart(), fposmod(angle, 360.0) / 360.0, beat)
+	var data := _boundary_point(get_chart(), fposmod(angle, 360.0) / 360.0, beat)
 	if bool(data.get("gap", false)):
 		return Vector2(INF, INF)
 	return project_design((data.point as Vector2) * scale)
@@ -1401,7 +1437,7 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 	_draw_path_head(canvas, head, top)
 	_draw_path_tail(canvas, tail, top)
 	if t >= note.beat and t <= note.end_beat:
-		var p := _path_screen_point(chart, note, t - note.beat, t)
+		var p := _path_screen_point(chart, note, t - note.beat, t, false)
 		if _valid_point(p):
 			canvas.draw_circle(p, 7.0, UITheme.CYAN if top else Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.5))
 			canvas.draw_circle(p, 2.5, UITheme.INK)
@@ -1422,19 +1458,29 @@ func path_distance(note: Note, relative_beat: float, beat: float, screen_point: 
 
 func _path_ring_point(chart: Chart, note: Note, relative_beat: float, t: float) -> Vector2:
 	var degrees := note.path_angle_at(relative_beat)
-	var data := BoundaryRuntime.eval_point(chart, fposmod(degrees, 360.0) / 360.0, t)
+	var data := _boundary_point(chart, fposmod(degrees, 360.0) / 360.0, t)
 	if bool(data.get("gap", false)):
 		return Vector2(INF, INF)
 	return project_design(data.point)
 
 
-func _path_screen_point(chart: Chart, note: Note, relative_beat: float, t: float) -> Vector2:
-	var local := note.path_local_at(relative_beat)
+func _path_screen_point(chart: Chart, note: Note, relative_beat: float, t: float, cache_sample: bool = true) -> Vector2:
+	var local: Vector2
+	if cache_sample:
+		if not _path_local_cache.has(note):
+			_path_local_cache[note] = {}
+		var samples: Dictionary = _path_local_cache[note]
+		if not samples.has(relative_beat):
+			samples[relative_beat] = note.path_local_at(relative_beat)
+		local = samples[relative_beat]
+	else:
+		# The moving marker has a new relative time every frame; do not retain it.
+		local = note.path_local_at(relative_beat)
 	var radius := local.length()
 	if radius <= 0.0001:
 		return project_design(Vector2.ZERO)
 	var degrees := fposmod(rad_to_deg(atan2(local.y, local.x)), 360.0)
-	var data := BoundaryRuntime.eval_point(chart, degrees / 360.0, t)
+	var data := _boundary_point(chart, degrees / 360.0, t)
 	if bool(data.get("gap", false)):
 		return Vector2(INF, INF)
 	return project_design((data.point as Vector2) * radius)
@@ -1473,7 +1519,7 @@ func _hold_node_screen(chart: Chart, note: Note, relative_beat: float, relative_
 	var duration := maxf(0.001, note.duration())
 	var q := clampf(relative_beat / duration, 0.0, 1.0)
 	var angle := fposmod(note.angle + relative_angle, 360.0)
-	var data := BoundaryRuntime.eval_point(chart, angle / 360.0, t)
+	var data := _boundary_point(chart, angle / 360.0, t)
 	if bool(data.get("gap", false)):
 		return Vector2(INF, INF)
 	var center := project_design(Vector2.ZERO)
@@ -1550,7 +1596,7 @@ func _draw_tap_note(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 	var points := PackedVector2Array()
 	for i in steps + 1:
 		var angle := note.angle - width * 0.5 + width * float(i) / float(steps)
-		var data := BoundaryRuntime.eval_point(chart, fposmod(angle, 360.0) / 360.0, t)
+		var data := _boundary_point(chart, fposmod(angle, 360.0) / 360.0, t)
 		if bool(data.get("gap", false)):
 			continue
 		var p := project_design(data.point * q)
@@ -1574,7 +1620,7 @@ func _draw_tap_note(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 	canvas.draw_polyline(points, UITheme.CORAL, 10.0, true)
 	canvas.draw_circle(points[0], 5.0, UITheme.CORAL)
 	canvas.draw_circle(points[-1], 5.0, UITheme.CORAL)
-	var center_data := BoundaryRuntime.eval_point(chart, fposmod(note.angle, 360.0) / 360.0, t)
+	var center_data := _boundary_point(chart, fposmod(note.angle, 360.0) / 360.0, t)
 	if not bool(center_data.get("gap", false)):
 		var c := project_design(center_data.point * q)
 		canvas.draw_line(c, center.lerp(c, 0.84), UITheme.INK, 2.0, true)
@@ -1964,7 +2010,7 @@ func bell_screen(note: Note, beat: float) -> Dictionary:
 	var chart := get_chart()
 	if chart == null:
 		return {}
-	var data := BoundaryRuntime.eval_point(chart, note.center_u, beat)
+	var data := _boundary_point(chart, note.center_u, beat)
 	if bool(data.get("gap", false)):
 		return {}
 	var design: Vector2 = data.point
