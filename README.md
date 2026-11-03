@@ -70,7 +70,7 @@ godot --path .
 - 媒体：原生 WAV/OGG/MP3 音频、Ogg Theora 视频；FLAC/M4A/AAC/OPUS/WebM/MP4 音频与 MP4/WebM/MOV/MKV/AVI 视频通过 ffmpeg 自动转码到 `user://media/` 后预览
 - 视觉：石墨黑 + 安全黄 UI、浅色切角音符卡、深空径向渐变、终末地式分段圆环（白色开口弧 + 琥珀细环 + 凹槽刻度 + 暗色外圈，不再使用八角外框/八束光）、圆盘刻度/十字准星、音符投影；试玩时环放大到屏幕短边约 86–88%，环外整片仍可判定；音符保留珊瑚/琥珀/青/薄荷/紫/金/红语义色
 - 性能：Forward+ / Vulkan、60fps 上限；边界批量采样时只排序一次分段，变形插值参数按事件计算一次；BoundaryFrame 缓存形状采样，当前时刻的网格、音符和光标共用精确边界求值，编辑后失效；Path 固定造型采样与相机适配半径复用；3D 网格在变形期间跟随渲染帧更新，静止时复用；音符拖动按帧合并通知、不重建环网格，完整校验在松开鼠标后执行；试玩时暂停被覆盖的编辑器及其 3D 视口；静止时 SubViewport 自动禁用，3D 内部渲染 0.8×；时间轴静态层与播放头拆成两层，播放时只重绘播放头；检查器标签 20Hz 更新、事件轨 20Hz、最近点 96 采样、字号预加载、视频仅在漂移时 seek
-- 试玩：音频主时钟（输出延迟补偿 + 单调防回跳）、按键事件时间戳判定（减少一帧输入延迟）、PERFECT ±50ms / GREAT ±90ms / GOOD ±140ms 三档、超过 140ms 判 Miss、Great/Good 不断连、早按跨帧保留 300ms、任意键 Tap/Hold/Anchor、Hold 绑定起手键、鼠标 Path/Tail/Bell/Trace、Red 200ms、FULL/FRAY/LOST、COMBO、命中扩散环/火花/环弧闪光、PERFECT/GREAT/GOOD/MISS 判定字、试玩内 note 类型标签、结果面板
+- 试玩：音频主时钟（输出延迟补偿 + 单调防回跳）、按键事件时间戳判定（减少一帧输入延迟）、PERFECT ±65ms / GREAT ±115ms / GOOD ±170ms 三档、超过 170ms 判 Miss、Great/Good 不断连、早按跨帧保留 300ms、任意键 Tap/Hold/Anchor、Hold 绑定起手键、鼠标 Path/Tail/Bell/Trace、Red 200ms、FULL/FRAY/LOST、COMBO、命中扩散环/火花/环弧闪光、PERFECT/GREAT/GOOD/MISS 判定字、试玩内 note 类型标签、结果面板
 - osu!std 混合层导入：circle → 环上 Tap（连续 u）；slider → 环内平面 Slide Trace（星头按键 + 沿轨迹移动，尾部是轨迹终点不单独判定）；lazy/短/重复 → Hold；滑条带 Sentakki 式 wait 阶段，Hold 与下一个 note 重叠时夹短、不足 0.5 拍降级 Tap
 - 连续角度：流内按 Sentakki 式 45° 步进，jump 用压缩角度差，360°/s 限速；不吸固定轨
 - 可变 Tap 宽度：按相邻角度/时间补偿（45–75°），密集段更容易跟，jump 略窄

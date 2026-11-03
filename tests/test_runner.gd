@@ -36,6 +36,7 @@ func _initialize() -> void:
 		"test_sfx_assets",
 		"test_simai_import",
 		"test_osu_std_sentakki_rules",
+		"test_simai_directive_slot",
 	]
 	for test_name in tests:
 		if call(test_name) != true:
@@ -910,4 +911,23 @@ SliderMultiplier: 1.4
 	eq(trace.type, "trace", "long slider becomes trace")
 	ok(trace.wait_beat > 0.0, "slide has a wait phase before moving")
 	near(trace.end_beat - trace.beat, 2.0, 0.001, "slide end beat stays on the osu timeline")
+	return true
+
+
+func test_simai_directive_slot() -> bool:
+	# 带有逗号的纯指令 token 必须占一个空拍，否则整张谱会提前。
+	var text := "&title=T\n&wholebpm=120\n&lv_1=1\n&inote_1=(120){4},1,2,\nE\n"
+	var path := "user://test_simai_directive.txt"
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	if file == null:
+		ok(false, "simai directive fixture")
+		return true
+	file.store_string(text)
+	file.close()
+	var chart := SimaiIO.import_maidata(path, 1)
+	ok(chart != null, "simai directive chart imports")
+	if chart != null:
+		near(chart.notes[0].beat, 1.0, 0.001, "directive-only token occupies one slot")
+		near(chart.notes[1].beat, 2.0, 0.001, "next note stays on the grid")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
 	return true
