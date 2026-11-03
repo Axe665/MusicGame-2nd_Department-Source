@@ -9,6 +9,8 @@ var _genre: OptionButton
 var _list: ItemList
 var _status: Label
 var _entries: Array = []
+var _source: OptionButton
+var _maj_items: Array = []
 var _specs: Dictionary = {}
 
 func _ready() -> void:
@@ -38,6 +40,11 @@ func _build() -> void:
 	_search.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_search.text_changed.connect(func(_t: String) -> void: _refresh())
 	row.add_child(_search)
+	_source = OptionButton.new()
+	_source.add_item("adxdls")
+	_source.add_item("majdata")
+	_source.item_selected.connect(func(_i: int) -> void: _refresh())
+	row.add_child(_source)
 	_version = OptionButton.new()
 	_genre = OptionButton.new()
 	row.add_child(_version)
@@ -66,6 +73,9 @@ func _build() -> void:
 
 func _refresh() -> void:
 	_list.clear()
+	if _source != null and _source.selected == 1:
+		_refresh_majdata()
+		return
 	var q := _search.text.strip_edges().to_lower()
 	var vsel := "" if _version.selected <= 0 else _version.get_item_text(_version.selected)
 	var gsel := "" if _genre.selected <= 0 else _genre.get_item_text(_genre.selected)
@@ -92,6 +102,9 @@ func _download_selected() -> void:
 	if sel.is_empty():
 		return
 	var slug := String(_list.get_item_metadata(sel[0]))
+	if _source != null and _source.selected == 1:
+		_download_majdata(slug)
+		return
 	var spec: Dictionary = _specs.get(slug, {})
 	var files: Array = spec.get("files", [])
 	var folder := "user://imports/adx_%s/" % slug
@@ -137,3 +150,57 @@ func _fetch_bytes(url: String) -> PackedByteArray:
 	if int(result[0]) != HTTPRequest.RESULT_SUCCESS or int(result[1]) < 200 or int(result[1]) >= 300:
 		return PackedByteArray()
 	return result[3]
+
+
+func _refresh_majdata() -> void:
+	var q := _search.text.strip_edges()
+	var url := "https://majdata.net/api3/api/maichart/list?sort=&page=0&search=" + q.uri_encode()
+	var http := HTTPRequest.new()
+	add_child(http)
+	http.request(url)
+	var r: Array = await http.request_completed
+	http.queue_free()
+	_maj_items = []
+	if int(r[0]) == HTTPRequest.RESULT_SUCCESS and int(r[1]) == 200:
+		var parsed = JSON.parse_string((r[3] as PackedByteArray).get_string_from_utf8())
+		if parsed is Array:
+			_maj_items = parsed
+	for i in _maj_items.size():
+		var item: Dictionary = _maj_items[i]
+		_list.add_item("%s — %s  [majdata]" % [String(item.get("title", "")), String(item.get("artist", ""))])
+		_list.set_item_metadata(i, String(item.get("id", "")))
+	_status.text = "majdata：%d 条（第 0 页）" % _maj_items.size()
+
+
+func _download_majdata(id: String) -> void:
+	var folder := "user://imports/maj_%s/" % id
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(folder))
+	var base := "https://majdata.net/api3/api/maichart/" + id
+	var maidata := folder + "maidata.txt"
+	var ok := await _save(base + "/chart?intent=download", maidata)
+	if ok:
+		await _save(base + "/track", folder + "track.mp3")
+		await _save(base + "/image?fullImage=true", folder + "bg.jpg")
+	if not ok:
+		_status.text = "majdata 下载失败"
+		return
+	var diffs := SimaiIO.list_maidata(maidata)
+	var index := int(diffs[-1].get("index", 0)) if not diffs.is_empty() else 0
+	var chart := SimaiIO.import_maidata(maidata, index)
+	if chart == null:
+		_status.text = "转换失败：%s" % SimaiIO.last_error
+		return
+	chart_imported.emit(chart)
+	hide()
+
+
+func _save(url: String, path: String) -> bool:
+	var body := await _fetch_bytes(url)
+	if body.is_empty():
+		return false
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	if f == null:
+		return false
+	f.store_buffer(body)
+	f.close()
+	return true
