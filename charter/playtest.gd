@@ -298,26 +298,6 @@ func _judge_all(ms: float, beat: float, delta: float) -> void:
 func _judge_tap(note: Note, ms: float, beat: float) -> void:
 	var state: Dictionary = _states[note.id]
 	var target := chart.timing.beat_to_chart_ms(note.beat)
-	if note.space == "plane":
-		if ms < target - HIT_WINDOW_MS:
-			return
-		var point := _preview.plane_screen(note.plane_x, note.plane_y)
-		var press := _take_key_for_plane(target - HIT_WINDOW_MS, target + HIT_WINDOW_MS, point, _preview.plane_note_judge_radius(note))
-		if not press.is_empty():
-			state["done"] = true
-			_hit_count += 1
-			_combo += 1
-			_max_combo = maxi(_max_combo, _combo)
-			_preview.add_hit_pulse(point, UITheme.CORAL, "HIT")
-			_sfx.play("don", randf_range(0.98, 1.02))
-			_record_error(float(press["time"]) - target, "PLANE TAP #%d HIT" % note.id)
-			return
-		if ms > target + HIT_WINDOW_MS:
-			state["done"] = true
-			_miss_count += 1
-			_combo = 0
-			_add_log("MISS Plane Tap #%d @ %.0fms" % [note.id, target])
-		return
 	if ms < target - HIT_WINDOW_MS:
 		return
 	var press := _take_key_for_arc(target - HIT_WINDOW_MS, target + HIT_WINDOW_MS, note.angle, note.width)
@@ -447,17 +427,7 @@ func _judge_trace(note: Note, ms: float, delta: float, mouse: Vector2) -> void:
 	if not state["trace_started"]:
 		if ms < start_ms - HIT_WINDOW_MS:
 			return
-		var started := false
-		if note.trace_style == "slider":
-			var points := _preview.trace_screen_points(note)
-			var head: Vector2 = points[0] if not points.is_empty() else mouse
-			var press := _take_key_for_plane(start_ms - HIT_WINDOW_MS, start_ms + HIT_WINDOW_MS, head, 42.0)
-			if not press.is_empty():
-				started = true
-				_sfx.play("don", 0.90)
-		elif contact:
-			started = true
-		if started:
+		if contact:
 			state["trace_started"] = true
 			state["trace_contact"] = true
 			state["trace_last"] = mouse
@@ -599,20 +569,6 @@ func _take_key_for_arc(lo: float, hi: float, angle: float, width: float) -> Dict
 			return press
 	return {}
 
-
-func _take_key_for_plane(lo: float, hi: float, point: Vector2, radius: float) -> Dictionary:
-	for i in _key_presses.size():
-		var press: Dictionary = _key_presses[i]
-		var stamp := float(press.get("time", -INF))
-		if stamp < lo:
-			continue
-		if stamp > hi:
-			break
-		var press_mouse: Vector2 = press.get("mouse", Vector2.ZERO)
-		if press_mouse.distance_to(point) <= radius:
-			_key_presses.remove_at(i)
-			return press
-	return {}
 
 
 func _record_error(error_ms: float, label: String) -> void:

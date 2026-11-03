@@ -76,9 +76,6 @@ var _frame_material: StandardMaterial3D
 var _last_mesh_beat: float = -9999.0
 var _mesh_dirty: bool = true
 var _last_chart_ref: Chart = null
-var _plane_mode: bool = false
-var _plane_cache_chart: Chart = null
-var _plane_cache_value: bool = false
 var _last_video_path: String = ""
 var _video_load_failed: bool = false
 var _last_cursor_emit: Vector2 = Vector2(-999, -999)
@@ -341,11 +338,6 @@ func _process(_delta: float) -> void:
 	var chart := get_chart()
 	if chart == null:
 		return
-	_plane_mode = _is_plane_chart(chart)
-	if _ring_mesh != null:
-		_ring_mesh.visible = not _plane_mode
-		_glow_mesh.visible = not _plane_mode
-		_shadow_mesh.visible = not _plane_mode
 	if follow_app and _app != null and _app.chart != _last_chart_ref:
 		_last_chart_ref = _app.chart
 		_mesh_dirty = true
@@ -364,7 +356,7 @@ func _process(_delta: float) -> void:
 	var mesh_key := _mesh_key(chart, t)
 	var view_changed := _update_transform(t)
 	var flat_dirty := _mesh_dirty and not use_3d_ring
-	if use_3d_ring and not _plane_mode and (_mesh_dirty or mesh_key != _last_mesh_key):
+	if use_3d_ring and (_mesh_dirty or mesh_key != _last_mesh_key):
 		_update_ring_mesh(chart, t)
 		_last_mesh_key = mesh_key
 		view_changed = true
@@ -388,18 +380,6 @@ func _process(_delta: float) -> void:
 		_update_3d_mode(playing or playtest_mode or _tilt.distance_to(_tilt_target) > 0.01, view_changed or _mesh_dirty)
 	_last_process_time = t
 	_last_mouse_screen = mouse_screen
-
-
-func _is_plane_chart(chart: Chart) -> bool:
-	if chart == _plane_cache_chart:
-		return _plane_cache_value
-	_plane_cache_chart = chart
-	_plane_cache_value = false
-	for note in chart.notes:
-		if note.space == "plane" or note.trace_style == "slider":
-			_plane_cache_value = true
-			break
-	return _plane_cache_value
 
 
 func _mesh_key(chart: Chart, beat: float) -> String:
@@ -681,7 +661,6 @@ func _update_video(chart: Chart, beat: float) -> void:
 
 
 func _on_chart_changed() -> void:
-	_plane_cache_chart = null
 	_mesh_dirty = true
 	_last_video_path = ""
 	_last_background_path = ""
@@ -692,7 +671,6 @@ func _on_chart_changed() -> void:
 
 
 func _on_chart_live_changed() -> void:
-	_plane_cache_chart = null
 	_mesh_dirty = true
 	_last_fit_key = ""
 	_last_mesh_key = ""
@@ -1203,23 +1181,6 @@ func plane_stage_radius() -> float:
 	return maxf(40.0, minf(center.distance_to(x_point), center.distance_to(y_point)))
 
 
-func plane_screen(x: float, y: float) -> Vector2:
-	var center := project_design(Vector2.ZERO)
-	var radius := plane_stage_radius()
-	return center + Vector2(
-		(clampf(x, 0.0, 1.0) - 0.5) * 1.32 * radius,
-		(clampf(y, 0.0, 1.0) - 0.5) * 0.99 * radius
-	)
-
-
-func plane_note_radius(note: Note) -> float:
-	return maxf(16.0, note.plane_radius * plane_stage_radius() * 0.70)
-
-
-func plane_note_judge_radius(note: Note) -> float:
-	return maxf(26.0, plane_note_radius(note) * 1.45)
-
-
 func plane_clamp_screen(point: Vector2) -> Vector2:
 	var center := project_design(Vector2.ZERO)
 	var radius := plane_stage_radius()
@@ -1234,10 +1195,7 @@ func trace_screen_points(note: Note) -> PackedVector2Array:
 	for point in note.trace_pts:
 		var x := float(point.get("x", 0.0))
 		var y := float(point.get("y", 0.0))
-		if note.trace_style == "slider":
-			points.append(plane_screen(x, y))
-		else:
-			points.append(Vector2(x * size.x, y * size.y))
+		points.append(Vector2(x * size.x, y * size.y))
 	return points
 
 
@@ -1249,12 +1207,9 @@ func draw_overlay(canvas: Control) -> void:
 	var pre := _pre_read_beats(chart, t)
 	if not use_3d_ring:
 		_draw_flat_stage(canvas, chart, t)
-		if not _plane_mode:
-			_draw_flat_ring(canvas, chart, t)
+		_draw_flat_ring(canvas, chart, t)
 	if not use_3d_ring:
 		_draw_bezel(canvas, chart, t)
-	if _plane_mode:
-		_draw_plane_tracks(canvas)
 	_draw_red_regions(canvas, chart, t)
 	_draw_paths(canvas, chart, t, pre)
 	_draw_holds(canvas, chart, t, pre)
@@ -1281,25 +1236,6 @@ func _affine_point(point: Vector2, affine: Array) -> Vector2:
 	var x_axis: Vector2 = affine[1]
 	var y_axis: Vector2 = affine[2]
 	return center + x_axis * point.x + y_axis * point.y
-
-
-func _draw_plane_tracks(canvas: Control) -> void:
-	var center := project_design(Vector2.ZERO)
-	if not _valid_point(center):
-		return
-	var radius := plane_stage_radius()
-	for i in 8:
-		var angle := -PI * 0.5 + TAU * float(i) / 8.0
-		var direction := Vector2(cos(angle), sin(angle))
-		canvas.draw_line(center, center + direction * radius * 0.92, Color(1, 1, 1, 0.055), 1.0, true)
-		canvas.draw_circle(center + direction * radius * 0.92, 2.0, Color(1, 1, 1, 0.12))
-		var label := str(i + 1)
-		var label_pos := center + direction * radius * 0.84
-		canvas.draw_string(UITheme.mono_font(), label_pos + Vector2(-3, -4), label, HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(1, 1, 1, 0.18))
-	var hx := 0.66 * radius
-	var hy := 0.495 * radius
-	canvas.draw_rect(Rect2(center - Vector2(hx, hy), Vector2(hx * 2.0, hy * 2.0)), Color(1, 1, 1, 0.045), false, 1.0)
-	canvas.draw_arc(center, 22.0, 0.0, TAU, 32, Color(1, 1, 1, 0.08), 1.0, true)
 
 
 func _draw_flat_stage(canvas: Control, chart: Chart, t: float) -> void:
@@ -1670,10 +1606,7 @@ func _draw_notes(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 			continue
 		match note.type:
 			"tap":
-				if note.space == "plane":
-					_draw_plane_tap(canvas, note, t, pre)
-				else:
-					_draw_tap_note(canvas, chart, note, t, pre)
+				_draw_tap_note(canvas, chart, note, t, pre)
 			"anchor":
 				var p := _flying_position(chart, note.angle, note.beat, t, pre)
 				if _valid_point(p):
@@ -1683,24 +1616,6 @@ func _draw_notes(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 				var bell := bell_screen(note, t)
 				if not bell.is_empty():
 					_draw_bell(canvas, bell["center"], bell["radius"], t, note.beat, pre)
-
-
-func _draw_plane_tap(canvas: Control, note: Note, t: float, pre: float) -> void:
-	var q := clampf((t - (note.beat - pre)) / maxf(0.001, pre), 0.0, 1.0)
-	var point := plane_screen(note.plane_x, note.plane_y)
-	if not _valid_point(point):
-		return
-	var radius := plane_note_radius(note)
-	var approach := radius * lerpf(1.9, 1.0, q)
-	canvas.draw_circle(point, approach, Color(UITheme.CORAL.r, UITheme.CORAL.g, UITheme.CORAL.b, 0.07))
-	canvas.draw_arc(point, approach, 0.0, TAU, 32, Color(UITheme.CORAL.r, UITheme.CORAL.g, UITheme.CORAL.b, 0.58), 1.6, true)
-	var scale := lerpf(0.45, 1.0, q)
-	canvas.draw_circle(point, radius * scale + 3.5, Color(0, 0, 0, 0.62))
-	canvas.draw_circle(point, radius * scale, UITheme.CORAL)
-	canvas.draw_arc(point, radius * scale, 0.0, TAU, 32, Color(1, 1, 1, 0.95), 2.2, true)
-	canvas.draw_circle(point, maxf(2.5, radius * scale * 0.32), UITheme.INK)
-	if not playtest_mode:
-		_draw_label(canvas, "PLANE TAP", point + Vector2(radius + 7.0, -radius - 3.0), UITheme.CORAL)
 
 
 func _draw_tap_note(canvas: Control, chart: Chart, note: Note, t: float, pre: float) -> void:
@@ -1748,17 +1663,12 @@ func _draw_tap_note(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 
 
 func _draw_traces(canvas: Control, chart: Chart, t: float) -> void:
-	var pre := _pre_read_beats(chart, t)
 	for note in chart.notes:
 		if note.type != "trace":
 			continue
-		var lead := pre if note.trace_style == "slider" else 0.5
-		if t < note.beat - lead or t > note.end_beat + 0.5:
+		if t < note.beat - 0.5 or t > note.end_beat + 0.5:
 			continue
 		var points := trace_screen_points(note)
-		if points.size() > 1 and note.trace_style == "slider":
-			_draw_slider_trace(canvas, note, points, t)
-			continue
 		if points.size() > 1:
 			var duration := maxf(0.001, note.duration())
 			var progress := clampf((t - note.beat) / duration, 0.0, 1.0)
@@ -1796,34 +1706,6 @@ func _draw_traces(canvas: Control, chart: Chart, t: float) -> void:
 		for p in _trace_points:
 			temp.append(p)
 		canvas.draw_polyline(temp, Color(UITheme.CORAL.r, UITheme.CORAL.g, UITheme.CORAL.b, 0.7), 3.0, true)
-
-
-func _draw_slider_trace(canvas: Control, note: Note, points: PackedVector2Array, t: float) -> void:
-	var duration := maxf(0.001, note.duration())
-	var progress := clampf((t - note.beat) / duration, 0.0, 1.0)
-	var shadow := PackedVector2Array()
-	for point in points:
-		shadow.append(point + Vector2(5, 7))
-	canvas.draw_polyline(shadow, Color(0, 0, 0, 0.44), 24.0, true)
-	canvas.draw_polyline(points, Color(0, 0, 0, 0.55), 22.0, true)
-	canvas.draw_polyline(points, Color(1, 1, 1, 0.92), 16.0, true)
-	canvas.draw_polyline(points, Color(0.78, 0.80, 0.79, 0.88), 12.0, true)
-	canvas.draw_polyline(points, Color(1, 1, 1, 0.14), 6.0, true)
-	_draw_dashed_polyline(canvas, points, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.90), 2.0, 6.0)
-	for k in 3:
-		var sample: Dictionary = _polyline_sample(points, (float(k) + 1.0) / 4.0)
-		_draw_arrowhead(canvas, sample["point"], sample["direction"], UITheme.CYAN)
-	var prefix := _polyline_prefix(points, progress)
-	if prefix.size() > 1:
-		canvas.draw_polyline(prefix, Color(UITheme.MINT.r, UITheme.MINT.g, UITheme.MINT.b, 0.30), 14.0, true)
-	_draw_path_head(canvas, points[0], true)
-	_draw_path_tail(canvas, points[-1], true)
-	var position := _trace_position(note, t)
-	if _valid_point(position):
-		canvas.draw_circle(position, 9.0, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.88))
-		canvas.draw_circle(position, 3.2, UITheme.INK)
-	if not playtest_mode:
-		_draw_label(canvas, "SLIDE", points[0] + Vector2(16, -14), UITheme.CYAN)
 
 
 func _draw_trace_cap(canvas: Control, point: Vector2, start: bool) -> void:
@@ -1908,7 +1790,7 @@ func _draw_cursor(canvas: Control, chart: Chart, t: float) -> void:
 	if not custom_cursor_visible or (not mouse_inside and not playtest_mode):
 		return
 	_draw_player_cursor(canvas)
-	if playtest_mode or _plane_mode:
+	if playtest_mode:
 		return
 	var p := project_u(cursor_u, t)
 	if cursor_valid and _valid_point(p):

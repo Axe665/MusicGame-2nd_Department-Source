@@ -4,7 +4,11 @@ extends RefCounted
 static var last_error: String = ""
 
 const TAIKO_STACK_GAP := 0.32
-const PLANE_TAP_RADIUS := 0.10
+const STD_MAX_DEG_PER_SEC := 360.0
+const STD_STREAM_COMPRESSION := 0.55
+const STD_JUMP_COMPRESSION := 0.75
+const STD_JUMP_DISTANCE := 128.0
+const STD_PATH_MAX_SPAN := 180.0
 
 
 static func list_osz_difficulties(path: String) -> Array[Dictionary]:
@@ -168,6 +172,8 @@ static func parse_osu(text: String, source_name: String = "") -> Dictionary:
 		return {}
 	var slider_multiplier := float(difficulty.get("SliderMultiplier", "1.4"))
 	slider_multiplier = maxf(slider_multiplier, 0.1)
+	var circle_size := float(difficulty.get("CircleSize", "5"))
+	var circle_radius := clampf(54.4 - 4.48 * circle_size, 8.0, 64.0)
 	var meta := {
 		"title": String(metadata.get("Title", metadata.get("TitleUnicode", source_name.get_basename()))),
 		"artist": String(metadata.get("Artist", metadata.get("ArtistUnicode", ""))),
@@ -213,10 +219,19 @@ static func parse_osu(text: String, source_name: String = "") -> Dictionary:
 	report.append("来源：%s" % source_name)
 	report.append("模式：%s" % ("osu!taiko" if mode == 1 else "osu!std"))
 	report.append("BPM 点：%d；offset：%.0f ms；SliderMultiplier：%.2f" % [chart.timing.points.size(), chart.offset_ms, slider_multiplier])
-	var counts := {"tap": 0, "hold": 0, "trace": 0, "spinner": 0, "invalid": 0}
+	objects_raw.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return float(a["time"]) < float(b["time"]))
+	if mode == 0:
+		var std_counts := _convert_std_continuous(objects_raw, chart, timing_raw, slider_multiplier, circle_radius)
+		chart.refresh_ids()
+		report.append("保留：Tap %d，Path %d，Hold %d；跳过：spinner %d，无效 %d" % [std_counts["tap"], std_counts["path"], std_counts["hold"], std_counts["spinner"], std_counts["invalid"]])
+		report.append("osu!std → 连续环：circle → Tap；可跟随 slider → Path；lazy/短/重复 slider → Hold；流方向压缩 + 360°/s 限速，宽度按相邻角度/时间补偿。")
+		if int(std_counts["spinner"]) > 0:
+			report.append("注意：spinner 没有头尾，按设计不导入。")
+		return {"chart": chart, "report": report, "_events": events, "_general": general}
+
+	var counts := {"tap": 0, "hold": 0, "spinner": 0, "invalid": 0}
 	var taiko_prev_beat := -1.0e9
 	var taiko_prev_angle := 0.0
-	objects_raw.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return float(a["time"]) < float(b["time"]))
 	for object in objects_raw:
 		var type := int(object["type"])
 		if type & 8:
@@ -225,83 +240,57 @@ static func parse_osu(text: String, source_name: String = "") -> Dictionary:
 		if type & 128:
 			counts["invalid"] += 1
 			continue
-		var object_time: float = float(object["time"])
-		var beat: float = chart.timing.audio_ms_to_beat(object_time)
+		var beat: float = chart.timing.audio_ms_to_beat(float(object["time"]))
 		var hit_sound := int(object["hit_sound"])
-		if mode == 1:
-			var kat := _is_taiko_kat(hit_sound)
-			var finish := (hit_sound & 4) != 0
-			if type & 1:
-				var gap := beat - taiko_prev_beat
-				var angle := taiko_prev_angle
-				if gap >= TAIKO_STACK_GAP:
-					angle = _taiko_lane(taiko_prev_angle, kat)
-				var width := 90.0 if finish else (76.0 if kat else 58.0)
-				var note := Note.new("tap", beat, fposmod(angle, 360.0), width)
-				note.id = chart.next_note_id()
-				chart.notes.append(note)
-				taiko_prev_beat = beat
-				taiko_prev_angle = fposmod(angle, 360.0)
-				counts["tap"] += 1
-			elif type & 2:
-				var duration := _slider_beats(object, chart, timing_raw, slider_multiplier)
-				var gap := beat - taiko_prev_beat
-				var angle := taiko_prev_angle
-				if gap >= TAIKO_STACK_GAP:
-					angle = _taiko_lane(taiko_prev_angle, kat)
-				if duration < 1.5:
-					# 短滑条按 osu!taiko 习惯拆成拍点，不生成需要长按的 Hold。
-					var span := clampf(duration, 0.25, 1.5)
-					var count := maxi(1, int(round(span / 0.5)))
-					var last_beat := beat
-					for i in count:
-						var tap_beat := beat + span * float(i) / float(count)
-						var tap := Note.new("tap", tap_beat, fposmod(angle, 360.0), 76.0 if kat else 58.0)
-						tap.id = chart.next_note_id()
-						chart.notes.append(tap)
-						last_beat = tap_beat
-						counts["tap"] += 1
-					taiko_prev_beat = last_beat
-				else:
-					var hold := Note.new("hold", beat, fposmod(angle, 360.0), 58.0)
-					hold.id = chart.next_note_id()
-					hold.end_beat = beat + duration
-					chart.notes.append(hold)
-					taiko_prev_beat = beat + duration
-					counts["hold"] += 1
-				taiko_prev_angle = fposmod(angle, 360.0)
-			else:
-				counts["invalid"] += 1
-			continue
+		var kat := _is_taiko_kat(hit_sound)
+		var finish := (hit_sound & 4) != 0
 		if type & 1:
-			var note := Note.new("tap", beat, 0.0, 60.0)
-			note.space = "plane"
-			note.plane_x = clampf(float(object["x"]) / 512.0, 0.0, 1.0)
-			note.plane_y = clampf(float(object["y"]) / 384.0, 0.0, 1.0)
-			note.plane_radius = PLANE_TAP_RADIUS
+			var gap := beat - taiko_prev_beat
+			var angle := taiko_prev_angle
+			if gap >= TAIKO_STACK_GAP:
+				angle = _taiko_lane(taiko_prev_angle, kat)
+			var width := 90.0 if finish else (76.0 if kat else 58.0)
+			var note := Note.new("tap", beat, fposmod(angle, 360.0), width)
 			note.id = chart.next_note_id()
 			chart.notes.append(note)
+			taiko_prev_beat = beat
+			taiko_prev_angle = fposmod(angle, 360.0)
 			counts["tap"] += 1
 		elif type & 2:
-			var note := _std_slider(object, beat, timing_raw, slider_multiplier)
-			if note == null:
-				counts["invalid"] += 1
+			var duration := _slider_beats(object, chart, timing_raw, slider_multiplier)
+			var gap := beat - taiko_prev_beat
+			var angle := taiko_prev_angle
+			if gap >= TAIKO_STACK_GAP:
+				angle = _taiko_lane(taiko_prev_angle, kat)
+			if duration < 1.5:
+				# 短滑条按 osu!taiko 习惯拆成拍点，不生成需要长按的 Hold。
+				var span := clampf(duration, 0.25, 1.5)
+				var count := maxi(1, int(round(span / 0.5)))
+				var last_beat := beat
+				for i in count:
+					var tap_beat := beat + span * float(i) / float(count)
+					var tap := Note.new("tap", tap_beat, fposmod(angle, 360.0), 76.0 if kat else 58.0)
+					tap.id = chart.next_note_id()
+					chart.notes.append(tap)
+					last_beat = tap_beat
+					counts["tap"] += 1
+				taiko_prev_beat = last_beat
 			else:
-				note.id = chart.next_note_id()
-				chart.notes.append(note)
-				counts["trace"] += 1
+				var hold := Note.new("hold", beat, fposmod(angle, 360.0), 58.0)
+				hold.id = chart.next_note_id()
+				hold.end_beat = beat + duration
+				chart.notes.append(hold)
+				taiko_prev_beat = beat + duration
+				counts["hold"] += 1
+			taiko_prev_angle = fposmod(angle, 360.0)
 		else:
 			counts["invalid"] += 1
 	chart.refresh_ids()
-	report.append("保留：Tap %d，Trace %d，Hold %d；跳过：spinner %d，无效 %d" % [counts["tap"], counts["trace"], counts["hold"], counts["spinner"], counts["invalid"]])
-	if mode == 1:
-		report.append("taiko 映射：don/kat 按 hitsound（whistle/clap = kat）分色；就近取 0/90/180/270 两车道，密集段堆叠不甩圈；短滑条 → Tap，长滑条 → Hold；spinner 跳过。")
-	else:
-		report.append("osu!std 全平面模式：circle → 平面 Tap（原 2D 位置 + 按键）；slider → 平面 Trace（B/L/C/P 二维轨迹，起始接触 + 沿带移动）；spinner 跳过。")
+	report.append("保留：Tap %d，Hold %d；跳过：spinner %d，无效 %d" % [counts["tap"], counts["hold"], counts["spinner"], counts["invalid"]])
+	report.append("taiko 映射：don/kat 按 hitsound（whistle/clap = kat）分色；就近取 0/90/180/270 两车道，密集段堆叠不甩圈；短滑条 → Tap，长滑条 → Hold；spinner 跳过。")
 	if counts["spinner"] > 0:
 		report.append("注意：spinner 没有头尾，按设计不导入。")
 	return {"chart": chart, "report": report, "_events": events, "_general": general}
-
 
 static func _is_taiko_kat(hit_sound: int) -> bool:
 	return (hit_sound & 2) != 0 or (hit_sound & 8) != 0
@@ -320,26 +309,196 @@ static func _taiko_lane(previous: float, kat: bool) -> float:
 	return best
 
 
-static func _std_slider(object: Dictionary, beat: float, timing_raw: Array[Dictionary], slider_multiplier: float) -> Note:
-	var fields: Array = object["fields"]
-	if fields.size() < 8:
-		return null
-	var slides := maxi(1, int(fields[6]))
-	var one_pass := _slider_one_pass_beats(object, timing_raw, slider_multiplier)
-	if one_pass <= 0.001:
-		one_pass = 0.25
-	var total := one_pass * float(slides)
-	var raw := _std_slider_curve(object)
-	if raw.size() < 2:
-		return null
-	var note := Note.new("trace", beat, 0.0, 60.0)
-	note.end_beat = beat + total
-	note.trace_style = "slider"
-	note.move_px = clampf(70.0 + total * 45.0, 90.0, 260.0)
-	note.trace_pts = _std_plane_trace(raw, total, slides)
-	if note.trace_pts.size() < 2:
-		return null
-	return note
+static func _convert_std_continuous(objects_raw: Array, chart: Chart, timing_raw: Array[Dictionary], slider_multiplier: float, circle_radius: float) -> Dictionary:
+	var counts := {"tap": 0, "path": 0, "hold": 0, "spinner": 0, "invalid": 0}
+	var play: Array[Dictionary] = []
+	for object in objects_raw:
+		var type := int(object["type"])
+		if type & 8:
+			counts["spinner"] += 1
+			continue
+		if type & 128 or (not (type & 1) and not (type & 2)):
+			counts["invalid"] += 1
+			continue
+		var pos := Vector2(float(object["x"]), float(object["y"]))
+		var beat := chart.timing.audio_ms_to_beat(float(object["time"]))
+		var is_slider := (type & 2) != 0
+		var end_pos := pos
+		var duration := 0.0
+		var repeats := 1
+		var lazy := false
+		var raw: Array[Vector2] = []
+		if is_slider:
+			var fields: Array = object["fields"]
+			if fields.size() < 8:
+				counts["invalid"] += 1
+				continue
+			repeats = maxi(1, int(fields[6]))
+			duration = _slider_beats(object, chart, timing_raw, slider_multiplier)
+			raw = _std_slider_curve(object)
+			if raw.size() < 2:
+				counts["invalid"] += 1
+				continue
+			end_pos = raw[-1] if repeats % 2 == 1 else pos
+			lazy = _std_is_lazy(raw, pos, circle_radius)
+		play.append({
+			"pos": pos, "end_pos": end_pos, "beat": beat, "is_slider": is_slider,
+			"duration": duration, "repeats": repeats, "lazy": lazy, "raw": raw,
+		})
+	if play.is_empty():
+		return counts
+	play.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return float(a["beat"]) < float(b["beat"]))
+
+	var infos: Array[Dictionary] = []
+	var prev_u := 0.0
+	var prev_end_beat := 0.0
+	var first := true
+	for i in play.size():
+		var current: Dictionary = play[i]
+		var pos: Vector2 = current["pos"]
+		var beat := float(current["beat"])
+		var raw_start := _std_angle(pos)
+		var u := raw_start
+		var is_jump := false
+		if not first:
+			var prev: Dictionary = play[i - 1]
+			var prev_prev: Dictionary = play[i - 2] if i >= 2 else {}
+			var midpoint := _std_midpoint(prev, prev_prev, current)
+			var prev_flow := _std_angle_between(midpoint, prev["end_pos"])
+			var curr_flow := _std_angle_between(midpoint, pos)
+			var raw_delta := _std_short_delta(prev_flow, curr_flow)
+			is_jump = (prev["end_pos"] as Vector2).distance_to(pos) >= STD_JUMP_DISTANCE
+			var compression := STD_JUMP_COMPRESSION if is_jump else STD_STREAM_COMPRESSION
+			var delta := raw_delta * compression
+			if absf(raw_delta) <= 5.0 or absf(absf(raw_delta) - 180.0) <= 5.0:
+				delta = 0.0
+			var bpm := maxf(1.0, chart.timing.bpm_at(beat))
+			var dt := maxf(0.0001, (beat - prev_end_beat) * 60.0 / bpm)
+			var max_delta := STD_MAX_DEG_PER_SEC * dt
+			delta = clampf(delta, -max_delta, max_delta)
+			u = prev_u + delta
+		first = false
+
+		var note: Note
+		var tail_u := u
+		var end_beat := beat
+		var is_path := false
+		if bool(current["is_slider"]) and not bool(current["lazy"]) and int(current["repeats"]) <= 1 and float(current["duration"]) >= 0.5:
+			var raw: Array[Vector2] = current["raw"]
+			var raw_end := _std_angle(current["end_pos"])
+			var net := _std_short_delta(raw_start, raw_end)
+			var turn := _std_curve_turn(raw)
+			var direction := 1.0
+			if absf(turn) > 0.1:
+				direction = 1.0 if turn > 0.0 else -1.0
+			elif absf(net) > 1.0:
+				direction = 1.0 if net > 0.0 else -1.0
+			var span := clampf(absf(net) * 0.55 + float(current["duration"]) * 12.0, 45.0, STD_PATH_MAX_SPAN)
+			tail_u = u + direction * span
+			end_beat = beat + float(current["duration"])
+			note = Note.new("path", beat, fposmod(u, 360.0), 60.0)
+			note.end_beat = end_beat
+			note.tail_angle = fposmod(tail_u, 360.0)
+			note.tail_width = 60.0
+			note.path_style = "arc"
+			note.tolerance = 0.24
+			note.samples_per_beat = 4.0
+			counts["path"] += 1
+			is_path = true
+		elif bool(current["is_slider"]):
+			var hold_duration := maxf(0.25, float(current["duration"]))
+			end_beat = beat + hold_duration
+			note = Note.new("hold", beat, fposmod(u, 360.0), 60.0)
+			note.end_beat = end_beat
+			counts["hold"] += 1
+		else:
+			note = Note.new("tap", beat, fposmod(u, 360.0), 60.0)
+			counts["tap"] += 1
+		note.id = chart.next_note_id()
+		chart.notes.append(note)
+		infos.append({
+			"note": note, "beat": beat, "u": u, "is_jump": is_jump,
+			"is_path": is_path, "tail_u": tail_u, "end_beat": end_beat,
+		})
+		prev_u = tail_u if is_path else u
+		prev_end_beat = end_beat
+
+	for i in infos.size():
+		var info: Dictionary = infos[i]
+		var note: Note = info["note"]
+		var u := float(info["u"])
+		var prev_ref := u
+		var next_ref := u
+		var prev_time := 4.0
+		var next_time := 4.0
+		if i > 0:
+			var previous: Dictionary = infos[i - 1]
+			prev_ref = float(previous["tail_u"]) if bool(previous["is_path"]) else float(previous["u"])
+			prev_time = float(info["beat"]) - float(previous["beat"])
+		if i + 1 < infos.size():
+			next_ref = float(infos[i + 1]["u"])
+			next_time = float(infos[i + 1]["beat"]) - float(info["beat"])
+		var current_ref := float(info["tail_u"]) if bool(info["is_path"]) else u
+		var prev_gap := absf(_std_short_delta(prev_ref, u))
+		var next_gap := absf(_std_short_delta(current_ref, next_ref))
+		var dense := prev_time < 0.5 or next_time < 0.5
+		var width := 62.0
+		if dense:
+			width += 22.0
+		width += clampf(minf(prev_gap, next_gap) * 0.25, 0.0, 25.0)
+		if bool(info["is_jump"]):
+			width -= 8.0
+		width = clampf(width, 52.0, 110.0)
+		note.width = width
+		if note.type == "path":
+			note.tail_width = clampf(width + 8.0, 52.0, 120.0)
+	return counts
+
+
+static func _std_angle(point: Vector2) -> float:
+	return rad_to_deg(atan2(point.y - 192.0, point.x - 256.0))
+
+
+static func _std_angle_between(from: Vector2, to: Vector2) -> float:
+	return rad_to_deg(atan2(to.y - from.y, to.x - from.x))
+
+
+static func _std_short_delta(from_angle: float, to_angle: float) -> float:
+	return JudgeMath.angle_delta(from_angle, to_angle)
+
+
+static func _std_midpoint(current: Dictionary, previous: Dictionary, next: Dictionary) -> Vector2:
+	var sum: Vector2 = current["end_pos"]
+	var count := 1
+	if not previous.is_empty():
+		sum += previous["end_pos"]
+		count += 1
+	sum += next["pos"]
+	count += 1
+	if (current["pos"] as Vector2) != (current["end_pos"] as Vector2):
+		sum += current["pos"]
+		count += 1
+	if count > 2:
+		return sum / float(count)
+	return Vector2(256.0, 192.0)
+
+
+static func _std_is_lazy(raw: Array[Vector2], start: Vector2, circle_radius: float) -> bool:
+	var limit := circle_radius * 2.4
+	var limit_squared := limit * limit
+	for point in raw:
+		if point.distance_squared_to(start) > limit_squared:
+			return false
+	return true
+
+
+static func _std_curve_turn(raw: Array[Vector2]) -> float:
+	var turn := 0.0
+	for i in range(1, raw.size() - 1):
+		var a := raw[i] - raw[i - 1]
+		var b := raw[i + 1] - raw[i]
+		turn += a.x * b.y - a.y * b.x
+	return turn
 
 
 static func _std_slider_curve(object: Dictionary) -> Array[Vector2]:
@@ -489,45 +648,6 @@ static func _circumcenter(a: Vector2, b: Vector2, c: Vector2) -> Vector2:
 	var ux := (a2 * (b.y - c.y) + b2 * (c.y - a.y) + c2 * (a.y - b.y)) / d
 	var uy := (a2 * (c.x - b.x) + b2 * (a.x - c.x) + c2 * (b.x - a.x)) / d
 	return Vector2(ux, uy)
-
-
-static func _std_plane_trace(raw: Array[Vector2], total: float, slides: int) -> Array[Dictionary]:
-	var path: Array[Vector2] = []
-	for span in slides:
-		if span % 2 == 0:
-			for point in raw:
-				if path.is_empty() or path[-1].distance_to(point) > 0.001:
-					path.append(point)
-		else:
-			for i in range(raw.size() - 1, -1, -1):
-				var point := raw[i]
-				if path.is_empty() or path[-1].distance_to(point) > 0.001:
-					path.append(point)
-	if path.size() < 2:
-		return []
-	var lengths: Array[float] = [0.0]
-	var total_length := 0.0
-	for i in range(1, path.size()):
-		total_length += path[i - 1].distance_to(path[i])
-		lengths.append(total_length)
-	if total_length < 0.001:
-		return []
-	var result: Array[Dictionary] = []
-	for i in path.size():
-		var mapped := _std_plane_point(path[i])
-		result.append({
-			"x": snappedf(mapped.x, 0.0001),
-			"y": snappedf(mapped.y, 0.0001),
-			"db": snappedf(total * lengths[i] / total_length, 0.001),
-		})
-	return result
-
-
-static func _std_plane_point(point: Vector2) -> Vector2:
-	return Vector2(
-		clampf(point.x, 0.0, 512.0) / 512.0,
-		clampf(point.y, 0.0, 384.0) / 384.0
-	)
 
 
 static func _slider_beats(object: Dictionary, chart: Chart, timing_raw: Array[Dictionary], slider_multiplier: float) -> float:

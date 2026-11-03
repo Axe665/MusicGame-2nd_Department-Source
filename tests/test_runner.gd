@@ -19,6 +19,7 @@ func _initialize() -> void:
 		"test_lbp_export",
 		"test_osu_std_import",
 		"test_osu_std_curves",
+		"test_osu_std_slider_kinds",
 		"test_osu_std_readability",
 		"test_osu_taiko_import",
 		"test_osu_taiko_flow",
@@ -318,24 +319,19 @@ SliderMultiplier: 1.4
 	eq(chart.notes.size(), 2, "osu std note count")
 	var tap: Note = chart.notes[0]
 	eq(tap.type, "tap", "osu circle -> tap")
-	eq(tap.space, "plane", "osu circle -> plane tap")
-	near(tap.plane_x, 0.5, 0.001, "osu circle plane x")
-	near(tap.plane_y, 0.5, 0.001, "osu circle plane y")
+	eq(tap.space, "ring", "osu circle stays on the ring")
 	near(tap.beat, 2.0, 0.001, "osu circle beat")
+	ok(tap.width >= 52.0 and tap.width <= 110.0, "osu tap has variable width")
 	var slide: Note = chart.notes[1]
-	eq(slide.type, "trace", "osu slider -> planar trace")
-	eq(slide.trace_style, "slider", "osu slider keeps slider style")
+	eq(slide.type, "path", "osu slider -> ring path")
+	eq(slide.path_style, "arc", "osu slider uses arc path")
 	near(slide.beat, 4.0, 0.001, "osu slider beat")
 	near(slide.end_beat, 4.7142857, 0.001, "osu slider duration")
-	ok(slide.trace_pts.size() > 2, "osu slider has a 2D trajectory")
-	var first: Dictionary = slide.trace_pts[0]
-	var last: Dictionary = slide.trace_pts[-1]
-	near(float(first["db"]), 0.0, 0.001, "slider trace starts at head time")
-	near(float(last["db"]), slide.duration(), 0.01, "slider trace ends at tail time")
-	ok(absf(float(last["x"]) - float(first["x"])) > 0.01, "slider trace moves on the plane")
+	ok(absf(JudgeMath.angle_delta(slide.angle, slide.tail_angle)) >= 40.0, "slider has a ring tail span")
+	ok(slide.tail_width >= 52.0 and slide.tail_width <= 120.0, "slider tail width is variable")
 	var restored := Note.from_dict(slide.to_dict())
-	eq(restored.trace_style, "slider", "slider trace style survives json")
-	eq(restored.trace_pts.size(), slide.trace_pts.size(), "slider trace points survive json")
+	eq(restored.type, "path", "slider path survives json")
+	near(restored.tail_angle, slide.tail_angle, 0.001, "slider tail angle survives json")
 	return true
 
 
@@ -370,23 +366,11 @@ SliderMultiplier: 1.4
 	var chart: Chart = result["chart"]
 	eq(chart.notes.size(), 4, "four slider curves imported")
 	for note in chart.notes:
-		eq(note.type, "trace", "curve %s is a planar trace" % note.id)
-		eq(note.trace_style, "slider", "curve %s keeps slider style" % note.id)
-		ok(note.trace_pts.size() >= 8, "curve %s has enough samples" % note.id)
-		var previous_db := -1.0
-		var in_bounds := true
-		var monotonic := true
-		for point in note.trace_pts:
-			var x := float(point.get("x", -1.0))
-			var y := float(point.get("y", -1.0))
-			var db := float(point.get("db", -1.0))
-			if x < 0.0 or x > 1.0 or y < 0.0 or y > 1.0:
-				in_bounds = false
-			if db + 0.0001 < previous_db:
-				monotonic = false
-			previous_db = db
-		ok(in_bounds, "curve %s stays inside the plane" % note.id)
-		ok(monotonic, "curve %s time is monotonic" % note.id)
+		eq(note.type, "path", "curve %s is a ring path" % note.id)
+		var span := absf(JudgeMath.angle_delta(note.angle, note.tail_angle))
+		ok(span >= 40.0 and span <= 180.1, "curve %s has a continuous tail span (%.1f)" % [note.id, span])
+		ok(note.width >= 52.0 and note.width <= 110.0, "curve %s head width is playable" % note.id)
+		ok(note.tail_width >= 52.0 and note.tail_width <= 120.0, "curve %s tail width is playable" % note.id)
 	return true
 
 
@@ -474,6 +458,42 @@ SliderMultiplier: 1.4
 	return true
 
 
+func test_osu_std_slider_kinds() -> bool:
+	var text := """osu file format v14
+
+[General]
+Mode: 0
+
+[Metadata]
+Title: SliderKinds
+Artist: A
+Creator: C
+Version: H
+
+[Difficulty]
+SliderMultiplier: 1.4
+
+[TimingPoints]
+0,500,4,2,0,100,1,0
+
+[HitObjects]
+256,192,1000,2,0,L|300:192,1,50,0|0,0:0|0:0,0:0:0:0:
+256,192,2000,2,0,L|400:192,2,200,0|0,0:0|0:0,0:0:0:0:
+256,192,3000,2,0,L|400:192,1,280,0|0,0:0|0:0,0:0:0:0:
+"""
+	var result := OsuIO.parse_osu(text, "kinds.osu")
+	ok(not result.is_empty(), "std slider kinds parsed")
+	if result.is_empty():
+		return false
+	var chart: Chart = result["chart"]
+	eq(chart.notes.size(), 3, "slider kinds note count")
+	eq(chart.notes[0].type, "hold", "short slider -> hold")
+	eq(chart.notes[1].type, "hold", "repeat slider -> hold")
+	eq(chart.notes[2].type, "path", "long slider -> path")
+	ok(chart.notes[2].end_beat > chart.notes[2].beat, "long slider path has duration")
+	return true
+
+
 func test_osu_std_readability() -> bool:
 	var text := """osu file format v14
 
@@ -505,15 +525,18 @@ SliderMultiplier: 1.4
 		return false
 	var chart: Chart = result["chart"]
 	eq(chart.notes.size(), 5, "std readability note count")
-	near(chart.notes[0].plane_x, 0.5, 0.001, "std plane first x")
-	near(chart.notes[0].plane_y, 0.0, 0.001, "std plane first y")
-	near(chart.notes[1].plane_x, 1.0, 0.001, "std plane right x")
-	near(chart.notes[1].plane_y, 0.5, 0.001, "std plane right y")
-	near(chart.notes[2].plane_y, 1.0, 0.001, "std plane bottom y")
-	near(chart.notes[3].plane_x, 0.0, 0.001, "std plane left x")
+	near(chart.notes[0].angle, 270.0, 0.001, "std first note keeps absolute angle")
+	var max_step := 0.0
+	var min_step := 360.0
+	for i in range(1, chart.notes.size()):
+		var step := absf(JudgeMath.angle_delta(chart.notes[i - 1].angle, chart.notes[i].angle))
+		max_step = maxf(max_step, step)
+		min_step = minf(min_step, step)
+	ok(max_step <= 180.1, "std continuous step stays under speed cap (max %.1f)" % max_step)
+	ok(min_step > 10.0, "std notes are not all stacked (min %.1f)" % min_step)
 	for note in chart.notes:
-		eq(note.space, "plane", "std readability stays planar")
-		ok(note.plane_x >= 0.0 and note.plane_x <= 1.0 and note.plane_y >= 0.0 and note.plane_y <= 1.0, "std plane note in bounds")
+		eq(note.space, "ring", "std readability stays on the ring")
+		ok(note.width >= 52.0 and note.width <= 110.0, "std width is playable")
 	return true
 
 
