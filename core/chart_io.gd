@@ -71,6 +71,7 @@ static func chart_to_dict(chart: Chart) -> Dictionary:
 			"zoom": snappedf(float(chart.editor.get("zoom", 1.0)), 0.001),
 			"waveform": bool(chart.editor.get("waveform", true)),
 			"hud": bool(chart.editor.get("hud", true)),
+			"flow_down": bool(chart.editor.get("flow_down", true)),
 		},
 	}
 

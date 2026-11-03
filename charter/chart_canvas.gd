@@ -7,13 +7,19 @@ signal notice(message: String, level: String)
 const LEFT_MARGIN := 58.0
 const TOP_MARGIN := 24.0
 const BOTTOM_MARGIN := 12.0
-const RIGHT_MARGIN := 12.0
+const RIGHT_MARGIN := 58.0
 const WAVE_WIDTH := 24.0
+const DIVISION_WIDTH := 42.0
+const DIVISION_ITEM_HEIGHT := 22.0
+const DIVISION_GAP := 3.0
+const DIVISION_MARGIN := 8.0
 
 var _app: Node = null
 var px_per_beat: float = 28.0
 var scroll_beat: float = 0.0
 var follow_playhead: bool = true
+var flow_down: bool = true
+var snap_division: int = GridDivisions.DEFAULT_DIVISION
 
 var _mouse_pos: Vector2 = Vector2.ZERO
 var _hover_u: float = 0.0
@@ -37,6 +43,9 @@ var _waveform_duration: float = 0.0
 var _waveform_audio_path: String = ""
 var _last_playhead_redraw: int = 0
 var _overlay: Control
+var _division_rects: Array[Rect2] = []
+var _division_hover: int = -1
+var _flow_button: Button
 
 
 func _ready() -> void:
@@ -51,10 +60,15 @@ func _ready() -> void:
 		_app.playhead_changed.connect(_on_playhead_changed)
 		_app.selection_changed.connect(_on_selection_changed)
 		_app.tool_changed.connect(_on_tool_changed)
+		_app.snap_changed.connect(_on_snap_changed)
+		_app.flow_changed.connect(_on_flow_changed)
 		px_per_beat = _app.zoom_px_per_beat
+		snap_division = _app.snap_division
+		flow_down = _app.time_flows_down
 	_overlay = load("res://charter/chart_overlay.gd").new()
 	_overlay.canvas = self
 	add_child(_overlay)
+	_build_flow_button()
 	_refresh_waveform()
 
 
@@ -78,12 +92,17 @@ func _x_to_u(x: float) -> float:
 
 func _beat_to_y(beat: float) -> float:
 	var plot := _plot_rect()
-	return plot.position.y + (beat - scroll_beat) * px_per_beat
+	var distance := (beat - scroll_beat) * px_per_beat
+	if flow_down:
+		return plot.position.y + distance
+	return plot.end.y - distance
 
 
 func _y_to_beat(y: float) -> float:
 	var plot := _plot_rect()
-	return scroll_beat + (y - plot.position.y) / maxf(0.1, px_per_beat)
+	if flow_down:
+		return scroll_beat + (y - plot.position.y) / maxf(0.1, px_per_beat)
+	return scroll_beat + (plot.end.y - y) / maxf(0.1, px_per_beat)
 
 
 func _visible_beats() -> float:
@@ -126,6 +145,65 @@ func _on_tool_changed(_tool: String) -> void:
 	queue_redraw()
 	if _overlay != null:
 		_overlay.queue_redraw()
+
+
+func _on_snap_changed(division: int) -> void:
+	snap_division = division
+	queue_redraw()
+
+
+func _on_flow_changed(down: bool) -> void:
+	flow_down = down
+	if _flow_button != null and _flow_button.button_pressed != down:
+		_flow_button.set_pressed_no_signal(down)
+	queue_redraw()
+	if _overlay != null:
+		_overlay.queue_redraw()
+
+
+func _build_flow_button() -> void:
+	_flow_button = Button.new()
+	_flow_button.name = "FlowToggle"
+	_flow_button.text = "从上往下"
+	_flow_button.toggle_mode = true
+	_flow_button.focus_mode = Control.FOCUS_NONE
+	_flow_button.tooltip_text = "开启时新音符向下写入；关闭后整个写谱区上下翻转（时间向上流动）"
+	_flow_button.add_theme_font_size_override("font_size", 10)
+	_flow_button.add_theme_color_override("font_color", Color(1, 1, 1, 0.55))
+	_flow_button.add_theme_color_override("font_pressed_color", UITheme.BG)
+	_flow_button.add_theme_color_override("font_hover_color", UITheme.INK)
+	_flow_button.add_theme_stylebox_override("normal", UITheme._box(UITheme.PANEL, UITheme.BORDER, 4, 8, 2))
+	_flow_button.add_theme_stylebox_override("hover", UITheme._box(UITheme.RAISED_HOVER, UITheme.BORDER_BRIGHT, 4, 8, 2))
+	_flow_button.add_theme_stylebox_override("pressed", UITheme._box(UITheme.ACCENT, UITheme.ACCENT, 4, 8, 2))
+	_flow_button.add_theme_stylebox_override("focus", UITheme._box(Color(0, 0, 0, 0), Color(0, 0, 0, 0), 4, 0, 0))
+	_flow_button.set_anchor(SIDE_LEFT, 1.0)
+	_flow_button.set_anchor(SIDE_RIGHT, 1.0)
+	_flow_button.set_anchor(SIDE_TOP, 0.0)
+	_flow_button.set_anchor(SIDE_BOTTOM, 0.0)
+	_flow_button.offset_left = -106.0
+	_flow_button.offset_right = -8.0
+	_flow_button.offset_top = TOP_MARGIN + 2.0
+	_flow_button.offset_bottom = TOP_MARGIN + 22.0
+	_flow_button.button_pressed = flow_down
+	_flow_button.toggled.connect(_on_flow_toggled)
+	add_child(_flow_button)
+
+
+func _on_flow_toggled(pressed: bool) -> void:
+	if _app != null:
+		_app.set_time_flows_down(pressed)
+		return
+	flow_down = pressed
+	queue_redraw()
+	if _overlay != null:
+		_overlay.queue_redraw()
+
+
+func _division_index_at(position: Vector2) -> int:
+	for i in _division_rects.size():
+		if _division_rects[i].has_point(position):
+			return i
+	return -1
 
 
 func _refresh_waveform() -> void:
@@ -185,6 +263,7 @@ func _draw() -> void:
 	_draw_events(plot)
 	_draw_notes(plot)
 	_draw_legend(plot)
+	_draw_divisions(plot)
 
 
 func _draw_waveform(plot: Rect2) -> void:
@@ -237,28 +316,59 @@ func _draw_grid(plot: Rect2) -> void:
 		if major:
 			var label := "%d°" % (i * 30)
 			draw_string(font, Vector2(x - 12, plot.position.y - 7), label, HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(1, 1, 1, 0.52))
-	var first_beat := floori(scroll_beat)
-	var last_beat := ceili(scroll_beat + _visible_beats() + 1.0)
-	var last_bar := -999
+	# Subdivision cells: one line per 1/division of a beat, skipped when the
+	# cells get shorter than 4 px so the grid stays readable at any zoom.
+	var step := GridDivisions.step_beats(snap_division)
+	if step * px_per_beat >= 4.0:
+		var cell := floorf(scroll_beat / step) * step
+		var limit := scroll_beat + _visible_beats() + step
+		while cell <= limit:
+			var cell_y := _beat_to_y(cell)
+			if cell_y >= plot.position.y - 1.0 and cell_y <= plot.end.y + 1.0 and absf(cell - roundf(cell)) > 0.0001:
+				draw_line(Vector2(plot.position.x, cell_y), Vector2(plot.end.x, cell_y), Color(1, 1, 1, 0.035), 1.0)
+			cell += step
+	# Beat / bar lines with continuous beat numbers. Bar lines stay thicker but
+	# are no longer labelled "bar N": the left column counts beats, like the
+	# Malody editor, so a note's row can be read as 1, 2, 3, 4, 5 ...
+	var first_beat := maxi(0, floori(scroll_beat) - 1)
+	var last_beat := ceili(scroll_beat + _visible_beats()) + 1
 	for beat in range(first_beat, last_beat + 1):
 		var y := _beat_to_y(float(beat))
 		if y < plot.position.y - 2.0 or y > plot.end.y + 2.0:
 			continue
 		var bpb := chart.timing.beats_per_bar_at(float(beat))
 		var is_bar := beat % bpb == 0
-		var color := Color(1, 1, 1, 0.16 if is_bar else 0.055)
-		draw_line(Vector2(plot.position.x, y), Vector2(plot.end.x, y), color, 1.0 if not is_bar else 1.5)
-		if is_bar:
-			var bar := floori(float(beat) / float(bpb))
-			if bar != last_bar:
-				last_bar = bar
-				draw_string(font, Vector2(4, y + 4), "bar %d" % bar, HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(1, 1, 1, 0.52))
+		var color := Color(1, 1, 1, 0.17 if is_bar else 0.075)
+		draw_line(Vector2(plot.position.x, y), Vector2(plot.end.x, y), color, 1.5 if is_bar else 1.0)
+		draw_string(font, Vector2(1, y + 3.5), str(beat + 1), HORIZONTAL_ALIGNMENT_RIGHT, 22, 10, Color(1, 1, 1, 0.62 if is_bar else 0.38))
 	for point in chart.timing.points:
 		if point.beat < scroll_beat or point.beat > scroll_beat + _visible_beats():
 			continue
 		var y := _beat_to_y(point.beat)
 		draw_line(Vector2(plot.position.x, y), Vector2(plot.end.x, y), Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, 0.55), 1.5)
-		draw_string(font, Vector2(plot.end.x - 120, y - 4), "BPM %.1f" % point.bpm, HORIZONTAL_ALIGNMENT_LEFT, -1, 10, UITheme.GOLD)
+		draw_string(font, Vector2(plot.position.x + 6, y + 12), "BPM %.1f" % point.bpm, HORIZONTAL_ALIGNMENT_LEFT, -1, 10, UITheme.GOLD)
+
+
+func _draw_divisions(plot: Rect2) -> void:
+	var font := UITheme.mono_font()
+	var left := plot.end.x + DIVISION_MARGIN
+	var total := float(GridDivisions.ITEMS.size()) * (DIVISION_ITEM_HEIGHT + DIVISION_GAP) - DIVISION_GAP
+	var top := clampf(plot.get_center().y - total * 0.5, plot.position.y + 18.0, maxf(plot.position.y + 18.0, plot.end.y - total - 4.0))
+	_division_rects.clear()
+	draw_line(Vector2(plot.end.x + 3.0, plot.position.y), Vector2(plot.end.x + 3.0, plot.end.y), Color(1, 1, 1, 0.06), 1.0)
+	draw_string(font, Vector2(left, top - 7.0), "分音", HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(1, 1, 1, 0.35))
+	for i in GridDivisions.ITEMS.size():
+		var division: int = GridDivisions.ITEMS[i]
+		var rect := Rect2(Vector2(left, top + float(i) * (DIVISION_ITEM_HEIGHT + DIVISION_GAP)), Vector2(DIVISION_WIDTH, DIVISION_ITEM_HEIGHT))
+		_division_rects.append(rect)
+		var active := division == snap_division
+		var hovered := i == _division_hover
+		if active:
+			draw_rect(rect, UITheme.ACCENT)
+		elif hovered:
+			draw_rect(rect, Color(1, 1, 1, 0.10))
+		draw_rect(rect, UITheme.ACCENT if active else Color(1, 1, 1, 0.14), false, 1.0)
+		draw_string(font, Vector2(rect.position.x, rect.position.y + 15.0), GridDivisions.LABELS[i], HORIZONTAL_ALIGNMENT_CENTER, DIVISION_WIDTH, 10, UITheme.BG if active else Color(1, 1, 1, 0.55))
 
 
 func _draw_dashed_vertical(x: float, y0: float, y1: float, color: Color) -> void:
@@ -278,17 +388,19 @@ func _draw_regions(plot: Rect2) -> void:
 		var color := UITheme.RED if region.kind == "red" else UITheme.GOLD
 		var y0 := _beat_to_y(region.start_beat)
 		var y1 := _beat_to_y(region.end_beat)
-		if y1 < plot.position.y or y0 > plot.end.y:
+		var top := minf(y0, y1)
+		var height := maxf(2.0, absf(y1 - y0))
+		if top + height < plot.position.y or top > plot.end.y:
 			continue
 		for interval in _u_intervals(region.angle, region.width):
 			var x0 := _u_to_x(interval.x)
 			var x1 := _u_to_x(interval.y)
-			var rect := Rect2(Vector2(x0, y0), Vector2(maxf(2.0, x1 - x0), maxf(2.0, y1 - y0)))
+			var rect := Rect2(Vector2(x0, top), Vector2(maxf(2.0, x1 - x0), height))
 			draw_rect(rect, Color(color.r, color.g, color.b, 0.16))
 			draw_rect(rect, Color(color.r, color.g, color.b, 0.55), false, 1.0)
-			draw_string(UITheme.mono_font(), Vector2(x0 + 4, y0 + 12), "RED %d" % region.id, HORIZONTAL_ALIGNMENT_LEFT, -1, 9, color)
+			draw_string(UITheme.mono_font(), Vector2(x0 + 4, top + 12), "RED %d" % region.id, HORIZONTAL_ALIGNMENT_LEFT, -1, 9, color)
 		if _is_region_selected(region.id):
-			draw_rect(Rect2(Vector2(_u_to_x(0.0), y0), Vector2(plot.size.x, maxf(2.0, y1 - y0))), Color(1, 1, 1, 0.35), false, 1.0)
+			draw_rect(Rect2(Vector2(_u_to_x(0.0), top), Vector2(plot.size.x, height)), Color(1, 1, 1, 0.35), false, 1.0)
 
 
 func _draw_events(plot: Rect2) -> void:
@@ -300,15 +412,17 @@ func _draw_events(plot: Rect2) -> void:
 	for event in chart.events:
 		var y0 := _beat_to_y(event.start_beat)
 		var y1 := _beat_to_y(event.end_beat + event.restore_duration)
-		if y1 < plot.position.y or y0 > plot.end.y:
+		var top := minf(y0, y1)
+		var height := maxf(2.0, absf(y1 - y0))
+		if top + height < plot.position.y or top > plot.end.y:
 			continue
 		var x0 := _u_to_x(event.target_u0)
 		var x1 := _u_to_x(event.target_u1)
-		var rect := Rect2(Vector2(x0, y0), Vector2(maxf(2.0, x1 - x0), maxf(2.0, y1 - y0)))
+		var rect := Rect2(Vector2(x0, top), Vector2(maxf(2.0, x1 - x0), height))
 		draw_rect(rect, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.07))
 		draw_rect(rect, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.30), false, 1.0)
-		if y1 - y0 > 14.0:
-			draw_string(UITheme.mono_font(), Vector2(x0 + 3, y0 + 10), "%s → %s" % [event.from_shape, event.to_shape], HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.7))
+		if height > 14.0:
+			draw_string(UITheme.mono_font(), Vector2(x0 + 3, top + 10), "%s → %s" % [event.from_shape, event.to_shape], HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.7))
 
 
 func _draw_notes(plot: Rect2) -> void:
@@ -452,22 +566,24 @@ func _draw_donut(point: Vector2, radius: float, color: Color) -> void:
 func _draw_trace(note: Note, _plot: Rect2) -> void:
 	var y0 := _beat_to_y(note.beat)
 	var y1 := _beat_to_y(note.end_beat)
+	var top := minf(y0, y1)
+	var height := maxf(12.0, absf(y1 - y0))
 	var selected := _is_note_selected(note.id)
 	var cx := _u_to_x(0.5)
-	var rect := Rect2(Vector2(cx - 24, y0), Vector2(48, maxf(12, y1 - y0)))
+	var rect := Rect2(Vector2(cx - 24, top), Vector2(48, height))
 	draw_rect(rect, Color(UITheme.MINT.r, UITheme.MINT.g, UITheme.MINT.b, 0.12))
 	draw_rect(rect, Color(UITheme.MINT.r, UITheme.MINT.g, UITheme.MINT.b, 0.60), false, 1.0)
 	if selected:
 		draw_rect(rect, UITheme.INK, false, 1.0)
 	var mini := PackedVector2Array()
 	for point in note.trace_pts:
-		mini.append(Vector2(cx - 20 + float(point.get("x", 0.0)) * 40.0, y0 + 4 + float(point.get("y", 0.0)) * maxf(4, y1 - y0 - 8)))
+		mini.append(Vector2(cx - 20 + float(point.get("x", 0.0)) * 40.0, top + 4 + float(point.get("y", 0.0)) * maxf(4, height - 8)))
 	if mini.size() > 1:
 		draw_polyline(mini, UITheme.MINT, 2.0, true)
-	draw_line(Vector2(cx - 19, y0 + 3), Vector2(cx - 11, y0 + 11), UITheme.MINT, 1.5, true)
-	draw_line(Vector2(cx - 11, y0 + 3), Vector2(cx - 19, y0 + 11), UITheme.MINT, 1.5, true)
+	draw_line(Vector2(cx - 19, top + 3), Vector2(cx - 11, top + 11), UITheme.MINT, 1.5, true)
+	draw_line(Vector2(cx - 11, top + 3), Vector2(cx - 19, top + 11), UITheme.MINT, 1.5, true)
 	if _show_type_label(note):
-		_draw_type_label("TRACE", Vector2(cx + 27.0, y0 + 10.0), UITheme.MINT)
+		_draw_type_label("TRACE", Vector2(cx + 27.0, top + 10.0), UITheme.MINT)
 
 
 func _draw_anchor(note: Note) -> void:
@@ -628,6 +744,10 @@ func _gui_input(event: InputEvent) -> void:
 		_mouse_pos = event.position
 		_hover_u = _x_to_u(event.position.x)
 		_hover_beat = _y_to_beat(event.position.y)
+		var hover_index := _division_index_at(event.position)
+		if hover_index != _division_hover:
+			_division_hover = hover_index
+			queue_redraw()
 		hover_changed.emit(_hover_u, _hover_beat)
 		if _drag_mode == "note":
 			_drag_notes_update(event.position, event)
@@ -656,6 +776,12 @@ func _gui_input(event: InputEvent) -> void:
 			return
 		if event.button_index == MOUSE_BUTTON_LEFT:
 			if event.pressed:
+				var division_index := _division_index_at(event.position)
+				if division_index >= 0:
+					if _app != null:
+						_app.set_snap_division(GridDivisions.ITEMS[division_index])
+					accept_event()
+					return
 				grab_focus()
 				_on_left_press(event)
 			else:
@@ -676,10 +802,12 @@ func _gui_input(event: InputEvent) -> void:
 
 func _handle_wheel(event: InputEventMouseButton) -> void:
 	if event.ctrl_pressed:
-		var beat := _y_to_beat(event.position.y)
+		var anchor := _y_to_beat(event.position.y)
 		var factor := 1.12 if event.button_index == MOUSE_BUTTON_WHEEL_UP else 0.89
 		px_per_beat = clampf(px_per_beat * factor, 10.0, 400.0)
-		scroll_beat = maxf(0.0, beat - (event.position.y - _plot_rect().position.y) / px_per_beat)
+		var plot := _plot_rect()
+		var distance := (event.position.y - plot.position.y) if flow_down else (plot.end.y - event.position.y)
+		scroll_beat = maxf(0.0, anchor - distance / px_per_beat)
 		if _app != null:
 			_app.zoom_px_per_beat = px_per_beat
 	else:
@@ -694,6 +822,8 @@ func _on_left_press(event: InputEventMouseButton) -> void:
 	if _app == null:
 		return
 	var plot := _plot_rect()
+	if event.position.x > plot.end.x + 1.0:
+		return
 	var beat: float = _app.snap_beat(_y_to_beat(event.position.y), event.alt_pressed)
 	var u := _x_to_u(event.position.x)
 	if event.position.x < plot.position.x - 4.0:

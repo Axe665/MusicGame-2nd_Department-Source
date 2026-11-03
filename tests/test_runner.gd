@@ -28,6 +28,12 @@ func _initialize() -> void:
 		"test_validation_demo",
 		"test_angle_math",
 		"test_trace_distance",
+		"test_grid_divisions",
+		"test_canvas_flow_mapping",
+		"test_wav_decode",
+		"test_bpm_detect_128",
+		"test_bpm_detect_87",
+		"test_bpm_detect_silence",
 	]
 	for test_name in tests:
 		if call(test_name) != true:
@@ -594,3 +600,134 @@ func test_trace_distance() -> bool:
 	var line: Array[Vector2] = [Vector2(0.0, 0.0), Vector2(1.0, 0.0)]
 	near(JudgeMath.trace_distance(Vector2(0.5, 0.25), line), 0.25, 0.001, "trace distance")
 	return true
+
+
+func test_grid_divisions() -> bool:
+	eq(GridDivisions.label(4), "1/4", "grid label 1/4")
+	eq(GridDivisions.label(12), "1/12", "grid label 1/12")
+	eq(GridDivisions.label(13), "1/4", "grid label falls back to default")
+	near(GridDivisions.step_beats(4), 0.25, 0.000001, "grid step 1/4")
+	near(GridDivisions.step_beats(6), 1.0 / 6.0, 0.000001, "grid step 1/6")
+	near(GridDivisions.snap(0.31, 4), 0.25, 0.000001, "grid snap quarter")
+	near(GridDivisions.snap(0.31, 8), 0.25, 0.000001, "grid snap eighth rounds down")
+	near(GridDivisions.snap(0.33, 8), 0.375, 0.000001, "grid snap eighth rounds up")
+	near(GridDivisions.snap(0.34, 3), 1.0 / 3.0, 0.000001, "grid snap triplet")
+	eq(GridDivisions.snap(0.31, 4, true), 0.31, "grid snap bypass")
+	eq(GridDivisions.normalize(5), 4, "grid normalize keeps only listed divisions")
+	eq(GridDivisions.index_of(12), 5, "grid index of 1/12")
+	return true
+
+
+func test_canvas_flow_mapping() -> bool:
+	var canvas := ChartCanvas.new()
+	canvas.size = Vector2(800.0, 600.0)
+	canvas.px_per_beat = 20.0
+	canvas.scroll_beat = 0.0
+	canvas.flow_down = true
+	near(canvas._beat_to_y(4.0) - canvas._beat_to_y(0.0), 80.0, 0.001, "canvas flow down: later beats are lower")
+	near(canvas._y_to_beat(canvas._beat_to_y(7.0)), 7.0, 0.0001, "canvas flow down round trip")
+	canvas.flow_down = false
+	near(canvas._beat_to_y(4.0) - canvas._beat_to_y(0.0), -80.0, 0.001, "canvas flow up: later beats are higher")
+	near(canvas._y_to_beat(canvas._beat_to_y(7.0)), 7.0, 0.0001, "canvas flow up round trip")
+	canvas.free()
+	return true
+
+
+func test_wav_decode() -> bool:
+	var path := "user://test_tone.wav"
+	_write_test_wav(path, 22050, 1.0, 441.0)
+	var samples := AudioPCM.load_mono(path, 11025)
+	ok(samples.size() > 9000 and samples.size() < 12000, "wav decode frame count: %d" % samples.size())
+	if samples.size() > 100:
+		var peak := 0.0
+		for value in samples:
+			peak = maxf(peak, absf(value))
+		near(peak, 0.5, 0.06, "wav decode amplitude")
+		var zero_crossings := 0
+		for i in samples.size() - 1:
+			if samples[i] <= 0.0 and samples[i + 1] > 0.0:
+				zero_crossings += 1
+		var frequency := float(zero_crossings) / (float(samples.size()) / 11025.0)
+		near(frequency, 441.0, 12.0, "wav decode resampled frequency")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	return true
+
+
+func test_bpm_detect_128() -> bool:
+	var samples := _click_track(128.0, 350.0, 24.0, 11025.0)
+	var result := BpmDetect.analyze(samples, 11025.0)
+	ok(bool(result["ok"]), "bpm detect 128 ok (%s)" % String(result.get("error", "")))
+	near(float(result["bpm"]), 128.0, 0.2, "bpm detect 128 tempo")
+	near(float(result["offset_ms"]), 350.0, 8.0, "bpm detect 128 offset")
+	ok(float(result["confidence"]) > 0.6, "bpm detect 128 confidence")
+	return true
+
+
+func test_bpm_detect_87() -> bool:
+	var samples := _click_track(87.0, 120.0, 24.0, 11025.0)
+	var result := BpmDetect.analyze(samples, 11025.0)
+	ok(bool(result["ok"]), "bpm detect 87 ok (%s)" % String(result.get("error", "")))
+	near(float(result["bpm"]), 87.0, 0.2, "bpm detect 87 tempo")
+	near(float(result["offset_ms"]), 120.0, 8.0, "bpm detect 87 offset")
+	return true
+
+
+func test_bpm_detect_silence() -> bool:
+	var samples := PackedFloat32Array()
+	samples.resize(11025 * 4)
+	var result := BpmDetect.analyze(samples, 11025.0)
+	ok(not bool(result["ok"]), "bpm detect rejects silence")
+	return true
+
+
+func _write_test_wav(path: String, rate: int, seconds: float, frequency: float) -> void:
+	var frames := int(float(rate) * seconds)
+	var data := PackedByteArray()
+	data.resize(frames * 2)
+	for i in frames:
+		var value := int(round(sin(TAU * frequency * float(i) / float(rate)) * 0.5 * 32767.0))
+		data.encode_s16(i * 2, value)
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	if file == null:
+		return
+	file.store_buffer("RIFF".to_ascii_buffer())
+	file.store_32(36 + data.size())
+	file.store_buffer("WAVE".to_ascii_buffer())
+	file.store_buffer("fmt ".to_ascii_buffer())
+	file.store_32(16)
+	file.store_16(1)
+	file.store_16(1)
+	file.store_32(rate)
+	file.store_32(rate * 2)
+	file.store_16(2)
+	file.store_16(16)
+	file.store_buffer("data".to_ascii_buffer())
+	file.store_32(data.size())
+	file.store_buffer(data)
+	file.close()
+
+
+func _click_track(bpm: float, offset_ms: float, seconds: float, rate: float) -> PackedFloat32Array:
+	var frames := int(rate * seconds)
+	var samples := PackedFloat32Array()
+	samples.resize(frames)
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 20261103
+	for i in frames:
+		samples[i] = (rng.randf() * 2.0 - 1.0) * 0.015
+	var period := 60.0 / bpm
+	var beat := 0
+	while true:
+		var start := int(round((offset_ms / 1000.0 + float(beat) * period) * rate))
+		if start >= frames:
+			break
+		var click_length := int(0.04 * rate)
+		for i in click_length:
+			var index := start + i
+			if index >= frames:
+				break
+			var decay := exp(-float(i) / (0.009 * rate))
+			samples[index] += sin(TAU * 170.0 * float(i) / rate) * decay * 0.5
+			samples[index] += sin(TAU * 1200.0 * float(i) / rate) * decay * 0.22
+		beat += 1
+	return samples

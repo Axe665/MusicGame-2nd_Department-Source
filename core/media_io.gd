@@ -8,9 +8,19 @@ extends RefCounted
 const NATIVE_AUDIO := ["wav", "ogg", "mp3"]
 const NATIVE_VIDEO := ["ogv"]
 
+## Executable used for every conversion. The editor keeps this in sync with its
+## own setting so a bundled or non-PATH ffmpeg also works for audio analysis.
+static var ffmpeg_exe: String = "ffmpeg"
+
 static var _ffmpeg_checked := false
 static var _ffmpeg_available := false
 static var last_error: String = ""
+
+
+static func set_ffmpeg_exe(path: String) -> void:
+	var trimmed := path.strip_edges()
+	ffmpeg_exe = trimmed if not trimmed.is_empty() else "ffmpeg"
+	_ffmpeg_checked = false
 
 
 static func has_ffmpeg() -> bool:
@@ -18,7 +28,7 @@ static func has_ffmpeg() -> bool:
 		return _ffmpeg_available
 	_ffmpeg_checked = true
 	var output: Array = []
-	var code := OS.execute("ffmpeg", ["-version"], output, true, false)
+	var code := OS.execute(ffmpeg_exe, ["-version"], output, true, false)
 	_ffmpeg_available = code == 0
 	return _ffmpeg_available
 
@@ -50,7 +60,7 @@ static func prepare_audio(path: String) -> String:
 		ProjectSettings.globalize_path(target),
 	]
 	var output: Array = []
-	var code := OS.execute("ffmpeg", args, output, true, false)
+	var code := OS.execute(ffmpeg_exe, args, output, true, false)
 	if code != 0 or not FileAccess.file_exists(target):
 		last_error = "音频转换失败：%s" % path.get_file()
 		return ""
@@ -77,7 +87,7 @@ static func prepare_video(path: String) -> String:
 		ProjectSettings.globalize_path(target),
 	]
 	var output: Array = []
-	var code := OS.execute("ffmpeg", args, output, true, false)
+	var code := OS.execute(ffmpeg_exe, args, output, true, false)
 	if code != 0 or not FileAccess.file_exists(target):
 		last_error = "视频转换失败：%s" % path.get_file()
 		return ""

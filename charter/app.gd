@@ -9,6 +9,12 @@ signal status_changed
 signal save_state_changed
 signal validation_changed(issues: Array)
 signal notice(message: String, level: String)
+signal snap_changed(division: int)
+signal flow_changed(down: bool)
+signal audio_import_requested
+signal audio_detect_requested(path: String)
+
+const SETTINGS_PATH := "user://editor.cfg"
 
 var chart: Chart = null
 var chart_path: String = ""
@@ -25,10 +31,10 @@ var selected_segment_index: int = -1
 var selected_view_index: int = -1
 
 var tool: String = "select"
-var snap_denominator: int = 4
-var snap_triplet: bool = false
-var snap_quint: bool = false
+var snap_division: int = GridDivisions.DEFAULT_DIVISION
 var zoom_px_per_beat: float = 28.0
+var time_flows_down: bool = true
+var ffmpeg_path: String = "ffmpeg"
 var hud_visible: bool = true
 var use_3d_ring: bool = true
 var mouse_tilt: bool = true
@@ -47,6 +53,7 @@ var _autosave_timer: Timer
 
 
 func _ready() -> void:
+	_load_settings()
 	_autosave_timer = Timer.new()
 	_autosave_timer.wait_time = 60.0
 	_autosave_timer.autostart = true
@@ -71,6 +78,28 @@ func _set_initial_focus_notice() -> void:
 	notice.emit("已载入示例谱：按空格播放，F5 试玩，Ctrl+S 保存。", "info")
 
 
+func _load_settings() -> void:
+	var config := ConfigFile.new()
+	if config.load(SETTINGS_PATH) == OK:
+		ffmpeg_path = String(config.get_value("media", "ffmpeg", ffmpeg_path))
+	MediaIO.set_ffmpeg_exe(ffmpeg_path)
+
+
+func save_settings() -> void:
+	var config := ConfigFile.new()
+	config.set_value("media", "ffmpeg", ffmpeg_path)
+	config.save(SETTINGS_PATH)
+
+
+func set_ffmpeg_path(path: String) -> void:
+	ffmpeg_path = path.strip_edges()
+	if ffmpeg_path.is_empty():
+		ffmpeg_path = "ffmpeg"
+	MediaIO.set_ffmpeg_exe(ffmpeg_path)
+	save_settings()
+	notice.emit("ffmpeg 路径：%s" % ffmpeg_path, "info")
+
+
 func set_chart(new_chart: Chart, path: String = "", mark_dirty: bool = false) -> void:
 	_live_change_pending = false
 	chart = new_chart
@@ -84,7 +113,12 @@ func set_chart(new_chart: Chart, path: String = "", mark_dirty: bool = false) ->
 	selected_shape_id = chart.default_shape_id if chart != null else "S0"
 	selected_segment_index = -1
 	selected_view_index = -1
+	if chart != null:
+		snap_division = GridDivisions.normalize(int(chart.editor.get("snap", snap_division)))
+		time_flows_down = bool(chart.editor.get("flow_down", time_flows_down))
 	chart_changed.emit()
+	snap_changed.emit(snap_division)
+	flow_changed.emit(time_flows_down)
 	selection_changed.emit()
 	playhead_changed.emit(playhead_beat)
 	save_state_changed.emit()
@@ -291,14 +325,57 @@ func set_playhead(beat: float) -> void:
 
 
 func snap_beat(beat: float, bypass: bool = false) -> float:
-	if bypass or snap_denominator <= 0:
-		return beat
-	var step := 1.0 / float(snap_denominator)
-	if snap_triplet:
-		step *= 2.0 / 3.0
-	elif snap_quint:
-		step *= 4.0 / 5.0
-	return roundf(beat / step) * step
+	return GridDivisions.snap(beat, snap_division, bypass)
+
+
+func set_snap_division(division: int) -> void:
+	var normalized := GridDivisions.normalize(division)
+	if chart != null:
+		chart.editor["snap"] = normalized
+	if snap_division == normalized:
+		return
+	snap_division = normalized
+	snap_changed.emit(snap_division)
+	status_changed.emit()
+
+
+func set_time_flows_down(down: bool) -> void:
+	if chart != null:
+		chart.editor["flow_down"] = down
+	if time_flows_down == down:
+		return
+	time_flows_down = down
+	flow_changed.emit(down)
+	status_changed.emit()
+
+
+func request_audio_import() -> void:
+	audio_import_requested.emit()
+
+
+func request_audio_detect() -> void:
+	audio_detect_requested.emit(chart.audio_path if chart != null else "")
+
+
+## Writes an auto-detected tempo into the chart. The base BPM always lives on
+## the first timing point (the inspector labels it "基准 BPM"), and the offset is
+## mirrored into both Chart.offset_ms and TimingMap.offset_ms because the save
+## path treats the timing map as authoritative.
+func apply_detected_timing(bpm: float, offset_ms: float, apply_offset: bool = true, audio_path: String = "") -> void:
+	if chart == null:
+		return
+	begin_edit()
+	if not audio_path.is_empty():
+		chart.audio_path = audio_path
+	chart.timing.sort_points()
+	if chart.timing.points.is_empty():
+		chart.timing.points = [TimingPoint.new(0.0, clampf(bpm, 20.0, 600.0), 4)]
+	else:
+		chart.timing.points[0].bpm = clampf(bpm, 20.0, 600.0)
+	if apply_offset:
+		chart.offset_ms = offset_ms
+		chart.timing.offset_ms = offset_ms
+	finish_edit()
 
 
 func set_tool(new_tool: String) -> void:

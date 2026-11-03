@@ -44,6 +44,9 @@ var _last_beat_int: int = -1
 var _open_dialog: FileDialog
 var _save_dialog: FileDialog
 var _import_dialog: FileDialog
+var _audio_dialog: FileDialog
+var _song_dialog: SongImportDialog
+var _snap_option: OptionButton
 var _lbp_dialog: FileDialog
 var _report_dialog: AcceptDialog
 var _difficulty_dialog: ConfirmationDialog
@@ -72,6 +75,9 @@ func _ready() -> void:
 		_app.save_state_changed.connect(_update_status)
 		_app.notice.connect(_show_toast)
 		_app.validation_changed.connect(_update_validation)
+		_app.snap_changed.connect(_on_snap_changed)
+		_app.audio_import_requested.connect(_on_audio_import_requested)
+		_app.audio_detect_requested.connect(_on_audio_detect_requested)
 		_app.chart_changed.emit()
 	_sync_from_app()
 	for intro_control in [_canvas, _inspector, _palette, _preview]:
@@ -115,13 +121,13 @@ func _build_ui() -> void:
 	brand_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	brand_row.add_child(brand_spacer)
 	brand_row.add_child(_menu("文件", [
-		["新建", 0], ["打开", 1], ["保存", 2], ["另存为", 3], ["-", 0], ["导入 osu! (.osz)", 6], ["导出 .lbp", 7], ["-", 0], ["恢复自动保存", 4], ["-", 0], ["退出", 5],
+		["新建", 0], ["打开", 1], ["保存", 2], ["另存为", 3], ["-", 0], ["导入歌曲 / 识别 BPM…", 8], ["导入 osu! (.osz)", 6], ["导出 .lbp", 7], ["-", 0], ["恢复自动保存", 4], ["-", 0], ["退出", 5],
 	]))
 	brand_row.add_child(_menu("编辑", [
 		["撤销", 10], ["重做", 11], ["-", 0], ["删除", 12], ["取消选择", 13], ["全选可见", 14],
 	]))
 	brand_row.add_child(_menu("视图", [
-		["显示/隐藏 HUD", 20], ["调试叠层", 21], ["波形", 22], ["-", 0], ["边界状态轨", 23], ["时间 / BPM (F6)", 24],
+		["显示/隐藏 HUD", 20], ["调试叠层", 21], ["波形", 22], ["从上往下写入", 25], ["-", 0], ["边界状态轨", 23], ["时间 / BPM (F6)", 24],
 	]))
 	brand_row.add_child(_menu("插入", [
 		["Tap", 30], ["Hold", 31], ["Path", 32], ["Trace", 33], ["Anchor", 34], ["Bell", 35], ["Red", 36], ["-", 0], ["BoundaryEvent", 37], ["RingState 关键帧", 38],
@@ -166,14 +172,17 @@ func _build_ui() -> void:
 	snap_text.add_theme_color_override("font_color", UITheme.MUTED)
 	tool_row.add_child(snap_text)
 	var snap_option := OptionButton.new()
-	for item in ["1/1", "1/2", "1/4", "1/8", "1/16", "1/32"]:
+	for item in GridDivisions.LABELS:
 		snap_option.add_item(item)
-	snap_option.selected = 2
+	var initial_division: int = _app.snap_division if _app != null else GridDivisions.DEFAULT_DIVISION
+	snap_option.selected = GridDivisions.index_of(initial_division)
 	snap_option.item_selected.connect(func(index: int) -> void:
-		_app.snap_denominator = [1, 2, 4, 8, 16, 32][index]
+		if _app != null:
+			_app.set_snap_division(GridDivisions.ITEMS[index])
 		_update_status()
 	)
 	tool_row.add_child(snap_option)
+	_snap_option = snap_option
 
 	var main_row := HBoxContainer.new()
 	main_row.name = "MainRow"
@@ -427,6 +436,19 @@ func _build_dialogs() -> void:
 	_import_dialog.title = "导入 osu!std / osu!taiko"
 	_import_dialog.file_selected.connect(_on_import_osz_selected)
 	add_child(_import_dialog)
+	_audio_dialog = FileDialog.new()
+	_audio_dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
+	_audio_dialog.access = FileDialog.ACCESS_FILESYSTEM
+	_audio_dialog.filters = PackedStringArray([
+		"*.wav, *.mp3, *.ogg, *.flac, *.m4a, *.aac, *.opus ; 音频文件",
+		"*.* ; 全部文件",
+	])
+	_audio_dialog.title = "导入歌曲（自动识别 BPM 与 offset）"
+	_audio_dialog.file_selected.connect(_on_audio_selected)
+	add_child(_audio_dialog)
+	_song_dialog = SongImportDialog.new()
+	_song_dialog.applied.connect(_on_song_timing_applied)
+	add_child(_song_dialog)
 	_lbp_dialog = FileDialog.new()
 	_lbp_dialog.file_mode = FileDialog.FILE_MODE_SAVE_FILE
 	_lbp_dialog.access = FileDialog.ACCESS_FILESYSTEM
@@ -644,12 +666,7 @@ func _update_status() -> void:
 	if _status_u != null:
 		_status_u.text = "u %.1f°" % (_cursor_u * 360.0)
 		_status_beat.text = "bar " + _app.chart.timing.format_beat(_app.playhead_beat)
-		var snap := "1/%d" % _app.snap_denominator
-		if _app.snap_triplet:
-			snap += "T"
-		if _app.snap_quint:
-			snap += "Q"
-		_status_snap.text = "吸附 " + snap
+		_status_snap.text = "吸附 " + GridDivisions.label(_app.snap_division) + ("" if _app.time_flows_down else " · 反向")
 		_status_sel.text = "选中 %d" % _app.selected_notes.size()
 		_status_shape.text = "边界 " + _app.chart.default_shape_id
 		var errors: Array = Validator.errors(_issues)
@@ -682,6 +699,34 @@ func _update_validation(issues: Array) -> void:
 		_validation_label.text = "● 校验通过"
 		_validation_label.add_theme_color_override("font_color", UITheme.GREEN)
 	_update_status()
+
+
+func _on_snap_changed(division: int) -> void:
+	if _snap_option == null:
+		return
+	var index := GridDivisions.index_of(division)
+	if _snap_option.selected != index:
+		_snap_option.select(index)
+
+
+func _on_audio_import_requested() -> void:
+	_audio_dialog.popup_centered_ratio(0.8)
+
+
+func _on_audio_detect_requested(path: String) -> void:
+	if path.strip_edges().is_empty():
+		_audio_dialog.popup_centered_ratio(0.8)
+		return
+	_song_dialog.open_for(path)
+
+
+func _on_audio_selected(path: String) -> void:
+	_song_dialog.open_for(path)
+
+
+func _on_song_timing_applied() -> void:
+	_sync_from_app()
+	_show_toast("已写入识别结果；可在“时间”页继续微调 BPM / offset。", "info")
 
 
 func _on_import_osz_selected(path: String) -> void:
@@ -751,6 +796,8 @@ func _on_menu(id: int) -> void:
 			_import_dialog.popup_centered_ratio(0.75)
 		7:
 			_lbp_dialog.popup_centered_ratio(0.75)
+		8:
+			_audio_dialog.popup_centered_ratio(0.8)
 		5:
 			get_tree().quit()
 		10:
@@ -773,6 +820,8 @@ func _on_menu(id: int) -> void:
 			_preview.show_debug = _app.debug_overlay
 		22:
 			_app.waveform_visible = not _app.waveform_visible
+		25:
+			_app.set_time_flows_down(not _app.time_flows_down)
 		23:
 			_show_toast("边界状态轨：RingState 关键帧在视图页编辑。", "info")
 		24:
