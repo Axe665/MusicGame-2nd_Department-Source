@@ -124,18 +124,32 @@ static func _note_line(chart: Chart, note: Note) -> String:
 	var options := _note_options(note)
 	match note.type:
 		"tap":
-			return "tap,%s,%s,%s%s" % [_beat(chart, note.beat), _num(note.angle), _num(note.width), options]
+			var suffix := ""
+			if note.space == "plane":
+				suffix = ",space=plane,px=%s,py=%s,pr=%s" % [_num(note.plane_x), _num(note.plane_y), _num(note.plane_radius)]
+			return "tap,%s,%s,%s%s%s" % [_beat(chart, note.beat), _num(note.angle), _num(note.width), suffix, options]
 		"hold":
 			var suffix := ""
+			if note.hold_style == "curved":
+				suffix = ",style=curved"
 			if not note.visual_pts.is_empty():
-				suffix = ",body=%s" % _points(note.visual_pts)
+				suffix += ",body=%s" % _points(note.visual_pts)
 			return "hold,%s,%s,%s,%s%s%s" % [_beat(chart, note.beat), _num(note.angle), _num(note.width), _beat(chart, note.end_beat), suffix, options]
 		"path":
 			var suffix := ",tol=%s,samples=%s" % [_num(note.tolerance), _num(note.samples_per_beat)]
 			if not note.visual_pts.is_empty():
 				suffix += ",visual=%s" % _points(note.visual_pts)
+			if not note.trace_pts.is_empty():
+				suffix += ",pts=%s" % _trace_points(note.trace_pts)
 			if note.path_style != "arc":
 				suffix += ",style=%s" % note.path_style
+			if note.path_speed != 1.0:
+				suffix += ",speed=%s" % _num(note.path_speed)
+			if not note.path_gaps.is_empty():
+				var ranges: Array[String] = []
+				for gap in note.path_gaps:
+					ranges.append("%s:%s" % [_num(float(gap.get("from", 0.0))), _num(float(gap.get("to", 0.0)))])
+				suffix += ",erase=%s" % "|".join(ranges)
 			return "path,%s,%s,%s,%s,%s,%s%s%s" % [
 				_beat(chart, note.beat), _num(note.angle), _num(note.width),
 				_beat(chart, note.end_beat), _num(note.tail_angle), _num(note.tail_width),
@@ -143,6 +157,8 @@ static func _note_line(chart: Chart, note: Note) -> String:
 			]
 		"trace":
 			var suffix := ",move=%s" % _num(note.move_px)
+			if note.trace_style != "wipe":
+				suffix += ",style=%s" % note.trace_style
 			if not note.trace_pts.is_empty():
 				suffix += ",pts=%s" % _trace_points(note.trace_pts)
 			return "trace,%s,%s%s%s" % [_beat(chart, note.beat), _beat(chart, note.end_beat), suffix, options]

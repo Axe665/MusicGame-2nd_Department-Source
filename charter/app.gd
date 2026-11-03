@@ -16,6 +16,9 @@ var dirty: bool = false
 var playhead_beat: float = 0.0
 var last_import_report: String = ""
 var playtest_offset_ms: float = 0.0
+var flow_scale: float = 1.0
+var ffmpeg_path: String = "ffmpeg"
+var star_speed: float = 1.0
 
 var selected_notes: Array[int] = []
 var selected_region_id: int = -1
@@ -240,6 +243,24 @@ func import_osz(path: String, difficulty_index: int = 0) -> bool:
 		notice.emit("osu! 导入失败：%s" % OsuIO.last_error, "error")
 		return false
 	var imported: Chart = result["chart"]
+	set_chart(imported, "", true)
+	var stream := ChartIO.audio_stream_from_path(imported.audio_path)
+	if stream is AudioStream:
+		last_import_report += "\n音频流已加载：%s（%.1fs）" % [imported.audio_path.get_file(), stream.get_length()]
+		print("[audio] imported ", imported.audio_path, " len=", stream.get_length())
+	else:
+		last_import_report += "\n音频流未加载：%s" % imported.audio_path
+		print("[audio] FAILED to load ", imported.audio_path)
+	notice.emit("已导入 %s：%d 个音符，%d 个 BPM 点。请另存为 JSON。" % [path.get_file(), imported.notes.size(), imported.timing.points.size()], "info")
+	return true
+
+
+func import_maimai(path: String, difficulty_index: int = 0) -> bool:
+	var imported := SimaiIO.import_maidata(path, difficulty_index)
+	last_import_report = SimaiIO.last_report
+	if imported == null:
+		notice.emit("舞萌导入失败：%s" % SimaiIO.last_error, "error")
+		return false
 	set_chart(imported, "", true)
 	notice.emit("已导入 %s：%d 个音符，%d 个 BPM 点。请另存为 JSON。" % [path.get_file(), imported.notes.size(), imported.timing.points.size()], "info")
 	return true

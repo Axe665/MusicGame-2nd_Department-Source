@@ -37,6 +37,11 @@ var _playing: bool = false
 var _rate: float = 1.0
 var _loop: bool = false
 var _metronome: bool = true
+var _sfx: HitSfx
+var _sfx_enabled: bool = true
+var _sfx_events: Array[Dictionary] = []
+var _sfx_event_index: int = 0
+var _sfx_last_beat: float = -INF
 var _play_start_usec: int = 0
 var _play_start_chart_ms: float = 0.0
 var _last_beat_int: int = -1
@@ -49,6 +54,11 @@ var _report_dialog: AcceptDialog
 var _difficulty_dialog: ConfirmationDialog
 var _difficulty_list: ItemList
 var _pending_osz: String = ""
+var _pending_kind: String = "osu"
+var _import_dir_dialog: FileDialog
+var _audio_dialog: FileDialog
+var _song_dialog: SongImportDialog
+var _chart_browser: ChartBrowser
 var _new_dialog: NewChartDialog
 var _playtest: Playtest
 var _cursor_u: float = 0.0
@@ -59,8 +69,12 @@ func _ready() -> void:
 	_app = get_node_or_null("/root/App")
 	theme = UITheme.build()
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_setup_audio_buses()
 	_build_ui()
 	_build_audio()
+	_sfx = HitSfx.new()
+	_sfx.name = "EditorHitSfx"
+	add_child(_sfx)
 	_build_dialogs()
 	if _app != null:
 		_app.chart_changed.connect(_on_chart_changed)
@@ -115,7 +129,7 @@ func _build_ui() -> void:
 	brand_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	brand_row.add_child(brand_spacer)
 	brand_row.add_child(_menu("文件", [
-		["新建", 0], ["打开", 1], ["保存", 2], ["另存为", 3], ["-", 0], ["导入 osu! (.osz)", 6], ["导出 .lbp", 7], ["-", 0], ["恢复自动保存", 4], ["-", 0], ["退出", 5],
+		["新建", 0], ["打开", 1], ["保存", 2], ["另存为", 3], ["-", 0], ["在线舞萌谱面…", 12], ["导入歌曲 / 识别 BPM…", 9], ["导入谱面 (.osz/.zip/.txt)", 6], ["导入舞萌文件夹", 8], ["导出 .lbp", 7], ["-", 0], ["恢复自动保存", 4], ["-", 0], ["退出", 5],
 	]))
 	brand_row.add_child(_menu("编辑", [
 		["撤销", 10], ["重做", 11], ["-", 0], ["删除", 12], ["取消选择", 13], ["全选可见", 14],
@@ -320,6 +334,36 @@ func _build_ui() -> void:
 			_start_play(beat)
 	)
 	transport_row.add_child(rate_option)
+	var flow_label := Label.new()
+	UITheme.style_mono(flow_label, 11, UITheme.MUTED)
+	flow_label.text = "流速"
+	transport_row.add_child(flow_label)
+	var flow_option := OptionButton.new()
+	for item in ["0.25×", "0.5×", "0.75×", "1.0×", "1.25×", "1.5×", "1.75×", "2.0×", "2.5×", "3.0×"]:
+		flow_option.add_item(item)
+	flow_option.selected = 3
+	flow_option.item_selected.connect(func(index: int) -> void:
+		_app.flow_scale = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0][index]
+		_preview.flow_scale = _app.flow_scale
+		_preview.request_redraw()
+		_show_toast("流速 %.2f×（只改预读速度，不改判定）" % _app.flow_scale, "info")
+	)
+	transport_row.add_child(flow_option)
+	var star_label := Label.new()
+	UITheme.style_mono(star_label, 11, UITheme.MUTED)
+	star_label.text = "星速"
+	transport_row.add_child(star_label)
+	var star_option := OptionButton.new()
+	for item in ["0.5×", "0.65×", "0.8×", "0.9×", "1.0×", "1.1×", "1.25×", "1.4×", "1.6×", "2.0×"]:
+		star_option.add_item(item)
+	star_option.selected = 4
+	star_option.item_selected.connect(func(index: int) -> void:
+		_app.star_speed = [0.5, 0.65, 0.8, 0.9, 1.0, 1.1, 1.25, 1.4, 1.6, 2.0][index]
+		_preview.star_speed = _app.star_speed
+		_preview.request_redraw()
+		_show_toast("星速 %.2f×（滑条引导星与跟随距离一起缩放）" % _app.star_speed, "info")
+	)
+	transport_row.add_child(star_option)
 	var loop_check := CheckBox.new()
 	loop_check.text = "循环"
 	loop_check.toggled.connect(func(pressed: bool) -> void: _loop = pressed)
@@ -329,6 +373,13 @@ func _build_ui() -> void:
 	metro_check.button_pressed = true
 	metro_check.toggled.connect(func(pressed: bool) -> void: _metronome = pressed)
 	transport_row.add_child(metro_check)
+	var sfx_check := CheckBox.new()
+	sfx_check.text = "打击音"
+	sfx_check.button_pressed = true
+	sfx_check.toggled.connect(func(pressed: bool) -> void: _sfx_enabled = pressed)
+	transport_row.add_child(sfx_check)
+	transport_row.add_child(_volume_slider("音乐", "Music"))
+	transport_row.add_child(_volume_slider("音效", "SFX"))
 	var transport_spacer := Control.new()
 	transport_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	transport_row.add_child(transport_spacer)
@@ -389,9 +440,49 @@ func _menu(title: String, items: Array) -> MenuButton:
 	return menu
 
 
+func _setup_audio_buses() -> void:
+	for bus_name in ["Music", "SFX"]:
+		if AudioServer.get_bus_index(bus_name) >= 0:
+			continue
+		AudioServer.add_bus()
+		var index := AudioServer.bus_count - 1
+		AudioServer.set_bus_name(index, bus_name)
+		AudioServer.set_bus_send(index, "Master")
+
+
+func _set_bus_volume(bus_name: String, value: float) -> void:
+	var index := AudioServer.get_bus_index(bus_name)
+	if index < 0:
+		return
+	var linear := clampf(value / 100.0, 0.0, 1.0)
+	AudioServer.set_bus_volume_db(index, linear_to_db(maxf(0.0001, linear)))
+	AudioServer.set_bus_mute(index, linear <= 0.001)
+
+
+func _volume_slider(label_text: String, bus_name: String) -> HBoxContainer:
+	var box := HBoxContainer.new()
+	box.add_theme_constant_override("separation", 4)
+	var label := Label.new()
+	label.text = label_text
+	label.add_theme_font_size_override("font_size", 10)
+	label.add_theme_color_override("font_color", UITheme.MUTED)
+	box.add_child(label)
+	var slider := HSlider.new()
+	slider.min_value = 0.0
+	slider.max_value = 100.0
+	slider.step = 1.0
+	slider.value = 100.0
+	slider.custom_minimum_size = Vector2(72, 16)
+	slider.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	slider.value_changed.connect(func(value: float) -> void: _set_bus_volume(bus_name, value))
+	box.add_child(slider)
+	return box
+
+
 func _build_audio() -> void:
 	_audio = AudioStreamPlayer.new()
 	_audio.name = "EditorAudio"
+	_audio.bus = "Music"
 	add_child(_audio)
 	_audio.finished.connect(_on_audio_finished)
 
@@ -423,10 +514,38 @@ func _build_dialogs() -> void:
 	_import_dialog = FileDialog.new()
 	_import_dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
 	_import_dialog.access = FileDialog.ACCESS_FILESYSTEM
-	_import_dialog.filters = PackedStringArray(["*.osz ; osu! 谱面包"])
-	_import_dialog.title = "导入 osu!std / osu!taiko"
+	_import_dialog.filters = PackedStringArray(["*.osz,*.zip,*.txt ; osu! / Simai 谱面"])
+	_import_dialog.title = "导入 osu! / 舞萌 Simai"
 	_import_dialog.file_selected.connect(_on_import_osz_selected)
 	add_child(_import_dialog)
+	_import_dir_dialog = FileDialog.new()
+	_import_dir_dialog.file_mode = FileDialog.FILE_MODE_OPEN_DIR
+	_import_dir_dialog.access = FileDialog.ACCESS_FILESYSTEM
+	_import_dir_dialog.title = "选择解压后的舞萌谱面文件夹（含 maidata.txt）"
+	_import_dir_dialog.dir_selected.connect(func(path: String) -> void:
+		_on_import_osz_selected(path.path_join("maidata.txt"))
+	)
+	add_child(_import_dir_dialog)
+	_audio_dialog = FileDialog.new()
+	_audio_dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
+	_audio_dialog.access = FileDialog.ACCESS_FILESYSTEM
+	_audio_dialog.filters = PackedStringArray(["*.wav, *.mp3, *.ogg, *.flac, *.m4a, *.aac, *.opus ; 音频文件", "*.* ; 全部文件"])
+	_audio_dialog.title = "导入歌曲（自动识别 BPM 与 offset）"
+	_audio_dialog.file_selected.connect(func(path: String) -> void: _song_dialog.open_for(path))
+	add_child(_audio_dialog)
+	_song_dialog = SongImportDialog.new()
+	_song_dialog.applied.connect(func() -> void:
+		_sync_from_app()
+		_show_toast("已写入识别结果；可在“时间”页继续微调 BPM / offset。", "info")
+	)
+	add_child(_song_dialog)
+	_chart_browser = ChartBrowser.new()
+	_chart_browser.chart_imported.connect(func(chart: Chart) -> void:
+		_app.set_chart(chart, "", true)
+		_sync_from_app()
+		_show_report("已从在线谱面导入：%d 个 note，%d 个 BPM 点。\n%s" % [chart.notes.size(), chart.timing.points.size(), SimaiIO.last_report])
+	)
+	add_child(_chart_browser)
 	_lbp_dialog = FileDialog.new()
 	_lbp_dialog.file_mode = FileDialog.FILE_MODE_SAVE_FILE
 	_lbp_dialog.access = FileDialog.ACCESS_FILESYSTEM
@@ -440,12 +559,12 @@ func _build_dialogs() -> void:
 	)
 	add_child(_lbp_dialog)
 	_report_dialog = AcceptDialog.new()
-	_report_dialog.title = "osu! 导入报告"
+	_report_dialog.title = "导入报告"
 	_report_dialog.dialog_autowrap = true
 	add_child(_report_dialog)
 	_difficulty_dialog = ConfirmationDialog.new()
-	_difficulty_dialog.title = "选择 osu! 难度"
-	_difficulty_dialog.dialog_text = "压缩包内有多个 .osu，请选择要导入的难度："
+	_difficulty_dialog.title = "选择导入难度"
+	_difficulty_dialog.dialog_text = "谱面包含多个难度，请选择："
 	_difficulty_dialog.ok_button_text = "导入"
 	_difficulty_dialog.cancel_button_text = "取消"
 	var diff_box := VBoxContainer.new()
@@ -457,7 +576,10 @@ func _build_dialogs() -> void:
 	_difficulty_dialog.confirmed.connect(func() -> void:
 		var selected := _difficulty_list.get_selected_items()
 		if selected.size() > 0 and not _pending_osz.is_empty():
-			_import_osz(_pending_osz, selected[0])
+			if _pending_kind == "simai":
+				_import_maimai(_pending_osz, int(_difficulty_list.get_item_metadata(selected[0])))
+			else:
+				_import_osz(_pending_osz, selected[0])
 	)
 	add_child(_difficulty_dialog)
 	_new_dialog = NewChartDialog.new()
@@ -478,6 +600,8 @@ func _sync_from_app() -> void:
 	_preview.use_3d_ring = _app.use_3d_ring
 	_preview.mouse_tilt = _app.mouse_tilt
 	_preview.show_debug = _app.debug_overlay
+	_preview.flow_scale = _app.flow_scale
+	_preview.star_speed = _app.star_speed
 	_canvas.px_per_beat = _app.zoom_px_per_beat
 	_ensure_audio()
 	_sync_tools()
@@ -505,6 +629,7 @@ func _ensure_audio() -> void:
 		return
 	var stream := ChartIO.audio_stream_from_path(prepared)
 	_audio.stream = stream if stream is AudioStream else null
+	print("[audio] editor ", prepared, " -> ", _audio.stream, " bus=", _audio.bus)
 	if _audio.stream == null:
 		_show_toast("音频不可用：预览使用系统时钟。", "warning")
 
@@ -516,6 +641,10 @@ func _sync_tools() -> void:
 
 func _on_chart_changed() -> void:
 	_ensure_audio()
+	_build_sfx_events()
+	if _playing and _app != null:
+		_sfx_event_index = _first_sfx_event(_app.playhead_beat)
+		_sfx_last_beat = _app.playhead_beat - 0.001
 	_update_transport()
 	_update_status()
 
@@ -568,6 +697,9 @@ func _start_play(beat: float) -> void:
 	_play_start_chart_ms = _app.chart.timing.beat_to_chart_ms(beat)
 	_play_start_usec = Time.get_ticks_usec()
 	_last_beat_int = -1
+	_build_sfx_events()
+	_sfx_event_index = _first_sfx_event(beat)
+	_sfx_last_beat = beat - 0.001
 	if _audio.stream != null:
 		_audio.pitch_scale = _rate
 		var from_sec := maxf(0.0, (_play_start_chart_ms - _app.chart.offset_ms) / 1000.0)
@@ -597,6 +729,55 @@ func _on_audio_finished() -> void:
 		_stop_play()
 
 
+func _build_sfx_events() -> void:
+	_sfx_events.clear()
+	if _app == null or _app.chart == null:
+		return
+	for note in _app.chart.notes:
+		match note.type:
+			"tap":
+				_add_sfx_event(note.beat, HitSfx.kind_for_note(note))
+			"hold":
+				_add_sfx_event(note.beat, "hold", 0.92)
+				_add_sfx_event(note.end_beat, "hold", 1.08)
+			"path":
+				_add_sfx_event(note.beat, "path", 1.0)
+				_add_sfx_event(note.end_beat, "tail")
+			"anchor":
+				_add_sfx_event(note.beat, "anchor", 1.0)
+			"bell":
+				_add_sfx_event(note.beat, "bell")
+			"trace":
+				_add_sfx_event(note.beat, "trace")
+	_sfx_events.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return float(a["beat"]) < float(b["beat"]))
+
+
+func _add_sfx_event(beat: float, kind: String, pitch: float = 1.0) -> void:
+	_sfx_events.append({"beat": beat, "kind": kind, "pitch": pitch})
+
+
+func _first_sfx_event(beat: float) -> int:
+	var index := 0
+	while index < _sfx_events.size() and float(_sfx_events[index]["beat"]) < beat - 0.0001:
+		index += 1
+	return index
+
+
+func _fire_editor_sfx(beat: float) -> void:
+	if beat < _sfx_last_beat - 0.001 or beat > _sfx_last_beat + 0.5:
+		_sfx_event_index = _first_sfx_event(beat)
+		_sfx_last_beat = beat
+		return
+	while _sfx_event_index < _sfx_events.size():
+		var event: Dictionary = _sfx_events[_sfx_event_index]
+		if float(event["beat"]) > beat + 0.0001:
+			break
+		if _sfx_enabled:
+			_sfx.play(String(event["kind"]), float(event.get("pitch", 1.0)) * randf_range(0.99, 1.01))
+		_sfx_event_index += 1
+	_sfx_last_beat = beat
+
+
 func _process(_delta: float) -> void:
 	if _app == null or _app.chart == null:
 		return
@@ -608,6 +789,7 @@ func _process(_delta: float) -> void:
 			chart_ms = _play_start_chart_ms + float(Time.get_ticks_usec() - _play_start_usec) / 1000.0 * _rate
 		var beat: float = _app.chart.timing.chart_ms_to_beat(chart_ms)
 		_app.set_playhead(beat)
+		_fire_editor_sfx(beat)
 		var beat_int := floori(beat)
 		if _metronome and beat_int != _last_beat_int and _beat_label != null:
 			_last_beat_int = beat_int
@@ -685,9 +867,22 @@ func _update_validation(issues: Array) -> void:
 
 
 func _on_import_osz_selected(path: String) -> void:
+	var simai := SimaiIO.list_maidata(path)
+	if not simai.is_empty():
+		_pending_kind = "simai"
+		_pending_osz = path
+		_difficulty_list.clear()
+		for i in simai.size():
+			var item: Dictionary = simai[i]
+			_difficulty_list.add_item("%s — %s  %s" % [String(item.get("title", "")), String(item.get("version", "")), String(item.get("creator", ""))])
+			_difficulty_list.set_item_metadata(i, int(item.get("index", 0)))
+		_difficulty_list.select(0)
+		_difficulty_dialog.popup_centered_ratio(0.58)
+		return
+	_pending_kind = "osu"
 	var difficulties := OsuIO.list_osz_difficulties(path)
 	if difficulties.is_empty():
-		_show_toast("osu! 导入失败：%s" % OsuIO.last_error, "error")
+		_show_toast("导入失败：%s" % OsuIO.last_error, "error")
 		return
 	if difficulties.size() == 1:
 		_import_osz(path, 0)
@@ -706,6 +901,12 @@ func _on_import_osz_selected(path: String) -> void:
 
 func _import_osz(path: String, difficulty_index: int) -> void:
 	if _app.import_osz(path, difficulty_index):
+		_sync_from_app()
+		_show_report(_app.last_import_report)
+
+
+func _import_maimai(path: String, difficulty_index: int) -> void:
+	if _app.import_maimai(path, difficulty_index):
 		_sync_from_app()
 		_show_report(_app.last_import_report)
 
@@ -749,6 +950,12 @@ func _on_menu(id: int) -> void:
 			_sync_from_app()
 		6:
 			_import_dialog.popup_centered_ratio(0.75)
+		8:
+			_import_dir_dialog.popup_centered_ratio(0.75)
+		9:
+			_audio_dialog.popup_centered_ratio(0.75)
+		12:
+			_chart_browser.popup_centered_ratio(0.8)
 		7:
 			_lbp_dialog.popup_centered_ratio(0.75)
 		5:

@@ -340,6 +340,15 @@ func _draw_notes(plot: Rect2) -> void:
 func _draw_tap(note: Note) -> void:
 	var y := _beat_to_y(note.beat)
 	var selected := _is_note_selected(note.id)
+	if note.space == "plane":
+		var px := _u_to_x(clampf(note.plane_x, 0.0, 1.0))
+		var point := Vector2(px, y)
+		draw_circle(point, 7.0 if selected else 6.0, Color(UITheme.CORAL.r, UITheme.CORAL.g, UITheme.CORAL.b, 0.20))
+		draw_arc(point, 6.0, 0.0, TAU, 24, UITheme.CORAL, 2.0, true)
+		draw_circle(point, 2.0, UITheme.INK)
+		if _show_type_label(note):
+			_draw_type_label("PLANE TAP", point + Vector2(9, 12), UITheme.CORAL)
+		return
 	for interval in _u_intervals(note.angle, note.width):
 		var x0 := _u_to_x(interval.x)
 		var x1 := _u_to_x(interval.y)
@@ -393,42 +402,46 @@ func _draw_path(note: Note) -> void:
 	var x0 := _u_to_x(fposmod(note.angle, 360.0) / 360.0)
 	var x1 := _u_to_x(fposmod(note.tail_angle, 360.0) / 360.0)
 	var selected := _is_note_selected(note.id)
-	var points := PackedVector2Array()
-	if note.path_style == "star":
-		var total := maxf(0.001, note.duration())
-		for i in 41:
-			var rel := total * float(i) / 40.0
-			points.append(Vector2(
-				_u_to_x(fposmod(note.path_angle_at(rel), 360.0) / 360.0),
-				_beat_to_y(note.beat + rel)
-			))
-	else:
-		points.append(Vector2(x0, y0))
-		for point in note.visual_pts:
-			points.append(Vector2(
-				_u_to_x(fposmod(note.angle + float(point.get("da", 0.0)), 360.0) / 360.0),
-				_beat_to_y(note.beat + float(point.get("db", 0.0)))
-			))
-		points.append(Vector2(x1, y1))
-	if points.size() > 1:
-		draw_polyline(points, Color(0.52, 0.56, 0.64, 0.28), 14.0, true)
+	var total := maxf(0.001, note.duration())
+	var runs: Array[PackedVector2Array] = []
+	var run := PackedVector2Array()
+	for i in 41:
+		var rel := total * float(i) / 40.0
+		if note.erased_at(rel):
+			if run.size() > 1:
+				runs.append(run)
+			run = PackedVector2Array()
+			continue
+		run.append(Vector2(
+			_u_to_x(fposmod(note.path_angle_at(rel), 360.0) / 360.0),
+			_beat_to_y(note.beat + rel)
+		))
+	if run.size() > 1:
+		runs.append(run)
+	for piece in runs:
+		draw_polyline(piece, Color(0.52, 0.56, 0.64, 0.28), 14.0, true)
 		var dashes := PackedVector2Array()
-		for i in points.size() - 1:
-			_append_dashes(points[i], points[i + 1], 5.0, dashes)
+		for i in piece.size() - 1:
+			_append_dashes(piece[i], piece[i + 1], 5.0, dashes)
 		if dashes.size() > 1:
 			draw_multiline(dashes, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.90), 2.0)
 		for fraction in [0.33, 0.66]:
-			var sample := _polyline_sample(points, fraction)
+			var sample := _polyline_sample(piece, fraction)
 			_draw_arrowhead(sample["point"], sample["direction"], UITheme.CYAN)
-	if note.path_style != "star":
-		for i in range(1, points.size() - 1):
-			draw_circle(points[i], 2.5, UITheme.CYAN)
+	for point in note.visual_pts:
+			var rel := float(point.get("db", 0.0))
+			if note.erased_at(rel):
+				continue
+			draw_circle(Vector2(
+				_u_to_x(fposmod(note.path_angle_at(rel), 360.0) / 360.0),
+				_beat_to_y(note.beat + rel)
+			), 2.5, UITheme.CYAN)
 	_draw_width_band(note.angle, note.width, y0, UITheme.CYAN)
 	_draw_width_band(note.tail_angle, note.tail_width, y1, UITheme.GOLD)
 	_draw_star(Vector2(x0, y0), 9.0 if selected else 8.0, UITheme.CORAL)
 	_draw_donut(Vector2(x1, y1), 7.0, UITheme.GOLD)
 	if _show_type_label(note):
-		_draw_type_label("PATH ★" if note.path_style == "star" else "PATH", Vector2(x0 + 11.0, y0 + 12.0), UITheme.CYAN)
+		_draw_type_label("PATH", Vector2(x0 + 11.0, y0 + 12.0), UITheme.CYAN)
 
 
 func _append_dashes(a: Vector2, b: Vector2, dash: float, out: PackedVector2Array) -> void:
@@ -461,13 +474,18 @@ func _draw_trace(note: Note, _plot: Rect2) -> void:
 		draw_rect(rect, UITheme.INK, false, 1.0)
 	var mini := PackedVector2Array()
 	for point in note.trace_pts:
-		mini.append(Vector2(cx - 20 + float(point.get("x", 0.0)) * 40.0, y0 + 4 + float(point.get("y", 0.0)) * maxf(4, y1 - y0 - 8)))
+		var px := float(point.get("x", 0.0))
+		var py := float(point.get("y", 0.0))
+		if note.trace_style == "slider":
+			px = px * 0.5 + 0.5
+			py = py * 0.5 + 0.5
+		mini.append(Vector2(cx - 20 + px * 40.0, y0 + 4 + py * maxf(4, y1 - y0 - 8)))
 	if mini.size() > 1:
 		draw_polyline(mini, UITheme.MINT, 2.0, true)
 	draw_line(Vector2(cx - 19, y0 + 3), Vector2(cx - 11, y0 + 11), UITheme.MINT, 1.5, true)
 	draw_line(Vector2(cx - 11, y0 + 3), Vector2(cx - 19, y0 + 11), UITheme.MINT, 1.5, true)
 	if _show_type_label(note):
-		_draw_type_label("TRACE", Vector2(cx + 27.0, y0 + 10.0), UITheme.MINT)
+		_draw_type_label("SLIDE" if note.trace_style == "slider" else "TRACE", Vector2(cx + 27.0, y0 + 10.0), UITheme.MINT)
 
 
 func _draw_anchor(note: Note) -> void:

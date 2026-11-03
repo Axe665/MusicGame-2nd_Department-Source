@@ -110,10 +110,6 @@ static func make_demo() -> Chart:
 	_add_tap(chart, 29.5, 0.0)
 	_add_hold(chart, 30.0, 32.0, 90.0, 60.0)
 	_add_anchor_pair(chart, 32.0, 90.0, "A1")
-	for note in chart.notes:
-		if note.type == "path" and is_equal_approx(note.beat, 26.0):
-			note.path_style = "star"
-			note.visual_pts.clear()
 	chart.refresh_ids()
 	return chart
 
@@ -129,7 +125,7 @@ static func _add_hold(chart: Chart, beat: float, end_beat: float, angle: float, 
 	note.id = chart.next_note_id()
 	note.end_beat = end_beat
 	note.hold = true
-	note.visual_pts = [{"db": (end_beat - beat) * 0.5, "da": 0.0}]
+	note.hold_style = "straight"
 	chart.notes.append(note)
 
 

@@ -12,7 +12,8 @@ func _initialize() -> void:
 		"test_boundary_frame",
 		"test_live_edit_notifications",
 		"test_self_intersection",
-		"test_star_path",
+		"test_plane_path",
+		"test_path_erase_overlap",
 		"test_nearest_u",
 		"test_pre_read",
 		"test_shrink_example",
@@ -21,13 +22,23 @@ func _initialize() -> void:
 		"test_media_formats",
 		"test_lbp_export",
 		"test_osu_std_import",
+		"test_osu_std_curves",
+		"test_osu_std_slider_kinds",
+		"test_osu_std_negative_shift",
+		"test_osu_std_readability",
 		"test_osu_taiko_import",
+		"test_osu_taiko_flow",
 		"test_osu_bpm_change",
 		"test_osu_multi_difficulty",
 		"test_json_roundtrip",
 		"test_validation_demo",
 		"test_angle_math",
 		"test_trace_distance",
+		"test_sfx_assets",
+		"test_simai_import",
+		"test_osu_std_sentakki_rules",
+		"test_simai_directive_slot",
+		"test_simai_bend_shapes",
 	]
 	for test_name in tests:
 		if call(test_name) != true:
@@ -221,23 +232,63 @@ func test_self_intersection() -> bool:
 	return true
 
 
-func test_star_path() -> bool:
+func test_plane_path() -> bool:
 	var note := Note.new("path", 0.0, 0.0, 120.0)
 	note.end_beat = 4.0
 	note.tail_angle = 180.0
-	note.path_style = "star"
-	var first := note.path_local_at(0.0)
-	near(first.length(), 0.78, 0.01, "star tip radius")
+	eq(note.space, "plane", "path defaults to the plane")
+	near(note.path_local_at(0.0).length(), 1.0, 0.01, "path head on the ring")
+	near(note.path_local_at(4.0).length(), 0.72, 0.01, "legacy path tail moves inside")
 	var inside := true
 	for i in 41:
 		var point := note.path_local_at(4.0 * float(i) / 40.0)
-		if point.length() > 0.79:
+		if point.length() > 1.01:
 			inside = false
-	ok(inside, "star stays inside ring")
-	ok(absf(note.path_local_at(0.8).x - note.path_local_at(1.6).x) > 0.001, "star bends across chords")
-	near(absf(note.path_angle_at(2.0)), 90.0, 1.0, "star judgment stays on head-tail chord")
+	ok(inside, "path body stays inside the ring")
+	note.trace_pts = [
+		{"x": 1.0, "y": 0.0, "db": 0.0},
+		{"x": 0.5, "y": 0.5, "db": 2.0},
+		{"x": 0.0, "y": 0.7, "db": 4.0},
+	]
+	near(note.path_local_at(2.0).x, 0.5, 0.001, "plane path follows explicit points")
+	near(note.path_local_at(2.0).y, 0.5, 0.001, "plane path interpolates y")
+	note.path_speed = 1.35
+	note.path_gaps = [{"from": 0.4, "to": 0.6}]
+	ok(note.erased_at(2.0), "path erase range hits middle")
+	ok(not note.erased_at(0.5), "path erase range leaves head")
+	var erased_sample := false
+	for sample_beat in note.path_sample_beats():
+		if note.erased_at(sample_beat - note.beat):
+			erased_sample = true
+	ok(not erased_sample, "erased path section has no hidden checkpoints")
 	var restored := Note.from_dict(note.to_dict())
-	eq(restored.path_style, "star", "star style survives json")
+	eq(restored.space, "plane", "plane path survives json")
+	eq(restored.trace_pts.size(), 3, "plane path points survive json")
+	near(restored.path_speed, 1.35, 0.001, "path slide speed survives json")
+	eq(restored.path_gaps.size(), 1, "path gaps survive json")
+	return true
+
+
+func test_path_erase_overlap() -> bool:
+	var line := PackedVector2Array()
+	for i in 101:
+		line.append(Vector2(float(i), 0.0))
+	var small := Preview3D.path_erase_ranges(line, Vector2(50, 0), Vector2(50, 0), 10.0)
+	eq(small.size(), 1, "small overlap yields one erase range")
+	if not small.is_empty():
+		ok(small[0].x > 0.2 and small[0].y < 0.8, "small overlap does not erase the whole path")
+	var far := Preview3D.path_erase_ranges(line, Vector2(50, 200), Vector2(50, 200), 10.0)
+	eq(far.size(), 0, "far mouse erases nothing")
+	var swept := Preview3D.path_erase_ranges(line, Vector2(30, -20), Vector2(70, 20), 8.0)
+	eq(swept.size(), 1, "mouse sweep across the path erases a range")
+	var loop := PackedVector2Array([
+		Vector2(0, 0), Vector2(100, 0), Vector2(100, 100),
+		Vector2(0, 100), Vector2(0, 50), Vector2(0, 0),
+	])
+	var overlapping := Preview3D.path_erase_ranges(loop, Vector2(0, 0), Vector2(0, 0), 8.0)
+	eq(overlapping.size(), 2, "overlapping passes are erased separately, not as one huge span")
+	if overlapping.size() == 2:
+		ok(overlapping[0].x < 0.01 and overlapping[1].y > 0.99, "both overlapping passes are covered")
 	return true
 
 
@@ -357,7 +408,16 @@ func test_lbp_export() -> bool:
 	ok(text.contains("[TimingPoints]"), "lbp timing section")
 	ok(text.contains("[BoundaryShapes]"), "lbp shapes section")
 	ok(text.contains("[Notes]"), "lbp notes section")
-	ok(text.contains("style=star"), "lbp keeps star path")
+	ok(not text.contains("style=star"), "lbp no longer writes ring star paths")
+	ok(text.contains("path,"), "lbp keeps planar path notes")
+	var gap_note := Note.new("path", 40.0, 0.0, 60.0)
+	gap_note.id = chart.next_note_id()
+	gap_note.end_beat = 44.0
+	gap_note.path_gaps = [{"from": 0.4, "to": 0.6}]
+	chart.notes.append(gap_note)
+	var gap_text := LBPIO.export_chart(chart)
+	ok(gap_text.contains("erase=0.400:0.600"), "lbp keeps path erase range")
+	chart.notes.erase(gap_note)
 	ok(not text.contains("\r"), "lbp uses LF")
 	var path := "user://test_export.lbp"
 	eq(LBPIO.export_to_file(chart, path), OK, "lbp write")
@@ -401,12 +461,77 @@ SliderMultiplier: 1.4
 	eq(chart.notes.size(), 2, "osu std note count")
 	var tap: Note = chart.notes[0]
 	eq(tap.type, "tap", "osu circle -> tap")
+	eq(tap.space, "ring", "osu circle stays on the ring")
 	near(tap.beat, 2.0, 0.001, "osu circle beat")
-	var path: Note = chart.notes[1]
-	eq(path.type, "path", "osu slider -> path")
-	near(path.beat, 4.0, 0.001, "osu slider beat")
-	near(path.end_beat, 4.7142857, 0.001, "osu slider duration")
-	eq(path.visual_pts.size(), 2, "osu slider visual points")
+	ok(tap.width >= 45.0 and tap.width <= 75.0, "osu tap has variable width")
+	var slide: Note = chart.notes[1]
+	eq(slide.type, "path", "osu slider -> planar path")
+	eq(slide.space, "plane", "osu slider dives into the plane")
+	near(slide.beat, 4.0, 0.001, "osu slider beat")
+	near(slide.end_beat, 4.7142857, 0.001, "osu slider duration")
+	ok(slide.trace_pts.size() > 8, "osu slider has a 2D slide path")
+	var first: Dictionary = slide.trace_pts[0]
+	var last: Dictionary = slide.trace_pts[-1]
+	near(sqrt(pow(float(first["x"]), 2) + pow(float(first["y"]), 2)), 1.0, 0.02, "slide head on the ring")
+	near(sqrt(pow(float(last["x"]), 2) + pow(float(last["y"]), 2)), 0.70, 0.02, "slide tail lands on the 0.70R circle")
+	var inside := true
+	for point in slide.trace_pts:
+		if sqrt(pow(float(point["x"]), 2) + pow(float(point["y"]), 2)) > 1.02:
+			inside = false
+	ok(inside, "slide path stays inside the ring disk")
+	var restored := Note.from_dict(slide.to_dict())
+	eq(restored.type, "path", "slide path survives json")
+	eq(restored.space, "plane", "slide plane survives json")
+	return true
+
+
+func test_osu_std_curves() -> bool:
+	var text := """osu file format v14
+
+[General]
+Mode: 0
+
+[Metadata]
+Title: Curves
+Artist: A
+Creator: C
+Version: H
+
+[Difficulty]
+SliderMultiplier: 1.4
+
+[TimingPoints]
+0,500,4,2,0,100,1,0
+
+[HitObjects]
+256,192,1000,2,0,L|400:192,1,200,0|0,0:0|0:0,0:0:0:0:
+256,192,2000,2,0,B|300:100|400:192,1,200,0|0,0:0|0:0,0:0:0:0:
+256,192,3000,2,0,C|300:100|400:192,1,200,0|0,0:0|0:0,0:0:0:0:
+256,192,4000,2,0,P|300:100|400:192,1,200,0|0,0:0|0:0,0:0:0:0:
+"""
+	var result := OsuIO.parse_osu(text, "curves.osu")
+	ok(not result.is_empty(), "osu std curves parsed")
+	if result.is_empty():
+		return false
+	var chart: Chart = result["chart"]
+	eq(chart.notes.size(), 4, "four slider curves imported")
+	for note in chart.notes:
+		eq(note.type, "path", "curve %s is a plane path" % note.id)
+		eq(note.space, "plane", "curve %s stays planar" % note.id)
+		ok(note.trace_pts.size() >= 8, "curve %s has enough slide samples" % note.id)
+		var previous_db := -1.0
+		var monotonic := true
+		var inside := true
+		for point in note.trace_pts:
+			var radius := sqrt(pow(float(point["x"]), 2) + pow(float(point["y"]), 2))
+			var db := float(point.get("db", -1.0))
+			if radius > 1.02:
+				inside = false
+			if db + 0.0001 < previous_db:
+				monotonic = false
+			previous_db = db
+		ok(inside, "curve %s stays inside the ring disk" % note.id)
+		ok(monotonic, "curve %s time is monotonic" % note.id)
 	return true
 
 
@@ -431,24 +556,184 @@ SliderMultiplier: 1.4
 
 [HitObjects]
 256,192,1000,1,0,0:0:0:0:
-256,192,1500,1,2,0:0:0:0:
-256,192,2000,1,4,0:0:0:0:
-256,192,2500,2,0,B|300:192,1,100,0|0,0:0|0:0,0:0:0:0:
-256,192,3000,8,0,4000,0:0:0:0:
+256,192,1250,1,2,0:0:0:0:
+256,192,1500,1,4,0:0:0:0:
+256,192,1750,1,0,0:0:0:0:
+256,192,2000,2,0,B|300:192,1,280,0|0,0:0|0:0,0:0:0:0:
+256,192,4000,8,0,5000,0:0:0:0:
 """
 	var result := OsuIO.parse_osu(text, "taiko.osu")
 	ok(not result.is_empty(), "osu taiko parsed")
 	if result.is_empty():
 		return false
 	var chart: Chart = result["chart"]
-	eq(chart.notes.size(), 4, "taiko spinner skipped")
+	eq(chart.notes.size(), 5, "taiko spinner skipped, short objects kept")
 	eq(chart.notes[0].type, "tap", "taiko don tap")
-	near(chart.notes[0].angle, 0.0, 0.001, "taiko quadrant 0")
-	near(chart.notes[1].angle, 90.0, 0.001, "taiko quadrant 90")
-	near(chart.notes[2].angle, 180.0, 0.001, "taiko quadrant 180")
-	near(chart.notes[3].angle, 270.0, 0.001, "taiko quadrant 270")
-	eq(chart.notes[3].type, "hold", "taiko drumroll hold")
-	near(chart.notes[3].end_beat, 5.7142857, 0.001, "taiko drumroll duration")
+	near(chart.notes[0].angle, 0.0, 0.001, "taiko don lane")
+	near(chart.notes[1].angle, 90.0, 0.001, "taiko kat lane")
+	eq(chart.notes[1].width, 76.0, "taiko kat width")
+	near(chart.notes[2].angle, 0.0, 0.001, "taiko finish stays don")
+	eq(chart.notes[2].width, 90.0, "taiko finish width")
+	near(chart.notes[3].angle, 0.0, 0.001, "taiko don returns to nearby lane")
+	eq(chart.notes[4].type, "hold", "long taiko slider is a drumroll")
+	near(chart.notes[4].end_beat, 6.0, 0.001, "taiko drumroll duration")
+	return true
+
+
+func test_osu_taiko_flow() -> bool:
+	var text := """osu file format v14
+
+[General]
+Mode: 1
+
+[Metadata]
+Title: Flow
+Artist: A
+Creator: C
+Version: Oni
+
+[Difficulty]
+SliderMultiplier: 1.4
+
+[TimingPoints]
+0,500,4,2,0,100,1,0
+
+[HitObjects]
+256,192,1000,1,0,0:0:0:0:
+256,192,1125,1,2,0:0:0:0:
+256,192,1250,1,0,0:0:0:0:
+256,192,1375,1,2,0:0:0:0:
+256,192,1500,1,0,0:0:0:0:
+"""
+	var result := OsuIO.parse_osu(text, "taiko_flow.osu")
+	ok(not result.is_empty(), "taiko flow parsed")
+	if result.is_empty():
+		return false
+	var chart: Chart = result["chart"]
+	eq(chart.notes.size(), 5, "taiko flow note count")
+	var stacked := true
+	for i in range(1, chart.notes.size()):
+		if absf(JudgeMath.angle_delta(chart.notes[0].angle, chart.notes[i].angle)) > 0.001:
+			stacked = false
+	ok(stacked, "dense taiko notes stack instead of rotating")
+	return true
+
+
+func test_osu_std_slider_kinds() -> bool:
+	var text := """osu file format v14
+
+[General]
+Mode: 0
+
+[Metadata]
+Title: SliderKinds
+Artist: A
+Creator: C
+Version: H
+
+[Difficulty]
+SliderMultiplier: 1.4
+
+[TimingPoints]
+0,500,4,2,0,100,1,0
+
+[HitObjects]
+256,192,1000,2,0,L|300:192,1,50,0|0,0:0|0:0,0:0:0:0:
+256,192,2000,2,0,L|400:192,2,200,0|0,0:0|0:0,0:0:0:0:
+256,192,3000,2,0,L|400:192,1,280,0|0,0:0|0:0,0:0:0:0:
+"""
+	var result := OsuIO.parse_osu(text, "kinds.osu")
+	ok(not result.is_empty(), "std slider kinds parsed")
+	if result.is_empty():
+		return false
+	var chart: Chart = result["chart"]
+	eq(chart.notes.size(), 3, "slider kinds note count")
+	eq(chart.notes[0].type, "hold", "short slider -> hold")
+	eq(chart.notes[0].hold_style, "straight", "short slider hold is straight")
+	eq(chart.notes[1].type, "hold", "repeat slider -> hold")
+	eq(chart.notes[1].hold_style, "straight", "repeat slider hold is straight")
+	eq(chart.notes[2].type, "path", "long slider -> plane path")
+	eq(chart.notes[2].space, "plane", "long slider stays planar")
+	ok(chart.notes[2].end_beat > chart.notes[2].beat, "long slider slide has duration")
+	return true
+
+
+func test_osu_std_negative_shift() -> bool:
+	var text := """osu file format v14
+
+[General]
+Mode: 0
+
+[Metadata]
+Title: Shift
+Artist: A
+Creator: C
+Version: H
+
+[Difficulty]
+SliderMultiplier: 1.4
+
+[TimingPoints]
+1000,500,4,2,0,100,1,0
+
+[HitObjects]
+256,192,500,1,0,0:0:0:0:
+"""
+	var result := OsuIO.parse_osu(text, "shift.osu")
+	ok(not result.is_empty(), "negative shift parsed")
+	if result.is_empty():
+		return false
+	var chart: Chart = result["chart"]
+	eq(chart.notes.size(), 1, "negative shift note count")
+	near(chart.notes[0].beat, 0.0, 0.001, "earliest note shifted to beat 0")
+	near(chart.offset_ms, -500.0, 0.001, "offset adjusted for shift")
+	near(chart.timing.beat_to_chart_ms(0.0), 0.0, 0.001, "shifted beat 0 maps to chart 0")
+	return true
+
+
+func test_osu_std_readability() -> bool:
+	var text := """osu file format v14
+
+[General]
+Mode: 0
+
+[Metadata]
+Title: Read
+Artist: A
+Creator: C
+Version: H
+
+[Difficulty]
+SliderMultiplier: 1.4
+
+[TimingPoints]
+0,500,4,2,0,100,1,0
+
+[HitObjects]
+256,0,1000,1,0,0:0:0:0:
+512,192,1500,1,0,0:0:0:0:
+256,384,2000,1,0,0:0:0:0:
+0,192,2500,1,0,0:0:0:0:
+256,0,3000,1,0,0:0:0:0:
+"""
+	var result := OsuIO.parse_osu(text, "read.osu")
+	ok(not result.is_empty(), "osu std readability parsed")
+	if result.is_empty():
+		return false
+	var chart: Chart = result["chart"]
+	eq(chart.notes.size(), 5, "std readability note count")
+	near(chart.notes[0].angle, 270.0, 0.001, "std first note keeps absolute angle")
+	var max_step := 0.0
+	var min_step := 360.0
+	for i in range(1, chart.notes.size()):
+		var step := absf(JudgeMath.angle_delta(chart.notes[i - 1].angle, chart.notes[i].angle))
+		max_step = maxf(max_step, step)
+		min_step = minf(min_step, step)
+	ok(max_step <= 180.1, "std continuous step stays under speed cap (max %.1f)" % max_step)
+	ok(min_step > 10.0, "std notes are not all stacked (min %.1f)" % min_step)
+	for note in chart.notes:
+		eq(note.space, "ring", "std readability stays on the ring")
+		ok(note.width >= 45.0 and note.width <= 75.0, "std width is playable")
 	return true
 
 
@@ -590,7 +875,119 @@ func test_angle_math() -> bool:
 	return true
 
 
+func test_sfx_assets() -> bool:
+	for kind in HitSfx.PATHS:
+		var stream: AudioStream = load(String(HitSfx.PATHS[kind]))
+		ok(stream != null, "sfx loads %s" % kind)
+	return true
+
+
 func test_trace_distance() -> bool:
 	var line: Array[Vector2] = [Vector2(0.0, 0.0), Vector2(1.0, 0.0)]
 	near(JudgeMath.trace_distance(Vector2(0.5, 0.25), line), 0.25, 0.001, "trace distance")
+	return true
+
+
+func test_simai_import() -> bool:
+	var text := "&title=Simai Test\n&artist=Tester\n&first=1\n&wholebpm=120\n&lv_1=5\n&des_1=me\n&inote_1=(120){4}\n1,2h[4:1],1-5[4:1],E1,\nE\n"
+	var path := "user://test_simai_maidata.txt"
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	if file == null:
+		ok(false, "simai fixture write")
+		return true
+	file.store_string(text)
+	file.close()
+	var diffs := SimaiIO.list_maidata(path)
+	eq(diffs.size(), 1, "simai difficulty detected")
+	if not diffs.is_empty():
+		eq(String(diffs[0]["version"]), "Lv.5", "simai level label")
+	var chart := SimaiIO.import_maidata(path, 1)
+	ok(chart != null, "simai imports")
+	if chart == null:
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+		return true
+	near(chart.offset_ms, -1000.0, 0.001, "simai first -> offset")
+	eq(chart.notes.size(), 4, "simai keeps four notes")
+	var types: Array[String] = []
+	for note in chart.notes:
+		types.append(note.type)
+	eq(types, ["tap", "hold", "path", "bell"], "simai note types")
+	eq(chart.notes[1].hold_style, "straight", "simai hold imports straight")
+	eq(Validator.errors(Validator.validate(chart)).size(), 0, "simai import is playable without double-hand conflicts")
+	if chart.notes.size() >= 3:
+		near(chart.notes[0].angle, 90.0, 0.001, "simai button 1 is top")
+		near(chart.notes[2].end_beat, 4.0, 0.001, "simai slide wait + duration")
+		near(chart.notes[2].tail_angle, 270.0, 0.001, "simai slide tail button 5")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	return true
+
+
+func test_osu_std_sentakki_rules() -> bool:
+	eq(OsuIO.STD_STREAM_STEP, 45.0, "osu std stream step is 8-lane 45deg")
+	var text := """osu file format v14
+
+[General]
+Mode: 0
+
+[Difficulty]
+SliderMultiplier: 1.4
+
+[TimingPoints]
+0,500,4,2,0,100,1,0
+
+[HitObjects]
+256,192,1000,2,0,L|400:192,1,280,0|0,0:0|0:0,0:0:0:0:
+256,192,1300,1,0,0:0:0:0:
+"""
+	var result := OsuIO.parse_osu(text, "sentakki.osu")
+	ok(not result.is_empty(), "sentakki rules chart parses")
+	if result.is_empty():
+		return true
+	var chart: Chart = result["chart"]
+	var trace: Note = chart.notes[0]
+	eq(trace.type, "path", "long slider becomes plane path")
+	ok(trace.wait_beat > 0.0, "slide has a wait phase before moving")
+	near(trace.end_beat - trace.beat, 2.0, 0.001, "slide end beat stays on the osu timeline")
+	return true
+
+
+func test_simai_directive_slot() -> bool:
+	# 带有逗号的纯指令 token 必须占一个空拍，否则整张谱会提前。
+	var text := "&title=T\n&wholebpm=120\n&lv_1=1\n&inote_1=(120){4},1,2,\nE\n"
+	var path := "user://test_simai_directive.txt"
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	if file == null:
+		ok(false, "simai directive fixture")
+		return true
+	file.store_string(text)
+	file.close()
+	var chart := SimaiIO.import_maidata(path, 1)
+	ok(chart != null, "simai directive chart imports")
+	if chart != null:
+		near(chart.notes[0].beat, 1.0, 0.001, "directive-only token occupies one slot")
+		near(chart.notes[1].beat, 2.0, 0.001, "next note stays on the grid")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	return true
+
+
+func test_simai_bend_shapes() -> bool:
+	var text := "&title=T\n&wholebpm=120\n&lv_1=1\n&inote_1=(120){4},1v5[4:1],1p3[4:1],\nE\n"
+	var path := "user://test_simai_bend.txt"
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	if file == null:
+		ok(false, "simai bend fixture")
+		return true
+	file.store_string(text)
+	file.close()
+	var chart := SimaiIO.import_maidata(path, 1)
+	ok(chart != null, "simai bend chart imports")
+	if chart != null:
+		var bent := 0
+		for note in chart.notes:
+			if note.type == "path" and note.trace_pts.size() >= 20:
+				var tail: Dictionary = note.trace_pts[-1]
+				if sqrt(pow(float(tail["x"]), 2) + pow(float(tail["y"]), 2)) < 0.75:
+					bent += 1
+		ok(bent >= 1, "v/p shapes become plane paths")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
 	return true
