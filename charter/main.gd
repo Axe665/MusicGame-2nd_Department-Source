@@ -810,6 +810,12 @@ func _start_playtest(from_start: bool) -> void:
 		_show_toast("先修复 %d 个校验错误再试玩：%s" % [errors.size(), errors[0].get("message", "")], "error")
 		return
 	_stop_play()
+	# The full-screen playtest covers the editor. Suspend its preview and input
+	# rather than continuing to render a second 3D scene underneath it.
+	var editor_root := get_node("Root") as Control
+	editor_root.hide()
+	editor_root.process_mode = Node.PROCESS_MODE_DISABLED
+	_preview.set_suspended(true)
 	_playtest = Playtest.new()
 	add_child(_playtest)
 	_playtest.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -821,6 +827,10 @@ func _end_playtest() -> void:
 	if _playtest != null:
 		_playtest.queue_free()
 		_playtest = null
+	var editor_root := get_node("Root") as Control
+	editor_root.process_mode = Node.PROCESS_MODE_INHERIT
+	editor_root.show()
+	_preview.set_suspended(false)
 	Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
 	_sync_from_app()
 

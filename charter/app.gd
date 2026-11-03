@@ -41,6 +41,7 @@ var trace_draw_mode: bool = false
 var undo := UndoStack.new()
 var _edit_before: Dictionary = {}
 var _editing: bool = false
+var _live_change_pending: bool = false
 var _commands_since_autosave: int = 0
 var _autosave_timer: Timer
 
@@ -71,6 +72,7 @@ func _set_initial_focus_notice() -> void:
 
 
 func set_chart(new_chart: Chart, path: String = "", mark_dirty: bool = false) -> void:
+	_live_change_pending = false
 	chart = new_chart
 	chart_path = path
 	dirty = mark_dirty
@@ -133,6 +135,7 @@ func begin_edit() -> void:
 func finish_edit() -> void:
 	if not _editing:
 		return
+	_flush_live_change()
 	_editing = false
 	var after := snapshot()
 	if _edit_before == after:
@@ -154,9 +157,21 @@ func _after_change() -> void:
 
 func touch_chart() -> void:
 	## Emit live updates during a drag; the undo entry is recorded on finish_edit().
+	# Mouse input may arrive several times per rendered frame. Full validation
+	# belongs to the committed edit, not to every intermediate mouse position.
+	_live_change_pending = true
+
+
+func _process(_delta: float) -> void:
+	_flush_live_change()
+
+
+func _flush_live_change() -> void:
+	if not _live_change_pending:
+		return
+	_live_change_pending = false
 	chart_live_changed.emit()
 	status_changed.emit()
-	_emit_validation()
 
 
 func undo_chart() -> void:
