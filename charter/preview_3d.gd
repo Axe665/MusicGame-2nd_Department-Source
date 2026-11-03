@@ -1831,31 +1831,55 @@ func path_point(note: Note, relative_beat: float, beat: float) -> Vector2:
 	return _path_screen_point(chart, note, relative_beat, beat, false)
 
 
-func path_fraction(note: Note, mouse: Vector2, beat: float) -> Dictionary:
-	var chart := get_chart()
-	if chart == null:
-		return {"fraction": 0.0, "distance": INF}
-	var points := PackedVector2Array()
-	var count := 48
-	for i in count + 1:
-		var p := _path_screen_point(chart, note, note.duration() * float(i) / float(count), beat, false)
-		if _valid_point(p):
-			points.append(p)
+static func path_erase_ranges(points: PackedVector2Array, from: Vector2, to: Vector2, radius: float) -> Array[Vector2]:
+	# 返回被鼠标（或本帧鼠标扫过的线段）覆盖的时间比例区间。
+	var ranges: Array[Vector2] = []
 	if points.size() < 2:
-		return {"fraction": 0.0, "distance": INF}
-	var best := INF
-	var best_fraction := 0.0
-	for i in points.size() - 1:
+		return ranges
+	var segments := points.size() - 1
+	var point_only := from.distance_to(to) < 0.5
+	var start := -1
+	for i in segments:
 		var a := points[i]
 		var b := points[i + 1]
-		var ab := b - a
-		var length_squared := ab.length_squared()
-		var q := 0.0 if length_squared <= 0.0001 else clampf((mouse - a).dot(ab) / length_squared, 0.0, 1.0)
-		var distance := mouse.distance_to(a + ab * q)
-		if distance < best:
-			best = distance
-			best_fraction = (float(i) + q) / float(points.size() - 1)
-	return {"fraction": best_fraction, "distance": best}
+		if not a.is_finite() or not b.is_finite():
+			if start >= 0:
+				ranges.append(Vector2(float(start) / float(segments), float(i) / float(segments)))
+				start = -1
+			continue
+		var distance := INF
+		if point_only:
+			distance = from.distance_to(Geometry2D.get_closest_point_to_segment(from, a, b))
+		else:
+			var pair := Geometry2D.get_closest_points_between_segments(a, b, from, to)
+			if pair.size() >= 2:
+				distance = pair[0].distance_to(pair[1])
+		if distance <= radius:
+			if start < 0:
+				start = i
+		elif start >= 0:
+			ranges.append(Vector2(float(start) / float(segments), float(i) / float(segments)))
+			start = -1
+	if start >= 0:
+		ranges.append(Vector2(float(start) / float(segments), 1.0))
+	return ranges
+
+
+func erase_path_overlap(note: Note, from: Vector2, to: Vector2, beat: float) -> bool:
+	var chart := get_chart()
+	if chart == null:
+		return false
+	var total := note.duration()
+	if total <= 0.001:
+		return false
+	var count := 96
+	var points := PackedVector2Array()
+	for i in count + 1:
+		points.append(_path_screen_point(chart, note, total * float(i) / float(count), beat, false))
+	var ranges := path_erase_ranges(points, from, to, 26.0 * _note_scale())
+	for span in ranges:
+		cut_path(note, span.x, span.y)
+	return not ranges.is_empty()
 
 
 func cut_path(note: Note, from_fraction: float, to_fraction: float) -> void:

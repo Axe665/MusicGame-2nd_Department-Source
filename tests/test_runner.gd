@@ -13,6 +13,7 @@ func _initialize() -> void:
 		"test_live_edit_notifications",
 		"test_self_intersection",
 		"test_plane_path",
+		"test_path_erase_overlap",
 		"test_nearest_u",
 		"test_pre_read",
 		"test_shrink_example",
@@ -265,6 +266,29 @@ func test_plane_path() -> bool:
 	eq(restored.trace_pts.size(), 3, "plane path points survive json")
 	near(restored.path_speed, 1.35, 0.001, "path slide speed survives json")
 	eq(restored.path_gaps.size(), 1, "path gaps survive json")
+	return true
+
+
+func test_path_erase_overlap() -> bool:
+	var line := PackedVector2Array()
+	for i in 101:
+		line.append(Vector2(float(i), 0.0))
+	var small := Preview3D.path_erase_ranges(line, Vector2(50, 0), Vector2(50, 0), 10.0)
+	eq(small.size(), 1, "small overlap yields one erase range")
+	if not small.is_empty():
+		ok(small[0].x > 0.2 and small[0].y < 0.8, "small overlap does not erase the whole path")
+	var far := Preview3D.path_erase_ranges(line, Vector2(50, 200), Vector2(50, 200), 10.0)
+	eq(far.size(), 0, "far mouse erases nothing")
+	var swept := Preview3D.path_erase_ranges(line, Vector2(30, -20), Vector2(70, 20), 8.0)
+	eq(swept.size(), 1, "mouse sweep across the path erases a range")
+	var loop := PackedVector2Array([
+		Vector2(0, 0), Vector2(100, 0), Vector2(100, 100),
+		Vector2(0, 100), Vector2(0, 50), Vector2(0, 0),
+	])
+	var overlapping := Preview3D.path_erase_ranges(loop, Vector2(0, 0), Vector2(0, 0), 8.0)
+	eq(overlapping.size(), 2, "overlapping passes are erased separately, not as one huge span")
+	if overlapping.size() == 2:
+		ok(overlapping[0].x < 0.01 and overlapping[1].y > 0.99, "both overlapping passes are covered")
 	return true
 
 

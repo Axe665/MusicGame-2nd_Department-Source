@@ -205,7 +205,6 @@ func _init_states() -> void:
 			"tail_judged": false,
 			"head_hit": false,
 			"tail_hit": false,
-			"path_frac": 0.0,
 			"path_last_mouse": Vector2.ZERO,
 			"trace_started": false,
 			"trace_distance": 0.0,
@@ -442,18 +441,16 @@ func _judge_path(note: Note, ms: float, beat: float, cursor_u: float, valid: boo
 		state["done"] = true
 	if ms < head_ms or ms > tail_ms:
 		return
-	# 中段只看“滑到了没有”：不逐点扣分，鼠标划过的轨迹立即削掉。
-	if bool(state.get("head_hit", false)) and valid:
-		var info: Dictionary = _preview.path_fraction(note, mouse, beat)
-		var fraction := float(info.get("fraction", 0.0))
-		var distance_to_path := float(info.get("distance", INF))
-		var previous_fraction := float(state.get("path_frac", 0.0))
-		if distance_to_path <= 56.0 and fraction > previous_fraction + 0.004:
-			_preview.cut_path(note, previous_fraction, fraction)
-			state["path_frac"] = fraction
-		elif fraction + 0.03 >= previous_fraction:
-			state["path_frac"] = maxf(previous_fraction, fraction)
-		state["path_last_mouse"] = mouse
+	# 中段只看“滑到了没有”：不逐点扣分；鼠标扫过的轨迹按重叠区域削掉。
+	if bool(state.get("head_hit", false)):
+		if valid:
+			var last: Vector2 = state.get("path_last_mouse", Vector2(INF, INF))
+			if not last.is_finite():
+				last = mouse
+			_preview.erase_path_overlap(note, last, mouse, beat)
+			state["path_last_mouse"] = mouse
+		else:
+			state["path_last_mouse"] = Vector2(INF, INF)
 
 
 func _judge_trace(note: Note, ms: float, beat: float, delta: float, mouse: Vector2) -> void:
