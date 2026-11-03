@@ -151,6 +151,18 @@ func _download_selected() -> void:
 	_choose_difficulty(maidata)
 
 func _fetch_bytes(url: String, label: String = "") -> PackedByteArray:
+	if url.contains("majdata.net"):
+		# Godot 的 HTTPRequest 会被 majdata 的 Cloudflare 挂住；curl 正常。
+		var tmp := "user://majdata_tmp.bin"
+		var output: Array = []
+		var code := OS.execute("curl", ["-sL", "--max-time", "25", "-A", "Mozilla/5.0", "-e", "https://majdata.net/", "-o", ProjectSettings.globalize_path(tmp), url], output, true, false)
+		if code != 0 or not FileAccess.file_exists(tmp):
+			return PackedByteArray()
+		var data := FileAccess.get_file_as_bytes(tmp)
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(tmp))
+		if not label.is_empty():
+			_status.text = "%s  %.0f KB" % [label, float(data.size()) / 1024.0]
+		return data
 	var http := HTTPRequest.new()
 	add_child(http)
 	var done := false
@@ -184,18 +196,13 @@ func _refresh_majdata() -> void:
 	var serial := _request_serial
 	var q := _search.text.strip_edges()
 	var url := "https://majdata.net/api3/api/maichart/list?sort=&page=0&search=" + q.uri_encode()
-	var http := HTTPRequest.new()
-	add_child(http)
-	http.request(url, ["Referer: https://majdata.net/", "User-Agent: Mozilla/5.0"])
-	var r: Array = await http.request_completed
-	http.queue_free()
+	var body := await _fetch_bytes(url, "majdata 搜索")
 	if serial != _request_serial:
 		return
 	_maj_items = []
-	if int(r[0]) == HTTPRequest.RESULT_SUCCESS and int(r[1]) == 200:
-		var parsed = JSON.parse_string((r[3] as PackedByteArray).get_string_from_utf8())
-		if parsed is Array:
-			_maj_items = parsed
+	var parsed = JSON.parse_string(body.get_string_from_utf8())
+	if parsed is Array:
+		_maj_items = parsed
 	for i in _maj_items.size():
 		var item: Dictionary = _maj_items[i]
 		_list.add_item("%s — %s  [majdata]" % [String(item.get("title", "")), String(item.get("artist", ""))])
