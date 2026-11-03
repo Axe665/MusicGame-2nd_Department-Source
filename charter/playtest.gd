@@ -433,6 +433,8 @@ func _judge_path(note: Note, ms: float, beat: float, cursor_u: float, valid: boo
 		elif samples.has(false):
 			status = "FRAY"
 		_add_log("PATH #%d %s" % [note.id, status])
+		var status_color := UITheme.MINT if status == "FULL" else (UITheme.AMBER if status == "FRAY" else UITheme.RED)
+		_pulse_at(note.tail_angle, beat, status_color, status, note.tail_width)
 		state["done"] = true
 	# 舞萌扫圈：中段不逐点取样，只看头、尾；跳区直接算通过。
 	if String(chart.metadata.get("slide_mode", "follow")) == "maimai":
