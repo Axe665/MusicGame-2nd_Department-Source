@@ -11,6 +11,9 @@ var _status: Label
 var _entries: Array = []
 var _source: OptionButton
 var _maj_items: Array = []
+var _diff_dialog: ConfirmationDialog
+var _diff_list: ItemList
+var _pending_maidata: String = ""
 var _specs: Dictionary = {}
 
 func _ready() -> void:
@@ -20,6 +23,14 @@ func _ready() -> void:
 	_entries = _load_json("res://charts/adx_search.json")
 	_specs = _load_json("res://charts/adx_specs.json")
 	_build()
+	_diff_dialog = ConfirmationDialog.new()
+	_diff_dialog.title = "选择难度"
+	_diff_dialog.ok_button_text = "导入"
+	_diff_list = ItemList.new()
+	_diff_list.custom_minimum_size = Vector2(360, 200)
+	_diff_dialog.add_child(_diff_list)
+	_diff_dialog.confirmed.connect(_import_chosen_difficulty)
+	add_child(_diff_dialog)
 	_refresh()
 	confirmed.connect(_download_selected)
 
@@ -118,7 +129,7 @@ func _download_selected() -> void:
 		if url.begins_with("/"):
 			url = "https://adxdls.saop.cc" + url
 		var target := folder + name
-		var body := await _fetch_bytes(url)
+		var body := await _fetch_bytes(url, "下载 " + name)
 		if body.is_empty():
 			continue
 		var file := FileAccess.open(target, FileAccess.WRITE)
@@ -130,22 +141,23 @@ func _download_selected() -> void:
 	if maidata.is_empty():
 		_status.text = "下载失败：没有 maidata.txt"
 		return
-	var diffs := SimaiIO.list_maidata(maidata)
-	var index := 0
-	if not diffs.is_empty():
-		index = int(diffs[-1].get("index", 0))
-	var chart := SimaiIO.import_maidata(maidata, index)
-	if chart == null:
-		_status.text = "转换失败：%s" % SimaiIO.last_error
-		return
-	chart_imported.emit(chart)
-	hide()
+	_choose_difficulty(maidata)
 
-func _fetch_bytes(url: String) -> PackedByteArray:
+func _fetch_bytes(url: String, label: String = "") -> PackedByteArray:
 	var http := HTTPRequest.new()
 	add_child(http)
+	var done := false
+	var result: Array = []
+	http.request_completed.connect(func(r: Array) -> void:
+		result = r
+		done = true
+	)
 	http.request(url)
-	var result: Array = await http.request_completed
+	while not done:
+		await get_tree().process_frame
+		if not label.is_empty():
+			var got := http.get_downloaded_bytes()
+			_status.text = "%s  %.0f KB" % [label, float(got) / 1024.0]
 	http.queue_free()
 	if int(result[0]) != HTTPRequest.RESULT_SUCCESS or int(result[1]) < 200 or int(result[1]) >= 300:
 		return PackedByteArray()
@@ -177,25 +189,18 @@ func _download_majdata(id: String) -> void:
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(folder))
 	var base := "https://majdata.net/api3/api/maichart/" + id
 	var maidata := folder + "maidata.txt"
-	var ok := await _save(base + "/chart?intent=download", maidata)
+	var ok := await _save(base + "/chart?intent=download", maidata, "下载 maidata")
 	if ok:
-		await _save(base + "/track", folder + "track.mp3")
-		await _save(base + "/image?fullImage=true", folder + "bg.jpg")
+		await _save(base + "/track", folder + "track.mp3", "下载音频")
+		await _save(base + "/image?fullImage=true", folder + "bg.jpg", "下载背景")
 	if not ok:
 		_status.text = "majdata 下载失败"
 		return
-	var diffs := SimaiIO.list_maidata(maidata)
-	var index := int(diffs[-1].get("index", 0)) if not diffs.is_empty() else 0
-	var chart := SimaiIO.import_maidata(maidata, index)
-	if chart == null:
-		_status.text = "转换失败：%s" % SimaiIO.last_error
-		return
-	chart_imported.emit(chart)
-	hide()
+	_choose_difficulty(maidata)
 
 
-func _save(url: String, path: String) -> bool:
-	var body := await _fetch_bytes(url)
+func _save(url: String, path: String, label: String = "") -> bool:
+	var body := await _fetch_bytes(url, label)
 	if body.is_empty():
 		return false
 	var f := FileAccess.open(path, FileAccess.WRITE)
@@ -204,3 +209,30 @@ func _save(url: String, path: String) -> bool:
 	f.store_buffer(body)
 	f.close()
 	return true
+
+
+func _choose_difficulty(maidata: String) -> void:
+	var diffs := SimaiIO.list_maidata(maidata)
+	if diffs.is_empty():
+		_status.text = "无法读取难度"
+		return
+	_pending_maidata = maidata
+	_diff_list.clear()
+	for d in diffs:
+		_diff_list.add_item("%s  %s" % [String(d.get("version", "?")), String(d.get("creator", ""))])
+		_diff_list.set_item_metadata(_diff_list.item_count - 1, int(d.get("index", 0)))
+	_diff_list.select(0)
+	_diff_dialog.popup_centered_ratio(0.4)
+
+
+func _import_chosen_difficulty() -> void:
+	var sel := _diff_list.get_selected_items()
+	if sel.is_empty() or _pending_maidata.is_empty():
+		return
+	var index := int(_diff_list.get_item_metadata(sel[0]))
+	var chart := SimaiIO.import_maidata(_pending_maidata, index)
+	if chart == null:
+		_status.text = "转换失败：%s" % SimaiIO.last_error
+		return
+	chart_imported.emit(chart)
+	hide()

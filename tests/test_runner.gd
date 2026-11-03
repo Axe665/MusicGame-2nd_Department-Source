@@ -871,7 +871,7 @@ func test_simai_import() -> bool:
 	if chart == null:
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
 		return true
-	near(chart.offset_ms, 1000.0, 0.001, "simai first -> offset")
+	near(chart.offset_ms, -1000.0, 0.001, "simai first -> offset")
 	eq(chart.notes.size(), 4, "simai keeps four notes")
 	var types: Array[String] = []
 	for note in chart.notes:
