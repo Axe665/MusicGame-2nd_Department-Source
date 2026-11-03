@@ -212,6 +212,8 @@ func _init_states() -> void:
 			"trace_last": Vector2.ZERO,
 			"trace_contact": false,
 			"trace_frac": 0.0,
+			"trace_away": 0.0,
+			"trace_reset": false,
 		}
 		if note.type == "bell":
 			_bell_total += 1
@@ -347,7 +349,7 @@ func _judge_hold(note: Note, ms: float, beat: float) -> void:
 			state["key"] = int(press.get("key", 0))
 			state["head_tier"] = head_tier
 			_pulse_at(note.angle, beat, _tier_color(head_tier), head_tier, note.width)
-			_sfx.play("don", 0.82)
+			_sfx.play("hold", 0.92)
 			_add_log("HOLD #%d HEAD %s" % [note.id, head_tier])
 			return
 		if ms > target + HIT_WINDOW_MS:
@@ -376,7 +378,7 @@ func _judge_hold(note: Note, ms: float, beat: float) -> void:
 		_max_combo = maxi(_max_combo, _combo)
 		_add_judgement(tier)
 		_pulse_at(note.angle, beat, _tier_color(tier), tier, note.width)
-		_sfx.play("don", 1.18)
+		_sfx.play("hold", 1.08)
 		_record_error(ms - end_ms, "HOLD #%d COMPLETE %s" % [note.id, tier])
 
 
@@ -392,7 +394,7 @@ func _judge_path(note: Note, ms: float, beat: float, cursor_u: float, valid: boo
 			_max_combo = maxi(_max_combo, _combo)
 			_add_judgement("PERFECT")
 			_pulse_at(note.angle, beat, _tier_color("PERFECT"), "PERFECT")
-			_sfx.play("don", 1.10)
+			_sfx.play("path", 1.0)
 			_add_log("PATH #%d HEAD PERFECT" % note.id)
 			state["head_judged"] = true
 		elif ms > head_ms + HIT_WINDOW_MS:
@@ -469,7 +471,7 @@ func _judge_trace(note: Note, ms: float, beat: float, delta: float, mouse: Vecto
 			var press := _take_key_for_point(start_ms - HIT_WINDOW_MS, start_ms + HIT_WINDOW_MS, head, 42.0)
 			if not press.is_empty():
 				started = true
-				_sfx.play("don", 0.90)
+				_sfx.play("path", 0.94)
 		elif contact:
 			started = true
 		if started:
@@ -523,6 +525,15 @@ func _judge_trace(note: Note, ms: float, beat: float, delta: float, mouse: Vecto
 		state["trace_last"] = mouse
 	else:
 		state["trace_contact"] = false
+		state["trace_away"] = float(state.get("trace_away", 0.0)) + delta
+		if float(state["trace_away"]) > 0.25 and not bool(state.get("trace_reset", false)):
+			# 离开轨迹超过 250ms：保留宽限后重置已累计距离，需要重新跟一遍。
+			state["trace_reset"] = true
+			state["trace_distance"] = 0.0
+			_add_log("TRACE #%d FRAY (left path >250ms)" % note.id)
+	if contact:
+		state["trace_away"] = 0.0
+		state["trace_reset"] = false
 	var required := note.move_px * float(_app.star_speed if _app != null else 1.0)
 	if float(state["trace_distance"]) >= required:
 		state["done"] = true
@@ -586,7 +597,7 @@ func _judge_anchor(note: Note, ms: float, beat: float) -> void:
 		_max_combo = maxi(_max_combo, _combo)
 		_add_judgement(tier)
 		_pulse_at(note.angle, beat, _tier_color(tier), tier, note.width)
-		_sfx.play("don", 1.22)
+		_sfx.play("anchor", 1.0)
 		_record_error(float(press["time"]) - target, "ANCHOR #%d %s" % [note.id, tier])
 		return
 	if ms > target + HIT_WINDOW_MS:

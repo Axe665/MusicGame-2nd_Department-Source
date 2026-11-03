@@ -41,7 +41,15 @@ static func import_maidata(path: String, difficulty_index: int = 0) -> Chart:
 	var meta := _metadata(text)
 	var inote := String(meta.get("inote_%d" % difficulty_index, ""))
 	if inote.is_empty():
-		last_error = "maidata.txt 里没有 inote_%d" % difficulty_index
+		# 调用方传错索引时退回第一个可用难度，而不是静默失败。
+		for key in meta.keys():
+			var name := String(key)
+			if name.begins_with("inote_") and not String(meta[key]).is_empty():
+				difficulty_index = int(name.trim_prefix("inote_"))
+				inote = String(meta[key])
+				break
+	if inote.is_empty():
+		last_error = "maidata.txt 里没有可用的 inote"
 		return null
 	var chart := Chart.new()
 	chart.metadata["title"] = String(meta.get("title", "未命名"))
@@ -59,9 +67,11 @@ static func import_maidata(path: String, difficulty_index: int = 0) -> Chart:
 	_clamp_holds(chart, counts)
 	chart.notes.sort_custom(func(a: Note, b: Note) -> bool: return a.beat < b.beat)
 	_extract_assets(path, chart)
-	last_report = "Simai 导入：Tap %d，Hold %d，Slide→Path %d，Touch→Bell %d，跳过 %d。\nBPM %.1f，offset %.0fms。" % [
+	var audio_note := "音频：未找到 track.*" if chart.audio_path.is_empty() else "音频：%s" % chart.audio_path.get_file()
+	last_report = "Simai 导入 Lv.%s：Tap %d，Hold %d，Slide→Path %d，Touch→Bell %d，跳过 %d。\nBPM %.1f，offset %.0fms，%s。" % [
+		String(meta.get("lv_%d" % difficulty_index, "?")),
 		counts["tap"], counts["hold"], counts["path"], counts["bell"], counts["dropped"],
-		base_bpm, chart.offset_ms,
+		base_bpm, chart.offset_ms, audio_note,
 	]
 	return chart
 

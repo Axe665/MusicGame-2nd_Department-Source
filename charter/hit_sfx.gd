@@ -6,6 +6,9 @@ extends Node
 const VOLUME_DB := -7.0
 const PATHS := {
 	"don": "res://audio/sfx/tap_don.wav",
+	"hold": "res://audio/sfx/hold.wav",
+	"path": "res://audio/sfx/path.wav",
+	"anchor": "res://audio/sfx/anchor.wav",
 	"kat": "res://audio/sfx/tap_kat.wav",
 	"bell": "res://audio/sfx/bell.wav",
 	"trace": "res://audio/sfx/trace.wav",

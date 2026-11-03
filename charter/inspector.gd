@@ -508,6 +508,9 @@ func _build_event_page(page: VBoxContainer) -> void:
 
 func _build_view_page(page: VBoxContainer) -> void:
 	_section(page, "显示")
+	_check(page, "正对镜头（忽略倾斜）", bool(_app.chart.metadata.get("face_camera", true)), func(value: bool) -> void:
+		_app.mutate(func() -> void: _app.chart.metadata["face_camera"] = value)
+	)
 	_check(page, "HUD（H）", _app.hud_visible, func(value: bool) -> void: _app.hud_visible = value)
 	_check(page, "调试叠层", _app.debug_overlay, func(value: bool) -> void: _app.debug_overlay = value)
 	_check(page, "波形", _app.waveform_visible, func(value: bool) -> void: _app.waveform_visible = value)

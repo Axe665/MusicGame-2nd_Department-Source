@@ -491,13 +491,13 @@ static func _convert_std_continuous(objects_raw: Array, chart: Chart, timing_raw
 		var prev_gap := absf(_std_short_delta(prev_ref, u))
 		var next_gap := absf(_std_short_delta(current_ref, next_ref))
 		var dense := prev_time < 0.5 or next_time < 0.5
-		var width := 50.0
+		var width := 56.0
 		if dense:
-			width += 8.0
-		width += clampf(minf(prev_gap, next_gap) * 0.15, 0.0, 15.0)
+			width += 5.0
+		width += clampf(minf(prev_gap, next_gap) * 0.12, 0.0, 10.0)
 		if bool(info["is_jump"]):
-			width -= 5.0
-		width = clampf(width, 45.0, 75.0)
+			width -= 3.0
+		width = clampf(width, 55.0, 68.0)
 		if note.type in ["tap", "hold"]:
 			note.width = width
 	return counts

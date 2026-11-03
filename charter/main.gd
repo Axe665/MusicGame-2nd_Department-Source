@@ -545,7 +545,7 @@ func _build_dialogs() -> void:
 		var selected := _difficulty_list.get_selected_items()
 		if selected.size() > 0 and not _pending_osz.is_empty():
 			if _pending_kind == "simai":
-				_import_maimai(_pending_osz, selected[0])
+				_import_maimai(_pending_osz, int(_difficulty_list.get_item_metadata(selected[0])))
 			else:
 				_import_osz(_pending_osz, selected[0])
 	)
@@ -705,13 +705,13 @@ func _build_sfx_events() -> void:
 			"tap":
 				_add_sfx_event(note.beat, HitSfx.kind_for_note(note))
 			"hold":
-				_add_sfx_event(note.beat, "don", 0.82)
-				_add_sfx_event(note.end_beat, "don", 1.18)
+				_add_sfx_event(note.beat, "hold", 0.92)
+				_add_sfx_event(note.end_beat, "hold", 1.08)
 			"path":
-				_add_sfx_event(note.beat, "don", 1.10)
+				_add_sfx_event(note.beat, "path", 1.0)
 				_add_sfx_event(note.end_beat, "tail")
 			"anchor":
-				_add_sfx_event(note.beat, "don", 1.22)
+				_add_sfx_event(note.beat, "anchor", 1.0)
 			"bell":
 				_add_sfx_event(note.beat, "bell")
 			"trace":
@@ -839,8 +839,10 @@ func _on_import_osz_selected(path: String) -> void:
 		_pending_kind = "simai"
 		_pending_osz = path
 		_difficulty_list.clear()
-		for item in simai:
+		for i in simai.size():
+			var item: Dictionary = simai[i]
 			_difficulty_list.add_item("%s — %s  %s" % [String(item.get("title", "")), String(item.get("version", "")), String(item.get("creator", ""))])
+			_difficulty_list.set_item_metadata(i, int(item.get("index", 0)))
 		_difficulty_list.select(0)
 		_difficulty_dialog.popup_centered_ratio(0.58)
 		return
