@@ -18,6 +18,7 @@ var move_px: float = 120.0
 var radius: float = 44.0
 var tolerance: float = 0.24
 var samples_per_beat: float = 4.0
+var path_speed: float = 1.0
 var path_style: String = "arc"
 var path_gaps: Array[Dictionary] = []
 var visual_pts: Array[Dictionary] = []
@@ -198,6 +199,8 @@ func to_dict() -> Dictionary:
 			data["tail_width"] = snappedf(tail_width, 0.001)
 			data["tolerance"] = snappedf(tolerance, 0.001)
 			data["samples"] = snappedf(samples_per_beat, 0.001)
+			if path_speed != 1.0:
+				data["speed"] = snappedf(path_speed, 0.001)
 			if path_style != "arc":
 				data["path_style"] = path_style
 			if not path_gaps.is_empty():
@@ -245,6 +248,7 @@ static func from_dict(raw: Dictionary) -> Note:
 	note.radius = float(raw.get("radius", 24.0))
 	note.tolerance = float(raw.get("tolerance", 0.24))
 	note.samples_per_beat = float(raw.get("samples", 4.0))
+	note.path_speed = float(raw.get("speed", 1.0))
 	note.path_style = String(raw.get("path_style", "arc"))
 	note.trace_style = String(raw.get("trace_style", "wipe"))
 	note.space = String(raw.get("space", "plane" if note.type == "path" else "ring"))

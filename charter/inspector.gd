@@ -299,11 +299,35 @@ func _build_note_page(page: VBoxContainer) -> void:
 		_spin(page, "尾宽度", note.tail_width, 0.0, 360.0, 1.0, func(value: float) -> void: note.tail_width = value)
 		_spin(page, "容差比例", note.tolerance, 0.0, 1.0, 0.01, func(value: float) -> void: note.tolerance = value)
 		_spin(page, "采样/拍", note.samples_per_beat, 0.25, 32.0, 0.25, func(value: float) -> void: note.samples_per_beat = value)
+		_spin(page, "滑动速度", note.path_speed, 0.5, 3.0, 0.05, func(value: float) -> void: note.path_speed = value)
 		_label(page, "平面 Path：星头在环上按键，身体/尾在平面内跟随；尾默认 0.65–0.75R。", 11, UITheme.CYAN)
-		_label(page, "中段只看滑到；平面点：%d 个（在预览里拖青色节点改形状）" % note.trace_pts.size(), 11, UITheme.MUTED)
+		_label(page, "中间判定点：%d 个（宽松：滑到即可）；平面点：%d 个" % [note.path_sample_beats().size(), note.trace_pts.size()], 11, UITheme.MUTED)
 		_buttons(page, [
 			{"text": "重画 Path", "callback": func() -> void: _app.set_tool("path")},
 		])
+		_section(page, "中间判定点（设计）")
+		var design_list := ItemList.new()
+		design_list.custom_minimum_size = Vector2(0, 96)
+		for i in note.visual_pts.size():
+			var point: Dictionary = note.visual_pts[i]
+			design_list.add_item("%02d  Δbeat %.2f  Δangle %.1f" % [i, float(point.get("db", 0.0)), float(point.get("da", 0.0))])
+		_selected_visual = clampi(_selected_visual, 0, maxi(0, note.visual_pts.size() - 1))
+		if _selected_visual < design_list.item_count:
+			design_list.select(_selected_visual)
+		design_list.item_selected.connect(func(index: int) -> void:
+			_selected_visual = index
+			_rebuild()
+		)
+		page.add_child(design_list)
+		_buttons(page, [
+			{"text": "加判定点", "callback": func() -> void: _add_visual_point(note)},
+			{"text": "删判定点", "callback": func() -> void: _delete_visual_point(note)},
+		])
+		if _selected_visual >= 0 and _selected_visual < note.visual_pts.size():
+			var point: Dictionary = note.visual_pts[_selected_visual]
+			_spin(page, "Δbeat", float(point.get("db", 0.0)), 0.0, maxf(0.25, note.duration()), 0.01, func(value: float) -> void: point["db"] = value)
+			_spin(page, "Δangle", float(point.get("da", 0.0)), -720.0, 720.0, 0.5, func(value: float) -> void: point["da"] = value)
+		_label(page, "判定点只做编辑器标记；中段仍是滑到即可，不逐点扣分。", 11, UITheme.MUTED)
 		_section(page, "跳区 / 擦除")
 		_spin(page, "中段擦除 %", _path_erase_width(note) * 100.0, 0.0, 80.0, 5.0, func(value: float) -> void:
 			_set_path_erase_width(note, value / 100.0)

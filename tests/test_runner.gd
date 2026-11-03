@@ -251,6 +251,7 @@ func test_plane_path() -> bool:
 	]
 	near(note.path_local_at(2.0).x, 0.5, 0.001, "plane path follows explicit points")
 	near(note.path_local_at(2.0).y, 0.5, 0.001, "plane path interpolates y")
+	note.path_speed = 1.35
 	note.path_gaps = [{"from": 0.4, "to": 0.6}]
 	ok(note.erased_at(2.0), "path erase range hits middle")
 	ok(not note.erased_at(0.5), "path erase range leaves head")
@@ -262,6 +263,7 @@ func test_plane_path() -> bool:
 	var restored := Note.from_dict(note.to_dict())
 	eq(restored.space, "plane", "plane path survives json")
 	eq(restored.trace_pts.size(), 3, "plane path points survive json")
+	near(restored.path_speed, 1.35, 0.001, "path slide speed survives json")
 	eq(restored.path_gaps.size(), 1, "path gaps survive json")
 	return true
 

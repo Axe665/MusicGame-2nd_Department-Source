@@ -925,8 +925,14 @@ func _on_left_press(event: InputEventMouseButton) -> void:
 			_drag_visual_note = _app.get_selected_note()
 			_drag_visual_start = event.position
 			if _drag_visual_note.type == "path":
-				var point: Dictionary = _drag_visual_note.trace_pts[visual]
-				_drag_visual_db = float(point.get("db", 0.0))
+				var trace_count: int = _drag_visual_note.trace_pts.size()
+				if visual < trace_count:
+					var point: Dictionary = _drag_visual_note.trace_pts[visual]
+					_drag_visual_db = float(point.get("db", 0.0))
+				else:
+					var design: Dictionary = _drag_visual_note.visual_pts[visual - trace_count]
+					_drag_visual_db = float(design.get("db", 0.0))
+					_drag_visual_da = float(design.get("da", 0.0))
 			else:
 				var point: Dictionary = _drag_visual_note.visual_pts[visual]
 				_drag_visual_db = float(point.get("db", 0.0))
@@ -1019,6 +1025,17 @@ func _update_visual_drag(screen_position: Vector2) -> void:
 	if not design.is_finite():
 		return
 	if _drag_visual_note.type == "path":
+		var trace_count: int = _drag_visual_note.trace_pts.size()
+		if _drag_visual >= trace_count:
+			var design_index := _drag_visual - trace_count
+			if design_index >= _drag_visual_note.visual_pts.size():
+				return
+			var marker: Dictionary = _drag_visual_note.visual_pts[design_index]
+			var duration := _drag_visual_note.duration()
+			marker["db"] = clampf(_drag_visual_db + (screen_position.y - _drag_visual_start.y) / 36.0, 0.001, maxf(0.001, duration - 0.001))
+			marker["da"] = JudgeMath.angle_delta(_drag_visual_note.angle, rad_to_deg(atan2(design.y, design.x)))
+			_app.touch_chart()
+			return
 		if _drag_visual >= _drag_visual_note.trace_pts.size():
 			return
 		var local := _design_to_path_local(design)
@@ -1650,6 +1667,12 @@ func _pick_visual_node(screen_position: Vector2) -> int:
 		var p := _path_local_screen(chart, local, t)
 		if _valid_point(p) and p.distance_to(screen_position) <= 12.0:
 			return i
+	# 中间设计判定点用轨迹时间定位，单独编号排在平面点之后。
+	for i in note.visual_pts.size():
+		var point: Dictionary = note.visual_pts[i]
+		var p := _path_screen_point(chart, note, float(point.get("db", 0.0)), t)
+		if _valid_point(p) and p.distance_to(screen_position) <= 10.0:
+			return note.trace_pts.size() + i
 	return -1
 
 
@@ -1680,7 +1703,8 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 	var grow := clampf((t - (note.beat - pre)) / maxf(0.001, pre), 0.0, 1.0)
 	var ns := _note_scale()
 	var wait := clampf(note.wait_beat, 0.0, maxf(0.0, total - 0.001))
-	var progress := clampf((t - note.beat - wait) / maxf(0.001, total - wait), 0.0, 1.0)
+	var q := clampf((t - note.beat - wait) / maxf(0.001, total - wait), 0.0, 1.0)
+	var progress := 1.0 - pow(1.0 - q, maxf(0.05, note.path_speed))
 	var runs: Array[PackedVector2Array] = []
 	var cache_key := "%d|%d|%s|%.0f|%.0f" % [note.id, (path_cuts.get(note.id, []) as Array).size(), _last_view_key, size.x, size.y]
 	if grow >= 0.999 and _path_runs_cache.has(cache_key):
@@ -1740,6 +1764,19 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 			var fraction := (float(k) + 1.0) / float(chevron_count + 1)
 			var sample: Dictionary = _polyline_sample(piece, fraction)
 			_draw_chevron(canvas, sample["point"], sample["direction"], passed if fraction < progress else future, 9.0 * ns)
+	# 中间判定点：保留设计/预览用的采样点，不参与严格扣分。
+	for sample_beat in note.path_sample_beats():
+		var rel := clampf(sample_beat - note.beat, 0.0, total)
+		var p := _path_screen_point(chart, note, rel, t, true, grow)
+		if _valid_point(p):
+			canvas.draw_circle(p, 2.6 * ns, Color(0, 0, 0, 0.5))
+			canvas.draw_circle(p, 1.8 * ns, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.85 if top else 0.28))
+	# 手动放置的中间设计点。
+	for point in note.visual_pts:
+		var rel := clampf(float(point.get("db", 0.0)), 0.0, total)
+		var p := _path_screen_point(chart, note, rel, t, true, grow)
+		if _valid_point(p):
+			_draw_diamond(canvas, p, 4.5, UITheme.GOLD)
 	_draw_target_arc(canvas, note.angle, note.width, t, UITheme.CORAL, 10.0)
 	if _app != null:
 		var selected_note: Note = _app.get_selected_note()

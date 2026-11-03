@@ -258,7 +258,7 @@ static func _parse_note(token: String, beat: float, bpm: float) -> Note:
 		note.samples_per_beat = 4.0
 		note.space = "plane"
 		var mid_angle := NAN
-		if token.contains("v") or token.contains("V") or token.contains("w") or token.contains("p") or token.contains("q") or token.contains("s") or token.contains("z"):
+		if token.contains("V") or token.contains("v") or token.contains("w") or token.contains("p") or token.contains("q") or token.contains("s") or token.contains("z"):
 			var digits := ""
 			for ch in token.split("[")[0]:
 				if ch.is_valid_int():
@@ -268,7 +268,7 @@ static func _parse_note(token: String, beat: float, bpm: float) -> Note:
 				mid_angle = _button_angle(turn)
 		note.trace_pts = _plane_slide_points(
 			start_angle, delta, note.wait_beat,
-			note.end_beat - note.beat, mid_angle
+			note.end_beat - note.beat, _slide_shape(token), mid_angle
 		)
 		return note
 	if token.find("h") >= 0:
@@ -283,33 +283,96 @@ static func _parse_note(token: String, beat: float, bpm: float) -> Note:
 	return tap
 
 
-static func _plane_slide_points(head_angle: float, delta: float, wait: float, total: float, mid_angle: float = NAN) -> Array[Dictionary]:
+static func _slide_shape(token: String) -> String:
+	var body := token.split("[")[0]
+	for shape in ["pp", "qq", "V", "v", "p", "q", "s", "z", "w", "^", "<", ">"]:
+		if body.contains(shape):
+			return shape
+	return "-"
+
+
+static func _plane_slide_points(head_angle: float, delta: float, wait: float, total: float, shape: String, mid_angle: float = NAN) -> Array[Dictionary]:
 	var head := Vector2(cos(deg_to_rad(head_angle)), sin(deg_to_rad(head_angle)))
-	var tail_angle := head_angle + delta
+	var tail := Vector2(cos(deg_to_rad(head_angle + delta)), sin(deg_to_rad(head_angle + delta))) * 0.72
+	var samples: Array[Vector2] = []
+	match shape:
+		"-", "w":
+			samples = _straight_samples(head, tail, 32)
+		"v":
+			# v 型：从环上经屏幕中心附近再折回，两段直线。
+			var vertex := Vector2(cos(deg_to_rad(head_angle + delta * 0.5)), sin(deg_to_rad(head_angle + delta * 0.5))) * 0.06
+			samples = _polyline_samples([head, vertex, tail], 18)
+		"V":
+			if is_nan(mid_angle):
+				samples = _straight_samples(head, tail, 32)
+			else:
+				var middle := Vector2(cos(deg_to_rad(mid_angle)), sin(deg_to_rad(mid_angle))) * 0.94
+				samples = _polyline_samples([head, middle, tail], 18)
+		"p", "q":
+			var control_radius := 0.22 if shape == "p" else 0.45
+			var control := Vector2(cos(deg_to_rad(head_angle + delta * 0.5)), sin(deg_to_rad(head_angle + delta * 0.5))) * control_radius
+			samples = _bezier_samples(head, control, tail, 34)
+		"pp", "qq":
+			var control_radius := 0.62 if shape == "pp" else 0.78
+			var control := Vector2(cos(deg_to_rad(head_angle + delta * 0.5)), sin(deg_to_rad(head_angle + delta * 0.5))) * control_radius
+			samples = _bezier_samples(head, control, tail, 34)
+		"s", "z":
+			var chord := tail - head
+			var normal := Vector2(-chord.y, chord.x).normalized()
+			var side := 1.0 if shape == "s" else -1.0
+			var a := Vector2(cos(deg_to_rad(head_angle + delta * 0.33)), sin(deg_to_rad(head_angle + delta * 0.33))) * 0.82 + normal * 0.10 * side
+			var b := Vector2(cos(deg_to_rad(head_angle + delta * 0.66)), sin(deg_to_rad(head_angle + delta * 0.66))) * 0.82 - normal * 0.10 * side
+			samples = _polyline_samples([head, a, b, tail], 12)
+		_:
+			# ^ < >：沿环内侧的弧线，最后收进 0.72R。
+			var count := 36
+			for i in count + 1:
+				var q := float(i) / float(count)
+				var angle := head_angle + delta * q
+				var radius := 1.0 - 0.07 * smoothstep(0.0, 0.12, q) - 0.21 * smoothstep(0.82, 1.0, q)
+				samples.append(Vector2(cos(deg_to_rad(angle)), sin(deg_to_rad(angle))) * radius)
+	if samples.is_empty():
+		samples = _straight_samples(head, tail, 32)
+	# 按轨迹长度分配时间：滑动速度恒定，不因折线/弧线改变。
+	var distances: Array[float] = [0.0]
+	for i in range(1, samples.size()):
+		distances.append(distances[-1] + samples[i].distance_to(samples[i - 1]))
+	var length := maxf(0.001, distances[-1])
+	var move := maxf(0.001, total - wait)
 	var result: Array[Dictionary] = [{"x": head.x, "y": head.y, "db": 0.0}]
 	if wait > 0.0:
 		result.append({"x": head.x, "y": head.y, "db": wait})
-	var move := maxf(0.001, total - wait)
-	var has_mid := not is_nan(mid_angle)
-	var split := 0.45 if has_mid else 1.0
-	var head_to_mid := _short_delta(head_angle, mid_angle)
-	var mid_to_tail := _short_delta(mid_angle, tail_angle)
-	var count := 32
+	for i in range(1, samples.size()):
+		result.append({
+			"x": samples[i].x,
+			"y": samples[i].y,
+			"db": wait + move * distances[i] / length,
+		})
+	return result
+
+
+static func _straight_samples(from: Vector2, to: Vector2, count: int) -> Array[Vector2]:
+	var result: Array[Vector2] = []
+	for i in count + 1:
+		result.append(from.lerp(to, float(i) / float(count)))
+	return result
+
+
+static func _polyline_samples(points: Array[Vector2], per_segment: int) -> Array[Vector2]:
+	var result: Array[Vector2] = []
+	for i in points.size() - 1:
+		for k in per_segment:
+			result.append(points[i].lerp(points[i + 1], float(k) / float(per_segment)))
+	result.append(points[-1])
+	return result
+
+
+static func _bezier_samples(from: Vector2, control: Vector2, to: Vector2, count: int) -> Array[Vector2]:
+	var result: Array[Vector2] = []
 	for i in count + 1:
 		var q := float(i) / float(count)
-		var angle := head_angle + delta * q
-		if has_mid:
-			if q <= split:
-				angle = head_angle + head_to_mid * (q / split)
-			else:
-				angle = mid_angle + mid_to_tail * ((q - split) / (1.0 - split))
-		# 舞萌星星主要贴着环走，只在最后一段收进 0.72R 作为尾点。
-		var radius := 1.0 - 0.07 * smoothstep(0.0, 0.12, q) - 0.21 * smoothstep(0.82, 1.0, q)
-		result.append({
-			"x": cos(deg_to_rad(angle)) * radius,
-			"y": sin(deg_to_rad(angle)) * radius,
-			"db": wait + move * q,
-		})
+		var inverse := 1.0 - q
+		result.append(from * inverse * inverse + control * 2.0 * inverse * q + to * q * q)
 	return result
 
 
