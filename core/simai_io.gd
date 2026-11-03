@@ -275,6 +275,7 @@ static func _parse_note(token: String, beat: float, bpm: float) -> Note:
 		var hold := Note.new("hold", beat, fposmod(start_angle, 360.0), 62.0)
 		hold.end_beat = beat + maxf(0.25, duration)
 		hold.hold = true
+		hold.hold_style = "straight"
 		return hold
 	var tap := Note.new("tap", beat, fposmod(start_angle, 360.0), 62.0)
 	if token.find("b") >= 0:

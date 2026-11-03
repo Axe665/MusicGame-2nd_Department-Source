@@ -1,6 +1,6 @@
 # Tamaki₃ 剩余工作清单
 
-> 基线：分支 `feat/tamaki3-charter`，测试 207 passed / 0 failed。
+> 基线：分支 `feat/tamaki3-charter`，测试 210 passed / 0 failed。
 > 最近提交：Path 平面化、Hold 弯条、osu/Simai 平面 Path、编辑器平面绘制。
 
 ## A. Path 平面化重构（最高优先）
@@ -43,10 +43,11 @@
 
 ## D. Hold 视觉
 
+- [x] 直 Hold / 弯 Hold 两种形态；osu、Simai 导入默认直 Hold。
 - [x] 头部圆头 + 端环更明确。
 - [x] 体段沿环弯曲；保留端环 + 游标 + 渐隐。
 - [x] 与 Tap 形状/描边明确区分（弯胶囊 vs 圆环）。
-- [ ] 可选：图示圆角长条 Hold 作为平面变体（待定）。
+- [x] 直 Hold 使用内圈→环上的圆头胶囊；弯 Hold 沿环弯曲。
 
 ## E. 音符视觉语言
 

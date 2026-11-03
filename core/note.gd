@@ -13,6 +13,7 @@ var wait_beat: float = 0.0
 var tail_angle: float = 0.0
 var tail_width: float = 45.0
 var hold: bool = true
+var hold_style: String = "straight"
 var move_px: float = 120.0
 var radius: float = 44.0
 var tolerance: float = 0.24
@@ -184,6 +185,8 @@ func to_dict() -> Dictionary:
 		"hold":
 			data["end_beat"] = snappedf(end_beat, 0.001)
 			data["hold"] = hold
+			if hold_style != "straight":
+				data["hold_style"] = hold_style
 			if not visual_pts.is_empty():
 				data["visual"] = _points_to_dict(visual_pts)
 		"path":
@@ -237,6 +240,7 @@ static func from_dict(raw: Dictionary) -> Note:
 	note.tail_angle = float(raw.get("tail_angle", note.angle))
 	note.tail_width = float(raw.get("tail_width", note.width))
 	note.hold = bool(raw.get("hold", true))
+	note.hold_style = String(raw.get("hold_style", "straight"))
 	note.move_px = float(raw.get("move", 120.0))
 	note.radius = float(raw.get("radius", 24.0))
 	note.tolerance = float(raw.get("tolerance", 0.24))

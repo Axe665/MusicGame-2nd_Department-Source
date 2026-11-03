@@ -130,8 +130,10 @@ static func _note_line(chart: Chart, note: Note) -> String:
 			return "tap,%s,%s,%s%s%s" % [_beat(chart, note.beat), _num(note.angle), _num(note.width), suffix, options]
 		"hold":
 			var suffix := ""
+			if note.hold_style == "curved":
+				suffix = ",style=curved"
 			if not note.visual_pts.is_empty():
-				suffix = ",body=%s" % _points(note.visual_pts)
+				suffix += ",body=%s" % _points(note.visual_pts)
 			return "hold,%s,%s,%s,%s%s%s" % [_beat(chart, note.beat), _num(note.angle), _num(note.width), _beat(chart, note.end_beat), suffix, options]
 		"path":
 			var suffix := ",tol=%s,samples=%s" % [_num(note.tolerance), _num(note.samples_per_beat)]

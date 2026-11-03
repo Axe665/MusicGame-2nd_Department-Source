@@ -1167,6 +1167,7 @@ func _create_note(type: String) -> void:
 		"hold":
 			note.end_beat = beat + 1.0
 			note.hold = true
+			note.hold_style = "straight"
 		"path":
 			note.end_beat = beat + 1.0
 			note.tail_angle = fposmod(angle + 60.0, 360.0)
@@ -1945,16 +1946,27 @@ func _draw_holds(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 			continue
 		var grow := clampf((t - (note.beat - pre)) / maxf(0.001, pre), 0.0, 1.0)
 		var center := project_design(Vector2.ZERO)
-		# Hold 是唯一贴在环上的长条：本体沿环弯曲，尾部有明确端环。
-		var span := clampf(16.0 + note.duration() * 12.0, 20.0, 64.0)
-		var steps := maxi(10, int(span / 3.0))
 		var body := PackedVector2Array()
-		for i in steps + 1:
-			var angle := note.angle + span * float(i) / float(steps)
-			var data := _boundary_point(chart, fposmod(angle, 360.0) / 360.0, t)
+		var curved := note.hold_style == "curved"
+		if curved:
+			# 弯 Hold：本体沿环弯曲，尾部有明确端环。
+			var span := clampf(16.0 + note.duration() * 12.0, 20.0, 64.0)
+			var steps := maxi(10, int(span / 3.0))
+			for i in steps + 1:
+				var angle := note.angle + span * float(i) / float(steps)
+				var data := _boundary_point(chart, fposmod(angle, 360.0) / 360.0, t)
+				if bool(data.get("gap", false)):
+					continue
+				body.append(center.lerp(project_design(data.point), grow))
+		else:
+			# 直 Hold：从内圈笔直连到环上，圆头胶囊；导入默认用这种。
+			var data := _boundary_point(chart, fposmod(note.angle, 360.0) / 360.0, t)
 			if bool(data.get("gap", false)):
 				continue
-			body.append(center.lerp(project_design(data.point), grow))
+			var outer := project_design(data.point)
+			var inner := center.lerp(outer, 0.28)
+			for i in 7:
+				body.append(center.lerp(inner.lerp(outer, float(i) / 6.0), grow))
 		if body.size() < 2:
 			continue
 		var boundary: Vector2 = body[-1]
@@ -1974,7 +1986,9 @@ func _draw_holds(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 		# Hold 尾：明确的端环，方便读松手时机。
 		canvas.draw_arc(boundary, 13.0 * ns, 0.0, TAU, 30, Color(UITheme.AMBER.r, UITheme.AMBER.g, UITheme.AMBER.b, 0.95 * fade), 3.2 * ns, true)
 		canvas.draw_arc(boundary, 13.0 * ns, 0.0, TAU, 30, Color(1, 1, 1, 0.6 * fade), 1.0, true)
-		canvas.draw_line(boundary + Vector2(-17, 0) * ns, boundary + Vector2(17, 0) * ns, Color(0, 0, 0, 0.55 * fade), 1.5 * ns, true)
+		var end_dir := (boundary - body[maxi(0, body.size() - 2)]).normalized()
+		var end_normal := Vector2(-end_dir.y, end_dir.x)
+		canvas.draw_line(boundary - end_normal * 17.0 * ns, boundary + end_normal * 17.0 * ns, Color(0, 0, 0, 0.55 * fade), 1.5 * ns, true)
 		if t >= note.beat and t <= note.end_beat:
 			var progress := clampf((t - note.beat) / maxf(0.001, note.duration()), 0.0, 1.0)
 			var marker_index := progress * float(body.size() - 1)

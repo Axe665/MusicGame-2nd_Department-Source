@@ -313,6 +313,13 @@ func _build_note_page(page: VBoxContainer) -> void:
 			_rebuild()
 		}])
 		_label(page, "擦除段不渲染、不生成中段检查点；头尾仍各自判定。", 11, UITheme.MUTED)
+	if note.type == "hold":
+		_section(page, "Hold 形态")
+		_label(page, "直 Hold：从内圈笔直连到环上，导入默认使用。" if note.hold_style != "curved" else "弯 Hold：本体沿环弯曲，适合手摆造型。", 11, UITheme.MUTED)
+		_buttons(page, [
+			{"text": "直 Hold", "callback": func() -> void: _set_hold_style(note, "straight")},
+			{"text": "弯 Hold", "callback": func() -> void: _set_hold_style(note, "curved")},
+		])
 	if note.type == "trace":
 		_spin(page, "移动距离 px", note.move_px, 0.0, 1000.0, 1.0, func(value: float) -> void: note.move_px = value)
 		_label(page, "二维点：%d 个；在预览窗用 Trace 工具拖拽重画。" % note.trace_pts.size(), 11, UITheme.MUTED)
@@ -348,6 +355,13 @@ func _set_path_erase_width(note: Note, width: float) -> void:
 		return
 	note.path_gaps.clear()
 	note.path_gaps.append({"from": 0.5 - half, "to": 0.5 + half})
+
+
+func _set_hold_style(note: Note, style: String) -> void:
+	_apply(func() -> void:
+		note.hold_style = style
+	)
+	_rebuild()
 
 
 func _set_path_tail(note: Note, radius: float, degrees: float) -> void:

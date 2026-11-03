@@ -623,7 +623,9 @@ SliderMultiplier: 1.4
 	var chart: Chart = result["chart"]
 	eq(chart.notes.size(), 3, "slider kinds note count")
 	eq(chart.notes[0].type, "hold", "short slider -> hold")
+	eq(chart.notes[0].hold_style, "straight", "short slider hold is straight")
 	eq(chart.notes[1].type, "hold", "repeat slider -> hold")
+	eq(chart.notes[1].hold_style, "straight", "repeat slider hold is straight")
 	eq(chart.notes[2].type, "path", "long slider -> plane path")
 	eq(chart.notes[2].space, "plane", "long slider stays planar")
 	ok(chart.notes[2].end_beat > chart.notes[2].beat, "long slider slide has duration")
@@ -884,6 +886,7 @@ func test_simai_import() -> bool:
 	for note in chart.notes:
 		types.append(note.type)
 	eq(types, ["tap", "hold", "path", "bell"], "simai note types")
+	eq(chart.notes[1].hold_style, "straight", "simai hold imports straight")
 	eq(Validator.errors(Validator.validate(chart)).size(), 0, "simai import is playable without double-hand conflicts")
 	if chart.notes.size() >= 3:
 		near(chart.notes[0].angle, 90.0, 0.001, "simai button 1 is top")

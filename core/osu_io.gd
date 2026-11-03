@@ -461,6 +461,7 @@ static func _convert_std_continuous(objects_raw: Array, chart: Chart, timing_raw
 			else:
 				note = Note.new("hold", beat, fposmod(u, 360.0), 60.0)
 				note.end_beat = end_beat
+				note.hold_style = "straight"
 				counts["hold"] += 1
 		else:
 			note = Note.new("tap", beat, fposmod(u, 360.0), 60.0)
