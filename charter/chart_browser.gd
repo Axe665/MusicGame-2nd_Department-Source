@@ -14,6 +14,8 @@ var _maj_items: Array = []
 var _diff_dialog: ConfirmationDialog
 var _diff_list: ItemList
 var _pending_maidata: String = ""
+var _search_timer: Timer
+var _request_serial: int = 0
 var _specs: Dictionary = {}
 
 func _ready() -> void:
@@ -49,7 +51,12 @@ func _build() -> void:
 	_search = LineEdit.new()
 	_search.placeholder_text = "搜索曲名 / 艺术家 / 别名"
 	_search.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_search.text_changed.connect(func(_t: String) -> void: _refresh())
+	_search_timer = Timer.new()
+	_search_timer.one_shot = true
+	_search_timer.wait_time = 0.35
+	_search_timer.timeout.connect(_refresh)
+	add_child(_search_timer)
+	_search.text_changed.connect(func(_t: String) -> void: _search_timer.start())
 	row.add_child(_search)
 	_source = OptionButton.new()
 	_source.add_item("adxdls")
@@ -152,7 +159,7 @@ func _fetch_bytes(url: String, label: String = "") -> PackedByteArray:
 		result = r
 		done = true
 	)
-	http.request(url)
+	http.request(url, ["Referer: https://majdata.net/", "User-Agent: Mozilla/5.0"])
 	while not done:
 		await get_tree().process_frame
 		if not label.is_empty():
@@ -160,18 +167,30 @@ func _fetch_bytes(url: String, label: String = "") -> PackedByteArray:
 			_status.text = "%s  %.0f KB" % [label, float(got) / 1024.0]
 	http.queue_free()
 	if int(result[0]) != HTTPRequest.RESULT_SUCCESS or int(result[1]) < 200 or int(result[1]) >= 300:
+		# 一次重试，避开 majdata 偶发的空响应/限流。
+		var retry := HTTPRequest.new()
+		add_child(retry)
+		retry.request(url, ["Referer: https://majdata.net/", "User-Agent: Mozilla/5.0"])
+		var rr: Array = await retry.request_completed
+		retry.queue_free()
+		if int(rr[0]) == HTTPRequest.RESULT_SUCCESS and int(rr[1]) == 200:
+			return rr[3]
 		return PackedByteArray()
 	return result[3]
 
 
 func _refresh_majdata() -> void:
+	_request_serial += 1
+	var serial := _request_serial
 	var q := _search.text.strip_edges()
 	var url := "https://majdata.net/api3/api/maichart/list?sort=&page=0&search=" + q.uri_encode()
 	var http := HTTPRequest.new()
 	add_child(http)
-	http.request(url)
+	http.request(url, ["Referer: https://majdata.net/", "User-Agent: Mozilla/5.0"])
 	var r: Array = await http.request_completed
 	http.queue_free()
+	if serial != _request_serial:
+		return
 	_maj_items = []
 	if int(r[0]) == HTTPRequest.RESULT_SUCCESS and int(r[1]) == 200:
 		var parsed = JSON.parse_string((r[3] as PackedByteArray).get_string_from_utf8())
