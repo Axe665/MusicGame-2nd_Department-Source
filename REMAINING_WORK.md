@@ -1,6 +1,6 @@
 # Tamaki₃ 剩余工作清单
 
-> 基线：分支 `feat/tamaki3-charter`，测试 206 passed / 0 failed。
+> 基线：分支 `feat/tamaki3-charter`，测试 207 passed / 0 failed。
 > 最近提交：Path 平面化、Hold 弯条、osu/Simai 平面 Path、编辑器平面绘制。
 
 ## A. Path 平面化重构（最高优先）
