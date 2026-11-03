@@ -239,6 +239,7 @@ func _start_audio() -> void:
 		return
 	_audio_available = true
 	_audio.stream = stream
+	print("[audio] playtest ", path, " -> ", stream, " bus=", _audio.bus)
 	_audio.finished.connect(_finish)
 	var from_sec := maxf(0.0, (_start_chart_ms - chart.offset_ms) / 1000.0)
 	_audio.play(from_sec)

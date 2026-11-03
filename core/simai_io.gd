@@ -78,6 +78,12 @@ static func import_maidata(path: String, difficulty_index: int = 0) -> Chart:
 
 
 static func _read_text(path: String) -> String:
+	if DirAccess.dir_exists_absolute(path):
+		var inside := path.path_join("maidata.txt")
+		if FileAccess.file_exists(inside):
+			return FileAccess.get_file_as_string(inside)
+		last_error = "文件夹里没有 maidata.txt"
+		return ""
 	if path.to_lower().ends_with(".zip"):
 		var zip := ZIPReader.new()
 		if zip.open(path) != OK:
@@ -318,41 +324,60 @@ static func _clamp_holds(chart: Chart, counts: Dictionary) -> void:
 
 
 static func _extract_assets(path: String, chart: Chart) -> void:
-	if not path.to_lower().ends_with(".zip"):
+	var folder := ""
+	if path.to_lower().ends_with(".zip"):
+		var zip := ZIPReader.new()
+		if zip.open(path) != OK:
+			return
+		var names := zip.get_files()
+		folder = "user://imports/simai_%d/" % Time.get_unix_time_from_system()
+		DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(folder))
+		for name in names:
+			var lower := name.to_lower()
+			var target := ""
+			if lower.ends_with("track.mp3") or lower.ends_with("track.ogg") or lower.ends_with("track.wav"):
+				target = folder + "track" + lower.substr(lower.rfind("."))
+				chart.audio_path = target
+			elif lower.ends_with("bg.png") or lower.ends_with("bg.jpg"):
+				target = folder + "bg" + lower.substr(lower.rfind("."))
+				chart.metadata["background"] = target
+			elif lower.ends_with("pv.mp4"):
+				target = folder + "pv.mp4"
+				chart.video_path = target
+			if target.is_empty():
+				continue
+			var data := zip.read_file(name)
+			var file := FileAccess.open(target, FileAccess.WRITE)
+			if file != null:
+				file.store_buffer(data)
+				file.close()
+		zip.close()
+		if not chart.audio_path.is_empty() and chart.audio_path.get_extension().to_lower() != "ogg":
+			# MP3 在部分音频驱动/解码器上会静音；解包时转成 OGG 更稳。
+			var ogg_path := folder + "track.ogg"
+			var output: Array = []
+			var code := OS.execute("ffmpeg", ["-y", "-i", ProjectSettings.globalize_path(chart.audio_path), "-vn", "-acodec", "libvorbis", "-q:a", "5", ProjectSettings.globalize_path(ogg_path)], output, true, false)
+			if code == 0 and FileAccess.file_exists(ogg_path):
+				chart.audio_path = ogg_path
 		return
-	var zip := ZIPReader.new()
-	if zip.open(path) != OK:
-		return
-	var names := zip.get_files()
-	var folder := "user://imports/simai_%d/" % Time.get_unix_time_from_system()
-	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(folder))
-	for name in names:
-		var lower := name.to_lower()
-		var target := ""
-		if lower.ends_with("track.mp3") or lower.ends_with("track.ogg") or lower.ends_with("track.wav"):
-			target = folder + "track" + lower.substr(lower.rfind("."))
-			chart.audio_path = target
-		elif lower.ends_with("bg.png") or lower.ends_with("bg.jpg"):
-			target = folder + "bg" + lower.substr(lower.rfind("."))
-			chart.metadata["background"] = target
-		elif lower.ends_with("pv.mp4"):
-			target = folder + "pv.mp4"
-			chart.video_path = target
-		if target.is_empty():
-			continue
-		var data := zip.read_file(name)
-		var file := FileAccess.open(target, FileAccess.WRITE)
-		if file != null:
-			file.store_buffer(data)
-			file.close()
-	zip.close()
-	if not chart.audio_path.is_empty() and chart.audio_path.get_extension().to_lower() != "ogg":
-		# MP3 在部分音频驱动/解码器上会静音；导入时转成 OGG 更稳。
-		var ogg_path := folder + "track.ogg"
-		var output: Array = []
-		var code := OS.execute("ffmpeg", ["-y", "-i", ProjectSettings.globalize_path(chart.audio_path), "-vn", "-acodec", "libvorbis", "-q:a", "5", ProjectSettings.globalize_path(ogg_path)], output, true, false)
-		if code == 0 and FileAccess.file_exists(ogg_path):
-			chart.audio_path = ogg_path
+	# 直接选择 maidata.txt 或解压后的文件夹时，直接用同目录的 track 文件，不复制。
+	folder = path.get_base_dir() if not DirAccess.dir_exists_absolute(path) else path
+	for name in ["track.ogg", "track.mp3", "track.wav", "track.flac", "track.m4a"]:
+		var candidate := folder.path_join(name)
+		if FileAccess.file_exists(candidate):
+			chart.audio_path = candidate
+			break
+	for name in ["bg.jpg", "bg.png"]:
+		var candidate := folder.path_join(name)
+		if FileAccess.file_exists(candidate):
+			chart.metadata["background"] = candidate
+			break
+	for name in ["pv.mp4", "pv.webm"]:
+		var candidate := folder.path_join(name)
+		if FileAccess.file_exists(candidate):
+			chart.video_path = candidate
+			break
+
 
 static func _resolve_path_overlaps(chart: Chart, counts: Dictionary) -> void:
 	# Path 尾拍与其他目标同刻且角度不重合时，删掉另一侧，保证单手可打。

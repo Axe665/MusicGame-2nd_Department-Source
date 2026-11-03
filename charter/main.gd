@@ -597,6 +597,7 @@ func _ensure_audio() -> void:
 		return
 	var stream := ChartIO.audio_stream_from_path(prepared)
 	_audio.stream = stream if stream is AudioStream else null
+	print("[audio] editor ", prepared, " -> ", _audio.stream, " bus=", _audio.bus)
 	if _audio.stream == null:
 		_show_toast("音频不可用：预览使用系统时钟。", "warning")
 

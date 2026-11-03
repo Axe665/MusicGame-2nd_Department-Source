@@ -464,16 +464,13 @@ func _update_3d_mode(animate: bool, changed: bool) -> void:
 
 
 func _update_mouse_tilt(delta: float) -> void:
-	if playtest_mode:
-		# 试玩时判定环正对镜头，避免鼠标移动把环推斜。
-		_tilt_target = Vector2.ZERO
-	elif not mouse_tilt or not mouse_inside:
+	if not mouse_tilt or not (mouse_inside or playtest_mode):
 		_tilt_target = Vector2.ZERO
 	elif size.x > 1.0 and size.y > 1.0:
 		var local := get_local_mouse_position()
 		var nx := clampf((local.x - size.x * 0.5) / (size.x * 0.5), -1.0, 1.0)
 		var ny := clampf((local.y - size.y * 0.5) / (size.y * 0.5), -1.0, 1.0)
-		var amount := 5.0 if playtest_mode else MOUSE_TILT_DEGREES
+		var amount := 7.0 if playtest_mode else MOUSE_TILT_DEGREES
 		_tilt_target = Vector2(-ny * amount, nx * amount)
 	var weight := 1.0 - exp(-maxf(0.0, delta) * 10.0)
 	_tilt = _tilt.lerp(_tilt_target, weight)
@@ -492,12 +489,12 @@ func _update_transform(beat: float) -> bool:
 	var zoom := float(view.get("zoom", 1.0))
 	var ellipse := float(view.get("ellipse", 1.0))
 	if bool(chart.metadata.get("face_camera", true)):
+		# 正对镜头只忽略谱面 ViewState 的倾斜；鼠标视差仍然保留。
 		tilt_x = 0.0
 		tilt_y = 0.0
 		ellipse = 1.0
-		_tilt = Vector2.ZERO
 	if playtest_mode:
-		# 试玩只保留平面内旋转，环面正对相机。
+		# 试玩只保留平面内旋转 + 鼠标视差，不跟随谱面倾斜。
 		tilt_x = 0.0
 		tilt_y = 0.0
 		ellipse = 1.0
@@ -1540,6 +1537,7 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 	if total <= 0.001:
 		return
 	var grow := clampf((t - (note.beat - pre)) / maxf(0.001, pre), 0.0, 1.0)
+	var ns := _note_scale()
 	var runs: Array[PackedVector2Array] = []
 	var run := PackedVector2Array()
 	var count := 80
@@ -1573,11 +1571,11 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 			var shadow := PackedVector2Array()
 			for p in piece:
 				shadow.append(p + Vector2(6, 8))
-			canvas.draw_polyline(shadow, Color(0, 0, 0, 0.45), 32.0, true)
-		canvas.draw_polyline(piece, Color(0, 0, 0, 0.55), 27.0, true)
-		canvas.draw_polyline(piece, Color(1, 1, 1, 0.20 if top else 0.07), 22.0, true)
-		canvas.draw_polyline(piece, body, 18.0, true)
-		canvas.draw_polyline(piece, Color(1, 1, 1, 0.12 if top else 0.04), 12.0, true)
+			canvas.draw_polyline(shadow, Color(0, 0, 0, 0.45), 32.0 * ns, true)
+		canvas.draw_polyline(piece, Color(0, 0, 0, 0.55), 27.0 * ns, true)
+		canvas.draw_polyline(piece, Color(1, 1, 1, 0.20 if top else 0.07), 22.0 * ns, true)
+		canvas.draw_polyline(piece, body, 18.0 * ns, true)
+		canvas.draw_polyline(piece, Color(1, 1, 1, 0.12 if top else 0.04), 12.0 * ns, true)
 		_draw_dashed_polyline(canvas, piece, dash, 2.0, 6.0)
 		var arrow_count := clampi(int(total * 1.5), 2, 5)
 		for k in arrow_count:
@@ -1593,8 +1591,8 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 		var rel := clampf(sample_beat - note.beat, 0.0, total)
 		var p := _path_screen_point(chart, note, rel, t, true, grow)
 		if _valid_point(p):
-			canvas.draw_circle(p, 3.2, Color(0, 0, 0, 0.45))
-			canvas.draw_circle(p, 2.2, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.92 if top else 0.30))
+			canvas.draw_circle(p, 3.2 * ns, Color(0, 0, 0, 0.45))
+			canvas.draw_circle(p, 2.2 * ns, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.92 if top else 0.30))
 	_draw_target_arc(canvas, note.angle, note.width, t, UITheme.CORAL, 10.0)
 	_draw_target_arc(canvas, note.tail_angle, note.tail_width, t, UITheme.GOLD, 8.0)
 	if _app != null and note.path_style != "star":
@@ -1610,13 +1608,13 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 	var tail := _flying_position(chart, note.tail_angle, note.beat, t, pre)
 	if note.path_style == "star" and _valid_point(head) and _valid_point(tail):
 		canvas.draw_dashed_line(head, tail, Color(1, 1, 1, 0.16 if top else 0.07), 1.0, 5.0)
-	_draw_path_head(canvas, head, top, grow)
+	_draw_path_head(canvas, head, top, grow * ns)
 	if top and _valid_point(head):
 		# 头部的白色箭头指向轨迹内侧，进一步区分头和尾。
 		var ahead := _path_screen_point(chart, note, minf(total, maxf(0.05, total * 0.08)), t, true, grow)
 		if _valid_point(ahead):
-			_draw_arrowhead(canvas, head + (ahead - head).normalized() * 22.0, ahead - head, Color(1, 1, 1, 0.95))
-	_draw_path_tail(canvas, tail, top, grow)
+			_draw_arrowhead(canvas, head + (ahead - head).normalized() * 22.0 * ns, ahead - head, Color(1, 1, 1, 0.95))
+	_draw_path_tail(canvas, tail, top, grow * ns)
 	if playtest_mode and top and _valid_point(head):
 		canvas.draw_string(UITheme.bold_font(), head + Vector2(-12, -22), "PATH", HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(UITheme.CORAL.r, UITheme.CORAL.g, UITheme.CORAL.b, 0.85))
 	if t >= note.beat and t <= note.end_beat:
@@ -1673,9 +1671,9 @@ func _draw_path_head(canvas: Control, point: Vector2, top: bool, scale: float = 
 	if not _valid_point(point):
 		return
 	var alpha := 1.0 if top else 0.45
-	var s := clampf(scale, 0.3, 1.0)
-	canvas.draw_circle(point, 28.0 * s, Color(color.r, color.g, color.b, 0.16 * alpha))
-	_draw_star_filled(canvas, point, 18.0 * s, Color(color.r, color.g, color.b, alpha))
+	var s := clampf(scale, 0.2, 2.0)
+	canvas.draw_circle(point, 34.0 * s, Color(color.r, color.g, color.b, 0.18 * alpha))
+	_draw_star_filled(canvas, point, 22.0 * s, Color(color.r, color.g, color.b, alpha))
 
 
 func _draw_star_filled(canvas: Control, point: Vector2, radius: float, color: Color) -> void:
@@ -1697,13 +1695,13 @@ func _draw_path_tail(canvas: Control, point: Vector2, top: bool, scale: float = 
 	if not _valid_point(point):
 		return
 	var alpha := 1.0 if top else 0.45
-	var s := clampf(scale, 0.3, 1.0)
+	var s := clampf(scale, 0.2, 2.0)
 	# 尾端用空心环，和实心星头明确区分，避免读反。
-	canvas.draw_circle(point, 22.0 * s, Color(color.r, color.g, color.b, 0.10 * alpha))
-	canvas.draw_circle(point, 18.0 * s, Color(0, 0, 0, 0.52 * alpha))
-	canvas.draw_arc(point, 15.0 * s, 0.0, TAU, 30, Color(color.r, color.g, color.b, 0.96 * alpha), 3.6 * s, true)
-	canvas.draw_arc(point, 15.0 * s, 0.0, TAU, 30, Color(1, 1, 1, 0.55 * alpha), 1.0, true)
-	canvas.draw_circle(point, 2.8 * s, Color(color.r, color.g, color.b, 0.9 * alpha))
+	canvas.draw_circle(point, 16.0 * s, Color(color.r, color.g, color.b, 0.10 * alpha))
+	canvas.draw_circle(point, 13.0 * s, Color(0, 0, 0, 0.52 * alpha))
+	canvas.draw_arc(point, 11.0 * s, 0.0, TAU, 30, Color(color.r, color.g, color.b, 0.96 * alpha), 3.0 * s, true)
+	canvas.draw_arc(point, 11.0 * s, 0.0, TAU, 30, Color(1, 1, 1, 0.55 * alpha), 1.0, true)
+	canvas.draw_circle(point, 2.0 * s, Color(color.r, color.g, color.b, 0.9 * alpha))
 
 
 func _hold_node_screen(chart: Chart, note: Note, relative_beat: float, relative_angle: float, t: float) -> Vector2:
@@ -1719,6 +1717,7 @@ func _hold_node_screen(chart: Chart, note: Note, relative_beat: float, relative_
 
 
 func _draw_holds(canvas: Control, chart: Chart, t: float, pre: float) -> void:
+	var ns := _note_scale()
 	for note in chart.notes:
 		if note.type != "hold":
 			continue
@@ -1756,7 +1755,7 @@ func _draw_holds(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 		_draw_target_arc(canvas, note.angle, note.width, t, UITheme.AMBER, 12.0)
 		if fade > 0.999:
 			var head := _flying_position(chart, note.angle, note.beat, t, pre)
-			_draw_hexagon(canvas, head, 11.0 * clampf(grow, 0.35, 1.0), UITheme.AMBER)
+			_draw_hexagon(canvas, head, 11.0 * ns * clampf(grow, 0.35, 1.0), UITheme.AMBER)
 			if playtest_mode and _valid_point(head):
 				canvas.draw_string(UITheme.bold_font(), head + Vector2(-14, -22), "HOLD", HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(UITheme.AMBER.r, UITheme.AMBER.g, UITheme.AMBER.b, 0.85))
 		if _app != null:
@@ -1794,6 +1793,7 @@ func _draw_notes(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 
 
 func _draw_tap_note(canvas: Control, chart: Chart, note: Note, t: float, pre: float) -> void:
+	var ns := _note_scale()
 	var width := maxf(note.width, 6.0)
 	var steps := clampi(int(width / 5.0), 8, 96)
 	var q := clampf((t - (note.beat - pre)) / maxf(0.001, pre), 0.0, 1.0)
@@ -1820,16 +1820,16 @@ func _draw_tap_note(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 	var shadow := PackedVector2Array()
 	for p in points:
 		shadow.append(p + Vector2(5, 7))
-	canvas.draw_polyline(shadow, Color(0, 0, 0, 0.42), 32.0, true)
-	canvas.draw_polyline(points, Color(UITheme.CORAL.r, UITheme.CORAL.g, UITheme.CORAL.b, 0.10), 32.0, true)
-	canvas.draw_polyline(points, Color(0, 0, 0, 0.68), 27.0, true)
-	canvas.draw_polyline(points, Color(1, 1, 1, 0.94), 22.0, true)
-	canvas.draw_polyline(points, UITheme.CORAL, 13.0, true)
-	canvas.draw_polyline(points, Color(1, 1, 0.94, 0.38), 3.5, true)
+	canvas.draw_polyline(shadow, Color(0, 0, 0, 0.42), 32.0 * ns, true)
+	canvas.draw_polyline(points, Color(UITheme.CORAL.r, UITheme.CORAL.g, UITheme.CORAL.b, 0.10), 32.0 * ns, true)
+	canvas.draw_polyline(points, Color(0, 0, 0, 0.68), 27.0 * ns, true)
+	canvas.draw_polyline(points, Color(1, 1, 1, 0.94), 22.0 * ns, true)
+	canvas.draw_polyline(points, UITheme.CORAL, 13.0 * ns, true)
+	canvas.draw_polyline(points, Color(1, 1, 0.94, 0.38), 3.5 * ns, true)
 	for cap in [points[0], points[-1]]:
-		canvas.draw_circle(cap, 8.0, Color(0, 0, 0, 0.65))
-		canvas.draw_circle(cap, 6.2, Color(1, 1, 1, 0.95))
-		canvas.draw_circle(cap, 4.2, UITheme.CORAL)
+		canvas.draw_circle(cap, 8.0 * ns, Color(0, 0, 0, 0.65))
+		canvas.draw_circle(cap, 6.2 * ns, Color(1, 1, 1, 0.95))
+		canvas.draw_circle(cap, 4.2 * ns, UITheme.CORAL)
 	if playtest_mode:
 		var label_point := points[points.size() / 2]
 		canvas.draw_string(UITheme.bold_font(), label_point + Vector2(-10, -20), "TAP", HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(UITheme.CORAL.r, UITheme.CORAL.g, UITheme.CORAL.b, 0.85))
@@ -1924,6 +1924,7 @@ func trace_fraction(note: Note, mouse: Vector2, beat: float) -> Dictionary:
 
 
 func _draw_slider_trace(canvas: Control, note: Note, points: PackedVector2Array, t: float, grow: float = 1.0) -> void:
+	var ns := _note_scale()
 	var duration := maxf(0.001, note.duration())
 	var wait := clampf(note.wait_beat, 0.0, maxf(0.0, duration - 0.001))
 	var progress := clampf((t - note.beat - wait) / maxf(0.001, duration - wait) * star_speed, 0.0, 1.0)
@@ -1935,11 +1936,11 @@ func _draw_slider_trace(canvas: Control, note: Note, points: PackedVector2Array,
 		for point in run:
 			shadow.append(point + Vector2(5, 7))
 		# 宽笔刷主体：去掉中心虚线和箭头，让星头、带体、尾环读成同一条轨迹。
-		canvas.draw_polyline(shadow, Color(0, 0, 0, 0.46), 32.0, true)
-		canvas.draw_polyline(run, Color(0, 0, 0, 0.58), 27.0, true)
-		canvas.draw_polyline(run, Color(1, 1, 1, 0.94), 22.0, true)
-		canvas.draw_polyline(run, Color(0.74, 0.78, 0.79, 0.92), 18.0, true)
-		canvas.draw_polyline(run, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.16), 12.0, true)
+		canvas.draw_polyline(shadow, Color(0, 0, 0, 0.46), 32.0 * ns, true)
+		canvas.draw_polyline(run, Color(0, 0, 0, 0.58), 27.0 * ns, true)
+		canvas.draw_polyline(run, Color(1, 1, 1, 0.94), 22.0 * ns, true)
+		canvas.draw_polyline(run, Color(0.74, 0.78, 0.79, 0.92), 18.0 * ns, true)
+		canvas.draw_polyline(run, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.16), 12.0 * ns, true)
 	# 流动高光：跟着引导星走的一小段亮带。
 	var from_index := clampi(int((progress - 0.16) * float(points.size())), 0, points.size() - 1)
 	var to_index := clampi(int((progress + 0.04) * float(points.size())) + 1, from_index + 1, points.size())
@@ -1951,11 +1952,11 @@ func _draw_slider_trace(canvas: Control, note: Note, points: PackedVector2Array,
 		canvas.draw_polyline(highlight, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.30), 28.0, true)
 		canvas.draw_polyline(highlight, Color(1, 1, 1, 0.82), 8.0, true)
 	# 星头和圆环尾都是轨迹的一部分：固定画在轨迹两端，尾部不单独飞入。
-	_draw_path_head(canvas, points[0], true, grow, UITheme.CYAN)
+	_draw_path_head(canvas, points[0], true, grow * ns, UITheme.CYAN)
 	if points.size() > 1:
 		var head_dir := (points[1] - points[0]).normalized()
-		_draw_arrowhead(canvas, points[0] + head_dir * 22.0, head_dir, Color(1, 1, 1, 0.95))
-	_draw_path_tail(canvas, points[-1], true, grow, UITheme.CYAN)
+		_draw_arrowhead(canvas, points[0] + head_dir * 22.0 * ns, head_dir, Color(1, 1, 1, 0.95))
+	_draw_path_tail(canvas, points[-1], true, grow * ns, UITheme.CYAN)
 	var position := _trace_position(note, t)
 	if _valid_point(position):
 		canvas.draw_circle(position, 11.0, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.20))
@@ -2345,6 +2346,7 @@ func _draw_label(canvas: Control, text: String, position: Vector2, color: Color)
 
 
 func _draw_target_arc(canvas: Control, angle: float, width: float, beat: float, color: Color, thickness: float) -> void:
+	thickness *= _note_scale()
 	var points := _arc_points(angle, width, beat, 36)
 	if points.size() < 2:
 		return
@@ -2441,6 +2443,14 @@ func _trace_position(note: Note, t: float) -> Vector2:
 			var p := clampf((target - previous_db) / maxf(0.001, db - previous_db), 0.0, 1.0)
 			return points[i - 1].lerp(points[i], p)
 	return points[-1]
+
+
+func _note_scale() -> float:
+	# 以 330px 设计半径为 1.0；编辑器小预览和试玩大环保持相同相对大小。
+	var base := _avg_radius_cache
+	if base < 40.0:
+		base = 300.0
+	return clampf(base / 330.0, 0.55, 1.7)
 
 
 func _valid_point(point: Vector2) -> bool:

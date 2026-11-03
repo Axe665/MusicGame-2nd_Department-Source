@@ -243,6 +243,13 @@ func import_osz(path: String, difficulty_index: int = 0) -> bool:
 		return false
 	var imported: Chart = result["chart"]
 	set_chart(imported, "", true)
+	var stream := ChartIO.audio_stream_from_path(imported.audio_path)
+	if stream is AudioStream:
+		last_import_report += "\n音频流已加载：%s（%.1fs）" % [imported.audio_path.get_file(), stream.get_length()]
+		print("[audio] imported ", imported.audio_path, " len=", stream.get_length())
+	else:
+		last_import_report += "\n音频流未加载：%s" % imported.audio_path
+		print("[audio] FAILED to load ", imported.audio_path)
 	notice.emit("已导入 %s：%d 个音符，%d 个 BPM 点。请另存为 JSON。" % [path.get_file(), imported.notes.size(), imported.timing.points.size()], "info")
 	return true
 
