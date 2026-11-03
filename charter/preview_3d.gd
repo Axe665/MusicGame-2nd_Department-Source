@@ -1802,6 +1802,15 @@ func _draw_holds(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 		canvas.draw_polyline(body, Color(UITheme.AMBER.r, UITheme.AMBER.g, UITheme.AMBER.b, 0.88 * fade), 10.0, true)
 		canvas.draw_polyline(body, Color(1, 1, 0.9, 0.34 * fade), 2.6, true)
 		_draw_target_arc(canvas, note.angle, note.width, t, UITheme.AMBER, 12.0)
+		# Hold 尾：明确的端环，方便读松手时机。
+		canvas.draw_arc(boundary, 13.0 * ns, 0.0, TAU, 30, Color(UITheme.AMBER.r, UITheme.AMBER.g, UITheme.AMBER.b, 0.95 * fade), 3.2 * ns, true)
+		canvas.draw_arc(boundary, 13.0 * ns, 0.0, TAU, 30, Color(1, 1, 1, 0.6 * fade), 1.0, true)
+		canvas.draw_line(boundary + Vector2(-17, 0) * ns, boundary + Vector2(17, 0) * ns, Color(0, 0, 0, 0.55 * fade), 1.5 * ns, true)
+		if t >= note.beat and t <= note.end_beat:
+			var progress := clampf((t - note.beat) / maxf(0.001, note.duration()), 0.0, 1.0)
+			var marker := center.lerp(boundary, 0.25 + 0.75 * progress)
+			canvas.draw_circle(marker, 5.0 * ns, Color(1, 1, 1, 0.95))
+			canvas.draw_circle(marker, 2.4 * ns, UITheme.AMBER)
 		if fade > 0.999:
 			var head := _flying_position(chart, note.angle, note.beat, t, pre)
 			_draw_hexagon(canvas, head, 9.0 * ns * clampf(grow, 0.35, 1.0), UITheme.AMBER)
@@ -2465,6 +2474,7 @@ func _draw_bell(canvas: Control, point: Vector2, radius: float, t: float, target
 	var r := maxf(6.0, radius) * lerpf(0.65, 1.0, q)
 	var p := project_design(Vector2.ZERO).lerp(point, q)
 	canvas.draw_circle(p, r + 2.5, Color(0, 0, 0, 0.55))
+	canvas.draw_circle(p, r + 18.0, Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, 0.10))
 	canvas.draw_circle(p, r, Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, 0.20))
 	canvas.draw_arc(p, r, 0.0, TAU, 32, Color(1, 1, 1, 0.92), 2.4, true)
 	canvas.draw_arc(p, r * 0.82, 0.0, TAU, 28, UITheme.GOLD, 1.6, true)

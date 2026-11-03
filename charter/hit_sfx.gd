@@ -3,8 +3,8 @@ extends Node
 
 ## Shared hit-sound pool for editor playback and playtest.
 
-const VOLUME_DB := -7.0
-const KIND_DB := {"don": -7.0, "kat": -7.5, "hold": -9.0, "path": -8.0, "anchor": -5.5, "bell": -8.0, "trace": -10.0, "tail": -8.0}
+const VOLUME_DB := -3.0
+const KIND_DB := {"don": -3.0, "kat": -3.5, "hold": -4.0, "path": -3.5, "anchor": -2.0, "bell": -4.0, "trace": -5.0, "tail": -3.5}
 const PATHS := {
 	"don": "res://audio/sfx/tap_don.wav",
 	"hold": "res://audio/sfx/hold.wav",

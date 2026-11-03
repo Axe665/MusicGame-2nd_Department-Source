@@ -7,7 +7,7 @@ const PERFECT_MS := 90.0
 const GREAT_MS := 150.0
 const GOOD_MS := 230.0
 const HIT_WINDOW_MS := GOOD_MS
-const BELL_WINDOW_MS := 180.0
+const BELL_WINDOW_MS := 250.0
 const RED_LIMIT_SEC := 0.2
 
 var _app: Node = null
@@ -582,7 +582,7 @@ func _judge_bell(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 	if ms <= target + BELL_WINDOW_MS:
 		var bell: Dictionary = _preview.bell_screen(note, beat)
 		# 鼠标瞄准有误差：Bell 给一个至少 42px 的收取半径。
-		if not bell.is_empty() and mouse.distance_to(bell["center"]) <= maxf(42.0, float(bell["radius"])):
+		if not bell.is_empty() and mouse.distance_to(bell["center"]) <= maxf(80.0, float(bell["radius"])):
 			state["done"] = true
 			_bell_hits += 1
 			_preview.add_hit_pulse(bell["center"], UITheme.GOLD, "BELL", "bell")
