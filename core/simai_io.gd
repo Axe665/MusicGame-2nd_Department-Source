@@ -66,6 +66,7 @@ static func import_maidata(path: String, difficulty_index: int = 0) -> Chart:
 	_remove_chords(chart, counts)
 	_clamp_holds(chart, counts)
 	_resolve_path_overlaps(chart, counts)
+	_resolve_conflicts(chart, counts)
 	chart.notes.sort_custom(func(a: Note, b: Note) -> bool: return a.beat < b.beat)
 	_extract_assets(path, chart)
 	var audio_note := "音频：未找到 track.*" if chart.audio_path.is_empty() else "音频：%s" % chart.audio_path.get_file()
@@ -402,3 +403,41 @@ static func _resolve_path_overlaps(chart: Chart, counts: Dictionary) -> void:
 	for note in remove:
 		chart.notes.erase(note)
 		counts["dropped"] += 1
+
+
+static func _resolve_conflicts(chart: Chart, counts: Dictionary) -> void:
+	# 同刻目标角度不重合时只保留最宽的一侧，保证单手可打。
+	for _pass in 6:
+		var by_beat := {}
+		for note in chart.notes:
+			if note.type in ["tap", "hold", "path"]:
+				var key := snappedf(note.beat, 0.001)
+				if not by_beat.has(key):
+					by_beat[key] = []
+				by_beat[key].append({"note": note, "angle": note.angle, "width": note.width})
+			if note.type == "path":
+				var tail_key := snappedf(note.end_beat, 0.001)
+				if not by_beat.has(tail_key):
+					by_beat[tail_key] = []
+				by_beat[tail_key].append({"note": note, "angle": note.tail_angle, "width": note.tail_width})
+		var remove: Array[Note] = []
+		for key in by_beat.keys():
+			var events: Array = by_beat[key]
+			if events.size() <= 1:
+				continue
+			var lists: Array = []
+			for event in events:
+				lists.append(JudgeMath.interval(float(event["angle"]), float(event["width"])))
+			if not JudgeMath.intersect_all(lists).is_empty():
+				continue
+			events.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return float(a["width"]) > float(b["width"]))
+			var keeper: Note = events[0]["note"]
+			for event in events:
+				var note: Note = event["note"]
+				if note != keeper and not remove.has(note):
+					remove.append(note)
+		if remove.is_empty():
+			return
+		for note in remove:
+			chart.notes.erase(note)
+			counts["dropped"] += 1

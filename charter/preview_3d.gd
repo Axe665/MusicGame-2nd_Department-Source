@@ -547,7 +547,7 @@ func _build_beams() -> void:
 func _build_rim() -> void:
 	var mesh := ImmediateMesh.new()
 	mesh.surface_begin(Mesh.PRIMITIVE_TRIANGLES, _rim_material)
-	var inner := 505.0
+	var inner := 512.0
 	var outer := 600.0
 	for i in 96:
 		var a0 := TAU * float(i) / 96.0
@@ -581,7 +581,7 @@ func _build_disc() -> void:
 func _build_stage() -> void:
 	var mesh := ImmediateMesh.new()
 	mesh.surface_begin(Mesh.PRIMITIVE_LINES, _stage_material)
-	for radius in [360.0, 420.0, 600.0]:
+	for radius in [360.0, 420.0, 620.0]:
 		var steps := 96
 		for i in steps:
 			var a0 := TAU * float(i) / float(steps)
@@ -608,7 +608,7 @@ func _build_frame() -> void:
 
 func _build_amber() -> void:
 	var segments := [[20.0, 44.0], [137.0, 160.0]]
-	_amber_mesh.mesh = _build_arc_mesh(segments, 480.0, 1.6, _amber_material)
+	_amber_mesh.mesh = _build_arc_mesh(segments, 466.0, 1.6, _amber_material)
 
 
 func _build_arc_mesh(segments: Array, radius: float, width: float, material: Material) -> ImmediateMesh:
@@ -649,7 +649,7 @@ func _build_bezel_gpu() -> void:
 	# 稀疏刻度：只保留 5 个方向的小三角，模仿菜单里的黄色旗标。
 	for angle in [-101.0, -162.0, -37.0, 29.0, 141.0]:
 		var a := deg_to_rad(angle)
-		var p := Vector2(cos(a), sin(a)) * 462.0
+		var p := Vector2(cos(a), sin(a)) * 455.0
 		var outward := Vector2(cos(a), sin(a))
 		var side := Vector2(-outward.y, outward.x) * 7.0
 		mesh.surface_add_vertex(Vector3(p.x + side.x, p.y + side.y, 0.0))
@@ -1345,10 +1345,11 @@ func draw_overlay(canvas: Control) -> void:
 	if not use_3d_ring:
 		_draw_bezel(canvas, chart, t)
 	_draw_red_regions(canvas, chart, t)
+	# 图层顺序：滑条底带 → Path → Hold → Tap/Anchor/Bell，命中目标始终在上层。
+	_draw_traces(canvas, chart, t)
 	_draw_paths(canvas, chart, t, pre)
 	_draw_holds(canvas, chart, t, pre)
 	_draw_notes(canvas, chart, t, pre)
-	_draw_traces(canvas, chart, t)
 	_draw_boundary_controls(canvas, chart)
 	_draw_cursor(canvas, chart, t)
 	if show_hud:
@@ -1375,7 +1376,7 @@ func _affine_point(point: Vector2, affine: Array) -> Vector2:
 
 func _draw_flat_stage(canvas: Control, chart: Chart, t: float) -> void:
 	var affine := _screen_affine()
-	for radius in [360.0, 420.0, 600.0]:
+	for radius in [360.0, 420.0, 620.0]:
 		var points := PackedVector2Array()
 		for i in 97:
 			var a := TAU * float(i) / 96.0
@@ -1423,7 +1424,7 @@ func _draw_bezel(canvas: Control, chart: Chart, t: float) -> void:
 			points.append(_affine_point(Vector2(cos(angle), sin(angle)) * radius, affine))
 		if points.size() > 1:
 			canvas.draw_polyline(points, Color(1, 1, 1, 0.09), 1.0, true)
-	_draw_affine_arcs(canvas, affine, [[20.0, 44.0], [137.0, 160.0]], 480.0, Color(UITheme.AMBER.r, UITheme.AMBER.g, UITheme.AMBER.b, 0.82), 1.8)
+	_draw_affine_arcs(canvas, affine, [[20.0, 44.0], [137.0, 160.0]], 466.0, Color(UITheme.AMBER.r, UITheme.AMBER.g, UITheme.AMBER.b, 0.82), 1.8)
 	_draw_affine_arcs(canvas, affine, [[-40.5, -10.0], [-4.0, 44.0], [138.0, 168.0], [174.0, 204.0], [210.0, 234.0]], 505.0, Color(1, 1, 1, 0.92), 9.8)
 	for angle in [-101.0, -162.0, -37.0, 29.0, 141.0]:
 		var a := deg_to_rad(angle)
@@ -1527,7 +1528,7 @@ func _draw_paths(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 	for note in chart.notes:
 		if note.type == "path" and t >= note.beat - pre and t <= note.end_beat + 0.5:
 			visible.append(note)
-	visible.sort_custom(func(a: Note, b: Note) -> bool: return a.beat < b.beat)
+	visible.sort_custom(func(a: Note, b: Note) -> bool: return a.beat > b.beat)
 	for i in visible.size():
 		_draw_one_path(canvas, chart, visible[i], t, pre, i == visible.size() - 1)
 
@@ -1574,8 +1575,8 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 			canvas.draw_polyline(shadow, Color(0, 0, 0, 0.45), 32.0 * ns, true)
 		canvas.draw_polyline(piece, Color(0, 0, 0, 0.55), 27.0 * ns, true)
 		canvas.draw_polyline(piece, Color(1, 1, 1, 0.20 if top else 0.07), 22.0 * ns, true)
-		canvas.draw_polyline(piece, body, 18.0 * ns, true)
-		canvas.draw_polyline(piece, Color(1, 1, 1, 0.12 if top else 0.04), 12.0 * ns, true)
+		canvas.draw_polyline(piece, body, 13.0 * ns, true)
+		canvas.draw_polyline(piece, Color(1, 1, 1, 0.12 if top else 0.04), 3.5 * ns, true)
 		_draw_dashed_polyline(canvas, piece, dash, 2.0, 6.0)
 		var arrow_count := clampi(int(total * 1.5), 2, 5)
 		for k in arrow_count:
@@ -1672,8 +1673,8 @@ func _draw_path_head(canvas: Control, point: Vector2, top: bool, scale: float = 
 		return
 	var alpha := 1.0 if top else 0.45
 	var s := clampf(scale, 0.2, 2.0)
-	canvas.draw_circle(point, 34.0 * s, Color(color.r, color.g, color.b, 0.18 * alpha))
-	_draw_star_filled(canvas, point, 22.0 * s, Color(color.r, color.g, color.b, alpha))
+	canvas.draw_circle(point, 24.0 * s, Color(color.r, color.g, color.b, 0.18 * alpha))
+	_draw_star_filled(canvas, point, 14.0 * s, Color(color.r, color.g, color.b, alpha))
 
 
 func _draw_star_filled(canvas: Control, point: Vector2, radius: float, color: Color) -> void:
@@ -1697,11 +1698,11 @@ func _draw_path_tail(canvas: Control, point: Vector2, top: bool, scale: float = 
 	var alpha := 1.0 if top else 0.45
 	var s := clampf(scale, 0.2, 2.0)
 	# 尾端用空心环，和实心星头明确区分，避免读反。
-	canvas.draw_circle(point, 16.0 * s, Color(color.r, color.g, color.b, 0.10 * alpha))
-	canvas.draw_circle(point, 13.0 * s, Color(0, 0, 0, 0.52 * alpha))
-	canvas.draw_arc(point, 11.0 * s, 0.0, TAU, 30, Color(color.r, color.g, color.b, 0.96 * alpha), 3.0 * s, true)
-	canvas.draw_arc(point, 11.0 * s, 0.0, TAU, 30, Color(1, 1, 1, 0.55 * alpha), 1.0, true)
-	canvas.draw_circle(point, 2.0 * s, Color(color.r, color.g, color.b, 0.9 * alpha))
+	canvas.draw_circle(point, 13.0 * s, Color(color.r, color.g, color.b, 0.10 * alpha))
+	canvas.draw_circle(point, 11.0 * s, Color(0, 0, 0, 0.52 * alpha))
+	canvas.draw_arc(point, 9.0 * s, 0.0, TAU, 30, Color(color.r, color.g, color.b, 0.96 * alpha), 2.6 * s, true)
+	canvas.draw_arc(point, 9.0 * s, 0.0, TAU, 30, Color(1, 1, 1, 0.55 * alpha), 1.0, true)
+	canvas.draw_circle(point, 1.8 * s, Color(color.r, color.g, color.b, 0.9 * alpha))
 
 
 func _hold_node_screen(chart: Chart, note: Note, relative_beat: float, relative_angle: float, t: float) -> Vector2:
@@ -1718,11 +1719,12 @@ func _hold_node_screen(chart: Chart, note: Note, relative_beat: float, relative_
 
 func _draw_holds(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 	var ns := _note_scale()
+	var visible: Array[Note] = []
 	for note in chart.notes:
-		if note.type != "hold":
-			continue
-		if t < note.beat - pre or t > note.end_beat + 0.3:
-			continue
+		if note.type == "hold" and t >= note.beat - pre and t <= note.end_beat + 0.3:
+			visible.append(note)
+	visible.sort_custom(func(a: Note, b: Note) -> bool: return a.beat > b.beat)
+	for note in visible:
 		# 结束后 0.24 拍内渐隐，而不是瞬间消失。
 		var fade := 1.0 if t <= note.end_beat else clampf(1.0 - (t - note.end_beat) / 0.24, 0.0, 1.0)
 		if fade <= 0.01:
@@ -1755,7 +1757,7 @@ func _draw_holds(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 		_draw_target_arc(canvas, note.angle, note.width, t, UITheme.AMBER, 12.0)
 		if fade > 0.999:
 			var head := _flying_position(chart, note.angle, note.beat, t, pre)
-			_draw_hexagon(canvas, head, 11.0 * ns * clampf(grow, 0.35, 1.0), UITheme.AMBER)
+			_draw_hexagon(canvas, head, 9.0 * ns * clampf(grow, 0.35, 1.0), UITheme.AMBER)
 			if playtest_mode and _valid_point(head):
 				canvas.draw_string(UITheme.bold_font(), head + Vector2(-14, -22), "HOLD", HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(UITheme.AMBER.r, UITheme.AMBER.g, UITheme.AMBER.b, 0.85))
 		if _app != null:
@@ -1772,11 +1774,14 @@ func _draw_holds(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 
 
 func _draw_notes(canvas: Control, chart: Chart, t: float, pre: float) -> void:
+	var visible: Array[Note] = []
 	for note in chart.notes:
 		if note.type in ["path", "hold", "trace"]:
 			continue
-		if t < note.beat - pre or t > note.beat + 0.3:
-			continue
+		if t >= note.beat - pre and t <= note.beat + 0.3:
+			visible.append(note)
+	visible.sort_custom(func(a: Note, b: Note) -> bool: return a.beat > b.beat)
+	for note in visible:
 		match note.type:
 			"tap":
 				_draw_tap_note(canvas, chart, note, t, pre)
@@ -1842,12 +1847,16 @@ func _draw_tap_note(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 
 func _draw_traces(canvas: Control, chart: Chart, t: float) -> void:
 	var pre := _pre_read_beats(chart, t)
+	var visible: Array[Note] = []
 	for note in chart.notes:
 		if note.type != "trace":
 			continue
 		var lead := pre if note.trace_style == "slider" else 0.5
-		if t < note.beat - lead or t > note.end_beat + 0.5:
-			continue
+		if t >= note.beat - lead and t <= note.end_beat + 0.5:
+			visible.append(note)
+	visible.sort_custom(func(a: Note, b: Note) -> bool: return a.beat > b.beat)
+	for note in visible:
+		var lead := pre if note.trace_style == "slider" else 0.5
 		var grow := clampf((t - (note.beat - lead)) / maxf(0.001, lead), 0.0, 1.0)
 		var points := trace_screen_points(note, t, grow)
 		if points.size() > 1 and note.trace_style == "slider":
@@ -1939,8 +1948,8 @@ func _draw_slider_trace(canvas: Control, note: Note, points: PackedVector2Array,
 		canvas.draw_polyline(shadow, Color(0, 0, 0, 0.46), 32.0 * ns, true)
 		canvas.draw_polyline(run, Color(0, 0, 0, 0.58), 27.0 * ns, true)
 		canvas.draw_polyline(run, Color(1, 1, 1, 0.94), 22.0 * ns, true)
-		canvas.draw_polyline(run, Color(0.74, 0.78, 0.79, 0.92), 18.0 * ns, true)
-		canvas.draw_polyline(run, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.16), 12.0 * ns, true)
+		canvas.draw_polyline(run, Color(0.74, 0.78, 0.79, 0.92), 13.0 * ns, true)
+		canvas.draw_polyline(run, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.16), 3.5 * ns, true)
 	# 流动高光：跟着引导星走的一小段亮带。
 	var from_index := clampi(int((progress - 0.16) * float(points.size())), 0, points.size() - 1)
 	var to_index := clampi(int((progress + 0.04) * float(points.size())) + 1, from_index + 1, points.size())

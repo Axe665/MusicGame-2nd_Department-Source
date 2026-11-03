@@ -55,6 +55,7 @@ var _difficulty_dialog: ConfirmationDialog
 var _difficulty_list: ItemList
 var _pending_osz: String = ""
 var _pending_kind: String = "osu"
+var _import_dir_dialog: FileDialog
 var _new_dialog: NewChartDialog
 var _playtest: Playtest
 var _cursor_u: float = 0.0
@@ -125,7 +126,7 @@ func _build_ui() -> void:
 	brand_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	brand_row.add_child(brand_spacer)
 	brand_row.add_child(_menu("文件", [
-		["新建", 0], ["打开", 1], ["保存", 2], ["另存为", 3], ["-", 0], ["导入 osu! (.osz)", 6], ["导出 .lbp", 7], ["-", 0], ["恢复自动保存", 4], ["-", 0], ["退出", 5],
+		["新建", 0], ["打开", 1], ["保存", 2], ["另存为", 3], ["-", 0], ["导入谱面 (.osz/.zip/.txt)", 6], ["导入舞萌文件夹", 8], ["导出 .lbp", 7], ["-", 0], ["恢复自动保存", 4], ["-", 0], ["退出", 5],
 	]))
 	brand_row.add_child(_menu("编辑", [
 		["撤销", 10], ["重做", 11], ["-", 0], ["删除", 12], ["取消选择", 13], ["全选可见", 14],
@@ -514,6 +515,14 @@ func _build_dialogs() -> void:
 	_import_dialog.title = "导入 osu! / 舞萌 Simai"
 	_import_dialog.file_selected.connect(_on_import_osz_selected)
 	add_child(_import_dialog)
+	_import_dir_dialog = FileDialog.new()
+	_import_dir_dialog.file_mode = FileDialog.FILE_MODE_OPEN_DIR
+	_import_dir_dialog.access = FileDialog.ACCESS_FILESYSTEM
+	_import_dir_dialog.title = "选择解压后的舞萌谱面文件夹（含 maidata.txt）"
+	_import_dir_dialog.dir_selected.connect(func(path: String) -> void:
+		_on_import_osz_selected(path.path_join("maidata.txt"))
+	)
+	add_child(_import_dir_dialog)
 	_lbp_dialog = FileDialog.new()
 	_lbp_dialog.file_mode = FileDialog.FILE_MODE_SAVE_FILE
 	_lbp_dialog.access = FileDialog.ACCESS_FILESYSTEM
@@ -918,6 +927,8 @@ func _on_menu(id: int) -> void:
 			_sync_from_app()
 		6:
 			_import_dialog.popup_centered_ratio(0.75)
+		8:
+			_import_dir_dialog.popup_centered_ratio(0.75)
 		7:
 			_lbp_dialog.popup_centered_ratio(0.75)
 		5:
