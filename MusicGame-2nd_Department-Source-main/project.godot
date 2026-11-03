@@ -1,0 +1,38 @@
+; Engine configuration file.
+; It's best edited using the editor UI and not directly,
+; since the parameters that go here are not all obvious.
+;
+; Format:
+;   [section] ; section goes between []
+;   param=value ; assign values to parameters
+
+config_version=5
+
+[application]
+
+config/name="Tamaki₃ 制谱器"
+run/main_scene="res://charter/main.tscn"
+config/features=PackedStringArray("4.7", "Forward Plus")
+run/max_fps=60
+config/icon="res://icon.svg"
+
+[audio]
+
+driver/output_latency=10
+
+[autoload]
+
+App="*res://charter/app.gd"
+
+[display]
+
+window/size/viewport_width=1600
+window/size/viewport_height=900
+window/size/window_width_override=1600
+window/size/window_height_override=900
+window/stretch/mode="canvas_items"
+window/stretch/aspect="expand"
+
+[rendering]
+
+environment/defaults/default_clear_color=Color(0.043137, 0.047059, 0.062745, 1)

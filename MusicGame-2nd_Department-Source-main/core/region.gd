@@ -1,0 +1,52 @@
+class_name Region
+extends RefCounted
+
+var id: int = 1
+var kind: String = "red"
+var start_beat: float = 0.0
+var end_beat: float = 1.0
+var angle: float = 0.0
+var width: float = 90.0
+var polarity: int = 1
+var shape: String = ""
+
+
+func _init(p_id: int = 1, p_start: float = 0.0, p_end: float = 1.0) -> void:
+	id = p_id
+	start_beat = p_start
+	end_beat = p_end
+
+
+func duration() -> float:
+	return maxf(0.0, end_beat - start_beat)
+
+
+func active_at(beat: float) -> bool:
+	return beat + 0.000001 >= start_beat and beat - 0.000001 <= end_beat
+
+
+func to_dict() -> Dictionary:
+	return {
+		"id": id,
+		"kind": kind,
+		"start_beat": snappedf(start_beat, 0.001),
+		"end_beat": snappedf(end_beat, 0.001),
+		"angle": snappedf(angle, 0.001),
+		"width": snappedf(width, 0.001),
+		"polarity": polarity,
+		"shape": shape,
+	}
+
+
+static func from_dict(data: Dictionary) -> Region:
+	var region := Region.new(
+		int(data.get("id", 1)),
+		float(data.get("start_beat", 0.0)),
+		float(data.get("end_beat", 1.0))
+	)
+	region.kind = String(data.get("kind", "red"))
+	region.angle = float(data.get("angle", 0.0))
+	region.width = float(data.get("width", 90.0))
+	region.polarity = int(data.get("polarity", 1))
+	region.shape = String(data.get("shape", ""))
+	return region
