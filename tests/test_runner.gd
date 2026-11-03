@@ -382,7 +382,8 @@ func test_lbp_export() -> bool:
 	ok(text.contains("[TimingPoints]"), "lbp timing section")
 	ok(text.contains("[BoundaryShapes]"), "lbp shapes section")
 	ok(text.contains("[Notes]"), "lbp notes section")
-	ok(text.contains("style=star"), "lbp keeps star path")
+	ok(not text.contains("style=star"), "lbp no longer writes ring star paths")
+	ok(text.contains("path,"), "lbp keeps planar path notes")
 	var gap_note := Note.new("path", 40.0, 0.0, 60.0)
 	gap_note.id = chart.next_note_id()
 	gap_note.end_beat = 44.0
