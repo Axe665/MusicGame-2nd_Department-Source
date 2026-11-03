@@ -431,6 +431,9 @@ func _judge_path(note: Note, ms: float, beat: float, cursor_u: float, valid: boo
 			status = "FRAY"
 		_add_log("PATH #%d %s" % [note.id, status])
 		state["done"] = true
+	# 舞萌扫圈：中段不逐点取样，只看头、尾；跳区直接算通过。
+	if String(chart.metadata.get("slide_mode", "follow")) == "maimai":
+		return
 	# Mid-section samples, one per frame.
 	if ms >= head_ms and ms <= tail_ms:
 		var sample_beats := note.path_sample_beats()
@@ -480,6 +483,26 @@ func _judge_trace(note: Note, ms: float, beat: float, delta: float, mouse: Vecto
 			_miss_count += 1
 			_combo = 0
 			_add_log("MISS Trace #%d (no contact)" % note.id)
+		return
+	if String(chart.metadata.get("slide_mode", "follow")) == "maimai":
+		# 舞萌扫圈：头部按键后，只要在结束窗口内碰到轨迹就算完成，不要求累计距离。
+		if contact and ms >= end_ms - HIT_WINDOW_MS:
+			state["done"] = true
+			_hit_count += 1
+			_combo += 1
+			_max_combo = maxi(_max_combo, _combo)
+			_add_judgement("PERFECT")
+			_preview.add_hit_pulse(mouse, UITheme.MINT, "PERFECT")
+			_sfx.play("trace", randf_range(0.97, 1.03))
+			_add_log("TRACE #%d SWEEP HIT" % note.id)
+			return
+		if ms > end_ms + HIT_WINDOW_MS:
+			state["done"] = true
+			_miss_count += 1
+			_add_judgement("MISS")
+			_combo = 0
+			_preview.add_hit_pulse(mouse, UITheme.RED, "MISS")
+			_add_log("MISS Trace #%d (sweep)" % note.id)
 		return
 	if contact:
 		var info: Dictionary = _preview.trace_fraction(note, mouse, beat)

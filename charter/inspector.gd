@@ -573,6 +573,9 @@ func _build_chart_page(page: VBoxContainer) -> void:
 	_text(page, "曲师", String(chart.metadata.get("artist", "")), func(value: String) -> void: chart.metadata["artist"] = value)
 	_text(page, "谱师", String(chart.metadata.get("creator", "")), func(value: String) -> void: chart.metadata["creator"] = value)
 	_text(page, "难度", chart.difficulty, func(value: String) -> void: chart.difficulty = value)
+	_option(page, "滑条判定", ["连续跟随", "舞萌扫圈"], 1 if String(chart.metadata.get("slide_mode", "follow")) == "maimai" else 0, func(index: int) -> void:
+		_app.mutate(func() -> void: chart.metadata["slide_mode"] = "maimai" if index == 1 else "follow")
+	)
 	_text(page, "音频路径", chart.audio_path, func(value: String) -> void: chart.audio_path = value)
 	_text(page, "视频路径", chart.video_path, func(value: String) -> void: chart.video_path = value)
 	_label(page, "时间/BPM/offset 已统一移到“时间”页。", 11, UITheme.MUTED)
