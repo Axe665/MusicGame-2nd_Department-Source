@@ -85,6 +85,8 @@ var _last_video_path: String = ""
 var _video_load_failed: bool = false
 var _last_cursor_emit: Vector2 = Vector2(-999, -999)
 var _cursor_cache_key: String = ""
+var _sorted_notes_cache: Array[Note] = []
+var _sorted_notes_chart: Chart = null
 var _last_view_key: String = ""
 var _last_fit_key: String = ""
 var _last_mesh_key: String = ""
@@ -1781,7 +1783,7 @@ func _draw_holds(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 
 func _draw_notes(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 	var visible: Array[Note] = []
-	for note in chart.notes:
+	for note in _notes_in_range(chart, t - pre - 0.1, t + 0.3):
 		if note.type in ["path", "hold", "trace"]:
 			continue
 		if t >= note.beat - pre and t <= note.beat + 0.3:
@@ -2469,6 +2471,27 @@ func _trace_position(note: Note, t: float) -> Vector2:
 			var p := clampf((target - previous_db) / maxf(0.001, db - previous_db), 0.0, 1.0)
 			return points[i - 1].lerp(points[i], p)
 	return points[-1]
+
+
+func _notes_in_range(chart: Chart, from_beat: float, to_beat: float) -> Array[Note]:
+	if _sorted_notes_chart != chart or _sorted_notes_cache.size() != chart.notes.size():
+		_sorted_notes_chart = chart
+		_sorted_notes_cache = chart.notes.duplicate()
+		_sorted_notes_cache.sort_custom(func(a: Note, b: Note) -> bool: return a.beat < b.beat)
+	var low := 0
+	var high := _sorted_notes_cache.size()
+	while low < high:
+		var mid := (low + high) / 2
+		if _sorted_notes_cache[mid].beat < from_beat:
+			low = mid + 1
+		else:
+			high = mid
+	var result: Array[Note] = []
+	for i in range(low, _sorted_notes_cache.size()):
+		if _sorted_notes_cache[i].beat > to_beat:
+			break
+		result.append(_sorted_notes_cache[i])
+	return result
 
 
 func _note_scale() -> float:
