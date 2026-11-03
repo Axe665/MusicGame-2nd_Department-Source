@@ -1651,6 +1651,12 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 	if note.path_style == "star" and _valid_point(head) and _valid_point(tail):
 		canvas.draw_dashed_line(head, tail, Color(1, 1, 1, 0.16 if top else 0.07), 1.0, 5.0)
 	_draw_path_head(canvas, head, top, grow * ns)
+	if _valid_point(head):
+		# 重叠 Path 用不同颜色的外环 + 编号区分星头。
+		var accents: Array[Color] = [UITheme.CORAL, UITheme.CYAN, UITheme.VIOLET, UITheme.MINT]
+		var accent: Color = accents[note.id % accents.size()]
+		canvas.draw_arc(head, 21.0 * ns, 0.0, TAU, 30, Color(accent.r, accent.g, accent.b, 0.95 if top else 0.45), 2.2, true)
+		canvas.draw_string(UITheme.mono_font(), head + Vector2(16, -14), "#%d" % note.id, HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(accent.r, accent.g, accent.b, 0.9 if top else 0.4))
 	if top and _valid_point(head):
 		# 头部的白色箭头指向轨迹内侧，进一步区分头和尾。
 		var ahead := _path_screen_point(chart, note, minf(total, maxf(0.05, total * 0.08)), t, true, grow)
