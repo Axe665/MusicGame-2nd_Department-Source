@@ -339,11 +339,11 @@ func _build_ui() -> void:
 	flow_label.text = "流速"
 	transport_row.add_child(flow_label)
 	var flow_option := OptionButton.new()
-	for item in ["0.5×", "0.75×", "1.0×", "1.25×", "1.5×", "2.0×"]:
+	for item in ["0.25×", "0.5×", "0.75×", "1.0×", "1.25×", "1.5×", "1.75×", "2.0×", "2.5×", "3.0×"]:
 		flow_option.add_item(item)
-	flow_option.selected = 2
+	flow_option.selected = 3
 	flow_option.item_selected.connect(func(index: int) -> void:
-		_app.flow_scale = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0][index]
+		_app.flow_scale = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0][index]
 		_preview.flow_scale = _app.flow_scale
 		_preview.request_redraw()
 		_show_toast("流速 %.2f×（只改预读速度，不改判定）" % _app.flow_scale, "info")
@@ -354,11 +354,11 @@ func _build_ui() -> void:
 	star_label.text = "星速"
 	transport_row.add_child(star_label)
 	var star_option := OptionButton.new()
-	for item in ["0.75×", "1.0×", "1.25×", "1.5×"]:
+	for item in ["0.5×", "0.65×", "0.8×", "0.9×", "1.0×", "1.1×", "1.25×", "1.4×", "1.6×", "2.0×"]:
 		star_option.add_item(item)
-	star_option.selected = 1
+	star_option.selected = 4
 	star_option.item_selected.connect(func(index: int) -> void:
-		_app.star_speed = [0.75, 1.0, 1.25, 1.5][index]
+		_app.star_speed = [0.5, 0.65, 0.8, 0.9, 1.0, 1.1, 1.25, 1.4, 1.6, 2.0][index]
 		_preview.star_speed = _app.star_speed
 		_preview.request_redraw()
 		_show_toast("星速 %.2f×（滑条引导星与跟随距离一起缩放）" % _app.star_speed, "info")
