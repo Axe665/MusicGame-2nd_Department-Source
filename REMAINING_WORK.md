@@ -1,7 +1,7 @@
 # Tamaki₃ 剩余工作清单
 
-> 基线：分支 `feat/tamaki3-charter`，测试 203 passed / 0 failed。
-> 最近提交：在线谱面（adxdls + majdata）、Simai 音画同步、Bell/Hold/打击音。
+> 基线：分支 `feat/tamaki3-charter`，测试 206 passed / 0 failed。
+> 最近提交：Path 平面化、Hold 弯条、osu/Simai 平面 Path、编辑器平面绘制。
 
 ## A. Path 平面化重构（最高优先）
 
@@ -18,43 +18,43 @@
 
 任务：
 
-- [ ] `Note` 增加 `space="plane"` Path 采样，复用 `trace_pts` 归一化 `(x,y)`。
-- [ ] 平面 Path 渲染：头从环上飞入，身体/尾在平面。
-- [ ] 中段 2D 距离判定 + FULL/FRAY/LOST。
-- [ ] 尾部 2D 点判定。
-- [ ] 跳区削段（跟随模式 + 扫圈模式）。
-- [ ] 删除平面 Path 的环上尾提示弧。
-- [ ] 删除环 Path 支持，旧谱提示迁移。
+- [x] `Note` 增加 `space="plane"` Path 采样，复用 `trace_pts` 归一化 `(x,y)`。
+- [x] 平面 Path 渲染：头从环上飞入，身体/尾在平面。
+- [x] 中段 2D 距离判定 + FULL/FRAY/LOST。
+- [x] 尾部 2D 点判定。
+- [x] 跳区削段（跟随模式 + 扫圈模式）。
+- [x] 删除平面 Path 的环上尾提示弧。
+- [x] 删除环 Path 支持；旧环 Path 自动迁移成 1.0R→0.72R 的平面弧。
 
 ## B. 导入改造
 
-- [ ] osu 滑条 → 平面 Path（Sentakki：head tap + wait/shoot delay + B/L/C/P 采样），不再生成滑条 Trace。
-- [ ] Simai Slide → 平面 Path：头按按钮角度在环上，尾在内圈；V/wifi/p/q 生成折点。
-- [ ] 双押继续删一侧。
-- [ ] 导入报告增加“Path 平面化 / 环 Path 删除”计数。
-- [ ] `Trace` 仅保留给手绘擦带，不再由 osu 滑条生成。
+- [x] osu 滑条 → 平面 Path（Sentakki：head tap + wait/shoot delay + B/L/C/P 采样），不再生成滑条 Trace。
+- [x] Simai Slide → 平面 Path：头按按钮角度在环上，尾在内圈；V/p/q 走二次曲线控制点。
+- [x] 双押继续删一侧。
+- [x] 导入报告改为 Path 计数；不再生成滑条 Trace。
+- [x] `Trace` 仅保留给手绘擦带，不再由 osu 滑条生成。
 
 ## C. 编辑器
 
-- [ ] Path 工具改为平面拖点；头从环上开始。
-- [ ] 拖动节点更新 `trace_pts`，不再用 `tail_angle` 作为判定依据。
-- [ ] 检查器 Path 页：头部角度/宽度、尾部平面坐标、容差、采样密度。
-- [ ] 旧环 Path 打开时提示迁移或删除。
+- [x] Path 工具改为平面拖点；头从环上开始。
+- [x] 拖动节点更新 `trace_pts`，不再用 `tail_angle` 作为判定依据。
+- [x] 检查器 Path 页：头部角度/宽度、尾部半径/角度、容差、采样密度。
+- [x] 旧环 Path 打开时自动按平面弧读取，不再渲染环上体。
 
 ## D. Hold 视觉
 
-- [ ] 头部圆角/端环更明确。
-- [ ] 体段沿环弯曲；保留端环 + 游标 + 渐隐。
-- [ ] 与 Tap 形状/描边明确区分。
+- [x] 头部圆头 + 端环更明确。
+- [x] 体段沿环弯曲；保留端环 + 游标 + 渐隐。
+- [x] 与 Tap 形状/描边明确区分（弯胶囊 vs 圆环）。
 - [ ] 可选：图示圆角长条 Hold 作为平面变体（待定）。
 
 ## E. 音符视觉语言
 
 形状照搬图示，颜色保留语义：
 
-- [ ] Tap：圆环 + 中心点。
-- [ ] Hold：圆角长条 / 弯 Hold + 端环。
-- [ ] Path/Slide：V 形箭头列 + 星头 + 发光球。
+- [x] Tap：圆环 + 中心点。
+- [x] Hold：弯胶囊 + 端环。
+- [x] Path/Slide：V 形箭头列 + 星头 + 发光球拖尾。
 - [ ] Break：橙色强调环（当前只加宽）。
 - [ ] BOTH：不做判定类型，保持单手。
 

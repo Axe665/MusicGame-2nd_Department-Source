@@ -224,8 +224,8 @@ static func parse_osu(text: String, source_name: String = "") -> Dictionary:
 		var std_counts := _convert_std_continuous(objects_raw, chart, timing_raw, slider_multiplier, circle_radius)
 		var shift := _shift_chart_to_zero(chart)
 		chart.refresh_ids()
-		report.append("保留：Tap %d，Slide %d，Hold %d；跳过：spinner %d，无效 %d" % [std_counts["tap"], std_counts["trace"], std_counts["hold"], std_counts["spinner"], std_counts["invalid"]])
-		report.append("osu!std → 混合层：circle → 环上 Tap；slider → 平面 Slide Trace（星头按键 + 沿轨迹，尾部是终点不单独判定）；lazy/短/重复 → Hold；流方向步进 + 45–75° 宽度。")
+		report.append("保留：Tap %d，Path %d，Hold %d；跳过：spinner %d，无效 %d" % [std_counts["tap"], std_counts["path"], std_counts["hold"], std_counts["spinner"], std_counts["invalid"]])
+		report.append("osu!std → 混合层：circle → 环上 Tap；slider → 平面 Path（星头在环上按键，身体/尾在平面内跟随）；lazy/短/重复 → Hold；流方向步进 + 45–75° 宽度。")
 		if shift > 0.001:
 			report.append("已整体平移 %.2f 拍，使最早 note 落在 beat 0；offset 调整为 %.0f ms。" % [shift, chart.offset_ms])
 		if int(std_counts["spinner"]) > 0:
@@ -340,7 +340,7 @@ static func _shift_chart_to_zero(chart: Chart) -> float:
 
 
 static func _convert_std_continuous(objects_raw: Array, chart: Chart, timing_raw: Array[Dictionary], slider_multiplier: float, circle_radius: float) -> Dictionary:
-	var counts := {"tap": 0, "trace": 0, "hold": 0, "spinner": 0, "invalid": 0}
+	var counts := {"tap": 0, "path": 0, "hold": 0, "spinner": 0, "invalid": 0}
 	var play: Array[Dictionary] = []
 	for object in objects_raw:
 		var type := int(object["type"])
@@ -437,13 +437,15 @@ static func _convert_std_continuous(objects_raw: Array, chart: Chart, timing_raw
 			var span := clampf(absf(net) * 0.45 + float(current["duration"]) * 16.0, 55.0, STD_PATH_MAX_SPAN)
 			tail_u = u + direction * span
 			end_beat = beat + float(current["duration"])
-			note = Note.new("trace", beat, fposmod(u, 360.0), 60.0)
+			note = Note.new("path", beat, fposmod(u, 360.0), 60.0)
 			note.end_beat = end_beat
-			note.trace_style = "slider"
-			note.move_px = clampf(90.0 + float(current["duration"]) * 55.0, 110.0, 280.0)
-			note.trace_pts = _std_slide_trace(u, tail_u, float(current["duration"]))
+			note.tail_angle = fposmod(tail_u, 360.0)
+			note.tail_width = 52.0
+			note.tolerance = 0.24
+			note.samples_per_beat = 4.0
+			note.trace_pts = _std_slide_trace(u, tail_u, float(current["duration"]), slide_wait)
 			note.wait_beat = slide_wait
-			counts["trace"] += 1
+			counts["path"] += 1
 			is_path = true
 		elif bool(current["is_slider"]):
 			var hold_duration := maxf(0.25, float(current["duration"]))
@@ -503,26 +505,24 @@ static func _convert_std_continuous(objects_raw: Array, chart: Chart, timing_raw
 	return counts
 
 
-static func _std_slide_trace(head_u: float, tail_u: float, duration: float) -> Array[Dictionary]:
-	var head := deg_to_rad(head_u)
-	var tail := deg_to_rad(tail_u)
-	var delta := fposmod(tail - head + PI, TAU) - PI
-	if absf(delta) < 0.01:
-		delta = PI * 0.5
-	var sag := clampf(0.10 + absf(delta) / PI * 0.09, 0.10, 0.20)
-	var result: Array[Dictionary] = []
+static func _std_slide_trace(head_u: float, tail_u: float, duration: float, wait: float = 0.0) -> Array[Dictionary]:
+	var head := Vector2(cos(deg_to_rad(head_u)), sin(deg_to_rad(head_u)))
+	var tail_rad := deg_to_rad(tail_u)
+	var tail := Vector2(cos(tail_rad), sin(tail_rad)) * 0.70
+	var control_rad := deg_to_rad(head_u + _std_short_delta(head_u, tail_u) * 0.5)
+	var control := Vector2(cos(control_rad), sin(control_rad)) * 0.84
+	var result: Array[Dictionary] = [{"x": head.x, "y": head.y, "db": 0.0}]
+	var safe_wait := clampf(wait, 0.0, maxf(0.0, duration - 0.001))
+	if safe_wait > 0.0:
+		result.append({"x": head.x, "y": head.y, "db": safe_wait})
+	var move := maxf(0.001, duration - safe_wait)
 	var count := 40
 	for i in count + 1:
-		var t := float(i) / float(count)
-		# 平滑起停，避免短滑条看起来像折线。
-		var eased := t * t * (3.0 - 2.0 * t)
-		var angle := head + delta * eased
-		var radius := 1.0 - sag * sin(PI * eased)
-		result.append({
-			"x": cos(angle) * radius,
-			"y": sin(angle) * radius,
-			"db": duration * t,
-		})
+		var q := float(i) / float(count)
+		var inverse := 1.0 - q
+		# 头在环上、尾在 0.70R，控制点向内收，整条轨迹都在平面内。
+		var point := head * inverse * inverse + control * 2.0 * inverse * q + tail * q * q
+		result.append({"x": point.x, "y": point.y, "db": safe_wait + move * q})
 	return result
 
 

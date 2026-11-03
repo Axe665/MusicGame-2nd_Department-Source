@@ -38,6 +38,8 @@ func _init(p_type: String = "tap", p_beat: float = 0.0, p_angle: float = 0.0, p_
 	beat = p_beat
 	angle = p_angle
 	width = p_width
+	if type == "path":
+		space = "plane"
 
 
 func duration() -> float:
@@ -52,12 +54,37 @@ func path_local_at(relative_beat: float) -> Vector2:
 	var total := duration()
 	if total <= 0.000001:
 		return _unit_from_angle(angle)
-	var wait := clampf(wait_beat, 0.0, maxf(0.0, total - 0.000001))
-	var move_total := maxf(0.000001, total - wait)
-	var p := clampf((relative_beat - wait) / move_total, 0.0, 1.0)
-	if path_style == "star":
-		return _star_local(p)
-	return _unit_from_angle(path_angle_at(relative_beat))
+	var p := clampf(relative_beat / total, 0.0, 1.0)
+	# Path 只允许平面：有显式二维点时按点走，旧环 Path 则迁移成
+	# 半径 1.0 → 0.72 的平面弧，头仍在环上。
+	if not trace_pts.is_empty():
+		return _path_plane_at(relative_beat)
+	var a := path_angle_at(relative_beat)
+	return _unit_from_angle(a) * lerpf(1.0, 0.72, p)
+
+
+func _path_plane_at(relative_beat: float) -> Vector2:
+	var target := clampf(relative_beat, 0.0, duration())
+	var previous: Dictionary = trace_pts[0]
+	if target <= float(previous.get("db", 0.0)):
+		return Vector2(float(previous.get("x", 0.0)), float(previous.get("y", 0.0)))
+	for i in range(1, trace_pts.size()):
+		var point: Dictionary = trace_pts[i]
+		var db := float(point.get("db", 0.0))
+		if target <= db:
+			var last_db := float(previous.get("db", 0.0))
+			var span := db - last_db
+			var q := 0.0 if span <= 0.000001 else (target - last_db) / span
+			return Vector2(
+				lerpf(float(previous.get("x", 0.0)), float(point.get("x", 0.0)), q),
+				lerpf(float(previous.get("y", 0.0)), float(point.get("y", 0.0)), q)
+			)
+		previous = point
+	return Vector2(float(previous.get("x", 0.0)), float(previous.get("y", 0.0)))
+
+
+func path_tail_local() -> Vector2:
+	return path_local_at(duration())
 
 
 func path_angle_at(relative_beat: float) -> float:
@@ -95,7 +122,7 @@ func _unit_from_angle(degrees: float) -> Vector2:
 
 
 func _star_local(p: float) -> Vector2:
-	# 五角星表现层：5 条弦，头尾判定仍各自独立。
+	# 保留给旧谱面读取；新的 Path 一律平面，不再生成五角星。
 	var tips: Array[Vector2] = []
 	for k in 5:
 		tips.append(_unit_from_angle(angle - 90.0 + float(k) * 72.0) * 0.78)
@@ -148,7 +175,7 @@ func to_dict() -> Dictionary:
 		"color": color,
 		"lock": lock,
 	}
-	if space != "ring":
+	if space != "ring" and type != "path":
 		data["space"] = space
 		data["plane_x"] = snappedf(plane_x, 0.0001)
 		data["plane_y"] = snappedf(plane_y, 0.0001)
@@ -160,6 +187,7 @@ func to_dict() -> Dictionary:
 			if not visual_pts.is_empty():
 				data["visual"] = _points_to_dict(visual_pts)
 		"path":
+			data["space"] = "plane"
 			data["end_beat"] = snappedf(end_beat, 0.001)
 			if wait_beat > 0.0:
 				data["wait"] = snappedf(wait_beat, 0.001)
@@ -173,6 +201,8 @@ func to_dict() -> Dictionary:
 				data["path_gaps"] = _ranges_to_array(path_gaps)
 			if not visual_pts.is_empty():
 				data["visual"] = _points_to_dict(visual_pts)
+			if not trace_pts.is_empty():
+				data["trace"] = _points_to_dict(trace_pts)
 		"trace":
 			data["end_beat"] = snappedf(end_beat, 0.001)
 			if wait_beat > 0.0:
@@ -213,7 +243,7 @@ static func from_dict(raw: Dictionary) -> Note:
 	note.samples_per_beat = float(raw.get("samples", 4.0))
 	note.path_style = String(raw.get("path_style", "arc"))
 	note.trace_style = String(raw.get("trace_style", "wipe"))
-	note.space = String(raw.get("space", "ring"))
+	note.space = String(raw.get("space", "plane" if note.type == "path" else "ring"))
 	note.plane_x = float(raw.get("plane_x", 0.5))
 	note.plane_y = float(raw.get("plane_y", 0.5))
 	note.plane_radius = float(raw.get("plane_radius", 0.10))

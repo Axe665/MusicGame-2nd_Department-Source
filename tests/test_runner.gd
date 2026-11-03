@@ -12,7 +12,7 @@ func _initialize() -> void:
 		"test_boundary_frame",
 		"test_live_edit_notifications",
 		"test_self_intersection",
-		"test_star_path",
+		"test_plane_path",
 		"test_nearest_u",
 		"test_pre_read",
 		"test_shrink_example",
@@ -231,21 +231,26 @@ func test_self_intersection() -> bool:
 	return true
 
 
-func test_star_path() -> bool:
+func test_plane_path() -> bool:
 	var note := Note.new("path", 0.0, 0.0, 120.0)
 	note.end_beat = 4.0
 	note.tail_angle = 180.0
-	note.path_style = "star"
-	var first := note.path_local_at(0.0)
-	near(first.length(), 0.78, 0.01, "star tip radius")
+	eq(note.space, "plane", "path defaults to the plane")
+	near(note.path_local_at(0.0).length(), 1.0, 0.01, "path head on the ring")
+	near(note.path_local_at(4.0).length(), 0.72, 0.01, "legacy path tail moves inside")
 	var inside := true
 	for i in 41:
 		var point := note.path_local_at(4.0 * float(i) / 40.0)
-		if point.length() > 0.79:
+		if point.length() > 1.01:
 			inside = false
-	ok(inside, "star stays inside ring")
-	ok(absf(note.path_local_at(0.8).x - note.path_local_at(1.6).x) > 0.001, "star bends across chords")
-	near(absf(note.path_angle_at(2.0)), 90.0, 1.0, "star judgment stays on head-tail chord")
+	ok(inside, "path body stays inside the ring")
+	note.trace_pts = [
+		{"x": 1.0, "y": 0.0, "db": 0.0},
+		{"x": 0.5, "y": 0.5, "db": 2.0},
+		{"x": 0.0, "y": 0.7, "db": 4.0},
+	]
+	near(note.path_local_at(2.0).x, 0.5, 0.001, "plane path follows explicit points")
+	near(note.path_local_at(2.0).y, 0.5, 0.001, "plane path interpolates y")
 	note.path_gaps = [{"from": 0.4, "to": 0.6}]
 	ok(note.erased_at(2.0), "path erase range hits middle")
 	ok(not note.erased_at(0.5), "path erase range leaves head")
@@ -255,7 +260,8 @@ func test_star_path() -> bool:
 			erased_sample = true
 	ok(not erased_sample, "erased path section has no hidden checkpoints")
 	var restored := Note.from_dict(note.to_dict())
-	eq(restored.path_style, "star", "star style survives json")
+	eq(restored.space, "plane", "plane path survives json")
+	eq(restored.trace_pts.size(), 3, "plane path points survive json")
 	eq(restored.path_gaps.size(), 1, "path gaps survive json")
 	return true
 
@@ -432,23 +438,23 @@ SliderMultiplier: 1.4
 	near(tap.beat, 2.0, 0.001, "osu circle beat")
 	ok(tap.width >= 45.0 and tap.width <= 75.0, "osu tap has variable width")
 	var slide: Note = chart.notes[1]
-	eq(slide.type, "trace", "osu slider -> planar slide trace")
-	eq(slide.trace_style, "slider", "osu slider keeps slide style")
+	eq(slide.type, "path", "osu slider -> planar path")
+	eq(slide.space, "plane", "osu slider dives into the plane")
 	near(slide.beat, 4.0, 0.001, "osu slider beat")
 	near(slide.end_beat, 4.7142857, 0.001, "osu slider duration")
 	ok(slide.trace_pts.size() > 8, "osu slider has a 2D slide path")
 	var first: Dictionary = slide.trace_pts[0]
 	var last: Dictionary = slide.trace_pts[-1]
 	near(sqrt(pow(float(first["x"]), 2) + pow(float(first["y"]), 2)), 1.0, 0.02, "slide head on the ring")
-	near(sqrt(pow(float(last["x"]), 2) + pow(float(last["y"]), 2)), 1.0, 0.02, "slide tail on the ring")
+	near(sqrt(pow(float(last["x"]), 2) + pow(float(last["y"]), 2)), 0.70, 0.02, "slide tail lands on the 0.70R circle")
 	var inside := true
 	for point in slide.trace_pts:
 		if sqrt(pow(float(point["x"]), 2) + pow(float(point["y"]), 2)) > 1.02:
 			inside = false
 	ok(inside, "slide path stays inside the ring disk")
 	var restored := Note.from_dict(slide.to_dict())
-	eq(restored.type, "trace", "slide trace survives json")
-	eq(restored.trace_style, "slider", "slide style survives json")
+	eq(restored.type, "path", "slide path survives json")
+	eq(restored.space, "plane", "slide plane survives json")
 	return true
 
 
@@ -483,8 +489,8 @@ SliderMultiplier: 1.4
 	var chart: Chart = result["chart"]
 	eq(chart.notes.size(), 4, "four slider curves imported")
 	for note in chart.notes:
-		eq(note.type, "trace", "curve %s is a slide trace" % note.id)
-		eq(note.trace_style, "slider", "curve %s keeps slide style" % note.id)
+		eq(note.type, "path", "curve %s is a plane path" % note.id)
+		eq(note.space, "plane", "curve %s stays planar" % note.id)
 		ok(note.trace_pts.size() >= 8, "curve %s has enough slide samples" % note.id)
 		var previous_db := -1.0
 		var monotonic := true
@@ -617,8 +623,8 @@ SliderMultiplier: 1.4
 	eq(chart.notes.size(), 3, "slider kinds note count")
 	eq(chart.notes[0].type, "hold", "short slider -> hold")
 	eq(chart.notes[1].type, "hold", "repeat slider -> hold")
-	eq(chart.notes[2].type, "trace", "long slider -> slide trace")
-	eq(chart.notes[2].trace_style, "slider", "long slider keeps slide style")
+	eq(chart.notes[2].type, "path", "long slider -> plane path")
+	eq(chart.notes[2].space, "plane", "long slider stays planar")
 	ok(chart.notes[2].end_beat > chart.notes[2].beat, "long slider slide has duration")
 	return true
 
@@ -909,7 +915,7 @@ SliderMultiplier: 1.4
 		return true
 	var chart: Chart = result["chart"]
 	var trace: Note = chart.notes[0]
-	eq(trace.type, "trace", "long slider becomes trace")
+	eq(trace.type, "path", "long slider becomes plane path")
 	ok(trace.wait_beat > 0.0, "slide has a wait phase before moving")
 	near(trace.end_beat - trace.beat, 2.0, 0.001, "slide end beat stays on the osu timeline")
 	return true
@@ -948,8 +954,10 @@ func test_simai_bend_shapes() -> bool:
 	if chart != null:
 		var bent := 0
 		for note in chart.notes:
-			if note.type == "path" and not note.visual_pts.is_empty():
-				bent += 1
-		ok(bent >= 1, "v/p shapes get a bend point")
+			if note.type == "path" and note.trace_pts.size() >= 20:
+				var tail: Dictionary = note.trace_pts[-1]
+				if sqrt(pow(float(tail["x"]), 2) + pow(float(tail["y"]), 2)) < 0.75:
+					bent += 1
+		ok(bent >= 1, "v/p shapes become plane paths")
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
 	return true

@@ -256,15 +256,20 @@ static func _parse_note(token: String, beat: float, bpm: float) -> Note:
 		note.tail_width = 52.0
 		note.tolerance = 0.24
 		note.samples_per_beat = 4.0
-		note.path_style = "arc"
+		note.space = "plane"
+		var mid_angle := NAN
 		if token.contains("v") or token.contains("V") or token.contains("w") or token.contains("p") or token.contains("q") or token.contains("s") or token.contains("z"):
 			var digits := ""
 			for ch in token.split("[")[0]:
 				if ch.is_valid_int():
 					digits += ch
 			var turn := int(digits.substr(1, 1)) if digits.length() >= 3 else 0
-			var mid_da := _short_delta(start_angle, _button_angle(turn)) if turn > 0 else _short_delta(start_angle, note.tail_angle) * 0.5 + 32.0
-			note.visual_pts = [{"db": (note.end_beat - note.beat) * 0.5, "da": mid_da}]
+			if turn > 0:
+				mid_angle = _button_angle(turn)
+		note.trace_pts = _plane_slide_points(
+			start_angle, note.tail_angle, note.wait_beat,
+			note.end_beat - note.beat, mid_angle
+		)
 		return note
 	if token.find("h") >= 0:
 		var hold := Note.new("hold", beat, fposmod(start_angle, 360.0), 62.0)
@@ -275,6 +280,23 @@ static func _parse_note(token: String, beat: float, bpm: float) -> Note:
 	if token.find("b") >= 0:
 		tap.width = 72.0
 	return tap
+
+
+static func _plane_slide_points(head_angle: float, tail_angle: float, wait: float, total: float, mid_angle: float = NAN) -> Array[Dictionary]:
+	var head := Vector2(cos(deg_to_rad(head_angle)), sin(deg_to_rad(head_angle)))
+	var tail := Vector2(cos(deg_to_rad(tail_angle)), sin(deg_to_rad(tail_angle))) * 0.70
+	var control_angle := head_angle + _short_delta(head_angle, tail_angle) * 0.5 if is_nan(mid_angle) else mid_angle
+	var control := Vector2(cos(deg_to_rad(control_angle)), sin(deg_to_rad(control_angle))) * 0.84
+	var result: Array[Dictionary] = [{"x": head.x, "y": head.y, "db": 0.0}]
+	if wait > 0.0:
+		result.append({"x": head.x, "y": head.y, "db": wait})
+	var move := maxf(0.001, total - wait)
+	for i in 25:
+		var q := float(i) / 24.0
+		var inverse := 1.0 - q
+		var point := head * inverse * inverse + control * 2.0 * inverse * q + tail * q * q
+		result.append({"x": point.x, "y": point.y, "db": wait + move * q})
+	return result
 
 
 static func _duration_beats(token: String, bpm: float) -> float:

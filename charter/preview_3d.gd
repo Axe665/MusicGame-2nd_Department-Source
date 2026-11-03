@@ -125,6 +125,10 @@ var _red_start_mouse: Vector2 = Vector2.ZERO
 var _pulses: Array[Dictionary] = []
 var _arc_flashes: Array[Dictionary] = []
 var trace_cuts: Dictionary = {}
+var path_cuts: Dictionary = {}
+var _drawing_path: bool = false
+var _path_points: Array[Vector2] = []
+var _path_head_angle: float = 0.0
 var _trace_points: Array[Vector2] = []
 
 
@@ -767,6 +771,8 @@ func _update_video(chart: Chart, beat: float) -> void:
 func _on_chart_changed() -> void:
 	_sorted_notes_chart = null
 	_trace_cache.clear()
+	trace_cuts.clear()
+	path_cuts.clear()
 	_path_runs_cache.clear()
 	_boundary_frame_cache = null
 	_path_local_cache.clear()
@@ -783,6 +789,8 @@ func _on_chart_changed() -> void:
 func _on_chart_live_changed() -> void:
 	_sorted_notes_chart = null
 	_trace_cache.clear()
+	trace_cuts.clear()
+	path_cuts.clear()
 	_path_runs_cache.clear()
 	_boundary_frame_cache = null
 	_path_local_cache.clear()
@@ -847,6 +855,8 @@ func _gui_input(event: InputEvent) -> void:
 			elif _drawing_red:
 				_update_cursor()
 				_update_red_drag(event.position)
+			elif _drawing_path:
+				_append_path_point(event.position)
 			elif _drawing_trace:
 				_append_trace_point(event.position)
 		_update_cursor()
@@ -914,11 +924,22 @@ func _on_left_press(event: InputEventMouseButton) -> void:
 			_drag_visual = visual
 			_drag_visual_note = _app.get_selected_note()
 			_drag_visual_start = event.position
-			var point: Dictionary = _drag_visual_note.visual_pts[visual]
-			_drag_visual_db = float(point.get("db", 0.0))
-			_drag_visual_da = float(point.get("da", 0.0))
+			if _drag_visual_note.type == "path":
+				var point: Dictionary = _drag_visual_note.trace_pts[visual]
+				_drag_visual_db = float(point.get("db", 0.0))
+			else:
+				var point: Dictionary = _drag_visual_note.visual_pts[visual]
+				_drag_visual_db = float(point.get("db", 0.0))
+				_drag_visual_da = float(point.get("da", 0.0))
 			_app.begin_edit()
 			return
+	if _app.tool == "path":
+		if cursor_valid:
+			_drawing_path = true
+			_path_head_angle = fposmod(cursor_u * 360.0, 360.0)
+			_path_points.clear()
+			_path_points.append(Vector2(cos(deg_to_rad(_path_head_angle)), sin(deg_to_rad(_path_head_angle))))
+		return
 	if _app.tool in ["tap", "hold", "path", "anchor", "bell"]:
 		if cursor_valid:
 			_create_note(_app.tool)
@@ -957,6 +978,9 @@ func _on_left_release(_event: InputEventMouseButton) -> void:
 	if _drawing_trace:
 		_drawing_trace = false
 		_create_trace()
+	if _drawing_path:
+		_drawing_path = false
+		_create_path()
 
 
 func _update_drag(screen_position: Vector2) -> void:
@@ -989,10 +1013,25 @@ func _update_drag(screen_position: Vector2) -> void:
 
 
 func _update_visual_drag(screen_position: Vector2) -> void:
-	if _drag_visual_note == null or _drag_visual < 0 or _drag_visual >= _drag_visual_note.visual_pts.size():
+	if _drag_visual_note == null or _drag_visual < 0:
 		return
 	var design := _screen_to_ring_plane(screen_position)
 	if not design.is_finite():
+		return
+	if _drag_visual_note.type == "path":
+		if _drag_visual >= _drag_visual_note.trace_pts.size():
+			return
+		var local := _design_to_path_local(design)
+		var point: Dictionary = _drag_visual_note.trace_pts[_drag_visual]
+		point["x"] = local.x
+		point["y"] = local.y
+		if _drag_visual == 0:
+			_drag_visual_note.angle = fposmod(rad_to_deg(atan2(local.y, local.x)), 360.0)
+		elif _drag_visual == _drag_visual_note.trace_pts.size() - 1:
+			_drag_visual_note.tail_angle = fposmod(rad_to_deg(atan2(local.y, local.x)), 360.0)
+		_app.touch_chart()
+		return
+	if _drag_visual >= _drag_visual_note.visual_pts.size():
 		return
 	var point: Dictionary = _drag_visual_note.visual_pts[_drag_visual]
 	var duration := _drag_visual_note.duration()
@@ -1000,6 +1039,18 @@ func _update_visual_drag(screen_position: Vector2) -> void:
 	var angle := rad_to_deg(atan2(design.y, design.x))
 	point["da"] = JudgeMath.angle_delta(_drag_visual_note.angle, angle)
 	_app.touch_chart()
+
+
+func _design_to_path_local(design: Vector2) -> Vector2:
+	var chart := get_chart()
+	if chart == null or design.length() <= 0.001:
+		return Vector2(0.7, 0.0)
+	var angle := fposmod(rad_to_deg(atan2(design.y, design.x)), 360.0)
+	var data := _boundary_point(chart, angle / 360.0, get_time_beat())
+	if bool(data.get("gap", false)):
+		return Vector2(INF, INF)
+	var ring_radius := maxf(0.001, (data.point as Vector2).length())
+	return design / ring_radius
 
 
 func _update_red_drag(screen_position: Vector2) -> void:
@@ -1051,6 +1102,57 @@ func _create_trace() -> void:
 	_trace_points.clear()
 
 
+func _append_path_point(screen: Vector2) -> void:
+	var design := _screen_to_ring_plane(screen)
+	if not design.is_finite():
+		return
+	var local := _design_to_path_local(design)
+	if not local.is_finite():
+		return
+	var radius := local.length()
+	if radius <= 0.001:
+		return
+	radius = clampf(radius, 0.06, 0.985)
+	local = local.normalized() * radius
+	if _path_points.is_empty() or _path_points[-1].distance_to(local) > 0.012:
+		_path_points.append(local)
+
+
+func _create_path() -> void:
+	if _app == null:
+		_path_points.clear()
+		return
+	var chart := get_chart()
+	if chart == null or _path_points.is_empty():
+		_path_points.clear()
+		return
+	if _path_points.size() < 2:
+		var angle := deg_to_rad(_path_head_angle + 60.0)
+		_path_points.append(Vector2(cos(angle), sin(angle)) * 0.70)
+	var start: float = _app.snap_beat(get_time_beat())
+	var note := Note.new("path", start, _path_head_angle, 62.0)
+	note.id = chart.next_note_id()
+	note.end_beat = start + 1.0
+	note.tail_width = 45.0
+	note.tolerance = 0.24
+	note.samples_per_beat = 4.0
+	note.space = "plane"
+	var last: Vector2 = _path_points[-1]
+	note.tail_angle = fposmod(rad_to_deg(atan2(last.y, last.x)), 360.0)
+	for i in _path_points.size():
+		var point := _path_points[i]
+		note.trace_pts.append({
+			"x": point.x,
+			"y": point.y,
+			"db": note.duration() * float(i) / float(_path_points.size() - 1),
+		})
+	_app.begin_edit()
+	chart.notes.append(note)
+	_app.finish_edit()
+	_app.select_note(note.id)
+	_path_points.clear()
+
+
 func _create_note(type: String) -> void:
 	if _app == null or not cursor_valid:
 		return
@@ -1067,10 +1169,14 @@ func _create_note(type: String) -> void:
 			note.hold = true
 		"path":
 			note.end_beat = beat + 1.0
-			note.tail_angle = fposmod(angle + 90.0, 360.0)
+			note.tail_angle = fposmod(angle + 60.0, 360.0)
 			note.tail_width = 45.0
 			note.tolerance = 0.24
 			note.samples_per_beat = 4.0
+			note.trace_pts = [
+				{"x": cos(deg_to_rad(angle)), "y": sin(deg_to_rad(angle)), "db": 0.0},
+				{"x": cos(deg_to_rad(note.tail_angle)) * 0.70, "y": sin(deg_to_rad(note.tail_angle)) * 0.70, "db": 1.0},
+			]
 		"anchor":
 			note.width = 0.0
 			note.anchor_pair = -1
@@ -1531,21 +1637,16 @@ func _pick_visual_node(screen_position: Vector2) -> int:
 	if _app == null:
 		return -1
 	var note: Note = _app.get_selected_note()
-	if note == null or not note.type in ["path", "hold"]:
-		return -1
-	if note.type == "path" and note.path_style == "star":
+	if note == null or note.type != "path":
 		return -1
 	var chart := get_chart()
 	if chart == null:
 		return -1
 	var t := get_time_beat()
-	for i in note.visual_pts.size():
-		var point: Dictionary = note.visual_pts[i]
-		var p: Vector2
-		if note.type == "hold":
-			p = _hold_node_screen(chart, note, float(point.get("db", 0.0)), float(point.get("da", 0.0)), t)
-		else:
-			p = _path_screen_point(chart, note, float(point.get("db", 0.0)), t)
+	for i in note.trace_pts.size():
+		var point: Dictionary = note.trace_pts[i]
+		var local := Vector2(float(point.get("x", 0.0)), float(point.get("y", 0.0)))
+		var p := _path_local_screen(chart, local, t)
 		if _valid_point(p) and p.distance_to(screen_position) <= 12.0:
 			return i
 	return -1
@@ -1559,6 +1660,16 @@ func _draw_paths(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 	visible.sort_custom(func(a: Note, b: Note) -> bool: return a.beat > b.beat)
 	for i in visible.size():
 		_draw_one_path(canvas, chart, visible[i], t, pre, i == visible.size() - 1)
+	if _drawing_path and _path_points.size() > 1:
+		var preview := PackedVector2Array()
+		for local in _path_points:
+			var p := _path_local_screen(chart, local, t)
+			if _valid_point(p):
+				preview.append(p)
+		if preview.size() > 1:
+			canvas.draw_polyline(preview, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.75), 3.0, true)
+			for p in preview:
+				canvas.draw_circle(p, 2.5, UITheme.CYAN)
 
 
 func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: float, top: bool) -> void:
@@ -1567,6 +1678,8 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 		return
 	var grow := clampf((t - (note.beat - pre)) / maxf(0.001, pre), 0.0, 1.0)
 	var ns := _note_scale()
+	var wait := clampf(note.wait_beat, 0.0, maxf(0.0, total - 0.001))
+	var progress := clampf((t - note.beat - wait) / maxf(0.001, total - wait), 0.0, 1.0)
 	var runs: Array[PackedVector2Array] = []
 	var cache_key := "%d|%s|%.0f|%.0f" % [note.id, _last_view_key, size.x, size.y]
 	if grow >= 0.999 and _path_runs_cache.has(cache_key):
@@ -1577,7 +1690,7 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 		var last_valid := Vector2(INF, INF)
 		for i in count + 1:
 			var rel := total * float(i) / float(count)
-			var erased := note.erased_at(rel)
+			var erased := path_erased(note, rel)
 			var p := _path_screen_point(chart, note, rel, t, true, 1.0)
 			if erased or not _valid_point(p):
 				if run.size() > 1:
@@ -1605,7 +1718,8 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 			_path_runs_cache[cache_key] = runs
 	var body := Color(0.78, 0.80, 0.79, 0.62 if top else 0.22)
 	var dash := Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.92 if top else 0.34)
-	var arrow := Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.95 if top else 0.34)
+	var future := Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.98 if top else 0.38)
+	var passed := Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.26 if top else 0.12)
 	for piece in runs:
 		if piece.size() < 2:
 			continue
@@ -1619,37 +1733,24 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 		canvas.draw_polyline(piece, body, 13.0 * ns, true)
 		canvas.draw_polyline(piece, Color(1, 1, 1, 0.12 if top else 0.04), 3.5 * ns, true)
 		_draw_dashed_polyline(canvas, piece, dash, 2.0, 6.0)
-		var arrow_count := clampi(int(total * 1.5), 2, 5)
-		for k in arrow_count:
-			var fraction := (float(k) + 1.0) / float(arrow_count + 1)
+		# V 形箭头列：已过的段变暗，未到的段保持高亮。
+		var chevron_count := clampi(int(total * 2.0), 3, 8)
+		for k in chevron_count:
+			var fraction := (float(k) + 1.0) / float(chevron_count + 1)
 			var sample: Dictionary = _polyline_sample(piece, fraction)
-			_draw_arrowhead(canvas, sample["point"], sample["direction"], arrow)
-			var direction: Vector2 = (sample["direction"] as Vector2).normalized()
-			var normal := Vector2(-direction.y, direction.x)
-			var tick_point: Vector2 = sample["point"]
-			canvas.draw_line(tick_point - normal * 12.0, tick_point + normal * 12.0, Color(1, 1, 1, 0.22 if top else 0.08), 1.0, true)
-	var star := note.path_style == "star"
-	for sample_beat in note.path_sample_beats():
-		var rel := clampf(sample_beat - note.beat, 0.0, total)
-		var p := _path_screen_point(chart, note, rel, t, true, grow)
-		if _valid_point(p):
-			canvas.draw_circle(p, 3.2 * ns, Color(0, 0, 0, 0.45))
-			canvas.draw_circle(p, 2.2 * ns, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.92 if top else 0.30))
+			_draw_chevron(canvas, sample["point"], sample["direction"], passed if fraction < progress else future, 9.0 * ns)
 	_draw_target_arc(canvas, note.angle, note.width, t, UITheme.CORAL, 10.0)
-	_draw_target_arc(canvas, note.tail_angle, note.tail_width, t, UITheme.GOLD, 8.0)
-	if _app != null and note.path_style != "star":
+	if _app != null:
 		var selected_note: Note = _app.get_selected_note()
 		if selected_note != null and selected_note.id == note.id:
-			for point in note.visual_pts:
-				var node := _path_screen_point(chart, note, float(point.get("db", 0.0)), t)
+			for point in note.trace_pts:
+				var node := _path_local_screen(chart, Vector2(float(point.get("x", 0.0)), float(point.get("y", 0.0))), t, grow)
 				if _valid_point(node):
 					_draw_diamond(canvas, node, 5.0, UITheme.CYAN)
 					canvas.draw_circle(node, 1.8, UITheme.INK)
 	var head := _flying_position(chart, note.angle, note.beat, t, pre)
-	# 星尾和轨迹一起从圆心出现，而不是等尾拍才飞入。
-	var tail := _flying_position(chart, note.tail_angle, note.beat, t, pre)
-	if note.path_style == "star" and _valid_point(head) and _valid_point(tail):
-		canvas.draw_dashed_line(head, tail, Color(1, 1, 1, 0.16 if top else 0.07), 1.0, 5.0)
+	# 尾部跟随轨迹一起从圆心长出，只落在平面内，不再回到环上。
+	var tail := _path_screen_point(chart, note, total, t, true, grow)
 	_draw_path_head(canvas, head, top, grow * ns)
 	if _valid_point(head):
 		# 重叠 Path 用不同颜色的外环 + 编号区分星头。
@@ -1665,11 +1766,24 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 	_draw_path_tail(canvas, tail, top, grow * ns)
 	if playtest_mode and top and _valid_point(head):
 		canvas.draw_string(UITheme.bold_font(), head + Vector2(-12, -22), "PATH", HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(UITheme.CORAL.r, UITheme.CORAL.g, UITheme.CORAL.b, 0.85))
+	# 大号发光球 + 短拖尾：当前进度点始终比星头更亮，方向一目了然。
 	if t >= note.beat and t <= note.end_beat:
-		var p := _path_screen_point(chart, note, t - note.beat, t, false)
+		var rel := progress * total
+		for trail_index in range(4, 0, -1):
+			var trail_rel := rel - float(trail_index) * 0.035 * total
+			if trail_rel < 0.0:
+				continue
+			var trail_point := _path_screen_point(chart, note, trail_rel, t, false)
+			if _valid_point(trail_point):
+				var fade := 0.30 * (1.0 - float(trail_index) / 5.0)
+				canvas.draw_circle(trail_point, (13.0 - float(trail_index) * 1.4) * ns, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, fade))
+		var p := _path_screen_point(chart, note, rel, t, false)
 		if _valid_point(p):
-			canvas.draw_circle(p, 7.0, UITheme.CYAN if top else Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.5))
-			canvas.draw_circle(p, 2.5, UITheme.INK)
+			canvas.draw_circle(p, 24.0 * ns, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.18 if top else 0.07))
+			canvas.draw_circle(p, 14.0 * ns, Color(0, 0, 0, 0.55))
+			canvas.draw_circle(p, 12.0 * ns, UITheme.CYAN if top else Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.5))
+			canvas.draw_circle(p, 7.0 * ns, Color(1, 1, 1, 0.96))
+			canvas.draw_circle(p, 3.0 * ns, UITheme.INK)
 
 
 func path_distance(note: Note, relative_beat: float, beat: float, screen_point: Vector2) -> float:
@@ -1679,18 +1793,78 @@ func path_distance(note: Note, relative_beat: float, beat: float, screen_point: 
 	var best := INF
 	for offset in [-0.06, 0.0, 0.06]:
 		var rel := clampf(relative_beat + offset, 0.0, note.duration())
-		var p := _path_ring_point(chart, note, rel, beat)
+		var p := _path_screen_point(chart, note, rel, beat, false)
 		if _valid_point(p):
 			best = minf(best, p.distance_to(screen_point))
 	return best
 
 
-func _path_ring_point(chart: Chart, note: Note, relative_beat: float, t: float) -> Vector2:
-	var degrees := note.path_angle_at(relative_beat)
-	var data := _boundary_point(chart, fposmod(degrees, 360.0) / 360.0, t)
+func path_point(note: Note, relative_beat: float, beat: float) -> Vector2:
+	var chart := get_chart()
+	if chart == null:
+		return Vector2(INF, INF)
+	return _path_screen_point(chart, note, relative_beat, beat, false)
+
+
+func path_fraction(note: Note, mouse: Vector2, beat: float) -> Dictionary:
+	var chart := get_chart()
+	if chart == null:
+		return {"fraction": 0.0, "distance": INF}
+	var points := PackedVector2Array()
+	var count := 48
+	for i in count + 1:
+		var p := _path_screen_point(chart, note, note.duration() * float(i) / float(count), beat, false)
+		if _valid_point(p):
+			points.append(p)
+	if points.size() < 2:
+		return {"fraction": 0.0, "distance": INF}
+	var best := INF
+	var best_fraction := 0.0
+	for i in points.size() - 1:
+		var a := points[i]
+		var b := points[i + 1]
+		var ab := b - a
+		var length_squared := ab.length_squared()
+		var q := 0.0 if length_squared <= 0.0001 else clampf((mouse - a).dot(ab) / length_squared, 0.0, 1.0)
+		var distance := mouse.distance_to(a + ab * q)
+		if distance < best:
+			best = distance
+			best_fraction = (float(i) + q) / float(points.size() - 1)
+	return {"fraction": best_fraction, "distance": best}
+
+
+func cut_path(note: Note, from_fraction: float, to_fraction: float) -> void:
+	var a := clampf(minf(from_fraction, to_fraction), 0.0, 1.0)
+	var b := clampf(maxf(from_fraction, to_fraction), 0.0, 1.0)
+	if b - a <= 0.004:
+		return
+	if not path_cuts.has(note.id):
+		path_cuts[note.id] = []
+	path_cuts[note.id].append({"from": a, "to": b})
+	if _overlay != null:
+		_overlay.queue_redraw()
+
+
+func path_erased(note: Note, relative_beat: float) -> bool:
+	if note.erased_at(relative_beat):
+		return true
+	var total := maxf(0.000001, note.duration())
+	var p := clampf(relative_beat / total, 0.0, 1.0)
+	for gap in path_cuts.get(note.id, []):
+		if p >= float(gap.get("from", 0.0)) and p <= float(gap.get("to", 1.0)):
+			return true
+	return false
+
+
+func _path_local_screen(chart: Chart, local: Vector2, t: float, scale: float = 1.0) -> Vector2:
+	var radius := local.length()
+	if radius <= 0.0001:
+		return project_design(Vector2.ZERO)
+	var degrees := fposmod(rad_to_deg(atan2(local.y, local.x)), 360.0)
+	var data := _boundary_point(chart, degrees / 360.0, t)
 	if bool(data.get("gap", false)):
 		return Vector2(INF, INF)
-	return project_design(data.point)
+	return project_design((data.point as Vector2) * radius * clampf(scale, 0.0, 1.0))
 
 
 func _path_screen_point(chart: Chart, note: Note, relative_beat: float, t: float, cache_sample: bool = true, scale: float = 1.0) -> Vector2:
@@ -1705,14 +1879,7 @@ func _path_screen_point(chart: Chart, note: Note, relative_beat: float, t: float
 	else:
 		# The moving marker has a new relative time every frame; do not retain it.
 		local = note.path_local_at(relative_beat)
-	var radius := local.length()
-	if radius <= 0.0001:
-		return project_design(Vector2.ZERO)
-	var degrees := fposmod(rad_to_deg(atan2(local.y, local.x)), 360.0)
-	var data := _boundary_point(chart, degrees / 360.0, t)
-	if bool(data.get("gap", false)):
-		return Vector2(INF, INF)
-	return project_design((data.point as Vector2) * radius * clampf(scale, 0.0, 1.0))
+	return _path_local_screen(chart, local, t, scale)
 
 
 func _draw_path_head(canvas: Control, point: Vector2, top: bool, scale: float = 1.0, color: Color = UITheme.CORAL) -> void:
@@ -1777,30 +1944,32 @@ func _draw_holds(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 		if fade <= 0.01:
 			continue
 		var grow := clampf((t - (note.beat - pre)) / maxf(0.001, pre), 0.0, 1.0)
-		var u := fposmod(note.angle, 360.0) / 360.0
-		var boundary := project_u(u, t)
-		if not _valid_point(boundary):
-			continue
 		var center := project_design(Vector2.ZERO)
-		var body := PackedVector2Array([center.lerp(boundary, 0.25)])
-		var visuals := note.visual_pts.duplicate()
-		visuals.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return float(a.get("db", 0.0)) < float(b.get("db", 0.0)))
-		for point in visuals:
-			var node := _hold_node_screen(chart, note, float(point.get("db", 0.0)), float(point.get("da", 0.0)), t)
-			if _valid_point(node):
-				body.append(node)
-		body.append(boundary)
-		# 所有 note 都从圆心长出：Hold 本体也随预读放大。
-		for i in body.size():
-			body[i] = center.lerp(body[i], grow)
+		# Hold 是唯一贴在环上的长条：本体沿环弯曲，尾部有明确端环。
+		var span := clampf(16.0 + note.duration() * 12.0, 20.0, 64.0)
+		var steps := maxi(10, int(span / 3.0))
+		var body := PackedVector2Array()
+		for i in steps + 1:
+			var angle := note.angle + span * float(i) / float(steps)
+			var data := _boundary_point(chart, fposmod(angle, 360.0) / 360.0, t)
+			if bool(data.get("gap", false)):
+				continue
+			body.append(center.lerp(project_design(data.point), grow))
+		if body.size() < 2:
+			continue
+		var boundary: Vector2 = body[-1]
 		var shadow := PackedVector2Array()
 		for p in body:
 			shadow.append(p + Vector2(5, 7))
-		canvas.draw_polyline(shadow, Color(0, 0, 0, 0.44 * fade), 24.0, true)
-		canvas.draw_polyline(body, Color(0, 0, 0, 0.62 * fade), 20.0, true)
-		canvas.draw_polyline(body, Color(1, 1, 1, 0.92 * fade), 15.0, true)
-		canvas.draw_polyline(body, Color(UITheme.AMBER.r, UITheme.AMBER.g, UITheme.AMBER.b, 0.88 * fade), 10.0, true)
-		canvas.draw_polyline(body, Color(1, 1, 0.9, 0.34 * fade), 2.6, true)
+		canvas.draw_polyline(shadow, Color(0, 0, 0, 0.44 * fade), 26.0 * ns, true)
+		canvas.draw_polyline(body, Color(0, 0, 0, 0.62 * fade), 22.0 * ns, true)
+		canvas.draw_polyline(body, Color(1, 1, 1, 0.92 * fade), 17.0 * ns, true)
+		canvas.draw_polyline(body, Color(UITheme.AMBER.r, UITheme.AMBER.g, UITheme.AMBER.b, 0.90 * fade), 12.0 * ns, true)
+		canvas.draw_polyline(body, Color(1, 1, 0.9, 0.34 * fade), 3.0 * ns, true)
+		# 圆头端点，让 Hold 读成胶囊而不是一根线。
+		for cap in [body[0], body[-1]]:
+			canvas.draw_circle(cap, 8.5 * ns, Color(UITheme.AMBER.r, UITheme.AMBER.g, UITheme.AMBER.b, 0.90 * fade))
+			canvas.draw_circle(cap, 4.5 * ns, Color(1, 1, 1, 0.28 * fade))
 		_draw_target_arc(canvas, note.angle, note.width, t, UITheme.AMBER, 12.0)
 		# Hold 尾：明确的端环，方便读松手时机。
 		canvas.draw_arc(boundary, 13.0 * ns, 0.0, TAU, 30, Color(UITheme.AMBER.r, UITheme.AMBER.g, UITheme.AMBER.b, 0.95 * fade), 3.2 * ns, true)
@@ -1808,22 +1977,18 @@ func _draw_holds(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 		canvas.draw_line(boundary + Vector2(-17, 0) * ns, boundary + Vector2(17, 0) * ns, Color(0, 0, 0, 0.55 * fade), 1.5 * ns, true)
 		if t >= note.beat and t <= note.end_beat:
 			var progress := clampf((t - note.beat) / maxf(0.001, note.duration()), 0.0, 1.0)
-			var marker := center.lerp(boundary, 0.25 + 0.75 * progress)
-			canvas.draw_circle(marker, 5.0 * ns, Color(1, 1, 1, 0.95))
+			var marker_index := progress * float(body.size() - 1)
+			var lower := clampi(int(marker_index), 0, body.size() - 1)
+			var upper := mini(lower + 1, body.size() - 1)
+			var marker := body[lower].lerp(body[upper], marker_index - float(lower))
+			canvas.draw_circle(marker, 8.0 * ns, Color(1, 1, 1, 0.28))
+			canvas.draw_circle(marker, 5.2 * ns, Color(1, 1, 1, 0.96))
 			canvas.draw_circle(marker, 2.4 * ns, UITheme.AMBER)
 		if fade > 0.999:
 			var head := _flying_position(chart, note.angle, note.beat, t, pre)
 			_draw_hexagon(canvas, head, 9.0 * ns * clampf(grow, 0.35, 1.0), UITheme.AMBER)
 			if playtest_mode and _valid_point(head):
 				canvas.draw_string(UITheme.bold_font(), head + Vector2(-14, -22), "HOLD", HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(UITheme.AMBER.r, UITheme.AMBER.g, UITheme.AMBER.b, 0.85))
-		if _app != null:
-			var selected_note: Note = _app.get_selected_note()
-			if selected_note != null and selected_note.id == note.id:
-				for point in visuals:
-					var node := _hold_node_screen(chart, note, float(point.get("db", 0.0)), float(point.get("da", 0.0)), t)
-					if _valid_point(node):
-						_draw_diamond(canvas, node, 5.0, UITheme.CYAN)
-						canvas.draw_circle(node, 1.8, UITheme.INK)
 		if t >= note.beat and t <= note.end_beat:
 			var glow := 0.5 + 0.5 * sin(t * PI)
 			canvas.draw_arc(boundary, 18.0, 0.0, TAU, 32, Color(UITheme.AMBER.r, UITheme.AMBER.g, UITheme.AMBER.b, 0.28 * glow), 2.0, true)
@@ -2373,6 +2538,18 @@ func _draw_arrowhead(canvas: Control, point: Vector2, direction: Vector2, color:
 		point - dir * 5.0 - normal * 5.0,
 	])
 	canvas.draw_colored_polygon(points, color)
+
+
+func _draw_chevron(canvas: Control, point: Vector2, direction: Vector2, color: Color, size: float) -> void:
+	var dir := direction.normalized()
+	if dir.length_squared() < 0.1:
+		return
+	var normal := Vector2(-dir.y, dir.x)
+	canvas.draw_polyline(PackedVector2Array([
+		point - dir * size + normal * size * 0.75,
+		point,
+		point - dir * size - normal * size * 0.75,
+	]), color, 2.4, true)
 
 
 func _draw_star(canvas: Control, point: Vector2, radius: float, color: Color) -> void:

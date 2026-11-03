@@ -278,7 +278,7 @@ func _build_note_page(page: VBoxContainer) -> void:
 	if note.type == "bell":
 		_spin(page, "中心 u", note.center_u, 0.0, 0.9999, 0.001, func(value: float) -> void: note.center_u = value)
 		_spin(page, "半径 px", note.radius, 4.0, 200.0, 1.0, func(value: float) -> void: note.radius = value)
-	elif note.space == "plane":
+	elif note.space == "plane" and note.type not in ["path", "trace"]:
 		_spin(page, "平面 x", note.plane_x, 0.0, 1.0, 0.001, func(value: float) -> void: note.plane_x = value)
 		_spin(page, "平面 y", note.plane_y, 0.0, 1.0, 0.001, func(value: float) -> void: note.plane_y = value)
 		_spin(page, "判定半径", note.plane_radius, 0.02, 0.3, 0.005, func(value: float) -> void: note.plane_radius = value)
@@ -287,17 +287,23 @@ func _build_note_page(page: VBoxContainer) -> void:
 		_spin(page, "逻辑角度", note.angle, 0.0, 360.0, 0.5, func(value: float) -> void: note.angle = fposmod(value, 360.0))
 		_spin(page, "宽度", note.width, 0.0, 360.0, 1.0, func(value: float) -> void: note.width = value)
 	if note.type == "path":
-		_spin(page, "尾角度", note.tail_angle, 0.0, 360.0, 0.5, func(value: float) -> void: note.tail_angle = fposmod(value, 360.0))
+		var tail_local := note.path_tail_local()
+		var tail_radius := tail_local.length()
+		var tail_degrees := rad_to_deg(atan2(tail_local.y, tail_local.x))
+		_spin(page, "尾半径 R", tail_radius, 0.05, 1.0, 0.01, func(value: float) -> void:
+			_set_path_tail(note, value, tail_degrees)
+		)
+		_spin(page, "尾角度", tail_degrees, 0.0, 360.0, 0.5, func(value: float) -> void:
+			_set_path_tail(note, tail_radius, value)
+		)
 		_spin(page, "尾宽度", note.tail_width, 0.0, 360.0, 1.0, func(value: float) -> void: note.tail_width = value)
 		_spin(page, "容差比例", note.tolerance, 0.0, 1.0, 0.01, func(value: float) -> void: note.tolerance = value)
 		_spin(page, "采样/拍", note.samples_per_beat, 0.25, 32.0, 0.25, func(value: float) -> void: note.samples_per_beat = value)
-		_section(page, "路径造型")
-		_label(page, "五角星只改表现层；头尾仍各自判定，中段仍是宽松跟随。" if note.path_style == "star" else "当前为弧线表现；头尾各判一次，中段宽松跟随。", 11, UITheme.MUTED)
+		_label(page, "平面 Path：星头在环上按键，身体/尾在平面内跟随；尾默认 0.65–0.75R。", 11, UITheme.CYAN)
+		_label(page, "中段采样点：%d；平面点：%d 个（在预览里拖青色节点改形状）" % [note.path_sample_beats().size(), note.trace_pts.size()], 11, UITheme.MUTED)
 		_buttons(page, [
-			{"text": "弧线", "callback": func() -> void: _set_path_style(note, "arc")},
-			{"text": "五角星", "callback": func() -> void: _set_path_style(note, "star")},
+			{"text": "重画 Path", "callback": func() -> void: _app.set_tool("path")},
 		])
-		_label(page, "中段采样点：%d；体节点：%d 个" % [note.path_sample_beats().size(), note.visual_pts.size()], 11, UITheme.MUTED)
 		_section(page, "跳区 / 擦除")
 		_spin(page, "中段擦除 %", _path_erase_width(note) * 100.0, 0.0, 80.0, 5.0, func(value: float) -> void:
 			_set_path_erase_width(note, value / 100.0)
@@ -315,30 +321,6 @@ func _build_note_page(page: VBoxContainer) -> void:
 		_buttons(page, [
 			{"text": "重画 Trace", "callback": func() -> void: _app.set_tool("trace")},
 		])
-	if note.type in ["hold", "path"]:
-		_section(page, "可视节点")
-		var visual_list := ItemList.new()
-		visual_list.custom_minimum_size = Vector2(0, 96)
-		for i in note.visual_pts.size():
-			var point: Dictionary = note.visual_pts[i]
-			visual_list.add_item("%02d  Δbeat %.2f  Δangle %.1f" % [i, float(point.get("db", 0.0)), float(point.get("da", 0.0))])
-		_selected_visual = clampi(_selected_visual, 0, maxi(0, note.visual_pts.size() - 1))
-		if _selected_visual < visual_list.item_count:
-			visual_list.select(_selected_visual)
-		visual_list.item_selected.connect(func(index: int) -> void:
-			_selected_visual = index
-			_rebuild()
-		)
-		page.add_child(visual_list)
-		_buttons(page, [
-			{"text": "加节点", "callback": func() -> void: _add_visual_point(note)},
-			{"text": "删节点", "callback": func() -> void: _delete_visual_point(note)},
-		])
-		if _selected_visual >= 0 and _selected_visual < note.visual_pts.size():
-			var point: Dictionary = note.visual_pts[_selected_visual]
-			_spin(page, "Δbeat", float(point.get("db", 0.0)), 0.0, maxf(0.25, note.duration()), 0.01, func(value: float) -> void: point["db"] = value)
-			_spin(page, "Δangle", float(point.get("da", 0.0)), -720.0, 720.0, 0.5, func(value: float) -> void: point["da"] = value)
-		_label(page, "节点只改可视形状，不改判定；Path/Hold 可在预览中拖动青色节点，Hold 只判头部。", 11, UITheme.MUTED)
 	if note.type == "anchor":
 		_spin(page, "配对角度", note.anchor_pair, -1.0, 90.0, 90.0, func(value: float) -> void: note.anchor_pair = int(value))
 		_text(page, "pairId", note.pair_id, func(value: String) -> void: note.pair_id = value)
@@ -368,11 +350,18 @@ func _set_path_erase_width(note: Note, width: float) -> void:
 	note.path_gaps.append({"from": 0.5 - half, "to": 0.5 + half})
 
 
-func _set_path_style(note: Note, style: String) -> void:
+func _set_path_tail(note: Note, radius: float, degrees: float) -> void:
 	_apply(func() -> void:
-		note.path_style = style
-		if style == "star":
-			note.visual_pts.clear()
+		if note.trace_pts.size() < 2:
+			note.trace_pts = [
+				{"x": cos(deg_to_rad(note.angle)), "y": sin(deg_to_rad(note.angle)), "db": 0.0},
+				{"x": cos(deg_to_rad(degrees)) * radius, "y": sin(deg_to_rad(degrees)) * radius, "db": note.duration()},
+			]
+		else:
+			var point: Dictionary = note.trace_pts[-1]
+			point["x"] = cos(deg_to_rad(degrees)) * radius
+			point["y"] = sin(deg_to_rad(degrees)) * radius
+		note.tail_angle = fposmod(degrees, 360.0)
 	)
 	_rebuild()
 

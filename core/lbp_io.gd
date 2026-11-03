@@ -137,6 +137,8 @@ static func _note_line(chart: Chart, note: Note) -> String:
 			var suffix := ",tol=%s,samples=%s" % [_num(note.tolerance), _num(note.samples_per_beat)]
 			if not note.visual_pts.is_empty():
 				suffix += ",visual=%s" % _points(note.visual_pts)
+			if not note.trace_pts.is_empty():
+				suffix += ",pts=%s" % _trace_points(note.trace_pts)
 			if note.path_style != "arc":
 				suffix += ",style=%s" % note.path_style
 			if not note.path_gaps.is_empty():

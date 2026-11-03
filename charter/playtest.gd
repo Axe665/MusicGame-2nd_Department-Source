@@ -207,6 +207,8 @@ func _init_states() -> void:
 			"tail_hit": false,
 			"next_sample": 0,
 			"samples": [],
+			"path_frac": 0.0,
+			"path_last_mouse": Vector2.ZERO,
 			"trace_started": false,
 			"trace_distance": 0.0,
 			"trace_last": Vector2.ZERO,
@@ -387,35 +389,42 @@ func _judge_path(note: Note, ms: float, beat: float, cursor_u: float, valid: boo
 	var state: Dictionary = _states[note.id]
 	var head_ms := chart.timing.beat_to_chart_ms(note.beat)
 	var tail_ms := chart.timing.beat_to_chart_ms(note.end_beat)
+	var head_point: Vector2 = _preview.path_point(note, 0.0, beat)
 	if not state["head_judged"]:
-		if ms >= head_ms - HIT_WINDOW_MS and valid and JudgeMath.in_arc(cursor_u * 360.0, note.angle, note.width):
-			state["head_hit"] = true
-			_hit_count += 1
-			_combo += 1
-			_max_combo = maxi(_max_combo, _combo)
-			_add_judgement("PERFECT")
-			_pulse_at(note.angle, beat, _tier_color("PERFECT"), "PERFECT")
-			_sfx.play("path", 1.0)
-			_add_log("PATH #%d HEAD PERFECT" % note.id)
-			state["head_judged"] = true
-		elif ms > head_ms + HIT_WINDOW_MS:
-			state["head_hit"] = false
-			_miss_count += 1
-			_add_judgement("MISS")
-			_combo = 0
-			_pulse_at(note.angle, beat, UITheme.RED, "MISS", note.width)
-			_add_log("PATH #%d HEAD MISS" % note.id)
-			state["head_judged"] = true
+		if ms >= head_ms - HIT_WINDOW_MS:
+			# 头部：鼠标到环上星头 + 按键，和 Tap 同一套宽松判定。
+			var press := _take_key_for_point(head_ms - HIT_WINDOW_MS, head_ms + HIT_WINDOW_MS, head_point, 58.0)
+			if not press.is_empty():
+				var tier := _tier_for(float(press["time"]) - head_ms)
+				state["head_hit"] = true
+				_hit_count += 1
+				_combo += 1
+				_max_combo = maxi(_max_combo, _combo)
+				_add_judgement(tier)
+				_pulse_at(note.angle, beat, _tier_color(tier), tier)
+				_sfx.play("path", randf_range(0.98, 1.02))
+				_add_log("PATH #%d HEAD %s" % [note.id, tier])
+				state["head_judged"] = true
+			elif ms > head_ms + HIT_WINDOW_MS:
+				state["head_hit"] = false
+				_miss_count += 1
+				_add_judgement("MISS")
+				_combo = 0
+				_pulse_at(note.angle, beat, UITheme.RED, "MISS", note.width)
+				_add_log("PATH #%d HEAD MISS" % note.id)
+				state["head_judged"] = true
 	if not state["tail_judged"] and ms >= tail_ms - HIT_WINDOW_MS:
-		if valid and JudgeMath.in_arc(cursor_u * 360.0, note.tail_angle, note.tail_width):
+		var tail_point: Vector2 = _preview.path_point(note, note.duration(), beat)
+		if mouse.is_finite() and tail_point.is_finite() and mouse.distance_to(tail_point) <= 60.0:
+			var tier := _tier_for(ms - tail_ms)
 			state["tail_hit"] = true
 			_hit_count += 1
 			_combo += 1
 			_max_combo = maxi(_max_combo, _combo)
-			_add_judgement("PERFECT")
-			_pulse_at(note.tail_angle, beat, _tier_color("PERFECT"), "PERFECT", note.tail_width, "path")
+			_add_judgement(tier)
+			_pulse_at(note.tail_angle, beat, _tier_color(tier), tier, note.tail_width, "path")
 			_sfx.play("tail", randf_range(0.98, 1.02))
-			_add_log("PATH #%d TAIL PERFECT" % note.id)
+			_add_log("PATH #%d TAIL %s" % [note.id, tier])
 			state["tail_judged"] = true
 		elif ms > tail_ms + HIT_WINDOW_MS:
 			state["tail_hit"] = false
@@ -436,27 +445,37 @@ func _judge_path(note: Note, ms: float, beat: float, cursor_u: float, valid: boo
 		var status_color := UITheme.MINT if status == "FULL" else (UITheme.AMBER if status == "FRAY" else UITheme.RED)
 		_pulse_at(note.tail_angle, beat, status_color, status, note.tail_width, "path")
 		state["done"] = true
-	# 舞萌扫圈：中段不逐点取样，只看头、尾；跳区直接算通过。
-	if String(chart.metadata.get("slide_mode", "follow")) == "maimai":
+	if ms < head_ms or ms > tail_ms:
 		return
+	# 中段平面跟随：跳过的区间直接削掉，不生成失败采样点。
+	if bool(state.get("head_hit", false)) and valid:
+		var info: Dictionary = _preview.path_fraction(note, mouse, beat)
+		var fraction := float(info.get("fraction", 0.0))
+		var distance_to_path := float(info.get("distance", INF))
+		var previous_fraction := float(state.get("path_frac", 0.0))
+		var last_mouse: Vector2 = state.get("path_last_mouse", mouse)
+		if distance_to_path <= 44.0:
+			if fraction >= previous_fraction + 0.02 and last_mouse.distance_to(mouse) > 60.0:
+				_preview.cut_path(note, previous_fraction, fraction)
+			state["path_frac"] = maxf(previous_fraction, fraction)
+		state["path_last_mouse"] = mouse
 	# Mid-section samples, one per frame.
-	if ms >= head_ms and ms <= tail_ms:
-		var sample_beats := note.path_sample_beats()
-		var index: int = state["next_sample"]
-		while index < sample_beats.size():
-			var sample_beat := sample_beats[index]
-			var sample_ms := chart.timing.beat_to_chart_ms(sample_beat)
-			if sample_ms > ms:
-				break
-			var rel := clampf(sample_beat - note.beat, 0.0, note.duration())
+	var sample_beats := note.path_sample_beats()
+	var index: int = state["next_sample"]
+	while index < sample_beats.size():
+		var sample_beat := sample_beats[index]
+		var sample_ms := chart.timing.beat_to_chart_ms(sample_beat)
+		if sample_ms > ms:
+			break
+		var rel := clampf(sample_beat - note.beat, 0.0, note.duration())
+		if not _preview.path_erased(note, rel):
 			var tolerance_px := clampf(24.0 * (note.tolerance / 0.24), 8.0, 64.0)
 			var distance := _preview.path_distance(note, rel, beat, mouse)
-			var inside := valid and distance <= tolerance_px
 			var samples: Array = state["samples"]
-			samples.append(inside)
+			samples.append(valid and distance <= tolerance_px)
 			state["samples"] = samples
-			index += 1
-		state["next_sample"] = index
+		index += 1
+	state["next_sample"] = index
 
 
 func _judge_trace(note: Note, ms: float, beat: float, delta: float, mouse: Vector2) -> void:

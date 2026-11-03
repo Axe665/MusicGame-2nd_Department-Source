@@ -138,7 +138,7 @@ static func _check_notes(chart: Chart, issues: Array[Dictionary]) -> void:
 			_add(issues, "error", "音符 %d 的类型 %s 未知" % [note.id, note.type], "note:%d" % note.id)
 		if note.width < 0.0 or note.width > 360.0:
 			_add(issues, "error", "音符 %d 的宽度越界" % note.id, "note:%d" % note.id)
-		if note.space == "plane":
+		if note.space == "plane" and note.type not in ["path", "trace"]:
 			if note.plane_x < 0.0 or note.plane_x > 1.0 or note.plane_y < 0.0 or note.plane_y > 1.0:
 				_add(issues, "error", "平面音符 %d 的位置越出舞台安全区" % note.id, "note:%d" % note.id)
 			if note.plane_radius <= 0.0 or note.plane_radius > 0.3:
@@ -154,6 +154,14 @@ static func _check_notes(chart: Chart, issues: Array[Dictionary]) -> void:
 					_add(issues, "error", "Path %d 的容差越界" % note.id, "note:%d" % note.id)
 				if note.samples_per_beat <= 0.0:
 					_add(issues, "error", "Path %d 的采样密度必须为正" % note.id, "note:%d" % note.id)
+				if not note.trace_pts.is_empty() and note.trace_pts.size() < 2:
+					_add(issues, "error", "Path %d 的平面点不足 2 个" % note.id, "note:%d" % note.id)
+				for point in note.trace_pts:
+					var x := float(point.get("x", 0.0))
+					var y := float(point.get("y", 0.0))
+					if sqrt(x * x + y * y) > 1.05:
+						_add(issues, "error", "Path %d 的点越出环内平面" % note.id, "note:%d" % note.id)
+						break
 			"trace":
 				if note.end_beat <= note.beat + EPS:
 					_add(issues, "error", "Trace %d 的结束拍必须晚于开始拍" % note.id, "note:%d" % note.id)
@@ -181,7 +189,7 @@ static func _check_notes(chart: Chart, issues: Array[Dictionary]) -> void:
 						_add(issues, "error", "Anchor %d 缺少同拍反向的配对" % note.id, "note:%d" % note.id)
 				if not note.pair_id.is_empty() and _anchor_partner(chart, note) == null:
 					_add(issues, "error", "Anchor %d 的 pairId 没有配对" % note.id, "note:%d" % note.id)
-		if note.type != "trace" and note.space != "plane":
+		if note.space != "plane" or note.type == "path":
 			var u := note.center_u if note.type == "bell" else fposmod(note.angle, 360.0) / 360.0
 			var shape := chart.get_default_shape()
 			if shape != null:
