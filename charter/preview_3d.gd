@@ -1681,7 +1681,7 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 	var wait := clampf(note.wait_beat, 0.0, maxf(0.0, total - 0.001))
 	var progress := clampf((t - note.beat - wait) / maxf(0.001, total - wait), 0.0, 1.0)
 	var runs: Array[PackedVector2Array] = []
-	var cache_key := "%d|%s|%.0f|%.0f" % [note.id, _last_view_key, size.x, size.y]
+	var cache_key := "%d|%d|%s|%.0f|%.0f" % [note.id, (path_cuts.get(note.id, []) as Array).size(), _last_view_key, size.x, size.y]
 	if grow >= 0.999 and _path_runs_cache.has(cache_key):
 		runs = _path_runs_cache[cache_key]
 	else:
