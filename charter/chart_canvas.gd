@@ -428,8 +428,7 @@ func _draw_path(note: Note) -> void:
 		for fraction in [0.33, 0.66]:
 			var sample := _polyline_sample(piece, fraction)
 			_draw_arrowhead(sample["point"], sample["direction"], UITheme.CYAN)
-	if note.path_style != "star":
-		for point in note.visual_pts:
+	for point in note.visual_pts:
 			var rel := float(point.get("db", 0.0))
 			if note.erased_at(rel):
 				continue
@@ -442,7 +441,7 @@ func _draw_path(note: Note) -> void:
 	_draw_star(Vector2(x0, y0), 9.0 if selected else 8.0, UITheme.CORAL)
 	_draw_donut(Vector2(x1, y1), 7.0, UITheme.GOLD)
 	if _show_type_label(note):
-		_draw_type_label("PATH ★" if note.path_style == "star" else "PATH", Vector2(x0 + 11.0, y0 + 12.0), UITheme.CYAN)
+		_draw_type_label("PATH", Vector2(x0 + 11.0, y0 + 12.0), UITheme.CYAN)
 
 
 func _append_dashes(a: Vector2, b: Vector2, dash: float, out: PackedVector2Array) -> void:
