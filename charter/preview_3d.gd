@@ -1133,7 +1133,10 @@ func _update_cursor() -> void:
 	var threshold := maxf(20.0, average * 0.20)
 	var near_center := mouse_screen.distance_to(center) < average * 0.12
 	var valid := distance <= threshold and not near_center
-	if not mouse_inside and not playtest_mode:
+	if playtest_mode:
+		# 外环判定：内圈以外（含环带外侧）都按最接近的 u 算，鼠标移出环/舞台也能打。
+		valid = mouse_screen.distance_to(center) >= average * 0.55
+	elif not mouse_inside:
 		valid = false
 	cursor_u = u
 	cursor_valid = valid
