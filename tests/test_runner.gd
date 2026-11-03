@@ -37,6 +37,7 @@ func _initialize() -> void:
 		"test_simai_import",
 		"test_osu_std_sentakki_rules",
 		"test_simai_directive_slot",
+		"test_simai_bend_shapes",
 	]
 	for test_name in tests:
 		if call(test_name) != true:
@@ -929,5 +930,26 @@ func test_simai_directive_slot() -> bool:
 	if chart != null:
 		near(chart.notes[0].beat, 1.0, 0.001, "directive-only token occupies one slot")
 		near(chart.notes[1].beat, 2.0, 0.001, "next note stays on the grid")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	return true
+
+
+func test_simai_bend_shapes() -> bool:
+	var text := "&title=T\n&wholebpm=120\n&lv_1=1\n&inote_1=(120){4},1v5[4:1],1p3[4:1],\nE\n"
+	var path := "user://test_simai_bend.txt"
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	if file == null:
+		ok(false, "simai bend fixture")
+		return true
+	file.store_string(text)
+	file.close()
+	var chart := SimaiIO.import_maidata(path, 1)
+	ok(chart != null, "simai bend chart imports")
+	if chart != null:
+		var bent := 0
+		for note in chart.notes:
+			if note.type == "path" and not note.visual_pts.is_empty():
+				bent += 1
+		ok(bent >= 1, "v/p shapes get a bend point")
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
 	return true
