@@ -1767,6 +1767,8 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 	# 中间判定点：保留设计/预览用的采样点，不参与严格扣分。
 	for sample_beat in note.path_sample_beats():
 		var rel := clampf(sample_beat - note.beat, 0.0, total)
+		if path_erased(note, rel):
+			continue
 		var p := _path_screen_point(chart, note, rel, t, true, grow)
 		if _valid_point(p):
 			canvas.draw_circle(p, 2.6 * ns, Color(0, 0, 0, 0.5))
@@ -1774,6 +1776,8 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 	# 手动放置的中间设计点。
 	for point in note.visual_pts:
 		var rel := clampf(float(point.get("db", 0.0)), 0.0, total)
+		if path_erased(note, rel):
+			continue
 		var p := _path_screen_point(chart, note, rel, t, true, grow)
 		if _valid_point(p):
 			_draw_diamond(canvas, p, 4.5, UITheme.GOLD)
@@ -1806,10 +1810,11 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 		canvas.draw_string(UITheme.bold_font(), head + Vector2(-12, -22), "PATH", HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(UITheme.CORAL.r, UITheme.CORAL.g, UITheme.CORAL.b, 0.85))
 	# 大号发光球 + 短拖尾：当前进度点始终比星头更亮，方向一目了然。
 	if t >= note.beat and t <= note.end_beat:
-		var rel := progress * total
+		# 指示球贴着已完成轨迹的前沿，擦除后不会悬在缺口里。
+		var rel := maxf(progress, path_erased_extent(note)) * total
 		for trail_index in range(4, 0, -1):
 			var trail_rel := rel - float(trail_index) * 0.035 * total
-			if trail_rel < 0.0:
+			if trail_rel < 0.0 or path_erased(note, trail_rel):
 				continue
 			var trail_point := _path_screen_point(chart, note, trail_rel, t, false)
 			if _valid_point(trail_point):
@@ -1877,25 +1882,27 @@ func erase_path_overlap(note: Note, from: Vector2, to: Vector2, beat: float) -> 
 	for i in count + 1:
 		points.append(_path_screen_point(chart, note, total * float(i) / float(count), beat, false))
 	var ranges := path_erase_ranges(points, from, to, 26.0 * _note_scale())
+	var furthest := 0.0
 	for span in ranges:
-		cut_path(note, span.x, span.y)
+		furthest = maxf(furthest, float(span.y))
+	if furthest > path_erased_extent(note) + 0.001:
+		set_path_erased_to(note, furthest)
 	return not ranges.is_empty()
 
 
-func cut_path(note: Note, from_fraction: float, to_fraction: float) -> void:
-	var a := clampf(minf(from_fraction, to_fraction), 0.0, 1.0)
-	var b := clampf(maxf(from_fraction, to_fraction), 0.0, 1.0)
-	if b - a <= 0.004:
+func path_erased_extent(note: Note) -> float:
+	var result := 0.0
+	for gap in path_cuts.get(note.id, []):
+		result = maxf(result, float(gap.get("to", 0.0)))
+	return result
+
+
+func set_path_erased_to(note: Note, fraction: float) -> void:
+	# 舞萌式擦除：已滑过的部分保持一个连续缺口，不留下碎片。
+	var target := maxf(path_erased_extent(note), clampf(fraction, 0.0, 1.0))
+	if target <= 0.004:
 		return
-	if not path_cuts.has(note.id):
-		path_cuts[note.id] = []
-	var ranges: Array = path_cuts[note.id]
-	if not ranges.is_empty() and a <= float(ranges[-1].get("to", 0.0)) + 0.004:
-		ranges[-1]["from"] = minf(float(ranges[-1].get("from", a)), a)
-		ranges[-1]["to"] = maxf(float(ranges[-1].get("to", b)), b)
-	else:
-		ranges.append({"from": a, "to": b})
-	path_cuts[note.id] = ranges
+	path_cuts[note.id] = [{"from": 0.0, "to": target}]
 	if _overlay != null:
 		_overlay.queue_redraw()
 
