@@ -1,0 +1,33 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>fig04-follow</title>
+<style>html,body{margin:0;background:#0A0B10}.diagram-container{width:100%;overflow-x:auto}
+svg{width:100%;min-width:1200px;display:block}
+@media print{.diagram-container{overflow:visible}svg{min-width:0}}</style></head>
+<body><main><div class="diagram-container"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 760" role="img" aria-labelledby="fig04-title fig04-desc">
+<title id="fig04-title">中段是宽松跟随</title>
+<desc id="fig04-desc">不必压线：指针周围 80px 容差圆盖住路径带就算跟随，每次离开单独给 250ms。</desc>
+<defs>
+<filter id="blur" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="10"/></filter>
+<filter id="soft" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="5"/></filter>
+<radialGradient id="vig" cx="50%" cy="42%" r="72%">
+<stop offset="0%" stop-color="#191C25"/><stop offset="100%" stop-color="#0A0B10"/></radialGradient>
+</defs>
+<rect width="1200" height="760" fill="url(#vig)"/>
+<text x="48" y="46" fill="#9A948C" font-family="DejaVu Sans Mono" font-size="12" font-weight="500" text-anchor="start" letter-spacing="3">TAMAKI³ / PATH</text>
+<text x="1152" y="46" fill="#5F5A55" font-family="DejaVu Sans Mono" font-size="12" font-weight="500" text-anchor="end">FIG04</text>
+<text x="48" y="96" fill="#F4EFE9" font-family="Noto Sans CJK SC" font-size="31" font-weight="600" text-anchor="start">中段是宽松跟随</text>
+<text x="48" y="126" fill="#9A948C" font-family="Noto Sans CJK SC" font-size="15.5" font-weight="400" text-anchor="start">不必压线：指针周围 80px 容差圆盖住路径带就算跟随，每次离开单独给 250ms。</text>
+<defs><marker id="ar" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="#FFC08A"/></marker></defs>
+<line x1="90" y1="440" x2="350" y2="440" stroke="#E4D9CB" stroke-width="14" stroke-linecap="round" opacity="0.55"/><line x1="90" y1="440" x2="350" y2="440" stroke="#5FD3D0" stroke-width="1.4" stroke-dasharray="6 9" opacity="0.7"/><circle cx="220" cy="440" r="80" fill="#5FD3D0" opacity="0.05"/><circle cx="220" cy="440" r="80" fill="none" stroke="#5FD3D0" stroke-width="1.2" stroke-dasharray="5 7" opacity="0.8"/><circle cx="220" cy="440" r="6" fill="#FFFFFF"/><circle cx="220" cy="440" r="3" fill="#0A0B10"/><line x1="470" y1="440" x2="730" y2="440" stroke="#E4D9CB" stroke-width="14" stroke-linecap="round" opacity="0.55"/><line x1="470" y1="440" x2="730" y2="440" stroke="#5FD3D0" stroke-width="1.4" stroke-dasharray="6 9" opacity="0.7"/><circle cx="600" cy="440" r="80" fill="none" stroke="#5FD3D0" stroke-width="1.2" stroke-dasharray="5 7" opacity="0.45"/><path d="M 600 366 C 604 408, 630 414, 644 426" fill="none" stroke="#FFC08A" stroke-width="2" stroke-dasharray="5 5" marker-end="url(#ar)"/><text x="656" y="386" fill="#FFC08A" font-family="DejaVu Sans Mono" font-size="12" font-weight="500" text-anchor="start">≤250ms</text><circle cx="600" cy="356" r="6" fill="#FFFFFF"/><circle cx="600" cy="356" r="3" fill="#0A0B10"/><line x1="850" y1="440" x2="1110" y2="440" stroke="#E4D9CB" stroke-width="14" stroke-linecap="round" opacity="0.55"/><line x1="850" y1="440" x2="1110" y2="440" stroke="#5FD3D0" stroke-width="1.4" stroke-dasharray="6 9" opacity="0.7"/><path d="M 966 286 L 994 314 M 994 286 L 966 314" stroke="#9A948C" stroke-width="2"/><circle cx="980" cy="300" r="6" fill="#FFFFFF"/><circle cx="980" cy="300" r="3" fill="#0A0B10"/>
+<text x="220" y="548" fill="#F4EFE9" font-family="DejaVu Sans Mono" font-size="16" font-weight="600" text-anchor="middle" letter-spacing="2">FULL</text>
+<text x="220" y="572" fill="#5F5A55" font-family="Noto Sans CJK SC" font-size="13" font-weight="400" text-anchor="middle">全程在带内</text>
+<text x="600" y="548" fill="#F4EFE9" font-family="DejaVu Sans Mono" font-size="16" font-weight="600" text-anchor="middle" letter-spacing="2">FRAY</text>
+<text x="600" y="572" fill="#5F5A55" font-family="Noto Sans CJK SC" font-size="13" font-weight="400" text-anchor="middle">离开 ≤250ms 后接回</text>
+<text x="980" y="548" fill="#F4EFE9" font-family="DejaVu Sans Mono" font-size="16" font-weight="600" text-anchor="middle" letter-spacing="2">LOST</text>
+<text x="980" y="572" fill="#5F5A55" font-family="Noto Sans CJK SC" font-size="13" font-weight="400" text-anchor="middle">离开超时，尾部前断</text>
+<line x1="410" y1="510" x2="410" y2="590" stroke="#242832" stroke-width="1"/>
+<line x1="790" y1="510" x2="790" y2="590" stroke="#242832" stroke-width="1"/>
+<text x="290" y="366" fill="#5FD3D0" font-family="DejaVu Sans Mono" font-size="12" font-weight="500" text-anchor="middle">容差圆 80px</text>
+
+<text x="48" y="736" fill="#5F5A55" font-family="Noto Sans CJK SC" font-size="12" font-weight="400" text-anchor="start">中段没跟好只降这一条 Path 的评级，不断连、不扣其他音符。</text>
+</svg></div></main></body></html>
