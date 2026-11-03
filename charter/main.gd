@@ -37,6 +37,11 @@ var _playing: bool = false
 var _rate: float = 1.0
 var _loop: bool = false
 var _metronome: bool = true
+var _sfx: HitSfx
+var _sfx_enabled: bool = true
+var _sfx_events: Array[Dictionary] = []
+var _sfx_event_index: int = 0
+var _sfx_last_beat: float = -INF
 var _play_start_usec: int = 0
 var _play_start_chart_ms: float = 0.0
 var _last_beat_int: int = -1
@@ -61,6 +66,9 @@ func _ready() -> void:
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_build_ui()
 	_build_audio()
+	_sfx = HitSfx.new()
+	_sfx.name = "EditorHitSfx"
+	add_child(_sfx)
 	_build_dialogs()
 	if _app != null:
 		_app.chart_changed.connect(_on_chart_changed)
@@ -344,6 +352,11 @@ func _build_ui() -> void:
 	metro_check.button_pressed = true
 	metro_check.toggled.connect(func(pressed: bool) -> void: _metronome = pressed)
 	transport_row.add_child(metro_check)
+	var sfx_check := CheckBox.new()
+	sfx_check.text = "打击音"
+	sfx_check.button_pressed = true
+	sfx_check.toggled.connect(func(pressed: bool) -> void: _sfx_enabled = pressed)
+	transport_row.add_child(sfx_check)
 	var transport_spacer := Control.new()
 	transport_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	transport_row.add_child(transport_spacer)
@@ -532,6 +545,10 @@ func _sync_tools() -> void:
 
 func _on_chart_changed() -> void:
 	_ensure_audio()
+	_build_sfx_events()
+	if _playing and _app != null:
+		_sfx_event_index = _first_sfx_event(_app.playhead_beat)
+		_sfx_last_beat = _app.playhead_beat - 0.001
 	_update_transport()
 	_update_status()
 
@@ -584,6 +601,9 @@ func _start_play(beat: float) -> void:
 	_play_start_chart_ms = _app.chart.timing.beat_to_chart_ms(beat)
 	_play_start_usec = Time.get_ticks_usec()
 	_last_beat_int = -1
+	_build_sfx_events()
+	_sfx_event_index = _first_sfx_event(beat)
+	_sfx_last_beat = beat - 0.001
 	if _audio.stream != null:
 		_audio.pitch_scale = _rate
 		var from_sec := maxf(0.0, (_play_start_chart_ms - _app.chart.offset_ms) / 1000.0)
@@ -613,6 +633,55 @@ func _on_audio_finished() -> void:
 		_stop_play()
 
 
+func _build_sfx_events() -> void:
+	_sfx_events.clear()
+	if _app == null or _app.chart == null:
+		return
+	for note in _app.chart.notes:
+		match note.type:
+			"tap":
+				_add_sfx_event(note.beat, HitSfx.kind_for_note(note))
+			"hold":
+				_add_sfx_event(note.beat, "don", 0.82)
+				_add_sfx_event(note.end_beat, "don", 1.18)
+			"path":
+				_add_sfx_event(note.beat, "don", 1.10)
+				_add_sfx_event(note.end_beat, "tail")
+			"anchor":
+				_add_sfx_event(note.beat, "don", 1.22)
+			"bell":
+				_add_sfx_event(note.beat, "bell")
+			"trace":
+				_add_sfx_event(note.beat, "trace")
+	_sfx_events.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return float(a["beat"]) < float(b["beat"]))
+
+
+func _add_sfx_event(beat: float, kind: String, pitch: float = 1.0) -> void:
+	_sfx_events.append({"beat": beat, "kind": kind, "pitch": pitch})
+
+
+func _first_sfx_event(beat: float) -> int:
+	var index := 0
+	while index < _sfx_events.size() and float(_sfx_events[index]["beat"]) < beat - 0.0001:
+		index += 1
+	return index
+
+
+func _fire_editor_sfx(beat: float) -> void:
+	if beat < _sfx_last_beat - 0.001 or beat > _sfx_last_beat + 0.5:
+		_sfx_event_index = _first_sfx_event(beat)
+		_sfx_last_beat = beat
+		return
+	while _sfx_event_index < _sfx_events.size():
+		var event: Dictionary = _sfx_events[_sfx_event_index]
+		if float(event["beat"]) > beat + 0.0001:
+			break
+		if _sfx_enabled:
+			_sfx.play(String(event["kind"]), float(event.get("pitch", 1.0)) * randf_range(0.99, 1.01))
+		_sfx_event_index += 1
+	_sfx_last_beat = beat
+
+
 func _process(_delta: float) -> void:
 	if _app == null or _app.chart == null:
 		return
@@ -624,6 +693,7 @@ func _process(_delta: float) -> void:
 			chart_ms = _play_start_chart_ms + float(Time.get_ticks_usec() - _play_start_usec) / 1000.0 * _rate
 		var beat: float = _app.chart.timing.chart_ms_to_beat(chart_ms)
 		_app.set_playhead(beat)
+		_fire_editor_sfx(beat)
 		var beat_int := floori(beat)
 		if _metronome and beat_int != _last_beat_int and _beat_label != null:
 			_last_beat_int = beat_int

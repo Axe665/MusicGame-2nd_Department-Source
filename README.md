@@ -40,7 +40,8 @@ godot --path .
 ## 已实现
 
 - `core/`：TimingMap、BoundaryShape/Segment/Event、ViewState、Region、Note、Chart、ChartIO、Validator、JudgeMath、UndoStack
-- 打击音效：试玩命中播放 Freesound CC0 打击音（don/kat/铃/Path 尾/擦带），10 路播放器轮转 + 轻微随机音高；资源在 `audio/sfx/`
+- 打击音效：试玩命中与编辑器播放共用 `HitSfx` 音效池（don/kat/铃/Path 尾/擦带），10 路播放器轮转 + 轻微随机音高；资源在 `audio/sfx/`
+- 编辑器播放打击音：运输条“打击音”开关，播放时按音符时间触发 Tap、Hold 头/尾、Path 头/尾、Anchor、Bell、Trace；不影响试玩
 - 光标：Estella 风格白色环 + 青色内环 + 旋转弧 + 深色描边 + 拖尾；预览内始终隐藏系统光标并绘制自定义光标
 - 流速：运输条“流速”0.5×–2.0×，只缩放预读速度（`pre_read_ms ÷ flow_scale`），不改判定窗口；试玩沿用当前设置
 - Path 擦除：检查器“跳区 / 擦除”可擦掉中段 0–80%；擦除段不渲染、不生成中段检查点，断裂处自动断开轨迹

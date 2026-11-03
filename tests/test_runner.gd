@@ -588,8 +588,8 @@ func test_angle_math() -> bool:
 
 
 func test_sfx_assets() -> bool:
-	for kind in Playtest.SFX_PATHS:
-		var stream: AudioStream = load(String(Playtest.SFX_PATHS[kind]))
+	for kind in HitSfx.PATHS:
+		var stream: AudioStream = load(String(HitSfx.PATHS[kind]))
 		ok(stream != null, "sfx loads %s" % kind)
 	return true
 
