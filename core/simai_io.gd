@@ -65,6 +65,7 @@ static func import_maidata(path: String, difficulty_index: int = 0) -> Chart:
 	_parse_notes(inote, chart, counts)
 	_remove_chords(chart, counts)
 	_clamp_holds(chart, counts)
+	_resolve_path_overlaps(chart, counts)
 	chart.notes.sort_custom(func(a: Note, b: Note) -> bool: return a.beat < b.beat)
 	_extract_assets(path, chart)
 	var audio_note := "音频：未找到 track.*" if chart.audio_path.is_empty() else "音频：%s" % chart.audio_path.get_file()
@@ -352,3 +353,27 @@ static func _extract_assets(path: String, chart: Chart) -> void:
 		var code := OS.execute("ffmpeg", ["-y", "-i", ProjectSettings.globalize_path(chart.audio_path), "-vn", "-acodec", "libvorbis", "-q:a", "5", ProjectSettings.globalize_path(ogg_path)], output, true, false)
 		if code == 0 and FileAccess.file_exists(ogg_path):
 			chart.audio_path = ogg_path
+
+static func _resolve_path_overlaps(chart: Chart, counts: Dictionary) -> void:
+	# Path 尾拍与其他目标同刻且角度不重合时，删掉另一侧，保证单手可打。
+	var remove: Array[Note] = []
+	for path in chart.notes:
+		if path.type != "path" or remove.has(path):
+			continue
+		for other in chart.notes:
+			if other == path or remove.has(other):
+				continue
+			if not other.type in ["tap", "hold", "path"]:
+				continue
+			if absf(other.beat - path.end_beat) > 0.001:
+				continue
+			if other.type == "path":
+				if other.duration() >= path.duration():
+					remove.append(path)
+				else:
+					remove.append(other)
+			else:
+				remove.append(other)
+	for note in remove:
+		chart.notes.erase(note)
+		counts["dropped"] += 1

@@ -105,7 +105,7 @@ godot --headless --path . --import
 godot --headless --path . --script res://tests/test_runner.gd
 ```
 
-当前结果：**197 passed, 0 failed**。测试覆盖：
+当前结果：**198 passed, 0 failed**。测试覆盖：
 
 - 120 BPM / 变速 / offset 的时间换算与反解
 - 圆的 C(u)、最近点反解、五角星 Path 表现层
@@ -114,7 +114,7 @@ godot --headless --path . --script res://tests/test_runner.gd
 - osu!taiko 导入的 don/kat 车道、密集堆叠、短滑条拆点、长滑条鼓滚、spinner 跳过
 - Path 跳区擦除范围、擦除段不生成中段检查点、JSON / `.lbp` 保留
 - 试玩打击音资源可加载
-- Simai 导入的难度列表、offset、按钮角度、Hold/Slide 时长、双押删除、Touch→Bell
+- Simai 导入的难度列表、offset、按钮角度、Hold/Slide 时长、双押删除、Path 尾冲突删除、Touch→Bell
 - osu!std 的 45° 流步长、Slide wait 阶段、Hold 重叠夹短/降级
 - `.osz` 多难度列表与指定难度导入
 - 固定预读 `P(T)=C(u,T)`（多形状/事件）

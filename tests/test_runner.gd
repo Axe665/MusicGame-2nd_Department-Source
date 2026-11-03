@@ -875,6 +875,7 @@ func test_simai_import() -> bool:
 	for note in chart.notes:
 		types.append(note.type)
 	eq(types, ["tap", "hold", "path", "bell"], "simai note types")
+	eq(Validator.errors(Validator.validate(chart)).size(), 0, "simai import is playable without double-hand conflicts")
 	if chart.notes.size() >= 3:
 		near(chart.notes[0].angle, 90.0, 0.001, "simai button 1 is top")
 		near(chart.notes[2].end_beat, 4.0, 0.001, "simai slide wait + duration")
