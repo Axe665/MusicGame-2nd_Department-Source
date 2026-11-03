@@ -8,6 +8,9 @@ func _initialize() -> void:
 	var tests := [
 		"test_timing",
 		"test_boundary_circle",
+		"test_boundary_batch",
+		"test_boundary_frame",
+		"test_live_edit_notifications",
 		"test_self_intersection",
 		"test_star_path",
 		"test_nearest_u",
@@ -87,6 +90,107 @@ func test_boundary_circle() -> bool:
 	near(shape.point_at(0.25).point.x, 0.0, 0.1, "circle u.25 x")
 	near(shape.point_at(0.25).point.y, 330.0, 0.1, "circle u.25 y")
 	eq(shape.validate().size(), 0, "circle validates")
+	return true
+
+
+func test_boundary_batch() -> bool:
+	var chart := DemoChart.make_demo()
+	# Cover unordered segments, gaps, both morph directions and exact seams.
+	chart.get_shape("S1").segments[0].gap = true
+	for shape in chart.sorted_shapes():
+		shape.segments.reverse()
+	var matches := true
+	for beat in [0.0, 7.999, 8.0, 9.0, 10.0, 12.0, 12.125, 12.25, 12.5, 13.0, 20.0, 21.0, 24.25, 25.0]:
+		var points := BoundaryRuntime.eval_shape(chart, beat, 128)
+		for i in points.size():
+			var expected := BoundaryRuntime.eval_point(chart, float(i) / 128.0, beat)
+			if (points[i].point as Vector2).distance_to(expected.point) > 0.00001 or points[i].gap != expected.gap:
+				matches = false
+	ok(matches, "batch boundary samples match point evaluation through morph and restore")
+	chart.events[0].target_u0 = 0.25
+	chart.events[0].target_u1 = 0.75
+	chart.events[0].end_behavior = "hold"
+	matches = true
+	for beat in [8.0, 9.0, 12.0, 12.5]:
+		var points := BoundaryRuntime.eval_shape(chart, beat, 128)
+		for i in points.size():
+			var expected := BoundaryRuntime.eval_point(chart, float(i) / 128.0, beat)
+			if (points[i].point as Vector2).distance_to(expected.point) > 0.00001 or points[i].gap != expected.gap:
+				matches = false
+	ok(matches, "batch boundary samples preserve partial event and hold behavior")
+	var shape := chart.get_default_shape()
+	var segment := shape.segment_at(0.125)
+	segment.p1 += Vector2(10, 0)
+	near(shape.point_at(0.125).point.distance_to(segment.p1), 0.0, 0.00001, "point lookup sees live geometry edits")
+	return true
+
+
+func test_boundary_frame() -> bool:
+	var chart := DemoChart.make_demo()
+	chart.get_shape("S1").segments[0].gap = true
+	for shape in chart.sorted_shapes():
+		shape.segments.reverse()
+	var previous: BoundaryFrame = null
+	var matches := true
+	for beat in [0.0, 7.999, 8.0, 9.0, 10.0, 12.0, 12.125, 12.25, 12.5, 13.0, 20.0, 21.0, 24.25, 25.0]:
+		var frame := BoundaryFrame.new(chart, beat, previous)
+		var points := frame.sample_points(128)
+		for i in points.size():
+			var expected := BoundaryRuntime.eval_point(chart, float(i) / 128.0, beat)
+			if (points[i].point as Vector2).distance_to(expected.point) > 0.00001 or points[i].gap != expected.gap:
+				matches = false
+		for u in [-0.25, 0.0, 0.03125, 0.12345, 0.50789, 1.0]:
+			var actual := frame.point_at(u)
+			var expected := BoundaryRuntime.eval_point(chart, u, beat)
+			if (actual.point as Vector2).distance_to(expected.point) > 0.00001 or actual.gap != expected.gap:
+				matches = false
+		previous = frame
+	ok(matches, "prepared frames match exact boundary evaluation across morph/restore and reused samples")
+	var frame := BoundaryFrame.new(chart, 9.0)
+	var projector := func(point: Vector2) -> Vector2: return point
+	var mouse := Vector2(250, 100)
+	var direct := BoundaryRuntime.nearest_u(chart, 9.0, mouse, projector, 96)
+	var prepared := BoundaryRuntime.nearest_u(chart, 9.0, mouse, projector, 96, frame)
+	near(prepared.u, direct.u, 0.000001, "prepared cursor preserves nearest u")
+	near(prepared.distance, direct.distance, 0.00001, "prepared cursor preserves distance")
+	var preview := Preview3D.new()
+	var before := preview._boundary_point(chart, 0.0, 0.0)
+	chart.get_default_shape().segment_at(0.0).p0 += Vector2(10, 0)
+	preview._on_chart_live_changed()
+	var after := preview._boundary_point(chart, 0.0, 0.0)
+	near((after.point as Vector2).distance_to(before.point), 10.0, 0.0001, "live geometry edits invalidate prepared samples at unchanged time")
+	preview.free()
+	return true
+
+
+func test_live_edit_notifications() -> bool:
+	var app = load("res://charter/app.gd").new()
+	var counts := {"live": 0, "validation": 0}
+	app.set_chart(DemoChart.make_demo())
+	app.chart_live_changed.connect(func() -> void: counts.live += 1)
+	app.validation_changed.connect(func(_issues: Array) -> void: counts.validation += 1)
+	app.begin_edit()
+	for i in 30:
+		app.chart.notes[0].angle = float(i)
+		app.touch_chart()
+	eq(counts.validation, 0, "drag does not run full validation per mouse event")
+	app._process(0.016)
+	eq(counts.live, 1, "drag updates coalesce into one live notification per frame")
+	app.chart.notes[0].angle = 45.0
+	app.touch_chart()
+	app.finish_edit()
+	eq(counts.live, 2, "release flushes the final mouse position")
+	eq(counts.validation, 1, "release validates the committed chart")
+	app.undo_chart()
+	near(app.chart.notes[0].angle, 0.0, 0.001, "drag remains one undo step")
+	app.redo_chart()
+	near(app.chart.notes[0].angle, 45.0, 0.001, "drag redo restores final position")
+	app.free()
+	var preview := Preview3D.new()
+	preview._mesh_dirty = false
+	preview._on_chart_live_changed()
+	ok(not preview._mesh_dirty, "note drag keeps the ring mesh valid")
+	preview.free()
 	return true
 
 

@@ -62,7 +62,7 @@ godot --path .
 - Red 表现与绘制：填充红色扇区、亮色外弧、扇区斜纹、RED/RED IN 标签；Red 工具在预览中横向拖角度、纵向拖时长（最多 4 拍）；Trace 表现：宽幅薄荷擦带、双层边线、虚线中轴、连续箭头、起止端点、已擦进度与高亮擦头
 - 媒体：原生 WAV/OGG/MP3 音频、Ogg Theora 视频；FLAC/M4A/AAC/OPUS/WebM/MP4 音频与 MP4/WebM/MOV/MKV/AVI 视频通过 ffmpeg 自动转码到 `user://media/` 后预览
 - 视觉：石墨黑 + 安全黄 UI、浅色切角音符卡、深空径向渐变、八角舞台与八束光、金色八边形外框、圆盘刻度/十字准星、音符投影；参考 maimai 的环上 HUD 与 Path 构成、Estella 的八角 3D 舞台；音符保留珊瑚/琥珀/青/薄荷/紫/金/红语义色
-- 性能：Forward+ / Vulkan、60fps 上限；3D 网格按形状/事件 20Hz 缓存，静止时 SubViewport 自动禁用，3D 内部渲染 0.8×；时间轴静态层与播放头拆成两层，播放时只重绘播放头；检查器标签 20Hz 更新、事件轨 20Hz、最近点 96 采样、字号预加载、视频仅在漂移时 seek
+- 性能：Forward+ / Vulkan、60fps 上限；边界批量采样时只排序一次分段，变形插值参数按事件计算一次；BoundaryFrame 缓存形状采样，当前时刻的网格、音符和光标共用精确边界求值，编辑后失效；Path 固定造型采样与相机适配半径复用；3D 网格在变形期间跟随渲染帧更新，静止时复用；音符拖动按帧合并通知、不重建环网格，完整校验在松开鼠标后执行；试玩时暂停被覆盖的编辑器及其 3D 视口；静止时 SubViewport 自动禁用，3D 内部渲染 0.8×；时间轴静态层与播放头拆成两层，播放时只重绘播放头；检查器标签 20Hz 更新、事件轨 20Hz、最近点 96 采样、字号预加载、视频仅在漂移时 seek
 - 试玩：音频主时钟（输出延迟补偿 + 单调防回跳）、按键事件时间戳判定（减少一帧输入延迟）、40ms 二值窗口、早按跨帧保留 300ms 并在窗口内取键（不再每帧清空）、任意键 Tap/Hold/Anchor、鼠标 Path/Tail/Bell/Trace、Red 200ms、FULL/FRAY/LOST、COMBO、命中扩散环、二值日志、结果面板
 - osu!std 混合层导入：circle → 环上 Tap（连续 u）；slider → 环内平面 Slide Trace（星头按键 + 沿轨迹移动，尾部是轨迹终点不单独判定）；lazy/短/重复 → Hold
 - 连续角度：流内按 Sentakki 式方向步进 22.5°，jump 用压缩角度差，360°/s 限速；不吸 8 轨
@@ -98,7 +98,7 @@ godot --headless --path . --import
 godot --headless --path . --script res://tests/test_runner.gd
 ```
 
-当前结果：**166 passed, 0 failed**。测试覆盖：
+当前结果：**169 passed, 0 failed**。测试覆盖：
 
 - 120 BPM / 变速 / offset 的时间换算与反解
 - 圆的 C(u)、最近点反解、五角星 Path 表现层
@@ -111,6 +111,8 @@ godot --headless --path . --script res://tests/test_runner.gd
 - 固定预读 `P(T)=C(u,T)`（多形状/事件）
 - 文档 §7.2 的 1 秒收缩算例（`R(t)=330−150t`，t=1 时 180px）
 - BoundaryEvent restore 回快照与插值
+- 批量边界采样与逐点求值一致（乱序分段、缺口、局部事件、变形与恢复）；拖动通知按帧合并、提交后校验、撤销/重做与环网格复用
+- BoundaryFrame 跨帧复用采样与原始求值一致、光标最近点一致、同一时刻编辑后缓存失效
 - JSON 保存→加载→保存字节稳定
 - 示例谱全量校验
 - 角度交集/红区差集、同刻可打性（红区覆盖唯一落脚点时拒绝）、Trace 距离
