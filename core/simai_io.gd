@@ -156,6 +156,30 @@ static func _parse_notes(inote: String, chart: Chart, counts: Dictionary) -> voi
 			# 只有指令的 token 仍然占一个空格；之前不推进会让整张谱提前 4 拍。
 			beat += slot
 			continue
+		if token.contains("*"):
+			var branches := token.split("*")
+			var head := String(branches[0]).strip_edges().substr(0, 1)
+			var best: Note = null
+			for i in branches.size():
+				var part := String(branches[i]).strip_edges()
+				if i > 0 and not part.begins_with(head):
+					part = head + part
+				var branch := _parse_note(part, beat, bpm)
+				if branch != null and (best == null or branch.duration() > best.duration()):
+					best = branch
+				elif branch != null:
+					counts["dropped"] += 1
+			if best != null:
+				best.id = chart.next_note_id()
+				chart.notes.append(best)
+				previous_angle = best.angle
+				match best.type:
+					"tap": counts["tap"] += 1
+					"hold": counts["hold"] += 1
+					"path": counts["path"] += 1
+					"bell": counts["bell"] += 1
+			beat += slot
+			continue
 		var pieces := token.split("/")
 		var parsed_at_beat: Array[Note] = []
 		for piece in pieces:
@@ -233,6 +257,14 @@ static func _parse_note(token: String, beat: float, bpm: float) -> Note:
 		note.tolerance = 0.24
 		note.samples_per_beat = 4.0
 		note.path_style = "arc"
+		if token.contains("v") or token.contains("V") or token.contains("w") or token.contains("p") or token.contains("q") or token.contains("s") or token.contains("z"):
+			var digits := ""
+			for ch in token.split("[")[0]:
+				if ch.is_valid_int():
+					digits += ch
+			var turn := int(digits.substr(1, 1)) if digits.length() >= 3 else 0
+			var mid_da := _short_delta(start_angle, _button_angle(turn)) if turn > 0 else _short_delta(start_angle, note.tail_angle) * 0.5 + 32.0
+			note.visual_pts = [{"db": (note.end_beat - note.beat) * 0.5, "da": mid_da}]
 		return note
 	if token.find("h") >= 0:
 		var hold := Note.new("hold", beat, fposmod(start_angle, 360.0), 62.0)
