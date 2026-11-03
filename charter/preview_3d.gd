@@ -87,6 +87,7 @@ var _last_cursor_emit: Vector2 = Vector2(-999, -999)
 var _cursor_cache_key: String = ""
 var _sorted_notes_cache: Array[Note] = []
 var _trace_cache: Dictionary = {}
+var _path_runs_cache: Dictionary = {}
 var _trace_cache_mesh: String = ""
 var _sorted_notes_chart: Chart = null
 var _last_view_key: String = ""
@@ -766,6 +767,7 @@ func _update_video(chart: Chart, beat: float) -> void:
 func _on_chart_changed() -> void:
 	_sorted_notes_chart = null
 	_trace_cache.clear()
+	_path_runs_cache.clear()
 	_boundary_frame_cache = null
 	_path_local_cache.clear()
 	_max_design_radius = -1.0
@@ -781,6 +783,7 @@ func _on_chart_changed() -> void:
 func _on_chart_live_changed() -> void:
 	_sorted_notes_chart = null
 	_trace_cache.clear()
+	_path_runs_cache.clear()
 	_boundary_frame_cache = null
 	_path_local_cache.clear()
 	# Note/region drags only change the overlay. Boundary dragging marks the
@@ -1335,6 +1338,8 @@ func trace_screen_points(note: Note, beat: float = 0.0, scale: float = 1.0) -> P
 	if mesh != _trace_cache_mesh:
 		_trace_cache_mesh = mesh
 		_trace_cache.clear()
+		_path_runs_cache.clear()
+	_path_runs_cache.clear()
 	var cache_key := "%d" % note.id
 	if grow >= 0.999 and _trace_cache.has(cache_key):
 		return _trace_cache[cache_key]
@@ -1563,28 +1568,41 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 	var grow := clampf((t - (note.beat - pre)) / maxf(0.001, pre), 0.0, 1.0)
 	var ns := _note_scale()
 	var runs: Array[PackedVector2Array] = []
-	var run := PackedVector2Array()
-	var count := 80
-	var last_valid := Vector2(INF, INF)
-	for i in count + 1:
-		var rel := total * float(i) / float(count)
-		var erased := note.erased_at(rel)
-		var p := _path_screen_point(chart, note, rel, t, true, grow)
-		if erased or not _valid_point(p):
-			if run.size() > 1:
-				runs.append(run)
-			run = PackedVector2Array()
-			last_valid = Vector2(INF, INF)
-			continue
-		# 跳区不连线：断开处直接起新的一段，避免画出跨过擦除区的假轨迹。
-		if last_valid.x < 1.0e9 and p.distance_to(last_valid) > 64.0:
-			if run.size() > 1:
-				runs.append(run)
-			run = PackedVector2Array()
-		run.append(p)
-		last_valid = p
-	if run.size() > 1:
-		runs.append(run)
+	var cache_key := "%d" % note.id
+	if grow >= 0.999 and _path_runs_cache.has(cache_key):
+		runs = _path_runs_cache[cache_key]
+	else:
+		var run := PackedVector2Array()
+		var count := 80
+		var last_valid := Vector2(INF, INF)
+		for i in count + 1:
+			var rel := total * float(i) / float(count)
+			var erased := note.erased_at(rel)
+			var p := _path_screen_point(chart, note, rel, t, true, 1.0)
+			if erased or not _valid_point(p):
+				if run.size() > 1:
+					runs.append(run)
+				run = PackedVector2Array()
+				last_valid = Vector2(INF, INF)
+				continue
+			# 跳区不连线：断开处直接起新的一段，避免画出跨过擦除区的假轨迹。
+			if last_valid.x < 1.0e9 and p.distance_to(last_valid) > 64.0:
+				if run.size() > 1:
+					runs.append(run)
+				run = PackedVector2Array()
+			run.append(p)
+			last_valid = p
+		if run.size() > 1:
+			runs.append(run)
+		if grow < 0.999:
+			var center := project_design(Vector2.ZERO)
+			for r in range(runs.size()):
+				var scaled := PackedVector2Array()
+				for p in runs[r]:
+					scaled.append(center.lerp(p, grow))
+				runs[r] = scaled
+		else:
+			_path_runs_cache[cache_key] = runs
 	var body := Color(0.78, 0.80, 0.79, 0.62 if top else 0.22)
 	var dash := Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.92 if top else 0.34)
 	var arrow := Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.95 if top else 0.34)
