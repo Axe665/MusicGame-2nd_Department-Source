@@ -46,7 +46,7 @@ godot --path .
 - 流速：运输条“流速”0.5×–2.0×，只缩放预读速度（`pre_read_ms ÷ flow_scale`），不改判定窗口；试玩沿用当前设置
 - 音量：运输条“音乐”“音效”两个滑杆，分别控制 `Music` / `SFX` 总线；编辑器播放、试玩、打击音共用总线设置
 - 游玩范围：所有 note 以**八角舞台安全矩形**为准；手绘 Trace 在落点时夹到安全区，环上 note 保持在环内
-- Tap 接近：环上 Tap 从中心飞向判定环并随预读进度放大（maimai/Estella 同类的径向接近）；流速只改预读时长，不改尺寸曲线
+- 接近表现：所有音符（Tap / Hold / Path / Trace / Anchor / Bell）都从圆心飞向判定环并随预读放大，轨迹和星尾一起长出，不再原地出现；Hold 完成后 0.24 拍渐隐
 - Path 擦除：检查器“跳区 / 擦除”可擦掉中段 0–80%；擦除段不渲染、不生成中段检查点，断裂处自动断开轨迹
 - 时间：beat↔毫秒分段积分、BPM 变化、offset、固定预读 D、拍号分子 1–16
 - 边界：分段曲线 l/s/si/so/b、闭合/缺口、局部 BoundaryEvent、restore/hold、控制点拖动、双击拆分、圆/椭圆/竖椭圆/切一刀预设；按本次要求限制为**简单凸轮廓**，自交/非凸/星形/折返/局部半径过激会被拒绝
@@ -98,7 +98,7 @@ godot --headless --path . --import
 godot --headless --path . --script res://tests/test_runner.gd
 ```
 
-当前结果：**169 passed, 0 failed**。测试覆盖：
+当前结果：**180 passed, 0 failed**。测试覆盖：
 
 - 120 BPM / 变速 / offset 的时间换算与反解
 - 圆的 C(u)、最近点反解、五角星 Path 表现层
