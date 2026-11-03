@@ -1,0 +1,39 @@
+; Engine configuration file.
+; Tamaki3 Charter — Godot 4.7.2
+config_version=5
+
+[application]
+
+run/max_fps=60
+
+config/name="Tamaki₃ 制谱器"
+run/main_scene="res://charter/main.tscn"
+config/features=PackedStringArray("4.7", "Forward Plus")
+config/icon="res://icon.svg"
+
+[autoload]
+
+App="*res://charter/app.gd"
+
+[display]
+
+window/vsync/vsync_mode=1
+
+window/size/viewport_width=1600
+window/size/viewport_height=900
+window/size/window_width_override=1600
+window/size/window_height_override=900
+window/size/resizable=true
+window/stretch/mode="canvas_items"
+window/stretch/aspect="expand"
+
+[rendering]
+
+renderer/rendering_method="forward_plus"
+renderer/rendering_method.mobile="mobile"
+environment/defaults/default_clear_color=Color(0.043137, 0.047059, 0.062745, 1)
+
+[audio]
+
+driver/enable_input=false
+driver/output_latency=10
