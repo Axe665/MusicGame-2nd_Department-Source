@@ -2139,13 +2139,13 @@ func request_redraw() -> void:
 		_overlay.queue_redraw()
 
 
-func add_hit_pulse(point: Vector2, color: Color, label: String = "HIT") -> void:
+func add_hit_pulse(point: Vector2, color: Color, label: String = "HIT", kind: String = "tap") -> void:
 	if not _valid_point(point):
 		return
 	var sparks: Array[float] = []
 	for i in 10:
 		sparks.append(randf_range(0.0, TAU))
-	_pulses.append({"pos": point, "age": 0.0, "color": color, "label": label, "sparks": sparks})
+	_pulses.append({"pos": point, "age": 0.0, "color": color, "label": label, "kind": kind, "sparks": sparks})
 	if _overlay != null:
 		_overlay.queue_redraw()
 
@@ -2190,6 +2190,17 @@ func _draw_pulses(canvas: Control) -> void:
 			var outer := point + direction * (18.0 + age * 96.0)
 			canvas.draw_line(inner, outer, Color(color.r, color.g, color.b, 0.85 * alpha), 2.2 * alpha + 0.4, true)
 			canvas.draw_circle(outer, 2.0 * alpha, Color(1, 1, 1, 0.8 * alpha))
+		match String(pulse.get("kind", "tap")):
+			"hold":
+				canvas.draw_line(point + Vector2(0, -80.0 * (1.0 - alpha)), point - Vector2(0, 20), Color(color.r, color.g, color.b, 0.35 * alpha), 10.0, true)
+			"bell":
+				canvas.draw_arc(point, radius * 0.55, 0.0, TAU, 28, Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, alpha), 3.0, true)
+			"path":
+				for k in 5:
+					var a := float(k) * TAU / 5.0
+					canvas.draw_circle(point + Vector2(cos(a), sin(a)) * (18.0 + age * 50.0), 3.0 * alpha, Color(1, 1, 1, alpha))
+			"trace":
+				canvas.draw_line(point - Vector2(46, 0), point + Vector2(46, 0), Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.5 * alpha), 8.0 * alpha + 1.0, true)
 		var text_scale := 1.0 + 0.25 * clampf(1.0 - age / 0.12, 0.0, 1.0)
 		canvas.draw_string_outline(UITheme.bold_font(), point + Vector2(14, -16 - age * 30), String(pulse.get("label", "")), HORIZONTAL_ALIGNMENT_LEFT, -1, int(12.0 * text_scale), 3, Color(0, 0, 0, 0.55 * alpha))
 		canvas.draw_string(UITheme.bold_font(), point + Vector2(14, -16 - age * 30), String(pulse.get("label", "")), HORIZONTAL_ALIGNMENT_LEFT, -1, int(12.0 * text_scale), Color(color.r, color.g, color.b, alpha))
