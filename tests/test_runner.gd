@@ -34,6 +34,8 @@ func _initialize() -> void:
 		"test_angle_math",
 		"test_trace_distance",
 		"test_sfx_assets",
+		"test_simai_import",
+		"test_osu_std_sentakki_rules",
 	]
 	for test_name in tests:
 		if call(test_name) != true:
@@ -846,4 +848,65 @@ func test_sfx_assets() -> bool:
 func test_trace_distance() -> bool:
 	var line: Array[Vector2] = [Vector2(0.0, 0.0), Vector2(1.0, 0.0)]
 	near(JudgeMath.trace_distance(Vector2(0.5, 0.25), line), 0.25, 0.001, "trace distance")
+	return true
+
+
+func test_simai_import() -> bool:
+	var text := "&title=Simai Test\n&artist=Tester\n&first=1\n&wholebpm=120\n&lv_1=5\n&des_1=me\n&inote_1=(120){4}\n1,2h[4:1],1-5[4:1],E1,\nE\n"
+	var path := "user://test_simai_maidata.txt"
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	if file == null:
+		ok(false, "simai fixture write")
+		return true
+	file.store_string(text)
+	file.close()
+	var diffs := SimaiIO.list_maidata(path)
+	eq(diffs.size(), 1, "simai difficulty detected")
+	if not diffs.is_empty():
+		eq(String(diffs[0]["version"]), "Lv.5", "simai level label")
+	var chart := SimaiIO.import_maidata(path, 1)
+	ok(chart != null, "simai imports")
+	if chart == null:
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+		return true
+	near(chart.offset_ms, 1000.0, 0.001, "simai first -> offset")
+	eq(chart.notes.size(), 4, "simai keeps four notes")
+	var types: Array[String] = []
+	for note in chart.notes:
+		types.append(note.type)
+	eq(types, ["tap", "hold", "path", "bell"], "simai note types")
+	if chart.notes.size() >= 3:
+		near(chart.notes[0].angle, 90.0, 0.001, "simai button 1 is top")
+		near(chart.notes[2].end_beat, 4.0, 0.001, "simai slide wait + duration")
+		near(chart.notes[2].tail_angle, 270.0, 0.001, "simai slide tail button 5")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	return true
+
+
+func test_osu_std_sentakki_rules() -> bool:
+	eq(OsuIO.STD_STREAM_STEP, 45.0, "osu std stream step is 8-lane 45deg")
+	var text := """osu file format v14
+
+[General]
+Mode: 0
+
+[Difficulty]
+SliderMultiplier: 1.4
+
+[TimingPoints]
+0,500,4,2,0,100,1,0
+
+[HitObjects]
+256,192,1000,2,0,L|400:192,1,280,0|0,0:0|0:0,0:0:0:0:
+256,192,1300,1,0,0:0:0:0:
+"""
+	var result := OsuIO.parse_osu(text, "sentakki.osu")
+	ok(not result.is_empty(), "sentakki rules chart parses")
+	if result.is_empty():
+		return true
+	var chart: Chart = result["chart"]
+	var trace: Note = chart.notes[0]
+	eq(trace.type, "trace", "long slider becomes trace")
+	ok(trace.wait_beat > 0.0, "slide has a wait phase before moving")
+	near(trace.end_beat - trace.beat, 2.0, 0.001, "slide end beat stays on the osu timeline")
 	return true

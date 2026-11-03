@@ -54,6 +54,7 @@ var _report_dialog: AcceptDialog
 var _difficulty_dialog: ConfirmationDialog
 var _difficulty_list: ItemList
 var _pending_osz: String = ""
+var _pending_kind: String = "osu"
 var _new_dialog: NewChartDialog
 var _playtest: Playtest
 var _cursor_u: float = 0.0
@@ -344,6 +345,21 @@ func _build_ui() -> void:
 		_show_toast("流速 %.2f×（只改预读速度，不改判定）" % _app.flow_scale, "info")
 	)
 	transport_row.add_child(flow_option)
+	var star_label := Label.new()
+	UITheme.style_mono(star_label, 11, UITheme.MUTED)
+	star_label.text = "星速"
+	transport_row.add_child(star_label)
+	var star_option := OptionButton.new()
+	for item in ["0.75×", "1.0×", "1.25×", "1.5×"]:
+		star_option.add_item(item)
+	star_option.selected = 1
+	star_option.item_selected.connect(func(index: int) -> void:
+		_app.star_speed = [0.75, 1.0, 1.25, 1.5][index]
+		_preview.star_speed = _app.star_speed
+		_preview.request_redraw()
+		_show_toast("星速 %.2f×（滑条引导星与跟随距离一起缩放）" % _app.star_speed, "info")
+	)
+	transport_row.add_child(star_option)
 	var loop_check := CheckBox.new()
 	loop_check.text = "循环"
 	loop_check.toggled.connect(func(pressed: bool) -> void: _loop = pressed)
@@ -494,8 +510,8 @@ func _build_dialogs() -> void:
 	_import_dialog = FileDialog.new()
 	_import_dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
 	_import_dialog.access = FileDialog.ACCESS_FILESYSTEM
-	_import_dialog.filters = PackedStringArray(["*.osz ; osu! 谱面包"])
-	_import_dialog.title = "导入 osu!std / osu!taiko"
+	_import_dialog.filters = PackedStringArray(["*.osz,*.zip,*.txt ; osu! / Simai 谱面"])
+	_import_dialog.title = "导入 osu! / 舞萌 Simai"
 	_import_dialog.file_selected.connect(_on_import_osz_selected)
 	add_child(_import_dialog)
 	_lbp_dialog = FileDialog.new()
@@ -511,12 +527,12 @@ func _build_dialogs() -> void:
 	)
 	add_child(_lbp_dialog)
 	_report_dialog = AcceptDialog.new()
-	_report_dialog.title = "osu! 导入报告"
+	_report_dialog.title = "导入报告"
 	_report_dialog.dialog_autowrap = true
 	add_child(_report_dialog)
 	_difficulty_dialog = ConfirmationDialog.new()
-	_difficulty_dialog.title = "选择 osu! 难度"
-	_difficulty_dialog.dialog_text = "压缩包内有多个 .osu，请选择要导入的难度："
+	_difficulty_dialog.title = "选择导入难度"
+	_difficulty_dialog.dialog_text = "谱面包含多个难度，请选择："
 	_difficulty_dialog.ok_button_text = "导入"
 	_difficulty_dialog.cancel_button_text = "取消"
 	var diff_box := VBoxContainer.new()
@@ -528,7 +544,10 @@ func _build_dialogs() -> void:
 	_difficulty_dialog.confirmed.connect(func() -> void:
 		var selected := _difficulty_list.get_selected_items()
 		if selected.size() > 0 and not _pending_osz.is_empty():
-			_import_osz(_pending_osz, selected[0])
+			if _pending_kind == "simai":
+				_import_maimai(_pending_osz, selected[0])
+			else:
+				_import_osz(_pending_osz, selected[0])
 	)
 	add_child(_difficulty_dialog)
 	_new_dialog = NewChartDialog.new()
@@ -550,6 +569,7 @@ func _sync_from_app() -> void:
 	_preview.mouse_tilt = _app.mouse_tilt
 	_preview.show_debug = _app.debug_overlay
 	_preview.flow_scale = _app.flow_scale
+	_preview.star_speed = _app.star_speed
 	_canvas.px_per_beat = _app.zoom_px_per_beat
 	_ensure_audio()
 	_sync_tools()
@@ -814,9 +834,20 @@ func _update_validation(issues: Array) -> void:
 
 
 func _on_import_osz_selected(path: String) -> void:
+	var simai := SimaiIO.list_maidata(path)
+	if not simai.is_empty():
+		_pending_kind = "simai"
+		_pending_osz = path
+		_difficulty_list.clear()
+		for item in simai:
+			_difficulty_list.add_item("%s — %s  %s" % [String(item.get("title", "")), String(item.get("version", "")), String(item.get("creator", ""))])
+		_difficulty_list.select(0)
+		_difficulty_dialog.popup_centered_ratio(0.58)
+		return
+	_pending_kind = "osu"
 	var difficulties := OsuIO.list_osz_difficulties(path)
 	if difficulties.is_empty():
-		_show_toast("osu! 导入失败：%s" % OsuIO.last_error, "error")
+		_show_toast("导入失败：%s" % OsuIO.last_error, "error")
 		return
 	if difficulties.size() == 1:
 		_import_osz(path, 0)
@@ -835,6 +866,12 @@ func _on_import_osz_selected(path: String) -> void:
 
 func _import_osz(path: String, difficulty_index: int) -> void:
 	if _app.import_osz(path, difficulty_index):
+		_sync_from_app()
+		_show_report(_app.last_import_report)
+
+
+func _import_maimai(path: String, difficulty_index: int) -> void:
+	if _app.import_maimai(path, difficulty_index):
 		_sync_from_app()
 		_show_report(_app.last_import_report)
 

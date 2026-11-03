@@ -5,7 +5,7 @@ static var last_error: String = ""
 
 const TAIKO_STACK_GAP := 0.32
 const STD_MAX_DEG_PER_SEC := 360.0
-const STD_STREAM_STEP := 22.5
+const STD_STREAM_STEP := 45.0
 const STD_JUMP_COMPRESSION := 0.75
 const STD_JUMP_DISTANCE := 128.0
 const STD_PATH_MAX_SPAN := 180.0
@@ -420,7 +420,11 @@ static func _convert_std_continuous(objects_raw: Array, chart: Chart, timing_raw
 		var tail_u := u
 		var end_beat := beat
 		var is_path := false
-		if bool(current["is_slider"]) and not bool(current["lazy"]) and int(current["repeats"]) <= 1 and float(current["duration"]) >= 0.5:
+		var slide_wait := 1.0
+		if bool(current["is_slider"]):
+			while slide_wait >= float(current["duration"]) - 0.05 and slide_wait > 0.5:
+				slide_wait /= 2.0
+		if bool(current["is_slider"]) and not bool(current["lazy"]) and int(current["repeats"]) <= 1 and float(current["duration"]) >= 0.5 and slide_wait >= 0.5:
 			var raw: Array[Vector2] = current["raw"]
 			var raw_end := _std_angle(current["end_pos"])
 			var net := _std_short_delta(raw_start, raw_end)
@@ -430,22 +434,32 @@ static func _convert_std_continuous(objects_raw: Array, chart: Chart, timing_raw
 				direction = 1.0 if turn > 0.0 else -1.0
 			elif absf(net) > 1.0:
 				direction = 1.0 if net > 0.0 else -1.0
-			var span := clampf(absf(net) * 0.55 + float(current["duration"]) * 12.0, 45.0, STD_PATH_MAX_SPAN)
+			var span := clampf(absf(net) * 0.45 + float(current["duration"]) * 16.0, 55.0, STD_PATH_MAX_SPAN)
 			tail_u = u + direction * span
 			end_beat = beat + float(current["duration"])
 			note = Note.new("trace", beat, fposmod(u, 360.0), 60.0)
 			note.end_beat = end_beat
 			note.trace_style = "slider"
-			note.move_px = clampf(70.0 + float(current["duration"]) * 50.0, 90.0, 240.0)
+			note.move_px = clampf(90.0 + float(current["duration"]) * 55.0, 110.0, 280.0)
 			note.trace_pts = _std_slide_trace(u, tail_u, float(current["duration"]))
+			note.wait_beat = slide_wait
 			counts["trace"] += 1
 			is_path = true
 		elif bool(current["is_slider"]):
 			var hold_duration := maxf(0.25, float(current["duration"]))
 			end_beat = beat + hold_duration
-			note = Note.new("hold", beat, fposmod(u, 360.0), 60.0)
-			note.end_beat = end_beat
-			counts["hold"] += 1
+			if i + 1 < play.size() and end_beat > float(play[i + 1]["beat"]) - 0.0625:
+				# 只有真的会和下一个 note 重叠时才夹短；夹完太短才降级 Tap。
+				end_beat = float(play[i + 1]["beat"]) - 0.0625
+				if end_beat - beat < 0.5:
+					hold_duration = 0.0
+			if hold_duration <= 0.0:
+				note = Note.new("tap", beat, fposmod(u, 360.0), 60.0)
+				counts["tap"] += 1
+			else:
+				note = Note.new("hold", beat, fposmod(u, 360.0), 60.0)
+				note.end_beat = end_beat
+				counts["hold"] += 1
 		else:
 			note = Note.new("tap", beat, fposmod(u, 360.0), 60.0)
 			counts["tap"] += 1
@@ -495,13 +509,15 @@ static func _std_slide_trace(head_u: float, tail_u: float, duration: float) -> A
 	var delta := fposmod(tail - head + PI, TAU) - PI
 	if absf(delta) < 0.01:
 		delta = PI * 0.5
-	var sag := clampf(0.12 + absf(delta) / PI * 0.10, 0.12, 0.22)
+	var sag := clampf(0.10 + absf(delta) / PI * 0.09, 0.10, 0.20)
 	var result: Array[Dictionary] = []
-	var count := 24
+	var count := 40
 	for i in count + 1:
 		var t := float(i) / float(count)
-		var angle := head + delta * t
-		var radius := 1.0 - sag * sin(PI * t)
+		# 平滑起停，避免短滑条看起来像折线。
+		var eased := t * t * (3.0 - 2.0 * t)
+		var angle := head + delta * eased
+		var radius := 1.0 - sag * sin(PI * eased)
 		result.append({
 			"x": cos(angle) * radius,
 			"y": sin(angle) * radius,

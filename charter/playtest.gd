@@ -3,7 +3,10 @@ extends Control
 
 signal exit_requested
 
-const HIT_WINDOW_MS := 40.0
+const PERFECT_MS := 50.0
+const GREAT_MS := 90.0
+const GOOD_MS := 140.0
+const HIT_WINDOW_MS := GOOD_MS
 const BELL_WINDOW_MS := 100.0
 const RED_LIMIT_SEC := 0.2
 
@@ -30,6 +33,9 @@ var _red_states: Dictionary = {}
 
 var _hit_count: int = 0
 var _miss_count: int = 0
+var _accuracy_sum: float = 0.0
+var _judged_total: int = 0
+var _tier_counts: Dictionary = {"PERFECT": 0, "GREAT": 0, "GOOD": 0, "MISS": 0}
 var _bell_total: int = 0
 var _bell_hits: int = 0
 var _red_breaks: int = 0
@@ -71,6 +77,7 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	_preview.mouse_tilt = true
 	_preview.show_debug = false
 	_preview.flow_scale = float(_app.flow_scale if _app != null else 1.0)
+	_preview.star_speed = float(_app.star_speed if _app != null else 1.0)
 	_preview.time_beat = start_beat
 	_preview.playing = true
 	_preview.visible = true
@@ -178,6 +185,9 @@ func _init_states() -> void:
 	_keys_held.clear()
 	_hit_count = 0
 	_miss_count = 0
+	_accuracy_sum = 0.0
+	_judged_total = 0
+	_tier_counts = {"PERFECT": 0, "GREAT": 0, "GOOD": 0, "MISS": 0}
 	_bell_total = 0
 	_bell_hits = 0
 	_red_breaks = 0
@@ -201,6 +211,7 @@ func _init_states() -> void:
 			"trace_distance": 0.0,
 			"trace_last": Vector2.ZERO,
 			"trace_contact": false,
+			"trace_frac": 0.0,
 		}
 		if note.type == "bell":
 			_bell_total += 1
@@ -302,18 +313,22 @@ func _judge_tap(note: Note, ms: float, beat: float) -> void:
 		return
 	var press := _take_key_for_arc(target - HIT_WINDOW_MS, target + HIT_WINDOW_MS, note.angle, note.width)
 	if not press.is_empty():
+		var tier := _tier_for(float(press["time"]) - target)
 		state["done"] = true
 		_hit_count += 1
 		_combo += 1
 		_max_combo = maxi(_max_combo, _combo)
-		_pulse_at(note.angle, beat, UITheme.CORAL, "HIT")
+		_add_judgement(tier)
+		_pulse_at(note.angle, beat, _tier_color(tier), tier, note.width)
 		_sfx.play(HitSfx.kind_for_note(note), randf_range(0.98, 1.02))
-		_record_error(float(press["time"]) - target, "Tap #%d HIT" % note.id)
+		_record_error(float(press["time"]) - target, "Tap #%d %s" % [note.id, tier])
 		return
 	if ms > target + HIT_WINDOW_MS:
 		state["done"] = true
 		_miss_count += 1
+		_add_judgement("MISS")
 		_combo = 0
+		_pulse_at(note.angle, beat, UITheme.RED, "MISS", note.width)
 		_add_log("MISS Tap #%d @ %.0fms" % [note.id, target])
 
 
@@ -326,32 +341,43 @@ func _judge_hold(note: Note, ms: float, beat: float) -> void:
 			return
 		var press := _take_key_for_arc(target - HIT_WINDOW_MS, target + HIT_WINDOW_MS, note.angle, note.width)
 		if not press.is_empty():
+			var head_tier := _tier_for(float(press["time"]) - target)
 			state["started"] = true
 			state["head"] = true
-			_pulse_at(note.angle, beat, UITheme.AMBER, "HOLD")
+			state["key"] = int(press.get("key", 0))
+			state["head_tier"] = head_tier
+			_pulse_at(note.angle, beat, _tier_color(head_tier), head_tier, note.width)
 			_sfx.play("don", 0.82)
-			_add_log("HOLD #%d HEAD" % note.id)
+			_add_log("HOLD #%d HEAD %s" % [note.id, head_tier])
 			return
 		if ms > target + HIT_WINDOW_MS:
 			state["done"] = true
 			_miss_count += 1
+			_add_judgement("MISS")
 			_combo = 0
+			_pulse_at(note.angle, beat, UITheme.RED, "MISS", note.width)
 			_add_log("MISS Hold #%d (head)" % note.id)
 		return
-	if _keys_held.is_empty():
+	# Hold 绑定起手键：松开起手键才算断，换成另一个键点 Tap 不会误续。
+	var hold_key := int(state.get("key", 0))
+	if hold_key != 0 and not _keys_held.has(hold_key):
 		state["done"] = true
 		_miss_count += 1
+		_add_judgement("MISS")
 		_combo = 0
-		_add_log("MISS Hold #%d (released)" % note.id)
+		_pulse_at(note.angle, beat, UITheme.RED, "MISS", note.width)
+		_add_log("MISS Hold #%d (key released)" % note.id)
 		return
 	if ms >= end_ms:
+		var tier := String(state.get("head_tier", "PERFECT"))
 		state["done"] = true
 		_hit_count += 1
 		_combo += 1
 		_max_combo = maxi(_max_combo, _combo)
-		_pulse_at(note.angle, beat, UITheme.AMBER, "HOLD")
+		_add_judgement(tier)
+		_pulse_at(note.angle, beat, _tier_color(tier), tier, note.width)
 		_sfx.play("don", 1.18)
-		_record_error(ms - end_ms, "HOLD #%d COMPLETE" % note.id)
+		_record_error(ms - end_ms, "HOLD #%d COMPLETE %s" % [note.id, tier])
 
 
 func _judge_path(note: Note, ms: float, beat: float, cursor_u: float, valid: bool, mouse: Vector2) -> void:
@@ -364,14 +390,17 @@ func _judge_path(note: Note, ms: float, beat: float, cursor_u: float, valid: boo
 			_hit_count += 1
 			_combo += 1
 			_max_combo = maxi(_max_combo, _combo)
-			_pulse_at(note.angle, beat, UITheme.CORAL, "HIT")
+			_add_judgement("PERFECT")
+			_pulse_at(note.angle, beat, _tier_color("PERFECT"), "PERFECT")
 			_sfx.play("don", 1.10)
-			_add_log("PATH #%d HEAD HIT" % note.id)
+			_add_log("PATH #%d HEAD PERFECT" % note.id)
 			state["head_judged"] = true
 		elif ms > head_ms + HIT_WINDOW_MS:
 			state["head_hit"] = false
 			_miss_count += 1
+			_add_judgement("MISS")
 			_combo = 0
+			_pulse_at(note.angle, beat, UITheme.RED, "MISS", note.width)
 			_add_log("PATH #%d HEAD MISS" % note.id)
 			state["head_judged"] = true
 	if not state["tail_judged"] and ms >= tail_ms - HIT_WINDOW_MS:
@@ -380,14 +409,17 @@ func _judge_path(note: Note, ms: float, beat: float, cursor_u: float, valid: boo
 			_hit_count += 1
 			_combo += 1
 			_max_combo = maxi(_max_combo, _combo)
-			_pulse_at(note.tail_angle, beat, UITheme.GOLD, "HIT")
+			_add_judgement("PERFECT")
+			_pulse_at(note.tail_angle, beat, _tier_color("PERFECT"), "PERFECT", note.tail_width)
 			_sfx.play("tail", randf_range(0.98, 1.02))
-			_add_log("PATH #%d TAIL HIT" % note.id)
+			_add_log("PATH #%d TAIL PERFECT" % note.id)
 			state["tail_judged"] = true
 		elif ms > tail_ms + HIT_WINDOW_MS:
 			state["tail_hit"] = false
 			_miss_count += 1
+			_add_judgement("MISS")
 			_combo = 0
+			_pulse_at(note.tail_angle, beat, UITheme.RED, "MISS", note.tail_width)
 			_add_log("PATH #%d TAIL MISS" % note.id)
 			state["tail_judged"] = true
 	if state["tail_judged"] and not state["done"]:
@@ -450,27 +482,43 @@ func _judge_trace(note: Note, ms: float, beat: float, delta: float, mouse: Vecto
 			_add_log("MISS Trace #%d (no contact)" % note.id)
 		return
 	if contact:
+		var info: Dictionary = _preview.trace_fraction(note, mouse, beat)
+		var fraction := float(info.get("fraction", 0.0))
+		var distance_to_path := float(info.get("distance", INF))
 		if state["trace_contact"]:
 			var last: Vector2 = state["trace_last"]
-			state["trace_distance"] = float(state["trace_distance"]) + last.distance_to(mouse)
+			var step := last.distance_to(mouse)
+			var previous_fraction := float(state.get("trace_frac", 0.0))
+			var jumped := fraction >= previous_fraction + 0.05 and step > 110.0 and distance_to_path <= 34.0
+			if jumped:
+				# 鼠标向前跳区：跳过的段落从画面削掉，且不累计移动距离。
+				_preview.cut_trace(note, previous_fraction, fraction)
+			elif fraction + 0.02 >= previous_fraction:
+				state["trace_distance"] = float(state["trace_distance"]) + step
+			state["trace_frac"] = maxf(previous_fraction, fraction)
 		state["trace_contact"] = true
 		state["trace_last"] = mouse
 	else:
 		state["trace_contact"] = false
-	if float(state["trace_distance"]) >= note.move_px:
+	var required := note.move_px * float(_app.star_speed if _app != null else 1.0)
+	if float(state["trace_distance"]) >= required:
 		state["done"] = true
 		_hit_count += 1
 		_combo += 1
 		_max_combo = maxi(_max_combo, _combo)
-		_preview.add_hit_pulse(mouse, UITheme.MINT, "TRACE")
+		_add_judgement("PERFECT")
+		_preview.add_hit_pulse(mouse, UITheme.MINT, "PERFECT")
 		_sfx.play("trace", randf_range(0.97, 1.03))
-		_add_log("TRACE #%d HIT (%.0f/%.0f px)" % [note.id, float(state["trace_distance"]), note.move_px])
+		_add_log("TRACE #%d HIT (%.0f/%.0f px)" % [note.id, float(state["trace_distance"]), required])
 		return
 	if ms > end_ms + HIT_WINDOW_MS:
 		state["done"] = true
 		_miss_count += 1
+		_add_judgement("MISS")
 		_combo = 0
-		_add_log("MISS Trace #%d (distance %.0f/%.0f)" % [note.id, float(state["trace_distance"]), note.move_px])
+		if _preview != null:
+			_preview.add_hit_pulse(mouse, UITheme.RED, "MISS")
+		_add_log("MISS Trace #%d (distance %.0f/%.0f)" % [note.id, float(state["trace_distance"]), required])
 
 
 func _trace_contact(note: Note, mouse: Vector2, beat: float) -> bool:
@@ -508,18 +556,22 @@ func _judge_anchor(note: Note, ms: float, beat: float) -> void:
 		return
 	var press := _take_key_in_window(target - HIT_WINDOW_MS, target + HIT_WINDOW_MS)
 	if not press.is_empty():
+		var tier := _tier_for(float(press["time"]) - target)
 		state["done"] = true
 		_hit_count += 1
 		_combo += 1
 		_max_combo = maxi(_max_combo, _combo)
-		_pulse_at(note.angle, beat, UITheme.VIOLET, "HIT")
+		_add_judgement(tier)
+		_pulse_at(note.angle, beat, _tier_color(tier), tier, note.width)
 		_sfx.play("don", 1.22)
-		_record_error(float(press["time"]) - target, "ANCHOR #%d HIT" % note.id)
+		_record_error(float(press["time"]) - target, "ANCHOR #%d %s" % [note.id, tier])
 		return
 	if ms > target + HIT_WINDOW_MS:
 		state["done"] = true
 		_miss_count += 1
+		_add_judgement("MISS")
 		_combo = 0
+		_pulse_at(note.angle, beat, UITheme.RED, "MISS", 70.0)
 		_add_log("MISS Anchor #%d" % note.id)
 
 
@@ -537,18 +589,20 @@ func _judge_red(ms: float, beat: float, delta: float, cursor_u: float, valid: bo
 				state["broken"] = true
 				_red_breaks += 1
 				_miss_count += 1
+				_add_judgement("MISS")
 				_add_log("RED #%d BREAK @ %.0fms" % [region.id, ms])
 		else:
 			state["time"] = 0.0
 			state["broken"] = false
 
 
-func _pulse_at(angle_degrees: float, beat: float, color: Color, label: String) -> void:
+func _pulse_at(angle_degrees: float, beat: float, color: Color, label: String, width: float = 60.0) -> void:
 	if _preview == null:
 		return
 	var p: Vector2 = _preview.project_u(fposmod(angle_degrees, 360.0) / 360.0, beat)
 	if p.is_finite() and p.x < 1.0e9:
 		_preview.add_hit_pulse(p, color, label)
+		_preview.add_arc_flash(angle_degrees, width, beat, color)
 
 
 func _take_key_for_point(lo: float, hi: float, point: Vector2, radius: float) -> Dictionary:
@@ -635,10 +689,36 @@ func _update_hud() -> void:
 
 
 func _accuracy() -> float:
-	var total := _hit_count + _miss_count
-	if total <= 0:
+	if _judged_total <= 0:
 		return -1.0
-	return 100.0 * float(_hit_count) / float(total)
+	return 100.0 * _accuracy_sum / float(_judged_total)
+
+
+func _tier_for(error_ms: float) -> String:
+	var error := absf(error_ms)
+	if error <= PERFECT_MS:
+		return "PERFECT"
+	if error <= GREAT_MS:
+		return "GREAT"
+	if error <= GOOD_MS:
+		return "GOOD"
+	return "MISS"
+
+
+func _tier_color(tier: String) -> Color:
+	match tier:
+		"PERFECT": return UITheme.GOLD
+		"GREAT": return UITheme.CYAN
+		"GOOD": return UITheme.MUTED
+		"MISS": return UITheme.RED
+	return UITheme.INK
+
+
+func _add_judgement(tier: String) -> void:
+	var weight := 1.0 if tier == "PERFECT" else (0.7 if tier == "GREAT" else (0.3 if tier == "GOOD" else 0.0))
+	_accuracy_sum += weight
+	_judged_total += 1
+	_tier_counts[tier] = int(_tier_counts.get(tier, 0)) + 1
 
 
 func _rating(accuracy: float) -> String:
@@ -688,6 +768,7 @@ func _input(event: InputEvent) -> void:
 				"mouse": _preview.mouse_screen,
 				"u": _preview.cursor_u,
 				"valid": _preview.cursor_valid,
+				"key": key,
 			})
 			_keys_held[key] = true
 			get_viewport().set_input_as_handled()
@@ -711,6 +792,10 @@ func _finish() -> void:
 	lines.append("调试准确率：%s" % ("—" if _accuracy() < 0.0 else "%.2f%%" % _accuracy()))
 	lines.append("评级：%s（预览/非正式）" % _rating(_accuracy()))
 	lines.append("最大连击：%d" % _max_combo)
+	lines.append("判定：PERFECT %d / GREAT %d / GOOD %d / MISS %d" % [
+		int(_tier_counts.get("PERFECT", 0)), int(_tier_counts.get("GREAT", 0)),
+		int(_tier_counts.get("GOOD", 0)), int(_tier_counts.get("MISS", 0)),
+	])
 	lines.append("Bell 收集：%d / %d" % [_bell_hits, _bell_total])
 	lines.append("Red 断连：%d 次" % _red_breaks)
 	lines.append("")

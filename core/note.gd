@@ -9,6 +9,7 @@ var beat: float = 0.0
 var angle: float = 0.0
 var width: float = 60.0
 var end_beat: float = 0.0
+var wait_beat: float = 0.0
 var tail_angle: float = 0.0
 var tail_width: float = 45.0
 var hold: bool = true
@@ -51,8 +52,10 @@ func path_local_at(relative_beat: float) -> Vector2:
 	var total := duration()
 	if total <= 0.000001:
 		return _unit_from_angle(angle)
+	var wait := clampf(wait_beat, 0.0, maxf(0.0, total - 0.000001))
+	var move_total := maxf(0.000001, total - wait)
+	var p := clampf((relative_beat - wait) / move_total, 0.0, 1.0)
 	if path_style == "star":
-		var p := clampf(relative_beat / total, 0.0, 1.0)
 		return _star_local(p)
 	return _unit_from_angle(path_angle_at(relative_beat))
 
@@ -61,7 +64,9 @@ func path_angle_at(relative_beat: float) -> float:
 	var total := duration()
 	if total <= 0.000001:
 		return angle
-	var p := clampf(relative_beat / total, 0.0, 1.0)
+	var wait := clampf(wait_beat, 0.0, maxf(0.0, total - 0.000001))
+	var move_total := maxf(0.000001, total - wait)
+	var p := clampf((relative_beat - wait) / move_total, 0.0, 1.0)
 	if visual_pts.is_empty():
 		return angle + _short_delta(angle, tail_angle) * p
 	var points: Array[Dictionary] = [{"db": 0.0, "da": 0.0}]
@@ -156,6 +161,8 @@ func to_dict() -> Dictionary:
 				data["visual"] = _points_to_dict(visual_pts)
 		"path":
 			data["end_beat"] = snappedf(end_beat, 0.001)
+			if wait_beat > 0.0:
+				data["wait"] = snappedf(wait_beat, 0.001)
 			data["tail_angle"] = snappedf(tail_angle, 0.001)
 			data["tail_width"] = snappedf(tail_width, 0.001)
 			data["tolerance"] = snappedf(tolerance, 0.001)
@@ -168,6 +175,8 @@ func to_dict() -> Dictionary:
 				data["visual"] = _points_to_dict(visual_pts)
 		"trace":
 			data["end_beat"] = snappedf(end_beat, 0.001)
+			if wait_beat > 0.0:
+				data["wait"] = snappedf(wait_beat, 0.001)
 			data["move"] = snappedf(move_px, 0.001)
 			data["trace"] = _points_to_dict(trace_pts)
 			if trace_style != "wipe":
@@ -194,6 +203,7 @@ static func from_dict(raw: Dictionary) -> Note:
 	note.color = int(raw.get("color", 0))
 	note.lock = bool(raw.get("lock", false))
 	note.end_beat = float(raw.get("end_beat", note.beat))
+	note.wait_beat = float(raw.get("wait", 0.0))
 	note.tail_angle = float(raw.get("tail_angle", note.angle))
 	note.tail_width = float(raw.get("tail_width", note.width))
 	note.hold = bool(raw.get("hold", true))
