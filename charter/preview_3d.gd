@@ -86,6 +86,8 @@ var _video_load_failed: bool = false
 var _last_cursor_emit: Vector2 = Vector2(-999, -999)
 var _cursor_cache_key: String = ""
 var _sorted_notes_cache: Array[Note] = []
+var _trace_cache: Dictionary = {}
+var _trace_cache_mesh: String = ""
 var _sorted_notes_chart: Chart = null
 var _last_view_key: String = ""
 var _last_fit_key: String = ""
@@ -763,6 +765,7 @@ func _update_video(chart: Chart, beat: float) -> void:
 
 func _on_chart_changed() -> void:
 	_sorted_notes_chart = null
+	_trace_cache.clear()
 	_boundary_frame_cache = null
 	_path_local_cache.clear()
 	_max_design_radius = -1.0
@@ -777,6 +780,7 @@ func _on_chart_changed() -> void:
 
 func _on_chart_live_changed() -> void:
 	_sorted_notes_chart = null
+	_trace_cache.clear()
 	_boundary_frame_cache = null
 	_path_local_cache.clear()
 	# Note/region drags only change the overlay. Boundary dragging marks the
@@ -1324,10 +1328,17 @@ func plane_clamp_screen(point: Vector2) -> Vector2:
 
 
 func trace_screen_points(note: Note, beat: float = 0.0, scale: float = 1.0) -> PackedVector2Array:
-	var points := PackedVector2Array()
 	var chart := get_chart()
 	var grow := clampf(scale, 0.0, 1.0)
 	var center := project_design(Vector2.ZERO)
+	var mesh := _mesh_key(chart, beat) if chart != null else ""
+	if mesh != _trace_cache_mesh:
+		_trace_cache_mesh = mesh
+		_trace_cache.clear()
+	var cache_key := "%d" % note.id
+	if grow >= 0.999 and _trace_cache.has(cache_key):
+		return _trace_cache[cache_key]
+	var points := PackedVector2Array()
 	for point in note.trace_pts:
 		var x := float(point.get("x", 0.0))
 		var y := float(point.get("y", 0.0))
@@ -1340,6 +1351,8 @@ func trace_screen_points(note: Note, beat: float = 0.0, scale: float = 1.0) -> P
 			points.append(project_design((data.point as Vector2) * radius * grow))
 		else:
 			points.append(center.lerp(Vector2(x * size.x, y * size.y), grow))
+	if grow >= 0.999:
+		_trace_cache[cache_key] = points
 	return points
 
 
