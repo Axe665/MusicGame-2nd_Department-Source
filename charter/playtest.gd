@@ -445,12 +445,25 @@ func _judge_trace(note: Note, ms: float, delta: float, mouse: Vector2) -> void:
 	var end_ms := chart.timing.beat_to_chart_ms(note.end_beat)
 	var contact := _trace_contact(note, mouse)
 	if not state["trace_started"]:
-		if ms >= start_ms - HIT_WINDOW_MS and ms <= start_ms + HIT_WINDOW_MS and contact:
+		if ms < start_ms - HIT_WINDOW_MS:
+			return
+		var started := false
+		if note.trace_style == "slider":
+			var points := _preview.trace_screen_points(note)
+			var head: Vector2 = points[0] if not points.is_empty() else mouse
+			var press := _take_key_for_plane(start_ms - HIT_WINDOW_MS, start_ms + HIT_WINDOW_MS, head, 42.0)
+			if not press.is_empty():
+				started = true
+				_sfx.play("don", 0.90)
+		elif contact:
+			started = true
+		if started:
 			state["trace_started"] = true
 			state["trace_contact"] = true
 			state["trace_last"] = mouse
 			_add_log("TRACE #%d CONTACT" % note.id)
-		elif ms > start_ms + HIT_WINDOW_MS:
+			return
+		if ms > start_ms + HIT_WINDOW_MS:
 			state["done"] = true
 			_miss_count += 1
 			_combo = 0

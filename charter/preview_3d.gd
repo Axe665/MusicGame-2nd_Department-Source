@@ -76,6 +76,9 @@ var _frame_material: StandardMaterial3D
 var _last_mesh_beat: float = -9999.0
 var _mesh_dirty: bool = true
 var _last_chart_ref: Chart = null
+var _plane_mode: bool = false
+var _plane_cache_chart: Chart = null
+var _plane_cache_value: bool = false
 var _last_video_path: String = ""
 var _video_load_failed: bool = false
 var _last_cursor_emit: Vector2 = Vector2(-999, -999)
@@ -338,6 +341,11 @@ func _process(_delta: float) -> void:
 	var chart := get_chart()
 	if chart == null:
 		return
+	_plane_mode = _is_plane_chart(chart)
+	if _ring_mesh != null:
+		_ring_mesh.visible = not _plane_mode
+		_glow_mesh.visible = not _plane_mode
+		_shadow_mesh.visible = not _plane_mode
 	if follow_app and _app != null and _app.chart != _last_chart_ref:
 		_last_chart_ref = _app.chart
 		_mesh_dirty = true
@@ -356,7 +364,7 @@ func _process(_delta: float) -> void:
 	var mesh_key := _mesh_key(chart, t)
 	var view_changed := _update_transform(t)
 	var flat_dirty := _mesh_dirty and not use_3d_ring
-	if use_3d_ring and (_mesh_dirty or mesh_key != _last_mesh_key):
+	if use_3d_ring and not _plane_mode and (_mesh_dirty or mesh_key != _last_mesh_key):
 		_update_ring_mesh(chart, t)
 		_last_mesh_key = mesh_key
 		view_changed = true
@@ -380,6 +388,18 @@ func _process(_delta: float) -> void:
 		_update_3d_mode(playing or playtest_mode or _tilt.distance_to(_tilt_target) > 0.01, view_changed or _mesh_dirty)
 	_last_process_time = t
 	_last_mouse_screen = mouse_screen
+
+
+func _is_plane_chart(chart: Chart) -> bool:
+	if chart == _plane_cache_chart:
+		return _plane_cache_value
+	_plane_cache_chart = chart
+	_plane_cache_value = false
+	for note in chart.notes:
+		if note.space == "plane" or note.trace_style == "slider":
+			_plane_cache_value = true
+			break
+	return _plane_cache_value
 
 
 func _mesh_key(chart: Chart, beat: float) -> String:
@@ -661,6 +681,7 @@ func _update_video(chart: Chart, beat: float) -> void:
 
 
 func _on_chart_changed() -> void:
+	_plane_cache_chart = null
 	_mesh_dirty = true
 	_last_video_path = ""
 	_last_background_path = ""
@@ -671,6 +692,7 @@ func _on_chart_changed() -> void:
 
 
 func _on_chart_live_changed() -> void:
+	_plane_cache_chart = null
 	_mesh_dirty = true
 	_last_fit_key = ""
 	_last_mesh_key = ""
@@ -1227,9 +1249,12 @@ func draw_overlay(canvas: Control) -> void:
 	var pre := _pre_read_beats(chart, t)
 	if not use_3d_ring:
 		_draw_flat_stage(canvas, chart, t)
-		_draw_flat_ring(canvas, chart, t)
+		if not _plane_mode:
+			_draw_flat_ring(canvas, chart, t)
 	if not use_3d_ring:
 		_draw_bezel(canvas, chart, t)
+	if _plane_mode:
+		_draw_plane_tracks(canvas)
 	_draw_red_regions(canvas, chart, t)
 	_draw_paths(canvas, chart, t, pre)
 	_draw_holds(canvas, chart, t, pre)
@@ -1256,6 +1281,25 @@ func _affine_point(point: Vector2, affine: Array) -> Vector2:
 	var x_axis: Vector2 = affine[1]
 	var y_axis: Vector2 = affine[2]
 	return center + x_axis * point.x + y_axis * point.y
+
+
+func _draw_plane_tracks(canvas: Control) -> void:
+	var center := project_design(Vector2.ZERO)
+	if not _valid_point(center):
+		return
+	var radius := plane_stage_radius()
+	for i in 8:
+		var angle := -PI * 0.5 + TAU * float(i) / 8.0
+		var direction := Vector2(cos(angle), sin(angle))
+		canvas.draw_line(center, center + direction * radius * 0.92, Color(1, 1, 1, 0.055), 1.0, true)
+		canvas.draw_circle(center + direction * radius * 0.92, 2.0, Color(1, 1, 1, 0.12))
+		var label := str(i + 1)
+		var label_pos := center + direction * radius * 0.84
+		canvas.draw_string(UITheme.mono_font(), label_pos + Vector2(-3, -4), label, HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(1, 1, 1, 0.18))
+	var hx := 0.66 * radius
+	var hy := 0.495 * radius
+	canvas.draw_rect(Rect2(center - Vector2(hx, hy), Vector2(hx * 2.0, hy * 2.0)), Color(1, 1, 1, 0.045), false, 1.0)
+	canvas.draw_arc(center, 22.0, 0.0, TAU, 32, Color(1, 1, 1, 0.08), 1.0, true)
 
 
 func _draw_flat_stage(canvas: Control, chart: Chart, t: float) -> void:
@@ -1864,7 +1908,7 @@ func _draw_cursor(canvas: Control, chart: Chart, t: float) -> void:
 	if not custom_cursor_visible or (not mouse_inside and not playtest_mode):
 		return
 	_draw_player_cursor(canvas)
-	if playtest_mode:
+	if playtest_mode or _plane_mode:
 		return
 	var p := project_u(cursor_u, t)
 	if cursor_valid and _valid_point(p):
