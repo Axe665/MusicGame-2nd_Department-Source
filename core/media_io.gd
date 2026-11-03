@@ -11,6 +11,7 @@ const NATIVE_VIDEO := ["ogv"]
 static var _ffmpeg_checked := false
 static var _ffmpeg_available := false
 static var last_error: String = ""
+static var ffmpeg_exe: String = "ffmpeg"
 
 
 static func has_ffmpeg() -> bool:
