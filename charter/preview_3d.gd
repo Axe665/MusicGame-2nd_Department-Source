@@ -898,8 +898,9 @@ func _update_red_drag(screen_position: Vector2) -> void:
 
 
 func _append_trace_point(point: Vector2) -> void:
-	if _trace_points.is_empty() or _trace_points[-1].distance_to(point) > 4.0:
-		_trace_points.append(point)
+	var clamped := plane_clamp_screen(point)
+	if _trace_points.is_empty() or _trace_points[-1].distance_to(clamped) > 4.0:
+		_trace_points.append(clamped)
 		_overlay.queue_redraw()
 
 
@@ -1169,6 +1170,53 @@ func project_u(u: float, beat: float) -> Vector2:
 	if bool(data.get("gap", false)):
 		return Vector2(INF, INF)
 	return project_design(data.point)
+
+
+func plane_stage_radius() -> float:
+	var center := project_design(Vector2.ZERO)
+	var x_point := project_design(Vector2(505.0, 0.0))
+	var y_point := project_design(Vector2(0.0, 505.0))
+	if not _valid_point(center) or not _valid_point(x_point) or not _valid_point(y_point):
+		return minf(size.x, size.y) * 0.35
+	return maxf(40.0, minf(center.distance_to(x_point), center.distance_to(y_point)))
+
+
+func plane_screen(x: float, y: float) -> Vector2:
+	var center := project_design(Vector2.ZERO)
+	var radius := plane_stage_radius()
+	return center + Vector2(
+		(clampf(x, 0.0, 1.0) - 0.5) * 1.32 * radius,
+		(clampf(y, 0.0, 1.0) - 0.5) * 0.99 * radius
+	)
+
+
+func plane_note_radius(note: Note) -> float:
+	return maxf(16.0, note.plane_radius * plane_stage_radius() * 0.70)
+
+
+func plane_note_judge_radius(note: Note) -> float:
+	return maxf(26.0, plane_note_radius(note) * 1.45)
+
+
+func plane_clamp_screen(point: Vector2) -> Vector2:
+	var center := project_design(Vector2.ZERO)
+	var radius := plane_stage_radius()
+	return Vector2(
+		clampf(point.x, center.x - 0.66 * radius, center.x + 0.66 * radius),
+		clampf(point.y, center.y - 0.495 * radius, center.y + 0.495 * radius)
+	)
+
+
+func trace_screen_points(note: Note) -> PackedVector2Array:
+	var points := PackedVector2Array()
+	for point in note.trace_pts:
+		var x := float(point.get("x", 0.0))
+		var y := float(point.get("y", 0.0))
+		if note.trace_style == "slider":
+			points.append(plane_screen(x, y))
+		else:
+			points.append(Vector2(x * size.x, y * size.y))
+	return points
 
 
 func draw_overlay(canvas: Control) -> void:
@@ -1578,7 +1626,10 @@ func _draw_notes(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 			continue
 		match note.type:
 			"tap":
-				_draw_tap_note(canvas, chart, note, t, pre)
+				if note.space == "plane":
+					_draw_plane_tap(canvas, note, t, pre)
+				else:
+					_draw_tap_note(canvas, chart, note, t, pre)
 			"anchor":
 				var p := _flying_position(chart, note.angle, note.beat, t, pre)
 				if _valid_point(p):
@@ -1588,6 +1639,24 @@ func _draw_notes(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 				var bell := bell_screen(note, t)
 				if not bell.is_empty():
 					_draw_bell(canvas, bell["center"], bell["radius"], t, note.beat, pre)
+
+
+func _draw_plane_tap(canvas: Control, note: Note, t: float, pre: float) -> void:
+	var q := clampf((t - (note.beat - pre)) / maxf(0.001, pre), 0.0, 1.0)
+	var point := plane_screen(note.plane_x, note.plane_y)
+	if not _valid_point(point):
+		return
+	var radius := plane_note_radius(note)
+	var approach := radius * lerpf(1.9, 1.0, q)
+	canvas.draw_circle(point, approach, Color(UITheme.CORAL.r, UITheme.CORAL.g, UITheme.CORAL.b, 0.07))
+	canvas.draw_arc(point, approach, 0.0, TAU, 32, Color(UITheme.CORAL.r, UITheme.CORAL.g, UITheme.CORAL.b, 0.58), 1.6, true)
+	var scale := lerpf(0.45, 1.0, q)
+	canvas.draw_circle(point, radius * scale + 3.5, Color(0, 0, 0, 0.62))
+	canvas.draw_circle(point, radius * scale, UITheme.CORAL)
+	canvas.draw_arc(point, radius * scale, 0.0, TAU, 32, Color(1, 1, 1, 0.95), 2.2, true)
+	canvas.draw_circle(point, maxf(2.5, radius * scale * 0.32), UITheme.INK)
+	if not playtest_mode:
+		_draw_label(canvas, "PLANE TAP", point + Vector2(radius + 7.0, -radius - 3.0), UITheme.CORAL)
 
 
 func _draw_tap_note(canvas: Control, chart: Chart, note: Note, t: float, pre: float) -> void:
@@ -1642,9 +1711,7 @@ func _draw_traces(canvas: Control, chart: Chart, t: float) -> void:
 		var lead := pre if note.trace_style == "slider" else 0.5
 		if t < note.beat - lead or t > note.end_beat + 0.5:
 			continue
-		var points := PackedVector2Array()
-		for point in note.trace_pts:
-			points.append(Vector2(float(point.get("x", 0.0)) * size.x, float(point.get("y", 0.0)) * size.y))
+		var points := trace_screen_points(note)
 		if points.size() > 1 and note.trace_style == "slider":
 			_draw_slider_trace(canvas, note, points, t)
 			continue
@@ -1711,7 +1778,8 @@ func _draw_slider_trace(canvas: Control, note: Note, points: PackedVector2Array,
 	if _valid_point(position):
 		canvas.draw_circle(position, 9.0, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.88))
 		canvas.draw_circle(position, 3.2, UITheme.INK)
-	_draw_label(canvas, "SLIDE", points[0] + Vector2(16, -14), UITheme.CYAN)
+	if not playtest_mode:
+		_draw_label(canvas, "SLIDE", points[0] + Vector2(16, -14), UITheme.CYAN)
 
 
 func _draw_trace_cap(canvas: Control, point: Vector2, start: bool) -> void:
@@ -1808,7 +1876,7 @@ func _draw_cursor(canvas: Control, chart: Chart, t: float) -> void:
 
 
 func _draw_player_cursor(canvas: Control) -> void:
-	var accent := UITheme.CYAN if cursor_valid else UITheme.MUTED
+	var accent := UITheme.CYAN if cursor_valid or playtest_mode else UITheme.MUTED
 	# osu 风格拖尾：连续线段填补采样空隙，越靠近光标越大、越亮，停手后自然消失。
 	for i in range(1, _cursor_trail.size()):
 		var previous: Dictionary = _cursor_trail[i - 1]
@@ -2115,23 +2183,18 @@ func _design_radius_to_screen(point: Vector2, radius: float) -> float:
 
 
 func _trace_position(note: Note, t: float) -> Vector2:
-	if note.trace_pts.is_empty():
+	var points := trace_screen_points(note)
+	if points.size() < 2:
 		return Vector2(INF, INF)
 	var total := note.duration()
 	var target := clampf(t - note.beat, 0.0, total)
-	var previous := note.trace_pts[0]
-	var previous_point := Vector2(float(previous.get("x", 0.0)) * size.x, float(previous.get("y", 0.0)) * size.y)
-	for i in range(1, note.trace_pts.size()):
-		var point := note.trace_pts[i]
-		var db := float(point.get("db", 0.0))
-		var current := Vector2(float(point.get("x", 0.0)) * size.x, float(point.get("y", 0.0)) * size.y)
+	for i in range(1, points.size()):
+		var db := float(note.trace_pts[i].get("db", 0.0))
 		if target <= db:
-			var prev_db := float(previous.get("db", 0.0))
-			var p := clampf((target - prev_db) / maxf(0.001, db - prev_db), 0.0, 1.0)
-			return previous_point.lerp(current, p)
-		previous = point
-		previous_point = current
-	return previous_point
+			var previous_db := float(note.trace_pts[i - 1].get("db", 0.0))
+			var p := clampf((target - previous_db) / maxf(0.001, db - previous_db), 0.0, 1.0)
+			return points[i - 1].lerp(points[i], p)
+	return points[-1]
 
 
 func _valid_point(point: Vector2) -> bool:

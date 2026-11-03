@@ -3,11 +3,8 @@ extends RefCounted
 
 static var last_error: String = ""
 
-const PLAYFIELD_CENTER := Vector2(256.0, 192.0)
-const DEFAULT_WIDTH := 120.0
 const TAIKO_STACK_GAP := 0.32
-const STD_ANGLE_COMPRESSION := 0.50
-const STD_MAX_STEP := 60.0
+const PLANE_TAP_RADIUS := 0.10
 
 
 static func list_osz_difficulties(path: String) -> Array[Dictionary]:
@@ -216,12 +213,9 @@ static func parse_osu(text: String, source_name: String = "") -> Dictionary:
 	report.append("来源：%s" % source_name)
 	report.append("模式：%s" % ("osu!taiko" if mode == 1 else "osu!std"))
 	report.append("BPM 点：%d；offset：%.0f ms；SliderMultiplier：%.2f" % [chart.timing.points.size(), chart.offset_ms, slider_multiplier])
-	var counts := {"tap": 0, "path": 0, "hold": 0, "trace": 0, "spinner": 0, "invalid": 0}
+	var counts := {"tap": 0, "hold": 0, "trace": 0, "spinner": 0, "invalid": 0}
 	var taiko_prev_beat := -1.0e9
 	var taiko_prev_angle := 0.0
-	var std_prev_raw := 0.0
-	var std_prev_ring := 0.0
-	var std_has_prev := false
 	objects_raw.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return float(a["time"]) < float(b["time"]))
 	for object in objects_raw:
 		var type := int(object["type"])
@@ -234,7 +228,6 @@ static func parse_osu(text: String, source_name: String = "") -> Dictionary:
 		var object_time: float = float(object["time"])
 		var beat: float = chart.timing.audio_ms_to_beat(object_time)
 		var hit_sound := int(object["hit_sound"])
-		var raw_angle := _std_angle(Vector2(float(object["x"]), float(object["y"])))
 		if mode == 1:
 			var kat := _is_taiko_kat(hit_sound)
 			var finish := (hit_sound & 4) != 0
@@ -280,31 +273,23 @@ static func parse_osu(text: String, source_name: String = "") -> Dictionary:
 			else:
 				counts["invalid"] += 1
 			continue
-		var ring_angle := raw_angle
-		if std_has_prev:
-			var delta := JudgeMath.angle_delta(std_prev_raw, raw_angle) * STD_ANGLE_COMPRESSION
-			ring_angle = std_prev_ring + clampf(delta, -STD_MAX_STEP, STD_MAX_STEP)
-		var angle := fposmod(ring_angle, 360.0)
 		if type & 1:
-			var note := Note.new("tap", beat, angle, DEFAULT_WIDTH)
+			var note := Note.new("tap", beat, 0.0, 60.0)
+			note.space = "plane"
+			note.plane_x = clampf(float(object["x"]) / 512.0, 0.0, 1.0)
+			note.plane_y = clampf(float(object["y"]) / 384.0, 0.0, 1.0)
+			note.plane_radius = PLANE_TAP_RADIUS
 			note.id = chart.next_note_id()
 			chart.notes.append(note)
 			counts["tap"] += 1
-			std_prev_raw = raw_angle
-			std_prev_ring = ring_angle
-			std_has_prev = true
 		elif type & 2:
-			var result := _std_slider(object, chart, beat, raw_angle, ring_angle, timing_raw, slider_multiplier)
-			if result.is_empty():
+			var note := _std_slider(object, beat, timing_raw, slider_multiplier)
+			if note == null:
 				counts["invalid"] += 1
 			else:
-				var note: Note = result["note"]
 				note.id = chart.next_note_id()
 				chart.notes.append(note)
 				counts["trace"] += 1
-				std_prev_raw = float(result["tail_raw"])
-				std_prev_ring = float(result["tail_ring"])
-				std_has_prev = true
 		else:
 			counts["invalid"] += 1
 	chart.refresh_ids()
@@ -312,14 +297,10 @@ static func parse_osu(text: String, source_name: String = "") -> Dictionary:
 	if mode == 1:
 		report.append("taiko 映射：don/kat 按 hitsound（whistle/clap = kat）分色；就近取 0/90/180/270 两车道，密集段堆叠不甩圈；短滑条 → Tap，长滑条 → Hold；spinner 跳过。")
 	else:
-		report.append("osu!std 映射：circle → Tap；slider → 平面 Trace（保留 B/L/C/P 二维轨迹，起始接触 + 沿带移动）；spinner 跳过。")
+		report.append("osu!std 全平面模式：circle → 平面 Tap（原 2D 位置 + 按键）；slider → 平面 Trace（B/L/C/P 二维轨迹，起始接触 + 沿带移动）；spinner 跳过。")
 	if counts["spinner"] > 0:
 		report.append("注意：spinner 没有头尾，按设计不导入。")
 	return {"chart": chart, "report": report, "_events": events, "_general": general}
-
-
-static func _std_angle(point: Vector2) -> float:
-	return fposmod(rad_to_deg(atan2(point.y - PLAYFIELD_CENTER.y, point.x - PLAYFIELD_CENTER.x)), 360.0)
 
 
 static func _is_taiko_kat(hit_sound: int) -> bool:
@@ -339,10 +320,10 @@ static func _taiko_lane(previous: float, kat: bool) -> float:
 	return best
 
 
-static func _std_slider(object: Dictionary, chart: Chart, beat: float, raw_head: float, ring_head: float, timing_raw: Array[Dictionary], slider_multiplier: float) -> Dictionary:
+static func _std_slider(object: Dictionary, beat: float, timing_raw: Array[Dictionary], slider_multiplier: float) -> Note:
 	var fields: Array = object["fields"]
 	if fields.size() < 8:
-		return {}
+		return null
 	var slides := maxi(1, int(fields[6]))
 	var one_pass := _slider_one_pass_beats(object, timing_raw, slider_multiplier)
 	if one_pass <= 0.001:
@@ -350,21 +331,15 @@ static func _std_slider(object: Dictionary, chart: Chart, beat: float, raw_head:
 	var total := one_pass * float(slides)
 	var raw := _std_slider_curve(object)
 	if raw.size() < 2:
-		return {}
-	var tail_raw := raw_head
-	if slides % 2 == 1:
-		tail_raw = _std_angle(raw[-1])
-	var tail_ring := ring_head + clampf(JudgeMath.angle_delta(raw_head, tail_raw) * STD_ANGLE_COMPRESSION, -90.0, 90.0)
-	var note := Note.new("trace", beat, fposmod(ring_head, 360.0), 60.0)
+		return null
+	var note := Note.new("trace", beat, 0.0, 60.0)
 	note.end_beat = beat + total
-	note.tail_angle = fposmod(tail_ring, 360.0)
-	note.tail_width = 60.0
 	note.trace_style = "slider"
 	note.move_px = clampf(70.0 + total * 45.0, 90.0, 260.0)
 	note.trace_pts = _std_plane_trace(raw, total, slides)
 	if note.trace_pts.size() < 2:
-		return {}
-	return {"note": note, "tail_raw": tail_raw, "tail_ring": tail_ring}
+		return null
+	return note
 
 
 static func _std_slider_curve(object: Dictionary) -> Array[Vector2]:
@@ -549,9 +524,10 @@ static func _std_plane_trace(raw: Array[Vector2], total: float, slides: int) -> 
 
 
 static func _std_plane_point(point: Vector2) -> Vector2:
-	var x := 0.5 + (clampf(point.x, 0.0, 512.0) / 512.0 - 0.5) * 0.60
-	var y := 0.5 + (clampf(point.y, 0.0, 384.0) / 384.0 - 0.5) * 0.80
-	return Vector2(x, y)
+	return Vector2(
+		clampf(point.x, 0.0, 512.0) / 512.0,
+		clampf(point.y, 0.0, 384.0) / 384.0
+	)
 
 
 static func _slider_beats(object: Dictionary, chart: Chart, timing_raw: Array[Dictionary], slider_multiplier: float) -> float:

@@ -340,6 +340,15 @@ func _draw_notes(plot: Rect2) -> void:
 func _draw_tap(note: Note) -> void:
 	var y := _beat_to_y(note.beat)
 	var selected := _is_note_selected(note.id)
+	if note.space == "plane":
+		var px := _u_to_x(clampf(note.plane_x, 0.0, 1.0))
+		var point := Vector2(px, y)
+		draw_circle(point, 7.0 if selected else 6.0, Color(UITheme.CORAL.r, UITheme.CORAL.g, UITheme.CORAL.b, 0.20))
+		draw_arc(point, 6.0, 0.0, TAU, 24, UITheme.CORAL, 2.0, true)
+		draw_circle(point, 2.0, UITheme.INK)
+		if _show_type_label(note):
+			_draw_type_label("PLANE TAP", point + Vector2(9, 12), UITheme.CORAL)
+		return
 	for interval in _u_intervals(note.angle, note.width):
 		var x0 := _u_to_x(interval.x)
 		var x1 := _u_to_x(interval.y)

@@ -20,6 +20,10 @@ var path_style: String = "arc"
 var path_gaps: Array[Dictionary] = []
 var visual_pts: Array[Dictionary] = []
 var trace_style: String = "wipe"
+var space: String = "ring"
+var plane_x: float = 0.5
+var plane_y: float = 0.5
+var plane_radius: float = 0.10
 var trace_pts: Array[Dictionary] = []
 var anchor_pair: int = -1
 var pair_id: String = ""
@@ -139,6 +143,11 @@ func to_dict() -> Dictionary:
 		"color": color,
 		"lock": lock,
 	}
+	if space != "ring":
+		data["space"] = space
+		data["plane_x"] = snappedf(plane_x, 0.0001)
+		data["plane_y"] = snappedf(plane_y, 0.0001)
+		data["plane_radius"] = snappedf(plane_radius, 0.0001)
 	match type:
 		"hold":
 			data["end_beat"] = snappedf(end_beat, 0.001)
@@ -194,6 +203,10 @@ static func from_dict(raw: Dictionary) -> Note:
 	note.samples_per_beat = float(raw.get("samples", 4.0))
 	note.path_style = String(raw.get("path_style", "arc"))
 	note.trace_style = String(raw.get("trace_style", "wipe"))
+	note.space = String(raw.get("space", "ring"))
+	note.plane_x = float(raw.get("plane_x", 0.5))
+	note.plane_y = float(raw.get("plane_y", 0.5))
+	note.plane_radius = float(raw.get("plane_radius", 0.10))
 	note.anchor_pair = int(raw.get("pair", -1))
 	note.pair_id = String(raw.get("pair_id", ""))
 	note.center_u = float(raw.get("center_u", 0.25))

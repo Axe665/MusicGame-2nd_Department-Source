@@ -24,7 +24,7 @@ var _ordered_notes: Array[Note] = []
 var _ui_accum: float = 0.0
 
 var _states: Dictionary = {}
-var _key_presses: Array[float] = []
+var _key_presses: Array[Dictionary] = []
 var _keys_held: Dictionary = {}
 var _red_states: Dictionary = {}
 
@@ -247,7 +247,8 @@ func _process(delta: float) -> void:
 		_update_hud()
 	if beat > chart.duration_beats() + 2.0:
 		_finish()
-	_key_presses.clear()
+	while not _key_presses.is_empty() and float(_key_presses[0].get("time", -INF)) < judge_ms - 300.0:
+		_key_presses.pop_front()
 
 
 func _chart_ms() -> float:
@@ -280,9 +281,9 @@ func _judge_all(ms: float, beat: float, delta: float) -> void:
 			continue
 		match note.type:
 			"tap":
-				_judge_tap(note, ms, beat, cursor_u, valid)
+				_judge_tap(note, ms, beat)
 			"hold":
-				_judge_hold(note, ms, beat, cursor_u, valid)
+				_judge_hold(note, ms, beat)
 			"path":
 				_judge_path(note, ms, beat, cursor_u, valid, mouse)
 			"trace":
@@ -294,23 +295,41 @@ func _judge_all(ms: float, beat: float, delta: float) -> void:
 	_judge_red(ms, beat, delta, cursor_u, valid)
 
 
-func _judge_tap(note: Note, ms: float, beat: float, cursor_u: float, valid: bool) -> void:
+func _judge_tap(note: Note, ms: float, beat: float) -> void:
 	var state: Dictionary = _states[note.id]
 	var target := chart.timing.beat_to_chart_ms(note.beat)
-	if ms < target - HIT_WINDOW_MS:
-		return
-	if valid and JudgeMath.in_arc(cursor_u * 360.0, note.angle, note.width):
-		var press := _peek_key()
-		if press > -INF and press >= target - HIT_WINDOW_MS and press <= target + HIT_WINDOW_MS:
-			_consume_key()
+	if note.space == "plane":
+		if ms < target - HIT_WINDOW_MS:
+			return
+		var point := _preview.plane_screen(note.plane_x, note.plane_y)
+		var press := _take_key_for_plane(target - HIT_WINDOW_MS, target + HIT_WINDOW_MS, point, _preview.plane_note_judge_radius(note))
+		if not press.is_empty():
 			state["done"] = true
 			_hit_count += 1
 			_combo += 1
 			_max_combo = maxi(_max_combo, _combo)
-			_pulse_at(note.angle, beat, UITheme.CORAL, "HIT")
-			_sfx.play(HitSfx.kind_for_note(note), randf_range(0.98, 1.02))
-			_record_error(press - target, "Tap #%d HIT" % note.id)
+			_preview.add_hit_pulse(point, UITheme.CORAL, "HIT")
+			_sfx.play("don", randf_range(0.98, 1.02))
+			_record_error(float(press["time"]) - target, "PLANE TAP #%d HIT" % note.id)
 			return
+		if ms > target + HIT_WINDOW_MS:
+			state["done"] = true
+			_miss_count += 1
+			_combo = 0
+			_add_log("MISS Plane Tap #%d @ %.0fms" % [note.id, target])
+		return
+	if ms < target - HIT_WINDOW_MS:
+		return
+	var press := _take_key_for_arc(target - HIT_WINDOW_MS, target + HIT_WINDOW_MS, note.angle, note.width)
+	if not press.is_empty():
+		state["done"] = true
+		_hit_count += 1
+		_combo += 1
+		_max_combo = maxi(_max_combo, _combo)
+		_pulse_at(note.angle, beat, UITheme.CORAL, "HIT")
+		_sfx.play(HitSfx.kind_for_note(note), randf_range(0.98, 1.02))
+		_record_error(float(press["time"]) - target, "Tap #%d HIT" % note.id)
+		return
 	if ms > target + HIT_WINDOW_MS:
 		state["done"] = true
 		_miss_count += 1
@@ -318,23 +337,21 @@ func _judge_tap(note: Note, ms: float, beat: float, cursor_u: float, valid: bool
 		_add_log("MISS Tap #%d @ %.0fms" % [note.id, target])
 
 
-func _judge_hold(note: Note, ms: float, beat: float, cursor_u: float, valid: bool) -> void:
+func _judge_hold(note: Note, ms: float, beat: float) -> void:
 	var state: Dictionary = _states[note.id]
 	var target := chart.timing.beat_to_chart_ms(note.beat)
 	var end_ms := chart.timing.beat_to_chart_ms(note.end_beat)
 	if not state["started"]:
 		if ms < target - HIT_WINDOW_MS:
 			return
-		if valid and JudgeMath.in_arc(cursor_u * 360.0, note.angle, note.width):
-			var press := _peek_key()
-			if press > -INF and press >= target - HIT_WINDOW_MS and press <= target + HIT_WINDOW_MS:
-				_consume_key()
-				state["started"] = true
-				state["head"] = true
-				_pulse_at(note.angle, beat, UITheme.AMBER, "HOLD")
-				_sfx.play("don", 0.82)
-				_add_log("HOLD #%d HEAD" % note.id)
-				return
+		var press := _take_key_for_arc(target - HIT_WINDOW_MS, target + HIT_WINDOW_MS, note.angle, note.width)
+		if not press.is_empty():
+			state["started"] = true
+			state["head"] = true
+			_pulse_at(note.angle, beat, UITheme.AMBER, "HOLD")
+			_sfx.play("don", 0.82)
+			_add_log("HOLD #%d HEAD" % note.id)
+			return
 		if ms > target + HIT_WINDOW_MS:
 			state["done"] = true
 			_miss_count += 1
@@ -467,8 +484,8 @@ func _trace_contact(note: Note, mouse: Vector2) -> bool:
 	if note.trace_pts.size() < 2:
 		return false
 	var polyline: Array[Vector2] = []
-	for point in note.trace_pts:
-		polyline.append(Vector2(float(point.get("x", 0.0)) * _preview.size.x, float(point.get("y", 0.0)) * _preview.size.y))
+	for point in _preview.trace_screen_points(note):
+		polyline.append(point)
 	return JudgeMath.trace_distance(mouse, polyline) <= 34.0
 
 
@@ -496,16 +513,15 @@ func _judge_anchor(note: Note, ms: float, beat: float) -> void:
 	var target := chart.timing.beat_to_chart_ms(note.beat)
 	if ms < target - HIT_WINDOW_MS:
 		return
-	var press := _peek_key()
-	if press > -INF and press >= target - HIT_WINDOW_MS and press <= target + HIT_WINDOW_MS:
-		_consume_key()
+	var press := _take_key_in_window(target - HIT_WINDOW_MS, target + HIT_WINDOW_MS)
+	if not press.is_empty():
 		state["done"] = true
 		_hit_count += 1
 		_combo += 1
 		_max_combo = maxi(_max_combo, _combo)
 		_pulse_at(note.angle, beat, UITheme.VIOLET, "HIT")
 		_sfx.play("don", 1.22)
-		_record_error(press - target, "ANCHOR #%d HIT" % note.id)
+		_record_error(float(press["time"]) - target, "ANCHOR #%d HIT" % note.id)
 		return
 	if ms > target + HIT_WINDOW_MS:
 		state["done"] = true
@@ -542,14 +558,48 @@ func _pulse_at(angle_degrees: float, beat: float, color: Color, label: String) -
 		_preview.add_hit_pulse(p, color, label)
 
 
-func _peek_key() -> float:
-	return _key_presses[0] if not _key_presses.is_empty() else -INF
+func _take_key_in_window(lo: float, hi: float) -> Dictionary:
+	# 早按可以跨帧保留：只取落在窗口内的一枚，过旧的不阻塞后面的按键。
+	for i in _key_presses.size():
+		var press: Dictionary = _key_presses[i]
+		var stamp := float(press.get("time", -INF))
+		if stamp < lo:
+			continue
+		if stamp > hi:
+			break
+		_key_presses.remove_at(i)
+		return press
+	return {}
 
 
-func _consume_key() -> float:
-	if _key_presses.is_empty():
-		return -INF
-	return _key_presses.pop_front()
+func _take_key_for_arc(lo: float, hi: float, angle: float, width: float) -> Dictionary:
+	for i in _key_presses.size():
+		var press: Dictionary = _key_presses[i]
+		var stamp := float(press.get("time", -INF))
+		if stamp < lo:
+			continue
+		if stamp > hi:
+			break
+		var press_u := float(press.get("u", 0.0)) * 360.0
+		if bool(press.get("valid", false)) and JudgeMath.in_arc(press_u, angle, width):
+			_key_presses.remove_at(i)
+			return press
+	return {}
+
+
+func _take_key_for_plane(lo: float, hi: float, point: Vector2, radius: float) -> Dictionary:
+	for i in _key_presses.size():
+		var press: Dictionary = _key_presses[i]
+		var stamp := float(press.get("time", -INF))
+		if stamp < lo:
+			continue
+		if stamp > hi:
+			break
+		var press_mouse: Vector2 = press.get("mouse", Vector2.ZERO)
+		if press_mouse.distance_to(point) <= radius:
+			_key_presses.remove_at(i)
+			return press
+	return {}
 
 
 func _record_error(error_ms: float, label: String) -> void:
@@ -639,7 +689,12 @@ func _input(event: InputEvent) -> void:
 				return
 			var key: int = event.physical_keycode if event.physical_keycode != 0 else event.keycode
 			var stamp := _chart_ms() + float(_app.playtest_offset_ms if _app != null else 0.0)
-			_key_presses.append(stamp)
+			_key_presses.append({
+				"time": stamp,
+				"mouse": _preview.mouse_screen,
+				"u": _preview.cursor_u,
+				"valid": _preview.cursor_valid,
+			})
 			_keys_held[key] = true
 			get_viewport().set_input_as_handled()
 		elif not event.pressed:

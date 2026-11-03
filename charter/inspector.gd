@@ -278,6 +278,11 @@ func _build_note_page(page: VBoxContainer) -> void:
 	if note.type == "bell":
 		_spin(page, "中心 u", note.center_u, 0.0, 0.9999, 0.001, func(value: float) -> void: note.center_u = value)
 		_spin(page, "半径 px", note.radius, 4.0, 200.0, 1.0, func(value: float) -> void: note.radius = value)
+	elif note.space == "plane":
+		_spin(page, "平面 x", note.plane_x, 0.0, 1.0, 0.001, func(value: float) -> void: note.plane_x = value)
+		_spin(page, "平面 y", note.plane_y, 0.0, 1.0, 0.001, func(value: float) -> void: note.plane_y = value)
+		_spin(page, "判定半径", note.plane_radius, 0.02, 0.3, 0.005, func(value: float) -> void: note.plane_radius = value)
+		_label(page, "平面 Tap：按 osu 原 2D 坐标；鼠标进入半径 + 按键判定，不占用环上角度。", 11, UITheme.MUTED)
 	else:
 		_spin(page, "逻辑角度", note.angle, 0.0, 360.0, 0.5, func(value: float) -> void: note.angle = fposmod(value, 360.0))
 		_spin(page, "宽度", note.width, 0.0, 360.0, 1.0, func(value: float) -> void: note.width = value)

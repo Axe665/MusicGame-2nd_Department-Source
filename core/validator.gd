@@ -138,6 +138,11 @@ static func _check_notes(chart: Chart, issues: Array[Dictionary]) -> void:
 			_add(issues, "error", "音符 %d 的类型 %s 未知" % [note.id, note.type], "note:%d" % note.id)
 		if note.width < 0.0 or note.width > 360.0:
 			_add(issues, "error", "音符 %d 的宽度越界" % note.id, "note:%d" % note.id)
+		if note.space == "plane":
+			if note.plane_x < 0.0 or note.plane_x > 1.0 or note.plane_y < 0.0 or note.plane_y > 1.0:
+				_add(issues, "error", "平面音符 %d 的位置越出舞台安全区" % note.id, "note:%d" % note.id)
+			if note.plane_radius <= 0.0 or note.plane_radius > 0.3:
+				_add(issues, "error", "平面音符 %d 的判定半径越界" % note.id, "note:%d" % note.id)
 		match note.type:
 			"hold":
 				if note.end_beat <= note.beat + EPS:
@@ -172,7 +177,7 @@ static func _check_notes(chart: Chart, issues: Array[Dictionary]) -> void:
 						_add(issues, "error", "Anchor %d 缺少同拍反向的配对" % note.id, "note:%d" % note.id)
 				if not note.pair_id.is_empty() and _anchor_partner(chart, note) == null:
 					_add(issues, "error", "Anchor %d 的 pairId 没有配对" % note.id, "note:%d" % note.id)
-		if note.type != "trace":
+		if note.type != "trace" and note.space != "plane":
 			var u := note.center_u if note.type == "bell" else fposmod(note.angle, 360.0) / 360.0
 			var shape := chart.get_default_shape()
 			if shape != null:

@@ -45,6 +45,8 @@ godot --path .
 - 光标：Estella 风格白色环 + 青色内环 + 旋转弧 + 深色描边 + 拖尾；预览内始终隐藏系统光标并绘制自定义光标
 - 流速：运输条“流速”0.5×–2.0×，只缩放预读速度（`pre_read_ms ÷ flow_scale`），不改判定窗口；试玩沿用当前设置
 - 音量：运输条“音乐”“音效”两个滑杆，分别控制 `Music` / `SFX` 总线；编辑器播放、试玩、打击音共用总线设置
+- 游玩范围：所有 note 以**八角舞台安全矩形**为准；平面 Tap/slider 映射到舞台内，手绘 Trace 在落点时夹到安全区
+- Tap 接近：环上 Tap 从中心飞向判定环并随预读进度放大（maimai/Estella 同类的径向接近）；流速只改预读时长，不改尺寸曲线
 - Path 擦除：检查器“跳区 / 擦除”可擦掉中段 0–80%；擦除段不渲染、不生成中段检查点，断裂处自动断开轨迹
 - 时间：beat↔毫秒分段积分、BPM 变化、offset、固定预读 D、拍号分子 1–16
 - 边界：分段曲线 l/s/si/so/b、闭合/缺口、局部 BoundaryEvent、restore/hold、控制点拖动、双击拆分、圆/椭圆/竖椭圆/切一刀预设；按本次要求限制为**简单凸轮廓**，自交/非凸/星形/折返/局部半径过激会被拒绝
@@ -61,15 +63,16 @@ godot --path .
 - 媒体：原生 WAV/OGG/MP3 音频、Ogg Theora 视频；FLAC/M4A/AAC/OPUS/WebM/MP4 音频与 MP4/WebM/MOV/MKV/AVI 视频通过 ffmpeg 自动转码到 `user://media/` 后预览
 - 视觉：石墨黑 + 安全黄 UI、浅色切角音符卡、深空径向渐变、八角舞台与八束光、金色八边形外框、圆盘刻度/十字准星、音符投影；参考 maimai 的环上 HUD 与 Path 构成、Estella 的八角 3D 舞台；音符保留珊瑚/琥珀/青/薄荷/紫/金/红语义色
 - 性能：Forward+ / Vulkan、60fps 上限；3D 网格按形状/事件 20Hz 缓存，静止时 SubViewport 自动禁用，3D 内部渲染 0.8×；时间轴静态层与播放头拆成两层，播放时只重绘播放头；检查器标签 20Hz 更新、事件轨 20Hz、最近点 96 采样、字号预加载、视频仅在漂移时 seek
-- 试玩：音频主时钟（输出延迟补偿 + 单调防回跳）、按键事件时间戳判定（减少一帧输入延迟）、40ms 二值窗口、任意键 Tap/Hold/Anchor、鼠标 Path/Tail/Bell/Trace、Red 200ms、FULL/FRAY/LOST、COMBO、命中扩散环、二值日志、结果面板
+- 试玩：音频主时钟（输出延迟补偿 + 单调防回跳）、按键事件时间戳判定（减少一帧输入延迟）、40ms 二值窗口、早按跨帧保留 300ms 并在窗口内取键（不再每帧清空）、任意键 Tap/Hold/Anchor、鼠标 Path/Tail/Bell/Trace、Red 200ms、FULL/FRAY/LOST、COMBO、命中扩散环、二值日志、结果面板
+- 平面 Tap：osu!std circle 使用原 2D 坐标，鼠标进入判定半径 + 按键；预览中在平面位置做接近圆与放大，不占用环上角度
 - 试玩延迟：`audio/driver/output_latency=10`；顶部 `OFF` 与 `[` / `]` 可手动校准音频/输入综合延迟，Path 头尾改为窗口内可命中而不是窗口一开始就判 Miss
 - 存档：JSON 主格式、原子写、`.bak.1..5`、60 秒/20 条命令自动保存、`user://autosave.json` 手动恢复
 - 演示：32 音符示例谱、示例点击轨、3D 预览、五角星 Path 示例、试玩事件日志
 
 ## 格式互通
 
-- **导入 `.osz`**：支持 osu!std 与 osu!taiko；circle → Tap、slider → Path 头尾/visual、drumroll → Hold；spinner 跳过；多难度包会弹窗选择 `.osu`；导入报告列出保留/丢弃原因。
-- **osu!std 映射**：circle → Tap（环上角度仍按相邻位移压缩 50%，单步 ≤60°）；slider → **平面 Trace**，保留 B/L/C/P 四种 osu 曲线，按累计长度分配时间；起始接触 + 沿带移动判定，星头和圆环尾都画在平面上，不再占用环上角度。
+- **导入 `.osz`**：支持 osu!std 与 osu!taiko；circle → Tap、slider → Trace、drumroll → Hold；spinner 跳过；多难度包会弹窗选择 `.osu`；导入报告列出保留/丢弃原因。
+- **osu!std 全平面模式**：circle → **平面 Tap**（原 osu x/y 坐标 + 按键 + 半径判定）；slider → **平面 Trace**，保留 B/L/C/P 四种 osu 曲线，按累计长度分配时间；所有平面点映射到八角舞台安全矩形内，不再有环上角度跳变。
 - **平面滑条**：`trace_style=slider` 的 Trace 使用白色宽轨迹 + 青色虚线中轴 + 星头/圆环尾；2D 点写回 `trace_pts`，编辑器时间轴显示缩小版 2D 轨迹。
 - **taiko 映射**：don/kat 按 hitsound（whistle/clap = kat，finish = 大音符）分色；就近取 0/90/180/270 两车道，密集段（<0.32 拍）堆叠不甩圈；短滑条拆成拍点，长滑条（≥1.5 拍）→ Hold；spinner 跳过。
 - **导出 `.lbp` v2**：按设计文档第 7 章输出 `[General] / [Video] / [Metadata] / [TimingPoints] / [BoundaryShapes] / [BoundaryEvents] / [ViewStates] / [Regions] / [Notes] / [Editor]`，保留 Path 五角星、Trace 二维点、Bell、Anchor 配对和颜色/锁定选项。
@@ -92,12 +95,12 @@ godot --headless --path . --import
 godot --headless --path . --script res://tests/test_runner.gd
 ```
 
-当前结果：**141 passed, 0 failed**。测试覆盖：
+当前结果：**158 passed, 0 failed**。测试覆盖：
 
 - 120 BPM / 变速 / offset 的时间换算与反解
 - 圆的 C(u)、最近点反解、五角星 Path 表现层
 - `.lbp` 导出头部/段落/Path 五角星/换行
-- osu!std 导入的 offset/BPM/circle/slider/spinner 跳过、平面 Trace 轨迹与 B/L/C/P 曲线采样、角度压缩可读性
+- osu!std 导入的 offset/BPM/circle/slider/spinner 跳过、平面 Tap 坐标、平面 Trace 轨迹与 B/L/C/P 曲线采样
 - osu!taiko 导入的 don/kat 车道、密集堆叠、短滑条拆点、长滑条鼓滚、spinner 跳过
 - Path 跳区擦除范围、擦除段不生成中段检查点、JSON / `.lbp` 保留
 - 试玩打击音资源可加载
@@ -141,7 +144,7 @@ tests/     SceneTree 无头测试
 - 边界编辑器是“分段参数 + 控制点 + 预设”，按本次要求只允许**简单凸轮廓**；凹口、星形、折返、自交、局部半径过激都会被校验拒绝。`b` 插值按平滑曲线处理，语法保留。
 - 局部 BoundaryEvent 仍可用，但若过渡中产生凹口/自交也会被拒绝；首版示例使用整环事件。
 - 试玩是文档 §8.9 的“最小判定模拟器”：二值命中/失误 + 事件日志 + 调试准确率/评级，不是正式评分公式。Path 中段已改为屏幕距离判定（容差 24px × tolerance/0.24），头尾仍是独立点判定。
-- osu!std 的 slider 转成平面 Trace 后，起始接触窗口为 ±40ms，随后沿带移动 `move_px` 即算接触；不再有环上 Path 头尾判定。circle 仍是环上 Tap。
+- osu!std 的 slider 转成平面 Trace 后，起始接触窗口为 ±40ms，随后沿带移动 `move_px` 即算接触；circle 转成平面 Tap，鼠标进入半径 + 按键判定。导入的 std 谱整体在平面，不再使用环上角度。
 - 试玩判定偏移只在当前会话生效，不做自动延迟测量；如果设备/耳机延迟大，用 `[` / `]` 手动校准，或启动时加 `--audio-output-latency 5` 覆盖 10ms 缓冲。
 - 命中窗口固定 40ms，尚未做 Perfect/Great/Good 分级；评分规则仍等文档冻结。
 - 拍号分母固定 4；3/8、6/8 需要后续 BeatUnit 扩展。
@@ -151,7 +154,7 @@ tests/     SceneTree 无头测试
 - 打击音是 Freesound CC0 素材（Wood block hit / wood block / ShiningRinging / Fast swipe / Thin bell ding），来源与授权见 `audio/sfx/ATTRIBUTION.md`。
 - 流速是编辑器/试玩会话选项，不写入谱面；谱面仍只保存固定预读 `pre_read_ms`。
 - 音量滑杆目前是会话级，不写入谱面/配置文件；重启后回到 100%。
-- osu!std 的圆仍是环上 Tap，只有 slider 走平面轨迹；如果整张谱都希望平面化，需要另做“全平面模式”。
+- 全平面模式目前只用于 osu!std 导入；编辑器新建的 Tap/Hold/Path 仍按环上角度工作。平面 Tap 的按键判定是“鼠标在半径内 + 任意键”，不是 osu 的鼠标左右键区分。
 
 ## 字体与资源
 

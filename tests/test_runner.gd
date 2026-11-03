@@ -318,6 +318,9 @@ SliderMultiplier: 1.4
 	eq(chart.notes.size(), 2, "osu std note count")
 	var tap: Note = chart.notes[0]
 	eq(tap.type, "tap", "osu circle -> tap")
+	eq(tap.space, "plane", "osu circle -> plane tap")
+	near(tap.plane_x, 0.5, 0.001, "osu circle plane x")
+	near(tap.plane_y, 0.5, 0.001, "osu circle plane y")
 	near(tap.beat, 2.0, 0.001, "osu circle beat")
 	var slide: Note = chart.notes[1]
 	eq(slide.type, "trace", "osu slider -> planar trace")
@@ -502,11 +505,15 @@ SliderMultiplier: 1.4
 		return false
 	var chart: Chart = result["chart"]
 	eq(chart.notes.size(), 5, "std readability note count")
-	var max_step := 0.0
-	for i in range(1, chart.notes.size()):
-		max_step = maxf(max_step, absf(JudgeMath.angle_delta(chart.notes[i - 1].angle, chart.notes[i].angle)))
-	ok(max_step <= 60.1, "std consecutive angle stays readable (max %.1f)" % max_step)
-	near(chart.notes[0].angle, 270.0, 0.001, "std first note keeps absolute angle")
+	near(chart.notes[0].plane_x, 0.5, 0.001, "std plane first x")
+	near(chart.notes[0].plane_y, 0.0, 0.001, "std plane first y")
+	near(chart.notes[1].plane_x, 1.0, 0.001, "std plane right x")
+	near(chart.notes[1].plane_y, 0.5, 0.001, "std plane right y")
+	near(chart.notes[2].plane_y, 1.0, 0.001, "std plane bottom y")
+	near(chart.notes[3].plane_x, 0.0, 0.001, "std plane left x")
+	for note in chart.notes:
+		eq(note.space, "plane", "std readability stays planar")
+		ok(note.plane_x >= 0.0 and note.plane_x <= 1.0 and note.plane_y >= 0.0 and note.plane_y <= 1.0, "std plane note in bounds")
 	return true
 
 

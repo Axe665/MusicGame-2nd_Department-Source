@@ -124,7 +124,10 @@ static func _note_line(chart: Chart, note: Note) -> String:
 	var options := _note_options(note)
 	match note.type:
 		"tap":
-			return "tap,%s,%s,%s%s" % [_beat(chart, note.beat), _num(note.angle), _num(note.width), options]
+			var suffix := ""
+			if note.space == "plane":
+				suffix = ",space=plane,px=%s,py=%s,pr=%s" % [_num(note.plane_x), _num(note.plane_y), _num(note.plane_radius)]
+			return "tap,%s,%s,%s%s%s" % [_beat(chart, note.beat), _num(note.angle), _num(note.width), suffix, options]
 		"hold":
 			var suffix := ""
 			if not note.visual_pts.is_empty():
