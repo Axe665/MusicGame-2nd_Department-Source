@@ -18,12 +18,18 @@ var _index: int = 0
 
 
 func _ready() -> void:
+	if AudioServer.get_bus_index("SFX") < 0:
+		AudioServer.add_bus()
+		var index := AudioServer.bus_count - 1
+		AudioServer.set_bus_name(index, "SFX")
+		AudioServer.set_bus_send(index, "Master")
 	for key in PATHS:
 		var stream: AudioStream = load(String(PATHS[key]))
 		if stream != null:
 			_streams[key] = stream
 	for i in 10:
 		var player := AudioStreamPlayer.new()
+		player.bus = "SFX"
 		player.volume_db = VOLUME_DB
 		add_child(player)
 		_players.append(player)

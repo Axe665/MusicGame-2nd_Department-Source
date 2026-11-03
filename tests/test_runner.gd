@@ -18,6 +18,7 @@ func _initialize() -> void:
 		"test_media_formats",
 		"test_lbp_export",
 		"test_osu_std_import",
+		"test_osu_std_curves",
 		"test_osu_std_readability",
 		"test_osu_taiko_import",
 		"test_osu_taiko_flow",
@@ -318,11 +319,71 @@ SliderMultiplier: 1.4
 	var tap: Note = chart.notes[0]
 	eq(tap.type, "tap", "osu circle -> tap")
 	near(tap.beat, 2.0, 0.001, "osu circle beat")
-	var path: Note = chart.notes[1]
-	eq(path.type, "path", "osu slider -> path")
-	near(path.beat, 4.0, 0.001, "osu slider beat")
-	near(path.end_beat, 4.7142857, 0.001, "osu slider duration")
-	eq(path.visual_pts.size(), 2, "osu slider visual points")
+	var slide: Note = chart.notes[1]
+	eq(slide.type, "trace", "osu slider -> planar trace")
+	eq(slide.trace_style, "slider", "osu slider keeps slider style")
+	near(slide.beat, 4.0, 0.001, "osu slider beat")
+	near(slide.end_beat, 4.7142857, 0.001, "osu slider duration")
+	ok(slide.trace_pts.size() > 2, "osu slider has a 2D trajectory")
+	var first: Dictionary = slide.trace_pts[0]
+	var last: Dictionary = slide.trace_pts[-1]
+	near(float(first["db"]), 0.0, 0.001, "slider trace starts at head time")
+	near(float(last["db"]), slide.duration(), 0.01, "slider trace ends at tail time")
+	ok(absf(float(last["x"]) - float(first["x"])) > 0.01, "slider trace moves on the plane")
+	var restored := Note.from_dict(slide.to_dict())
+	eq(restored.trace_style, "slider", "slider trace style survives json")
+	eq(restored.trace_pts.size(), slide.trace_pts.size(), "slider trace points survive json")
+	return true
+
+
+func test_osu_std_curves() -> bool:
+	var text := """osu file format v14
+
+[General]
+Mode: 0
+
+[Metadata]
+Title: Curves
+Artist: A
+Creator: C
+Version: H
+
+[Difficulty]
+SliderMultiplier: 1.4
+
+[TimingPoints]
+0,500,4,2,0,100,1,0
+
+[HitObjects]
+256,192,1000,2,0,L|400:192,1,200,0|0,0:0|0:0,0:0:0:0:
+256,192,2000,2,0,B|300:100|400:192,1,200,0|0,0:0|0:0,0:0:0:0:
+256,192,3000,2,0,C|300:100|400:192,1,200,0|0,0:0|0:0,0:0:0:0:
+256,192,4000,2,0,P|300:100|400:192,1,200,0|0,0:0|0:0,0:0:0:0:
+"""
+	var result := OsuIO.parse_osu(text, "curves.osu")
+	ok(not result.is_empty(), "osu std curves parsed")
+	if result.is_empty():
+		return false
+	var chart: Chart = result["chart"]
+	eq(chart.notes.size(), 4, "four slider curves imported")
+	for note in chart.notes:
+		eq(note.type, "trace", "curve %s is a planar trace" % note.id)
+		eq(note.trace_style, "slider", "curve %s keeps slider style" % note.id)
+		ok(note.trace_pts.size() >= 8, "curve %s has enough samples" % note.id)
+		var previous_db := -1.0
+		var in_bounds := true
+		var monotonic := true
+		for point in note.trace_pts:
+			var x := float(point.get("x", -1.0))
+			var y := float(point.get("y", -1.0))
+			var db := float(point.get("db", -1.0))
+			if x < 0.0 or x > 1.0 or y < 0.0 or y > 1.0:
+				in_bounds = false
+			if db + 0.0001 < previous_db:
+				monotonic = false
+			previous_db = db
+		ok(in_bounds, "curve %s stays inside the plane" % note.id)
+		ok(monotonic, "curve %s time is monotonic" % note.id)
 	return true
 
 

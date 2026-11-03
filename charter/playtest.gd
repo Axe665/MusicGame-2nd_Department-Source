@@ -212,6 +212,7 @@ func _start_audio() -> void:
 	_last_chart_ms = -INF
 	_audio = AudioStreamPlayer.new()
 	_audio.name = "PlaytestAudio"
+	_audio.bus = "Music"
 	add_child(_audio)
 	var path := chart.audio_path
 	if not path.begins_with("res://") and not path.begins_with("user://") and not path.is_absolute_path() and not chart_path.is_empty():

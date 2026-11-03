@@ -64,6 +64,7 @@ func _ready() -> void:
 	_app = get_node_or_null("/root/App")
 	theme = UITheme.build()
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_setup_audio_buses()
 	_build_ui()
 	_build_audio()
 	_sfx = HitSfx.new()
@@ -357,6 +358,8 @@ func _build_ui() -> void:
 	sfx_check.button_pressed = true
 	sfx_check.toggled.connect(func(pressed: bool) -> void: _sfx_enabled = pressed)
 	transport_row.add_child(sfx_check)
+	transport_row.add_child(_volume_slider("音乐", "Music"))
+	transport_row.add_child(_volume_slider("音效", "SFX"))
 	var transport_spacer := Control.new()
 	transport_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	transport_row.add_child(transport_spacer)
@@ -417,9 +420,49 @@ func _menu(title: String, items: Array) -> MenuButton:
 	return menu
 
 
+func _setup_audio_buses() -> void:
+	for bus_name in ["Music", "SFX"]:
+		if AudioServer.get_bus_index(bus_name) >= 0:
+			continue
+		AudioServer.add_bus()
+		var index := AudioServer.bus_count - 1
+		AudioServer.set_bus_name(index, bus_name)
+		AudioServer.set_bus_send(index, "Master")
+
+
+func _set_bus_volume(bus_name: String, value: float) -> void:
+	var index := AudioServer.get_bus_index(bus_name)
+	if index < 0:
+		return
+	var linear := clampf(value / 100.0, 0.0, 1.0)
+	AudioServer.set_bus_volume_db(index, linear_to_db(maxf(0.0001, linear)))
+	AudioServer.set_bus_mute(index, linear <= 0.001)
+
+
+func _volume_slider(label_text: String, bus_name: String) -> HBoxContainer:
+	var box := HBoxContainer.new()
+	box.add_theme_constant_override("separation", 4)
+	var label := Label.new()
+	label.text = label_text
+	label.add_theme_font_size_override("font_size", 10)
+	label.add_theme_color_override("font_color", UITheme.MUTED)
+	box.add_child(label)
+	var slider := HSlider.new()
+	slider.min_value = 0.0
+	slider.max_value = 100.0
+	slider.step = 1.0
+	slider.value = 100.0
+	slider.custom_minimum_size = Vector2(72, 16)
+	slider.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	slider.value_changed.connect(func(value: float) -> void: _set_bus_volume(bus_name, value))
+	box.add_child(slider)
+	return box
+
+
 func _build_audio() -> void:
 	_audio = AudioStreamPlayer.new()
 	_audio.name = "EditorAudio"
+	_audio.bus = "Music"
 	add_child(_audio)
 	_audio.finished.connect(_on_audio_finished)
 

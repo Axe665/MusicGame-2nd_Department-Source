@@ -216,7 +216,7 @@ static func parse_osu(text: String, source_name: String = "") -> Dictionary:
 	report.append("来源：%s" % source_name)
 	report.append("模式：%s" % ("osu!taiko" if mode == 1 else "osu!std"))
 	report.append("BPM 点：%d；offset：%.0f ms；SliderMultiplier：%.2f" % [chart.timing.points.size(), chart.offset_ms, slider_multiplier])
-	var counts := {"tap": 0, "path": 0, "hold": 0, "spinner": 0, "invalid": 0}
+	var counts := {"tap": 0, "path": 0, "hold": 0, "trace": 0, "spinner": 0, "invalid": 0}
 	var taiko_prev_beat := -1.0e9
 	var taiko_prev_angle := 0.0
 	var std_prev_raw := 0.0
@@ -301,18 +301,18 @@ static func parse_osu(text: String, source_name: String = "") -> Dictionary:
 				var note: Note = result["note"]
 				note.id = chart.next_note_id()
 				chart.notes.append(note)
-				counts["path"] += 1
+				counts["trace"] += 1
 				std_prev_raw = float(result["tail_raw"])
 				std_prev_ring = float(result["tail_ring"])
 				std_has_prev = true
 		else:
 			counts["invalid"] += 1
 	chart.refresh_ids()
-	report.append("保留：Tap %d，Path %d，Hold %d；跳过：spinner %d，无效 %d" % [counts["tap"], counts["path"], counts["hold"], counts["spinner"], counts["invalid"]])
+	report.append("保留：Tap %d，Trace %d，Hold %d；跳过：spinner %d，无效 %d" % [counts["tap"], counts["trace"], counts["hold"], counts["spinner"], counts["invalid"]])
 	if mode == 1:
 		report.append("taiko 映射：don/kat 按 hitsound（whistle/clap = kat）分色；就近取 0/90/180/270 两车道，密集段堆叠不甩圈；短滑条 → Tap，长滑条 → Hold；spinner 跳过。")
 	else:
-		report.append("osu!std 映射：circle → Tap；slider → Path；角度按相邻位移压缩 %.2f（单步 ≤ %.0f°），避免整圈散点；spinner 跳过。" % [STD_ANGLE_COMPRESSION, STD_MAX_STEP])
+		report.append("osu!std 映射：circle → Tap；slider → 平面 Trace（保留 B/L/C/P 二维轨迹，起始接触 + 沿带移动）；spinner 跳过。")
 	if counts["spinner"] > 0:
 		report.append("注意：spinner 没有头尾，按设计不导入。")
 	return {"chart": chart, "report": report, "_events": events, "_general": general}
@@ -343,36 +343,215 @@ static func _std_slider(object: Dictionary, chart: Chart, beat: float, raw_head:
 	var fields: Array = object["fields"]
 	if fields.size() < 8:
 		return {}
-	var curve: String = String(fields[5])
 	var slides := maxi(1, int(fields[6]))
 	var one_pass := _slider_one_pass_beats(object, timing_raw, slider_multiplier)
 	if one_pass <= 0.001:
 		one_pass = 0.25
 	var total := one_pass * float(slides)
-	var pieces := curve.split("|")
-	var points: Array[Vector2] = []
+	var raw := _std_slider_curve(object)
+	if raw.size() < 2:
+		return {}
+	var tail_raw := raw_head
+	if slides % 2 == 1:
+		tail_raw = _std_angle(raw[-1])
+	var tail_ring := ring_head + clampf(JudgeMath.angle_delta(raw_head, tail_raw) * STD_ANGLE_COMPRESSION, -90.0, 90.0)
+	var note := Note.new("trace", beat, fposmod(ring_head, 360.0), 60.0)
+	note.end_beat = beat + total
+	note.tail_angle = fposmod(tail_ring, 360.0)
+	note.tail_width = 60.0
+	note.trace_style = "slider"
+	note.move_px = clampf(70.0 + total * 45.0, 90.0, 260.0)
+	note.trace_pts = _std_plane_trace(raw, total, slides)
+	if note.trace_pts.size() < 2:
+		return {}
+	return {"note": note, "tail_raw": tail_raw, "tail_ring": tail_ring}
+
+
+static func _std_slider_curve(object: Dictionary) -> Array[Vector2]:
+	var fields: Array = object["fields"]
+	var pieces := String(fields[5]).split("|")
+	var kind := String(pieces[0])
+	var control: Array[Vector2] = [Vector2(float(object["x"]), float(object["y"]))]
 	for i in range(1, pieces.size()):
 		var xy := pieces[i].split(":")
 		if xy.size() >= 2:
-			points.append(Vector2(float(xy[0]), float(xy[1])))
-	var tail_raw := raw_head
-	if slides % 2 == 1 and not points.is_empty():
-		tail_raw = _std_angle(points[-1])
-	var tail_ring := ring_head + clampf(JudgeMath.angle_delta(raw_head, tail_raw) * STD_ANGLE_COMPRESSION, -90.0, 90.0)
-	var note := Note.new("path", beat, fposmod(ring_head, 360.0), DEFAULT_WIDTH)
-	note.end_beat = beat + total
-	note.tail_angle = fposmod(tail_ring, 360.0)
-	note.tail_width = 90.0
-	note.path_style = "arc"
-	for i in points.size():
-		var point := points[i]
-		var point_angle := _std_angle(point)
-		var delta := clampf(JudgeMath.angle_delta(raw_head, point_angle) * STD_ANGLE_COMPRESSION, -90.0, 90.0)
-		note.visual_pts.append({
-			"db": one_pass * float(i + 1) / float(points.size() + 1),
-			"da": delta,
+			control.append(Vector2(float(xy[0]), float(xy[1])))
+	if control.size() < 2:
+		return control
+	match kind:
+		"L":
+			return _sample_linear(control)
+		"C":
+			return _sample_catmull(control)
+		"P":
+			return _sample_perfect(control)
+		_:
+			return _sample_bezier(control)
+
+
+static func _sample_linear(points: Array[Vector2]) -> Array[Vector2]:
+	var result: Array[Vector2] = []
+	for i in points.size() - 1:
+		var a := points[i]
+		var b := points[i + 1]
+		if a.distance_to(b) < 0.001:
+			continue
+		for step in 8:
+			result.append(a.lerp(b, float(step) / 8.0))
+	result.append(points[-1])
+	return result
+
+
+static func _sample_bezier(control: Array[Vector2]) -> Array[Vector2]:
+	var segments: Array = []
+	var current: Array[Vector2] = []
+	for point in control:
+		if not current.is_empty() and current[-1].distance_to(point) < 0.001:
+			if current.size() >= 2:
+				segments.append(current)
+			current.clear()
+			current.append(point)
+			continue
+		current.append(point)
+	if current.size() >= 2:
+		segments.append(current)
+	if segments.is_empty():
+		return control
+	var result: Array[Vector2] = []
+	for segment in segments:
+		var seg: Array = segment
+		if seg.size() == 2:
+			for step in 8:
+				result.append((seg[0] as Vector2).lerp(seg[1], float(step) / 8.0))
+		else:
+			var steps := maxi(12, seg.size() * 6)
+			for step in steps:
+				result.append(_bezier_point(seg, float(step) / float(steps)))
+	result.append(control[-1])
+	return result
+
+
+static func _bezier_point(control: Array, t: float) -> Vector2:
+	var points: Array = control.duplicate()
+	for level in range(points.size() - 1, 0, -1):
+		for i in level:
+			points[i] = (points[i] as Vector2).lerp(points[i + 1] as Vector2, t)
+	return points[0] as Vector2
+
+
+static func _sample_catmull(control: Array[Vector2]) -> Array[Vector2]:
+	var result: Array[Vector2] = []
+	var count := control.size()
+	if count < 2:
+		return control
+	for i in count - 1:
+		var p0 := control[maxi(0, i - 1)]
+		var p1 := control[i]
+		var p2 := control[i + 1]
+		var p3 := control[mini(count - 1, i + 2)]
+		if p1.distance_to(p2) < 0.001:
+			continue
+		for step in 12:
+			result.append(_catmull_point(p0, p1, p2, p3, float(step) / 12.0))
+	result.append(control[-1])
+	return result
+
+
+static func _catmull_point(p0: Vector2, p1: Vector2, p2: Vector2, p3: Vector2, t: float) -> Vector2:
+	var t2 := t * t
+	var t3 := t2 * t
+	return 0.5 * ((2.0 * p1) + (-p0 + p2) * t + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t2 + (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * t3)
+
+
+static func _sample_perfect(control: Array[Vector2]) -> Array[Vector2]:
+	if control.size() < 3:
+		return _sample_linear(control)
+	var points: Array[Vector2] = []
+	for point in control:
+		if points.is_empty() or points[-1].distance_to(point) > 0.001:
+			points.append(point)
+		if points.size() == 3:
+			break
+	if points.size() < 3:
+		return _sample_linear(control)
+	var center := _circumcenter(points[0], points[1], points[2])
+	if not center.is_finite() or center == Vector2(INF, INF):
+		return _sample_linear(control)
+	var radius := points[0].distance_to(center)
+	if radius < 0.001:
+		return _sample_linear(control)
+	var a0 := atan2(points[0].y - center.y, points[0].x - center.x)
+	var a1 := atan2(points[1].y - center.y, points[1].x - center.x)
+	var a2 := atan2(points[2].y - center.y, points[2].x - center.x)
+	var ccw := fposmod(a1 - a0, TAU) <= fposmod(a2 - a0, TAU)
+	if ccw:
+		if a2 < a0:
+			a2 += TAU
+	else:
+		if a2 > a0:
+			a2 -= TAU
+	var result: Array[Vector2] = []
+	for step in 32:
+		var angle := lerpf(a0, a2, float(step) / 32.0)
+		result.append(center + Vector2(cos(angle), sin(angle)) * radius)
+	for i in range(3, control.size()):
+		var previous := result[-1]
+		var next := control[i]
+		for step in 8:
+			result.append(previous.lerp(next, float(step) / 8.0))
+		result.append(next)
+	result.append(control[-1])
+	return result
+
+
+static func _circumcenter(a: Vector2, b: Vector2, c: Vector2) -> Vector2:
+	var d := 2.0 * (a.x * (b.y - c.y) + b.x * (c.y - a.y) + c.x * (a.y - b.y))
+	if absf(d) < 0.0001:
+		return Vector2(INF, INF)
+	var a2 := a.length_squared()
+	var b2 := b.length_squared()
+	var c2 := c.length_squared()
+	var ux := (a2 * (b.y - c.y) + b2 * (c.y - a.y) + c2 * (a.y - b.y)) / d
+	var uy := (a2 * (c.x - b.x) + b2 * (a.x - c.x) + c2 * (b.x - a.x)) / d
+	return Vector2(ux, uy)
+
+
+static func _std_plane_trace(raw: Array[Vector2], total: float, slides: int) -> Array[Dictionary]:
+	var path: Array[Vector2] = []
+	for span in slides:
+		if span % 2 == 0:
+			for point in raw:
+				if path.is_empty() or path[-1].distance_to(point) > 0.001:
+					path.append(point)
+		else:
+			for i in range(raw.size() - 1, -1, -1):
+				var point := raw[i]
+				if path.is_empty() or path[-1].distance_to(point) > 0.001:
+					path.append(point)
+	if path.size() < 2:
+		return []
+	var lengths: Array[float] = [0.0]
+	var total_length := 0.0
+	for i in range(1, path.size()):
+		total_length += path[i - 1].distance_to(path[i])
+		lengths.append(total_length)
+	if total_length < 0.001:
+		return []
+	var result: Array[Dictionary] = []
+	for i in path.size():
+		var mapped := _std_plane_point(path[i])
+		result.append({
+			"x": snappedf(mapped.x, 0.0001),
+			"y": snappedf(mapped.y, 0.0001),
+			"db": snappedf(total * lengths[i] / total_length, 0.001),
 		})
-	return {"note": note, "tail_raw": tail_raw, "tail_ring": tail_ring}
+	return result
+
+
+static func _std_plane_point(point: Vector2) -> Vector2:
+	var x := 0.5 + (clampf(point.x, 0.0, 512.0) / 512.0 - 0.5) * 0.60
+	var y := 0.5 + (clampf(point.y, 0.0, 384.0) / 384.0 - 0.5) * 0.80
+	return Vector2(x, y)
 
 
 static func _slider_beats(object: Dictionary, chart: Chart, timing_raw: Array[Dictionary], slider_multiplier: float) -> float:

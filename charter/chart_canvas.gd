@@ -472,7 +472,7 @@ func _draw_trace(note: Note, _plot: Rect2) -> void:
 	draw_line(Vector2(cx - 19, y0 + 3), Vector2(cx - 11, y0 + 11), UITheme.MINT, 1.5, true)
 	draw_line(Vector2(cx - 11, y0 + 3), Vector2(cx - 19, y0 + 11), UITheme.MINT, 1.5, true)
 	if _show_type_label(note):
-		_draw_type_label("TRACE", Vector2(cx + 27.0, y0 + 10.0), UITheme.MINT)
+		_draw_type_label("SLIDE" if note.trace_style == "slider" else "TRACE", Vector2(cx + 27.0, y0 + 10.0), UITheme.MINT)
 
 
 func _draw_anchor(note: Note) -> void:

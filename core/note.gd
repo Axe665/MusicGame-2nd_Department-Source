@@ -19,6 +19,7 @@ var samples_per_beat: float = 4.0
 var path_style: String = "arc"
 var path_gaps: Array[Dictionary] = []
 var visual_pts: Array[Dictionary] = []
+var trace_style: String = "wipe"
 var trace_pts: Array[Dictionary] = []
 var anchor_pair: int = -1
 var pair_id: String = ""
@@ -160,6 +161,8 @@ func to_dict() -> Dictionary:
 			data["end_beat"] = snappedf(end_beat, 0.001)
 			data["move"] = snappedf(move_px, 0.001)
 			data["trace"] = _points_to_dict(trace_pts)
+			if trace_style != "wipe":
+				data["trace_style"] = trace_style
 		"anchor":
 			if anchor_pair >= 0:
 				data["pair"] = anchor_pair
@@ -190,6 +193,7 @@ static func from_dict(raw: Dictionary) -> Note:
 	note.tolerance = float(raw.get("tolerance", 0.24))
 	note.samples_per_beat = float(raw.get("samples", 4.0))
 	note.path_style = String(raw.get("path_style", "arc"))
+	note.trace_style = String(raw.get("trace_style", "wipe"))
 	note.anchor_pair = int(raw.get("pair", -1))
 	note.pair_id = String(raw.get("pair_id", ""))
 	note.center_u = float(raw.get("center_u", 0.25))

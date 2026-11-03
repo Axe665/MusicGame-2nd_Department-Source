@@ -305,6 +305,8 @@ func _build_note_page(page: VBoxContainer) -> void:
 	if note.type == "trace":
 		_spin(page, "移动距离 px", note.move_px, 0.0, 1000.0, 1.0, func(value: float) -> void: note.move_px = value)
 		_label(page, "二维点：%d 个；在预览窗用 Trace 工具拖拽重画。" % note.trace_pts.size(), 11, UITheme.MUTED)
+		if note.trace_style == "slider":
+			_label(page, "平面滑条：std 导入的 B/L/C/P 二维轨迹，起始接触 + 沿带移动判定；不再占用环上角度。", 11, UITheme.CYAN)
 		_buttons(page, [
 			{"text": "重画 Trace", "callback": func() -> void: _app.set_tool("trace")},
 		])

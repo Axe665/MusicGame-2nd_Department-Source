@@ -148,6 +148,8 @@ static func _note_line(chart: Chart, note: Note) -> String:
 			]
 		"trace":
 			var suffix := ",move=%s" % _num(note.move_px)
+			if note.trace_style != "wipe":
+				suffix += ",style=%s" % note.trace_style
 			if not note.trace_pts.is_empty():
 				suffix += ",pts=%s" % _trace_points(note.trace_pts)
 			return "trace,%s,%s%s%s" % [_beat(chart, note.beat), _beat(chart, note.end_beat), suffix, options]
