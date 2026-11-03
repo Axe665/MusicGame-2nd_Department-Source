@@ -201,7 +201,7 @@ static func _parse_note(token: String, beat: float, bpm: float) -> Note:
 			return null
 		var bell := Note.new("bell", beat, fposmod(_button_angle(digit), 360.0), 45.0)
 		bell.center_u = fposmod(_button_angle(digit), 360.0) / 360.0
-		bell.radius = 26.0
+		bell.radius = 50.0
 		bell.end_beat = beat
 		return bell
 	if not first.is_valid_int():
