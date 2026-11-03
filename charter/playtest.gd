@@ -3,9 +3,9 @@ extends Control
 
 signal exit_requested
 
-const PERFECT_MS := 50.0
-const GREAT_MS := 90.0
-const GOOD_MS := 140.0
+const PERFECT_MS := 65.0
+const GREAT_MS := 115.0
+const GOOD_MS := 170.0
 const HIT_WINDOW_MS := GOOD_MS
 const BELL_WINDOW_MS := 100.0
 const RED_LIMIT_SEC := 0.2

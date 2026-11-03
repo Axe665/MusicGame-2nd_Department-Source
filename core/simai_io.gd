@@ -153,8 +153,8 @@ static func _parse_notes(inote: String, chart: Chart, counts: Dictionary) -> voi
 			token = token.substr(close + 1).strip_edges()
 			had_directive = true
 		if token.is_empty():
-			if not had_directive:
-				beat += slot
+			# 只有指令的 token 仍然占一个空格；之前不推进会让整张谱提前 4 拍。
+			beat += slot
 			continue
 		var pieces := token.split("/")
 		var parsed_at_beat: Array[Note] = []
