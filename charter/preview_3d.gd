@@ -84,6 +84,7 @@ var _last_chart_ref: Chart = null
 var _last_video_path: String = ""
 var _video_load_failed: bool = false
 var _last_cursor_emit: Vector2 = Vector2(-999, -999)
+var _cursor_cache_key: String = ""
 var _last_view_key: String = ""
 var _last_fit_key: String = ""
 var _last_mesh_key: String = ""
@@ -1220,6 +1221,11 @@ func _update_cursor() -> void:
 	if chart == null:
 		return
 	var t := get_time_beat()
+	# 鼠标和边界几何都没变时，直接复用上一帧的 u，避免每帧 96 次反解。
+	var cache_key := "%s|%.1f|%.1f|%s" % [_mesh_key(chart, t), mouse_screen.x, mouse_screen.y, _last_view_key]
+	if cache_key == _cursor_cache_key:
+		return
+	_cursor_cache_key = cache_key
 	var result := BoundaryRuntime.nearest_u(chart, t, mouse_screen, func(point: Vector2) -> Vector2: return project_design(point), 96, _frame_for(chart, t))
 	var u := float(result["u"])
 	var distance := float(result["distance"])
