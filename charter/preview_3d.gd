@@ -1190,12 +1190,21 @@ func plane_clamp_screen(point: Vector2) -> Vector2:
 	)
 
 
-func trace_screen_points(note: Note) -> PackedVector2Array:
+func trace_screen_points(note: Note, beat: float = 0.0) -> PackedVector2Array:
 	var points := PackedVector2Array()
+	var chart := get_chart()
 	for point in note.trace_pts:
 		var x := float(point.get("x", 0.0))
 		var y := float(point.get("y", 0.0))
-		points.append(Vector2(x * size.x, y * size.y))
+		if note.trace_style == "slider" and chart != null:
+			var radius := minf(1.0, sqrt(x * x + y * y))
+			var angle := fposmod(rad_to_deg(atan2(y, x)), 360.0)
+			var data := BoundaryRuntime.eval_point(chart, angle / 360.0, beat)
+			if bool(data.get("gap", false)):
+				continue
+			points.append(project_design((data.point as Vector2) * radius))
+		else:
+			points.append(Vector2(x * size.x, y * size.y))
 	return points
 
 
@@ -1663,12 +1672,17 @@ func _draw_tap_note(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 
 
 func _draw_traces(canvas: Control, chart: Chart, t: float) -> void:
+	var pre := _pre_read_beats(chart, t)
 	for note in chart.notes:
 		if note.type != "trace":
 			continue
-		if t < note.beat - 0.5 or t > note.end_beat + 0.5:
+		var lead := pre if note.trace_style == "slider" else 0.5
+		if t < note.beat - lead or t > note.end_beat + 0.5:
 			continue
-		var points := trace_screen_points(note)
+		var points := trace_screen_points(note, t)
+		if points.size() > 1 and note.trace_style == "slider":
+			_draw_slider_trace(canvas, note, points, t)
+			continue
 		if points.size() > 1:
 			var duration := maxf(0.001, note.duration())
 			var progress := clampf((t - note.beat) / duration, 0.0, 1.0)
@@ -1706,6 +1720,35 @@ func _draw_traces(canvas: Control, chart: Chart, t: float) -> void:
 		for p in _trace_points:
 			temp.append(p)
 		canvas.draw_polyline(temp, Color(UITheme.CORAL.r, UITheme.CORAL.g, UITheme.CORAL.b, 0.7), 3.0, true)
+
+
+func _draw_slider_trace(canvas: Control, note: Note, points: PackedVector2Array, t: float) -> void:
+	var duration := maxf(0.001, note.duration())
+	var progress := clampf((t - note.beat) / duration, 0.0, 1.0)
+	var shadow := PackedVector2Array()
+	for point in points:
+		shadow.append(point + Vector2(5, 7))
+	canvas.draw_polyline(shadow, Color(0, 0, 0, 0.44), 24.0, true)
+	canvas.draw_polyline(points, Color(0, 0, 0, 0.55), 22.0, true)
+	canvas.draw_polyline(points, Color(1, 1, 1, 0.92), 16.0, true)
+	canvas.draw_polyline(points, Color(0.78, 0.80, 0.79, 0.88), 12.0, true)
+	canvas.draw_polyline(points, Color(1, 1, 1, 0.14), 6.0, true)
+	_draw_dashed_polyline(canvas, points, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.90), 2.0, 6.0)
+	for k in 3:
+		var sample: Dictionary = _polyline_sample(points, (float(k) + 1.0) / 4.0)
+		_draw_arrowhead(canvas, sample["point"], sample["direction"], UITheme.CYAN)
+	var prefix := _polyline_prefix(points, progress)
+	if prefix.size() > 1:
+		canvas.draw_polyline(prefix, Color(UITheme.MINT.r, UITheme.MINT.g, UITheme.MINT.b, 0.30), 14.0, true)
+	# 星头和圆环尾都是轨迹的一部分：固定画在轨迹两端，尾部不单独飞入。
+	_draw_path_head(canvas, points[0], true)
+	_draw_path_tail(canvas, points[-1], true)
+	var position := _trace_position(note, t)
+	if _valid_point(position):
+		canvas.draw_circle(position, 9.0, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.88))
+		canvas.draw_circle(position, 3.2, UITheme.INK)
+	if not playtest_mode:
+		_draw_label(canvas, "SLIDE", points[0] + Vector2(16, -14), UITheme.CYAN)
 
 
 func _draw_trace_cap(canvas: Control, point: Vector2, start: bool) -> void:
@@ -2109,7 +2152,7 @@ func _design_radius_to_screen(point: Vector2, radius: float) -> float:
 
 
 func _trace_position(note: Note, t: float) -> Vector2:
-	var points := trace_screen_points(note)
+	var points := trace_screen_points(note, t)
 	if points.size() < 2:
 		return Vector2(INF, INF)
 	var total := note.duration()

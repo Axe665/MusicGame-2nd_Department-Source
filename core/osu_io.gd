@@ -5,7 +5,7 @@ static var last_error: String = ""
 
 const TAIKO_STACK_GAP := 0.32
 const STD_MAX_DEG_PER_SEC := 360.0
-const STD_STREAM_COMPRESSION := 0.55
+const STD_STREAM_STEP := 22.5
 const STD_JUMP_COMPRESSION := 0.75
 const STD_JUMP_DISTANCE := 128.0
 const STD_PATH_MAX_SPAN := 180.0
@@ -222,9 +222,12 @@ static func parse_osu(text: String, source_name: String = "") -> Dictionary:
 	objects_raw.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return float(a["time"]) < float(b["time"]))
 	if mode == 0:
 		var std_counts := _convert_std_continuous(objects_raw, chart, timing_raw, slider_multiplier, circle_radius)
+		var shift := _shift_chart_to_zero(chart)
 		chart.refresh_ids()
-		report.append("保留：Tap %d，Path %d，Hold %d；跳过：spinner %d，无效 %d" % [std_counts["tap"], std_counts["path"], std_counts["hold"], std_counts["spinner"], std_counts["invalid"]])
-		report.append("osu!std → 连续环：circle → Tap；可跟随 slider → Path；lazy/短/重复 slider → Hold；流方向压缩 + 360°/s 限速，宽度按相邻角度/时间补偿。")
+		report.append("保留：Tap %d，Slide %d，Hold %d；跳过：spinner %d，无效 %d" % [std_counts["tap"], std_counts["trace"], std_counts["hold"], std_counts["spinner"], std_counts["invalid"]])
+		report.append("osu!std → 混合层：circle → 环上 Tap；slider → 平面 Slide Trace（星头按键 + 沿轨迹，尾部是终点不单独判定）；lazy/短/重复 → Hold；流方向步进 + 45–75° 宽度。")
+		if shift > 0.001:
+			report.append("已整体平移 %.2f 拍，使最早 note 落在 beat 0；offset 调整为 %.0f ms。" % [shift, chart.offset_ms])
 		if int(std_counts["spinner"]) > 0:
 			report.append("注意：spinner 没有头尾，按设计不导入。")
 		return {"chart": chart, "report": report, "_events": events, "_general": general}
@@ -285,8 +288,11 @@ static func parse_osu(text: String, source_name: String = "") -> Dictionary:
 			taiko_prev_angle = fposmod(angle, 360.0)
 		else:
 			counts["invalid"] += 1
+	var shift := _shift_chart_to_zero(chart)
 	chart.refresh_ids()
 	report.append("保留：Tap %d，Hold %d；跳过：spinner %d，无效 %d" % [counts["tap"], counts["hold"], counts["spinner"], counts["invalid"]])
+	if shift > 0.001:
+		report.append("已整体平移 %.2f 拍，使最早 note 落在 beat 0；offset 调整为 %.0f ms。" % [shift, chart.offset_ms])
 	report.append("taiko 映射：don/kat 按 hitsound（whistle/clap = kat）分色；就近取 0/90/180/270 两车道，密集段堆叠不甩圈；短滑条 → Tap，长滑条 → Hold；spinner 跳过。")
 	if counts["spinner"] > 0:
 		report.append("注意：spinner 没有头尾，按设计不导入。")
@@ -309,8 +315,32 @@ static func _taiko_lane(previous: float, kat: bool) -> float:
 	return best
 
 
+static func _shift_chart_to_zero(chart: Chart) -> float:
+	if chart == null or chart.notes.is_empty():
+		return 0.0
+	var min_beat := INF
+	for note in chart.notes:
+		min_beat = minf(min_beat, note.beat)
+	if min_beat >= -0.0001:
+		return 0.0
+	var delta := -min_beat
+	var bpm := maxf(0.001, chart.timing.bpm_at(0.0))
+	var meter := chart.timing.beats_per_bar_at(0.0)
+	var offset_delta := delta * 60000.0 / bpm
+	for point in chart.timing.points:
+		point.beat += delta
+	for note in chart.notes:
+		note.beat += delta
+		note.end_beat += delta
+	chart.timing.points.append(TimingPoint.new(0.0, bpm, meter))
+	chart.timing.sort_points()
+	chart.offset_ms += offset_delta
+	chart.timing.offset_ms = chart.offset_ms
+	return delta
+
+
 static func _convert_std_continuous(objects_raw: Array, chart: Chart, timing_raw: Array[Dictionary], slider_multiplier: float, circle_radius: float) -> Dictionary:
-	var counts := {"tap": 0, "path": 0, "hold": 0, "spinner": 0, "invalid": 0}
+	var counts := {"tap": 0, "trace": 0, "hold": 0, "spinner": 0, "invalid": 0}
 	var play: Array[Dictionary] = []
 	for object in objects_raw:
 		var type := int(object["type"])
@@ -363,20 +393,27 @@ static func _convert_std_continuous(objects_raw: Array, chart: Chart, timing_raw
 		if not first:
 			var prev: Dictionary = play[i - 1]
 			var prev_prev: Dictionary = play[i - 2] if i >= 2 else {}
-			var midpoint := _std_midpoint(prev, prev_prev, current)
-			var prev_flow := _std_angle_between(midpoint, prev["end_pos"])
-			var curr_flow := _std_angle_between(midpoint, pos)
-			var raw_delta := _std_short_delta(prev_flow, curr_flow)
-			is_jump = (prev["end_pos"] as Vector2).distance_to(pos) >= STD_JUMP_DISTANCE
-			var compression := STD_JUMP_COMPRESSION if is_jump else STD_STREAM_COMPRESSION
-			var delta := raw_delta * compression
-			if absf(raw_delta) <= 5.0 or absf(absf(raw_delta) - 180.0) <= 5.0:
-				delta = 0.0
-			var bpm := maxf(1.0, chart.timing.bpm_at(beat))
-			var dt := maxf(0.0001, (beat - prev_end_beat) * 60.0 / bpm)
-			var max_delta := STD_MAX_DEG_PER_SEC * dt
-			delta = clampf(delta, -max_delta, max_delta)
-			u = prev_u + delta
+			var gap_beats := beat - prev_end_beat
+			if gap_beats > 1.0:
+				# 长间隔重新锚定到 osu 绝对角度，避免长句累积漂移。
+				u = raw_start
+			else:
+				var midpoint := _std_midpoint(prev, prev_prev, current)
+				var prev_flow := _std_angle_between(midpoint, prev["end_pos"])
+				var curr_flow := _std_angle_between(midpoint, pos)
+				var raw_delta := _std_short_delta(prev_flow, curr_flow)
+				is_jump = (prev["end_pos"] as Vector2).distance_to(pos) >= STD_JUMP_DISTANCE
+				var delta := 0.0
+				if is_jump:
+					delta = raw_delta * STD_JUMP_COMPRESSION
+				elif absf(raw_delta) > 5.0 and absf(absf(raw_delta) - 180.0) > 5.0:
+					# 流内只沿方向走固定步长，避免中点角度来回摆成两堵墙。
+					delta = (1.0 if raw_delta > 0.0 else -1.0) * STD_STREAM_STEP
+				var bpm := maxf(1.0, chart.timing.bpm_at(beat))
+				var dt := maxf(0.0001, gap_beats * 60.0 / bpm)
+				var max_delta := STD_MAX_DEG_PER_SEC * dt
+				delta = clampf(delta, -max_delta, max_delta)
+				u = prev_u + delta
 		first = false
 
 		var note: Note
@@ -396,14 +433,12 @@ static func _convert_std_continuous(objects_raw: Array, chart: Chart, timing_raw
 			var span := clampf(absf(net) * 0.55 + float(current["duration"]) * 12.0, 45.0, STD_PATH_MAX_SPAN)
 			tail_u = u + direction * span
 			end_beat = beat + float(current["duration"])
-			note = Note.new("path", beat, fposmod(u, 360.0), 60.0)
+			note = Note.new("trace", beat, fposmod(u, 360.0), 60.0)
 			note.end_beat = end_beat
-			note.tail_angle = fposmod(tail_u, 360.0)
-			note.tail_width = 60.0
-			note.path_style = "arc"
-			note.tolerance = 0.24
-			note.samples_per_beat = 4.0
-			counts["path"] += 1
+			note.trace_style = "slider"
+			note.move_px = clampf(70.0 + float(current["duration"]) * 50.0, 90.0, 240.0)
+			note.trace_pts = _std_slide_trace(u, tail_u, float(current["duration"]))
+			counts["trace"] += 1
 			is_path = true
 		elif bool(current["is_slider"]):
 			var hold_duration := maxf(0.25, float(current["duration"]))
@@ -442,17 +477,37 @@ static func _convert_std_continuous(objects_raw: Array, chart: Chart, timing_raw
 		var prev_gap := absf(_std_short_delta(prev_ref, u))
 		var next_gap := absf(_std_short_delta(current_ref, next_ref))
 		var dense := prev_time < 0.5 or next_time < 0.5
-		var width := 62.0
+		var width := 50.0
 		if dense:
-			width += 22.0
-		width += clampf(minf(prev_gap, next_gap) * 0.25, 0.0, 25.0)
+			width += 8.0
+		width += clampf(minf(prev_gap, next_gap) * 0.15, 0.0, 15.0)
 		if bool(info["is_jump"]):
-			width -= 8.0
-		width = clampf(width, 52.0, 110.0)
-		note.width = width
-		if note.type == "path":
-			note.tail_width = clampf(width + 8.0, 52.0, 120.0)
+			width -= 5.0
+		width = clampf(width, 45.0, 75.0)
+		if note.type in ["tap", "hold"]:
+			note.width = width
 	return counts
+
+
+static func _std_slide_trace(head_u: float, tail_u: float, duration: float) -> Array[Dictionary]:
+	var head := deg_to_rad(head_u)
+	var tail := deg_to_rad(tail_u)
+	var delta := fposmod(tail - head + PI, TAU) - PI
+	if absf(delta) < 0.01:
+		delta = PI * 0.5
+	var sag := clampf(0.12 + absf(delta) / PI * 0.10, 0.12, 0.22)
+	var result: Array[Dictionary] = []
+	var count := 24
+	for i in count + 1:
+		var t := float(i) / float(count)
+		var angle := head + delta * t
+		var radius := 1.0 - sag * sin(PI * t)
+		result.append({
+			"x": cos(angle) * radius,
+			"y": sin(angle) * radius,
+			"db": duration * t,
+		})
+	return result
 
 
 static func _std_angle(point: Vector2) -> float:

@@ -20,6 +20,7 @@ func _initialize() -> void:
 		"test_osu_std_import",
 		"test_osu_std_curves",
 		"test_osu_std_slider_kinds",
+		"test_osu_std_negative_shift",
 		"test_osu_std_readability",
 		"test_osu_taiko_import",
 		"test_osu_taiko_flow",
@@ -321,17 +322,25 @@ SliderMultiplier: 1.4
 	eq(tap.type, "tap", "osu circle -> tap")
 	eq(tap.space, "ring", "osu circle stays on the ring")
 	near(tap.beat, 2.0, 0.001, "osu circle beat")
-	ok(tap.width >= 52.0 and tap.width <= 110.0, "osu tap has variable width")
+	ok(tap.width >= 45.0 and tap.width <= 75.0, "osu tap has variable width")
 	var slide: Note = chart.notes[1]
-	eq(slide.type, "path", "osu slider -> ring path")
-	eq(slide.path_style, "arc", "osu slider uses arc path")
+	eq(slide.type, "trace", "osu slider -> planar slide trace")
+	eq(slide.trace_style, "slider", "osu slider keeps slide style")
 	near(slide.beat, 4.0, 0.001, "osu slider beat")
 	near(slide.end_beat, 4.7142857, 0.001, "osu slider duration")
-	ok(absf(JudgeMath.angle_delta(slide.angle, slide.tail_angle)) >= 40.0, "slider has a ring tail span")
-	ok(slide.tail_width >= 52.0 and slide.tail_width <= 120.0, "slider tail width is variable")
+	ok(slide.trace_pts.size() > 8, "osu slider has a 2D slide path")
+	var first: Dictionary = slide.trace_pts[0]
+	var last: Dictionary = slide.trace_pts[-1]
+	near(sqrt(pow(float(first["x"]), 2) + pow(float(first["y"]), 2)), 1.0, 0.02, "slide head on the ring")
+	near(sqrt(pow(float(last["x"]), 2) + pow(float(last["y"]), 2)), 1.0, 0.02, "slide tail on the ring")
+	var inside := true
+	for point in slide.trace_pts:
+		if sqrt(pow(float(point["x"]), 2) + pow(float(point["y"]), 2)) > 1.02:
+			inside = false
+	ok(inside, "slide path stays inside the ring disk")
 	var restored := Note.from_dict(slide.to_dict())
-	eq(restored.type, "path", "slider path survives json")
-	near(restored.tail_angle, slide.tail_angle, 0.001, "slider tail angle survives json")
+	eq(restored.type, "trace", "slide trace survives json")
+	eq(restored.trace_style, "slider", "slide style survives json")
 	return true
 
 
@@ -366,11 +375,22 @@ SliderMultiplier: 1.4
 	var chart: Chart = result["chart"]
 	eq(chart.notes.size(), 4, "four slider curves imported")
 	for note in chart.notes:
-		eq(note.type, "path", "curve %s is a ring path" % note.id)
-		var span := absf(JudgeMath.angle_delta(note.angle, note.tail_angle))
-		ok(span >= 40.0 and span <= 180.1, "curve %s has a continuous tail span (%.1f)" % [note.id, span])
-		ok(note.width >= 52.0 and note.width <= 110.0, "curve %s head width is playable" % note.id)
-		ok(note.tail_width >= 52.0 and note.tail_width <= 120.0, "curve %s tail width is playable" % note.id)
+		eq(note.type, "trace", "curve %s is a slide trace" % note.id)
+		eq(note.trace_style, "slider", "curve %s keeps slide style" % note.id)
+		ok(note.trace_pts.size() >= 8, "curve %s has enough slide samples" % note.id)
+		var previous_db := -1.0
+		var monotonic := true
+		var inside := true
+		for point in note.trace_pts:
+			var radius := sqrt(pow(float(point["x"]), 2) + pow(float(point["y"]), 2))
+			var db := float(point.get("db", -1.0))
+			if radius > 1.02:
+				inside = false
+			if db + 0.0001 < previous_db:
+				monotonic = false
+			previous_db = db
+		ok(inside, "curve %s stays inside the ring disk" % note.id)
+		ok(monotonic, "curve %s time is monotonic" % note.id)
 	return true
 
 
@@ -489,8 +509,42 @@ SliderMultiplier: 1.4
 	eq(chart.notes.size(), 3, "slider kinds note count")
 	eq(chart.notes[0].type, "hold", "short slider -> hold")
 	eq(chart.notes[1].type, "hold", "repeat slider -> hold")
-	eq(chart.notes[2].type, "path", "long slider -> path")
-	ok(chart.notes[2].end_beat > chart.notes[2].beat, "long slider path has duration")
+	eq(chart.notes[2].type, "trace", "long slider -> slide trace")
+	eq(chart.notes[2].trace_style, "slider", "long slider keeps slide style")
+	ok(chart.notes[2].end_beat > chart.notes[2].beat, "long slider slide has duration")
+	return true
+
+
+func test_osu_std_negative_shift() -> bool:
+	var text := """osu file format v14
+
+[General]
+Mode: 0
+
+[Metadata]
+Title: Shift
+Artist: A
+Creator: C
+Version: H
+
+[Difficulty]
+SliderMultiplier: 1.4
+
+[TimingPoints]
+1000,500,4,2,0,100,1,0
+
+[HitObjects]
+256,192,500,1,0,0:0:0:0:
+"""
+	var result := OsuIO.parse_osu(text, "shift.osu")
+	ok(not result.is_empty(), "negative shift parsed")
+	if result.is_empty():
+		return false
+	var chart: Chart = result["chart"]
+	eq(chart.notes.size(), 1, "negative shift note count")
+	near(chart.notes[0].beat, 0.0, 0.001, "earliest note shifted to beat 0")
+	near(chart.offset_ms, -500.0, 0.001, "offset adjusted for shift")
+	near(chart.timing.beat_to_chart_ms(0.0), 0.0, 0.001, "shifted beat 0 maps to chart 0")
 	return true
 
 
@@ -536,7 +590,7 @@ SliderMultiplier: 1.4
 	ok(min_step > 10.0, "std notes are not all stacked (min %.1f)" % min_step)
 	for note in chart.notes:
 		eq(note.space, "ring", "std readability stays on the ring")
-		ok(note.width >= 52.0 and note.width <= 110.0, "std width is playable")
+		ok(note.width >= 45.0 and note.width <= 75.0, "std width is playable")
 	return true
 
 

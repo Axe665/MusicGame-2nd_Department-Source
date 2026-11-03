@@ -475,7 +475,12 @@ func _draw_trace(note: Note, _plot: Rect2) -> void:
 		draw_rect(rect, UITheme.INK, false, 1.0)
 	var mini := PackedVector2Array()
 	for point in note.trace_pts:
-		mini.append(Vector2(cx - 20 + float(point.get("x", 0.0)) * 40.0, y0 + 4 + float(point.get("y", 0.0)) * maxf(4, y1 - y0 - 8)))
+		var px := float(point.get("x", 0.0))
+		var py := float(point.get("y", 0.0))
+		if note.trace_style == "slider":
+			px = px * 0.5 + 0.5
+			py = py * 0.5 + 0.5
+		mini.append(Vector2(cx - 20 + px * 40.0, y0 + 4 + py * maxf(4, y1 - y0 - 8)))
 	if mini.size() > 1:
 		draw_polyline(mini, UITheme.MINT, 2.0, true)
 	draw_line(Vector2(cx - 19, y0 + 3), Vector2(cx - 11, y0 + 11), UITheme.MINT, 1.5, true)

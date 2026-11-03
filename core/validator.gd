@@ -162,7 +162,11 @@ static func _check_notes(chart: Chart, issues: Array[Dictionary]) -> void:
 				for point in note.trace_pts:
 					var x := float(point.get("x", 0.0))
 					var y := float(point.get("y", 0.0))
-					if x < 0.0 or x > 1.0 or y < 0.0 or y > 1.0:
+					if note.trace_style == "slider":
+						if sqrt(x * x + y * y) > 1.05:
+							_add(issues, "error", "Slide %d 的点越出环内平面" % note.id, "note:%d" % note.id)
+							break
+					elif x < 0.0 or x > 1.0 or y < 0.0 or y > 1.0:
 						_add(issues, "error", "Trace %d 的点越出安全区" % note.id, "note:%d" % note.id)
 						break
 			"bell":

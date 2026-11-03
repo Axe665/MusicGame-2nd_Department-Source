@@ -287,7 +287,7 @@ func _judge_all(ms: float, beat: float, delta: float) -> void:
 			"path":
 				_judge_path(note, ms, beat, cursor_u, valid, mouse)
 			"trace":
-				_judge_trace(note, ms, delta, mouse)
+				_judge_trace(note, ms, beat, delta, mouse)
 			"anchor":
 				_judge_anchor(note, ms, beat)
 			"bell":
@@ -419,15 +419,25 @@ func _judge_path(note: Note, ms: float, beat: float, cursor_u: float, valid: boo
 		state["next_sample"] = index
 
 
-func _judge_trace(note: Note, ms: float, delta: float, mouse: Vector2) -> void:
+func _judge_trace(note: Note, ms: float, beat: float, delta: float, mouse: Vector2) -> void:
 	var state: Dictionary = _states[note.id]
 	var start_ms := chart.timing.beat_to_chart_ms(note.beat)
 	var end_ms := chart.timing.beat_to_chart_ms(note.end_beat)
-	var contact := _trace_contact(note, mouse)
+	var contact := _trace_contact(note, mouse, beat)
 	if not state["trace_started"]:
 		if ms < start_ms - HIT_WINDOW_MS:
 			return
-		if contact:
+		var started := false
+		if note.trace_style == "slider":
+			var points := _preview.trace_screen_points(note, beat)
+			var head: Vector2 = points[0] if not points.is_empty() else mouse
+			var press := _take_key_for_point(start_ms - HIT_WINDOW_MS, start_ms + HIT_WINDOW_MS, head, 42.0)
+			if not press.is_empty():
+				started = true
+				_sfx.play("don", 0.90)
+		elif contact:
+			started = true
+		if started:
 			state["trace_started"] = true
 			state["trace_contact"] = true
 			state["trace_last"] = mouse
@@ -463,11 +473,11 @@ func _judge_trace(note: Note, ms: float, delta: float, mouse: Vector2) -> void:
 		_add_log("MISS Trace #%d (distance %.0f/%.0f)" % [note.id, float(state["trace_distance"]), note.move_px])
 
 
-func _trace_contact(note: Note, mouse: Vector2) -> bool:
+func _trace_contact(note: Note, mouse: Vector2, beat: float) -> bool:
 	if note.trace_pts.size() < 2:
 		return false
 	var polyline: Array[Vector2] = []
-	for point in _preview.trace_screen_points(note):
+	for point in _preview.trace_screen_points(note, beat):
 		polyline.append(point)
 	return JudgeMath.trace_distance(mouse, polyline) <= 34.0
 
@@ -539,6 +549,21 @@ func _pulse_at(angle_degrees: float, beat: float, color: Color, label: String) -
 	var p: Vector2 = _preview.project_u(fposmod(angle_degrees, 360.0) / 360.0, beat)
 	if p.is_finite() and p.x < 1.0e9:
 		_preview.add_hit_pulse(p, color, label)
+
+
+func _take_key_for_point(lo: float, hi: float, point: Vector2, radius: float) -> Dictionary:
+	for i in _key_presses.size():
+		var press: Dictionary = _key_presses[i]
+		var stamp := float(press.get("time", -INF))
+		if stamp < lo:
+			continue
+		if stamp > hi:
+			break
+		var press_mouse: Vector2 = press.get("mouse", Vector2.ZERO)
+		if press_mouse.distance_to(point) <= radius:
+			_key_presses.remove_at(i)
+			return press
+	return {}
 
 
 func _take_key_in_window(lo: float, hi: float) -> Dictionary:
