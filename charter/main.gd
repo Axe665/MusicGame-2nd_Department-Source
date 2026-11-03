@@ -58,6 +58,7 @@ var _pending_kind: String = "osu"
 var _import_dir_dialog: FileDialog
 var _audio_dialog: FileDialog
 var _song_dialog: SongImportDialog
+var _chart_browser: ChartBrowser
 var _new_dialog: NewChartDialog
 var _playtest: Playtest
 var _cursor_u: float = 0.0
@@ -128,7 +129,7 @@ func _build_ui() -> void:
 	brand_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	brand_row.add_child(brand_spacer)
 	brand_row.add_child(_menu("文件", [
-		["新建", 0], ["打开", 1], ["保存", 2], ["另存为", 3], ["-", 0], ["导入歌曲 / 识别 BPM…", 9], ["导入谱面 (.osz/.zip/.txt)", 6], ["导入舞萌文件夹", 8], ["导出 .lbp", 7], ["-", 0], ["恢复自动保存", 4], ["-", 0], ["退出", 5],
+		["新建", 0], ["打开", 1], ["保存", 2], ["另存为", 3], ["-", 0], ["在线舞萌谱面…", 12], ["导入歌曲 / 识别 BPM…", 9], ["导入谱面 (.osz/.zip/.txt)", 6], ["导入舞萌文件夹", 8], ["导出 .lbp", 7], ["-", 0], ["恢复自动保存", 4], ["-", 0], ["退出", 5],
 	]))
 	brand_row.add_child(_menu("编辑", [
 		["撤销", 10], ["重做", 11], ["-", 0], ["删除", 12], ["取消选择", 13], ["全选可见", 14],
@@ -538,6 +539,13 @@ func _build_dialogs() -> void:
 		_show_toast("已写入识别结果；可在“时间”页继续微调 BPM / offset。", "info")
 	)
 	add_child(_song_dialog)
+	_chart_browser = ChartBrowser.new()
+	_chart_browser.chart_imported.connect(func(chart: Chart) -> void:
+		_app.set_chart(chart, "", true)
+		_sync_from_app()
+		_show_report("已从在线谱面导入：%d 个 note，%d 个 BPM 点。\n%s" % [chart.notes.size(), chart.timing.points.size(), SimaiIO.last_report])
+	)
+	add_child(_chart_browser)
 	_lbp_dialog = FileDialog.new()
 	_lbp_dialog.file_mode = FileDialog.FILE_MODE_SAVE_FILE
 	_lbp_dialog.access = FileDialog.ACCESS_FILESYSTEM
@@ -946,6 +954,8 @@ func _on_menu(id: int) -> void:
 			_import_dir_dialog.popup_centered_ratio(0.75)
 		9:
 			_audio_dialog.popup_centered_ratio(0.75)
+		12:
+			_chart_browser.popup_centered_ratio(0.8)
 		7:
 			_lbp_dialog.popup_centered_ratio(0.75)
 		5:
