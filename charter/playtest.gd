@@ -3,9 +3,9 @@ extends Control
 
 signal exit_requested
 
-const PERFECT_MS := 65.0
-const GREAT_MS := 115.0
-const GOOD_MS := 170.0
+const PERFECT_MS := 90.0
+const GREAT_MS := 150.0
+const GOOD_MS := 230.0
 const HIT_WINDOW_MS := GOOD_MS
 const BELL_WINDOW_MS := 180.0
 const RED_LIMIT_SEC := 0.2
@@ -517,7 +517,7 @@ func _judge_trace(note: Note, ms: float, beat: float, delta: float, mouse: Vecto
 			var last: Vector2 = state["trace_last"]
 			var step := last.distance_to(mouse)
 			var previous_fraction := float(state.get("trace_frac", 0.0))
-			var jumped := fraction >= previous_fraction + 0.05 and step > 110.0 and distance_to_path <= 34.0
+			var jumped := fraction >= previous_fraction + 0.02 and step > 60.0 and distance_to_path <= 40.0
 			if jumped:
 				# 鼠标向前跳区：跳过的段落从画面削掉，且不累计移动距离。
 				_preview.cut_trace(note, previous_fraction, fraction)
