@@ -136,6 +136,11 @@ static func _note_line(chart: Chart, note: Note) -> String:
 				suffix += ",visual=%s" % _points(note.visual_pts)
 			if note.path_style != "arc":
 				suffix += ",style=%s" % note.path_style
+			if not note.path_gaps.is_empty():
+				var ranges: Array[String] = []
+				for gap in note.path_gaps:
+					ranges.append("%s:%s" % [_num(float(gap.get("from", 0.0))), _num(float(gap.get("to", 0.0)))])
+				suffix += ",erase=%s" % "|".join(ranges)
 			return "path,%s,%s,%s,%s,%s,%s%s%s" % [
 				_beat(chart, note.beat), _num(note.angle), _num(note.width),
 				_beat(chart, note.end_beat), _num(note.tail_angle), _num(note.tail_width),

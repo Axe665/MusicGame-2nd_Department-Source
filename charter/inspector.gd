@@ -293,6 +293,15 @@ func _build_note_page(page: VBoxContainer) -> void:
 			{"text": "五角星", "callback": func() -> void: _set_path_style(note, "star")},
 		])
 		_label(page, "中段采样点：%d；体节点：%d 个" % [note.path_sample_beats().size(), note.visual_pts.size()], 11, UITheme.MUTED)
+		_section(page, "跳区 / 擦除")
+		_spin(page, "中段擦除 %", _path_erase_width(note) * 100.0, 0.0, 80.0, 5.0, func(value: float) -> void:
+			_set_path_erase_width(note, value / 100.0)
+		)
+		_buttons(page, [{"text": "清除擦除", "callback": func() -> void:
+			_apply(func() -> void: _set_path_erase_width(note, 0.0))
+			_rebuild()
+		}])
+		_label(page, "擦除段不渲染、不生成中段检查点；头尾仍各自判定。", 11, UITheme.MUTED)
 	if note.type == "trace":
 		_spin(page, "移动距离 px", note.move_px, 0.0, 1000.0, 1.0, func(value: float) -> void: note.move_px = value)
 		_label(page, "二维点：%d 个；在预览窗用 Trace 工具拖拽重画。" % note.trace_pts.size(), 11, UITheme.MUTED)
@@ -334,6 +343,22 @@ func _build_note_page(page: VBoxContainer) -> void:
 		{"text": "复制", "callback": func() -> void: _duplicate_note(note)},
 		{"text": "删除", "callback": func() -> void: _delete_note(note)},
 	])
+
+
+func _path_erase_width(note: Note) -> float:
+	if note.path_gaps.is_empty():
+		return 0.0
+	var gap: Dictionary = note.path_gaps[0]
+	return maxf(0.0, minf(0.8, absf(float(gap.get("to", 0.0)) - float(gap.get("from", 0.0)))))
+
+
+func _set_path_erase_width(note: Note, width: float) -> void:
+	var half := clampf(width, 0.0, 0.8) * 0.5
+	if half <= 0.001:
+		note.path_gaps.clear()
+		return
+	note.path_gaps.clear()
+	note.path_gaps.append({"from": 0.5 - half, "to": 0.5 + half})
 
 
 func _set_path_style(note: Note, style: String) -> void:

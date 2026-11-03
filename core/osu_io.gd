@@ -5,7 +5,9 @@ static var last_error: String = ""
 
 const PLAYFIELD_CENTER := Vector2(256.0, 192.0)
 const DEFAULT_WIDTH := 120.0
-const TAIKO_QUADRANTS := [0.0, 90.0, 180.0, 270.0]
+const TAIKO_STACK_GAP := 0.32
+const STD_ANGLE_COMPRESSION := 0.50
+const STD_MAX_STEP := 60.0
 
 
 static func list_osz_difficulties(path: String) -> Array[Dictionary]:
@@ -215,7 +217,11 @@ static func parse_osu(text: String, source_name: String = "") -> Dictionary:
 	report.append("模式：%s" % ("osu!taiko" if mode == 1 else "osu!std"))
 	report.append("BPM 点：%d；offset：%.0f ms；SliderMultiplier：%.2f" % [chart.timing.points.size(), chart.offset_ms, slider_multiplier])
 	var counts := {"tap": 0, "path": 0, "hold": 0, "spinner": 0, "invalid": 0}
-	var quadrant := 0
+	var taiko_prev_beat := -1.0e9
+	var taiko_prev_angle := 0.0
+	var std_prev_raw := 0.0
+	var std_prev_ring := 0.0
+	var std_has_prev := false
 	objects_raw.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return float(a["time"]) < float(b["time"]))
 	for object in objects_raw:
 		var type := int(object["type"])
@@ -227,46 +233,86 @@ static func parse_osu(text: String, source_name: String = "") -> Dictionary:
 			continue
 		var object_time: float = float(object["time"])
 		var beat: float = chart.timing.audio_ms_to_beat(object_time)
-		var angle := _std_angle(Vector2(float(object["x"]), float(object["y"])))
+		var hit_sound := int(object["hit_sound"])
+		var raw_angle := _std_angle(Vector2(float(object["x"]), float(object["y"])))
 		if mode == 1:
+			var kat := _is_taiko_kat(hit_sound)
+			var finish := (hit_sound & 4) != 0
 			if type & 1:
-				var note := Note.new("tap", beat, TAIKO_QUADRANTS[quadrant % 4], 90.0 if (int(object["hit_sound"]) & 4) != 0 else 60.0)
+				var gap := beat - taiko_prev_beat
+				var angle := taiko_prev_angle
+				if gap >= TAIKO_STACK_GAP:
+					angle = _taiko_lane(taiko_prev_angle, kat)
+				var width := 90.0 if finish else (76.0 if kat else 58.0)
+				var note := Note.new("tap", beat, fposmod(angle, 360.0), width)
 				note.id = chart.next_note_id()
 				chart.notes.append(note)
-				quadrant += 1
+				taiko_prev_beat = beat
+				taiko_prev_angle = fposmod(angle, 360.0)
 				counts["tap"] += 1
 			elif type & 2:
 				var duration := _slider_beats(object, chart, timing_raw, slider_multiplier)
-				var note := Note.new("hold", beat, TAIKO_QUADRANTS[quadrant % 4], 60.0)
-				note.id = chart.next_note_id()
-				note.end_beat = beat + maxf(0.25, duration)
-				chart.notes.append(note)
-				quadrant += 1
-				counts["hold"] += 1
+				var gap := beat - taiko_prev_beat
+				var angle := taiko_prev_angle
+				if gap >= TAIKO_STACK_GAP:
+					angle = _taiko_lane(taiko_prev_angle, kat)
+				if duration < 1.5:
+					# 短滑条按 osu!taiko 习惯拆成拍点，不生成需要长按的 Hold。
+					var span := clampf(duration, 0.25, 1.5)
+					var count := maxi(1, int(round(span / 0.5)))
+					var last_beat := beat
+					for i in count:
+						var tap_beat := beat + span * float(i) / float(count)
+						var tap := Note.new("tap", tap_beat, fposmod(angle, 360.0), 76.0 if kat else 58.0)
+						tap.id = chart.next_note_id()
+						chart.notes.append(tap)
+						last_beat = tap_beat
+						counts["tap"] += 1
+					taiko_prev_beat = last_beat
+				else:
+					var hold := Note.new("hold", beat, fposmod(angle, 360.0), 58.0)
+					hold.id = chart.next_note_id()
+					hold.end_beat = beat + duration
+					chart.notes.append(hold)
+					taiko_prev_beat = beat + duration
+					counts["hold"] += 1
+				taiko_prev_angle = fposmod(angle, 360.0)
 			else:
 				counts["invalid"] += 1
 			continue
+		var ring_angle := raw_angle
+		if std_has_prev:
+			var delta := JudgeMath.angle_delta(std_prev_raw, raw_angle) * STD_ANGLE_COMPRESSION
+			ring_angle = std_prev_ring + clampf(delta, -STD_MAX_STEP, STD_MAX_STEP)
+		var angle := fposmod(ring_angle, 360.0)
 		if type & 1:
 			var note := Note.new("tap", beat, angle, DEFAULT_WIDTH)
 			note.id = chart.next_note_id()
 			chart.notes.append(note)
 			counts["tap"] += 1
+			std_prev_raw = raw_angle
+			std_prev_ring = ring_angle
+			std_has_prev = true
 		elif type & 2:
-			var note := _std_slider(object, chart, beat, angle, timing_raw, slider_multiplier)
-			if note == null:
+			var result := _std_slider(object, chart, beat, raw_angle, ring_angle, timing_raw, slider_multiplier)
+			if result.is_empty():
 				counts["invalid"] += 1
 			else:
+				var note: Note = result["note"]
 				note.id = chart.next_note_id()
 				chart.notes.append(note)
 				counts["path"] += 1
+				std_prev_raw = float(result["tail_raw"])
+				std_prev_ring = float(result["tail_ring"])
+				std_has_prev = true
 		else:
 			counts["invalid"] += 1
 	chart.refresh_ids()
 	report.append("保留：Tap %d，Path %d，Hold %d；跳过：spinner %d，无效 %d" % [counts["tap"], counts["path"], counts["hold"], counts["spinner"], counts["invalid"]])
 	if mode == 1:
-		report.append("taiko 映射：don/kat 合并为 Tap，按四象限 0/90/180/270 轮转；drumroll → Hold；spinner 跳过。")
+		report.append("taiko 映射：don/kat 按 hitsound（whistle/clap = kat）分色；就近取 0/90/180/270 两车道，密集段堆叠不甩圈；短滑条 → Tap，长滑条 → Hold；spinner 跳过。")
 	else:
-		report.append("osu!std 映射：circle → Tap；slider 头/尾 → Path 头/尾，控制点 → visual；spinner 跳过。")
+		report.append("osu!std 映射：circle → Tap；slider → Path；角度按相邻位移压缩 %.2f（单步 ≤ %.0f°），避免整圈散点；spinner 跳过。" % [STD_ANGLE_COMPRESSION, STD_MAX_STEP])
 	if counts["spinner"] > 0:
 		report.append("注意：spinner 没有头尾，按设计不导入。")
 	return {"chart": chart, "report": report, "_events": events, "_general": general}
@@ -276,10 +322,27 @@ static func _std_angle(point: Vector2) -> float:
 	return fposmod(rad_to_deg(atan2(point.y - PLAYFIELD_CENTER.y, point.x - PLAYFIELD_CENTER.x)), 360.0)
 
 
-static func _std_slider(object: Dictionary, chart: Chart, beat: float, head_angle: float, timing_raw: Array[Dictionary], slider_multiplier: float) -> Note:
+static func _is_taiko_kat(hit_sound: int) -> bool:
+	return (hit_sound & 2) != 0 or (hit_sound & 8) != 0
+
+
+static func _taiko_lane(previous: float, kat: bool) -> float:
+	# 同一类音落在固定车道上，跨 don/kat 时只走最近的 90°。
+	var base := 90.0 if kat else 0.0
+	var best := base
+	var best_distance := INF
+	for candidate in [base, fposmod(base + 180.0, 360.0)]:
+		var distance := absf(JudgeMath.angle_delta(previous, candidate))
+		if distance < best_distance:
+			best_distance = distance
+			best = candidate
+	return best
+
+
+static func _std_slider(object: Dictionary, chart: Chart, beat: float, raw_head: float, ring_head: float, timing_raw: Array[Dictionary], slider_multiplier: float) -> Dictionary:
 	var fields: Array = object["fields"]
 	if fields.size() < 8:
-		return null
+		return {}
 	var curve: String = String(fields[5])
 	var slides := maxi(1, int(fields[6]))
 	var one_pass := _slider_one_pass_beats(object, timing_raw, slider_multiplier)
@@ -292,22 +355,24 @@ static func _std_slider(object: Dictionary, chart: Chart, beat: float, head_angl
 		var xy := pieces[i].split(":")
 		if xy.size() >= 2:
 			points.append(Vector2(float(xy[0]), float(xy[1])))
-	var tail_angle := head_angle
+	var tail_raw := raw_head
 	if slides % 2 == 1 and not points.is_empty():
-		tail_angle = _std_angle(points[-1])
-	var note := Note.new("path", beat, head_angle, DEFAULT_WIDTH)
+		tail_raw = _std_angle(points[-1])
+	var tail_ring := ring_head + clampf(JudgeMath.angle_delta(raw_head, tail_raw) * STD_ANGLE_COMPRESSION, -90.0, 90.0)
+	var note := Note.new("path", beat, fposmod(ring_head, 360.0), DEFAULT_WIDTH)
 	note.end_beat = beat + total
-	note.tail_angle = tail_angle
+	note.tail_angle = fposmod(tail_ring, 360.0)
 	note.tail_width = 90.0
 	note.path_style = "arc"
 	for i in points.size():
 		var point := points[i]
 		var point_angle := _std_angle(point)
+		var delta := clampf(JudgeMath.angle_delta(raw_head, point_angle) * STD_ANGLE_COMPRESSION, -90.0, 90.0)
 		note.visual_pts.append({
 			"db": one_pass * float(i + 1) / float(points.size() + 1),
-			"da": JudgeMath.angle_delta(head_angle, point_angle),
+			"da": delta,
 		})
-	return note
+	return {"note": note, "tail_raw": tail_raw, "tail_ring": tail_ring}
 
 
 static func _slider_beats(object: Dictionary, chart: Chart, timing_raw: Array[Dictionary], slider_multiplier: float) -> float:

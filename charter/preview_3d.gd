@@ -17,6 +17,8 @@ var interactive: bool = true
 var playtest_mode: bool = false
 var show_hud: bool = true
 var show_debug: bool = false
+var flow_scale: float = 1.0
+var custom_cursor_visible: bool = true
 var mouse_tilt: bool = true
 var use_3d_ring: bool = true:
 	set(value):
@@ -82,6 +84,7 @@ var _last_fit_key: String = ""
 var _last_mesh_key: String = ""
 var _last_process_time: float = -9999.0
 var _last_mouse_screen: Vector2 = Vector2(-9999, -9999)
+var _cursor_trail: Array[Dictionary] = []
 var _avg_radius_cache: float = 100.0
 var _avg_radius_key: String = ""
 var _last_overlay_time: float = -9999.0
@@ -369,7 +372,8 @@ func _process(_delta: float) -> void:
 	var mouse_moved := mouse_screen.distance_to(_last_mouse_screen) > 0.1
 	if mouse_inside and (playtest_mode or (playing and Engine.get_process_frames() % 6 == 0) or mouse_moved):
 		_update_cursor()
-	var needs_overlay := time_changed or mouse_moved or view_changed or flat_dirty
+	_update_cursor_trail(_delta)
+	var needs_overlay := time_changed or mouse_moved or view_changed or flat_dirty or not _cursor_trail.is_empty()
 	if needs_overlay:
 		_overlay.queue_redraw()
 	if use_3d_ring:
@@ -1076,7 +1080,7 @@ func _split_segment() -> void:
 
 
 func _pre_read_beats(chart: Chart, beat: float) -> float:
-	return chart.pre_read_ms / 60000.0 * chart.timing.bpm_at(beat)
+	return chart.pre_read_ms / maxf(0.1, flow_scale) / 60000.0 * chart.timing.bpm_at(beat)
 
 
 func _flying_position(chart: Chart, angle: float, target_beat: float, current_beat: float, pre: float) -> Vector2:
@@ -1085,6 +1089,22 @@ func _flying_position(chart: Chart, angle: float, target_beat: float, current_be
 	var center := project_design(Vector2.ZERO)
 	var q := clampf((current_beat - (target_beat - pre)) / maxf(0.001, pre), 0.0, 1.0)
 	return center.lerp(boundary, q)
+
+
+func _update_cursor_trail(delta: float) -> void:
+	for i in range(_cursor_trail.size() - 1, -1, -1):
+		var age := float(_cursor_trail[i].get("age", 0.0)) + delta
+		_cursor_trail[i]["age"] = age
+		if age > 0.26:
+			_cursor_trail.remove_at(i)
+	if not mouse_inside:
+		_cursor_trail.clear()
+		return
+	if _last_mouse_screen.distance_to(mouse_screen) <= 1.0:
+		return
+	_cursor_trail.append({"pos": mouse_screen, "age": 0.0})
+	if _cursor_trail.size() > 28:
+		_cursor_trail.pop_front()
 
 
 func _update_cursor() -> void:
@@ -1349,41 +1369,61 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 	var total := note.duration()
 	if total <= 0.001:
 		return
-	var points := PackedVector2Array()
+	var runs: Array[PackedVector2Array] = []
+	var run := PackedVector2Array()
 	var count := 80
+	var last_valid := Vector2(INF, INF)
 	for i in count + 1:
 		var rel := total * float(i) / float(count)
+		var erased := note.erased_at(rel)
 		var p := _path_screen_point(chart, note, rel, t)
-		if _valid_point(p):
-			points.append(p)
-	if points.size() < 2:
-		return
-	var body := Color(0.70, 0.71, 0.69, 0.46 if top else 0.20)
+		if erased or not _valid_point(p):
+			if run.size() > 1:
+				runs.append(run)
+			run = PackedVector2Array()
+			last_valid = Vector2(INF, INF)
+			continue
+		# 跳区不连线：断开处直接起新的一段，避免画出跨过擦除区的假轨迹。
+		if last_valid.x < 1.0e9 and p.distance_to(last_valid) > 64.0:
+			if run.size() > 1:
+				runs.append(run)
+			run = PackedVector2Array()
+		run.append(p)
+		last_valid = p
+	if run.size() > 1:
+		runs.append(run)
+	var body := Color(0.78, 0.80, 0.79, 0.62 if top else 0.22)
 	var dash := Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.92 if top else 0.34)
 	var arrow := Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.95 if top else 0.34)
-	if top:
-		var shadow := PackedVector2Array()
-		for p in points:
-			shadow.append(p + Vector2(6, 8))
-		canvas.draw_polyline(shadow, Color(0, 0, 0, 0.45), 22.0, true)
-	canvas.draw_polyline(points, body, 18.0, true)
-	canvas.draw_polyline(points, Color(1, 1, 1, 0.10 if top else 0.04), 12.0, true)
-	_draw_dashed_polyline(canvas, points, dash, 2.0, 6.0)
-	var arrow_count := clampi(int(total * 1.5), 2, 5)
-	for k in arrow_count:
-		var fraction := (float(k) + 1.0) / float(arrow_count + 1)
-		var sample: Dictionary = _polyline_sample(points, fraction)
-		_draw_arrowhead(canvas, sample["point"], sample["direction"], arrow)
-		var direction: Vector2 = (sample["direction"] as Vector2).normalized()
-		var normal := Vector2(-direction.y, direction.x)
-		var tick_point: Vector2 = sample["point"]
-		canvas.draw_line(tick_point - normal * 12.0, tick_point + normal * 12.0, Color(1, 1, 1, 0.22 if top else 0.08), 1.0, true)
+	for piece in runs:
+		if piece.size() < 2:
+			continue
+		if top:
+			var shadow := PackedVector2Array()
+			for p in piece:
+				shadow.append(p + Vector2(6, 8))
+			canvas.draw_polyline(shadow, Color(0, 0, 0, 0.45), 26.0, true)
+		canvas.draw_polyline(piece, Color(0, 0, 0, 0.55), 24.0, true)
+		canvas.draw_polyline(piece, Color(1, 1, 1, 0.20 if top else 0.07), 20.0, true)
+		canvas.draw_polyline(piece, body, 17.0, true)
+		canvas.draw_polyline(piece, Color(1, 1, 1, 0.12 if top else 0.04), 11.0, true)
+		_draw_dashed_polyline(canvas, piece, dash, 2.0, 6.0)
+		var arrow_count := clampi(int(total * 1.5), 2, 5)
+		for k in arrow_count:
+			var fraction := (float(k) + 1.0) / float(arrow_count + 1)
+			var sample: Dictionary = _polyline_sample(piece, fraction)
+			_draw_arrowhead(canvas, sample["point"], sample["direction"], arrow)
+			var direction: Vector2 = (sample["direction"] as Vector2).normalized()
+			var normal := Vector2(-direction.y, direction.x)
+			var tick_point: Vector2 = sample["point"]
+			canvas.draw_line(tick_point - normal * 12.0, tick_point + normal * 12.0, Color(1, 1, 1, 0.22 if top else 0.08), 1.0, true)
 	var star := note.path_style == "star"
 	for sample_beat in note.path_sample_beats():
 		var rel := clampf(sample_beat - note.beat, 0.0, total)
 		var p := _path_ring_point(chart, note, rel, t) if star else _path_screen_point(chart, note, rel, t)
 		if _valid_point(p):
-			canvas.draw_circle(p, 2.5, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.85 if top else 0.30))
+			canvas.draw_circle(p, 3.2, Color(0, 0, 0, 0.45))
+			canvas.draw_circle(p, 2.2, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.92 if top else 0.30))
 	_draw_target_arc(canvas, note.angle, note.width, t, UITheme.CORAL, 10.0)
 	_draw_target_arc(canvas, note.tail_angle, note.tail_width, t, UITheme.GOLD, 8.0)
 	if _app != null and note.path_style != "star":
@@ -1444,29 +1484,35 @@ func _draw_path_head(canvas: Control, point: Vector2, top: bool) -> void:
 	if not _valid_point(point):
 		return
 	var alpha := 1.0 if top else 0.45
-	canvas.draw_circle(point, 19.0, Color(UITheme.CORAL.r, UITheme.CORAL.g, UITheme.CORAL.b, 0.13 * alpha))
+	canvas.draw_circle(point, 22.0, Color(UITheme.CORAL.r, UITheme.CORAL.g, UITheme.CORAL.b, 0.16 * alpha))
 	_draw_star_filled(canvas, point, 12.0, Color(UITheme.CORAL.r, UITheme.CORAL.g, UITheme.CORAL.b, alpha))
 
 
 func _draw_star_filled(canvas: Control, point: Vector2, radius: float, color: Color) -> void:
 	var points := PackedVector2Array()
-	for i in 10:
-		var angle := -PI * 0.5 + TAU * float(i) / 10.0
-		var r := radius if i % 2 == 0 else radius * 0.45
-		points.append(point + Vector2(cos(angle), sin(angle)) * r)
-	canvas.draw_colored_polygon(points, color)
-	points.append(points[0])
-	canvas.draw_polyline(points, UITheme.INK, 1.2, true)
-	canvas.draw_circle(point, 2.6, UITheme.INK)
+	for layer in 3:
+		points = PackedVector2Array()
+		var layer_radius := radius + (3.6 if layer == 0 else (1.2 if layer == 1 else 0.0))
+		for i in 10:
+			var angle := -PI * 0.5 + TAU * float(i) / 10.0
+			var r := layer_radius if i % 2 == 0 else layer_radius * 0.45
+			points.append(point + Vector2(cos(angle), sin(angle)) * r)
+		canvas.draw_colored_polygon(points, Color(0, 0, 0, 0.68) if layer == 0 else (Color(1, 1, 1, 0.96) if layer == 1 else color))
+		points.append(points[0])
+		canvas.draw_polyline(points, Color(0, 0, 0, 0.7) if layer == 0 else (Color(1, 1, 1, 0.96) if layer == 1 else UITheme.INK), 1.4, true)
+	canvas.draw_circle(point, radius * 0.24, Color(0, 0, 0, 0.82))
 
 
 func _draw_path_tail(canvas: Control, point: Vector2, top: bool) -> void:
 	if not _valid_point(point):
 		return
 	var alpha := 1.0 if top else 0.45
-	canvas.draw_circle(point, 16.0, Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, 0.12 * alpha))
-	canvas.draw_circle(point, 11.0, Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, alpha))
-	canvas.draw_circle(point, 5.0, Color(UITheme.INK.r, UITheme.INK.g, UITheme.INK.b, alpha))
+	canvas.draw_circle(point, 18.0, Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, 0.14 * alpha))
+	canvas.draw_circle(point, 15.0, Color(0, 0, 0, 0.64 * alpha))
+	canvas.draw_circle(point, 12.5, Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, alpha))
+	canvas.draw_circle(point, 6.2, Color(0, 0, 0, 0.82 * alpha))
+	canvas.draw_arc(point, 9.0, 0.0, TAU, 28, Color(1, 1, 1, 0.88 * alpha), 1.6, true)
+	canvas.draw_circle(point, 2.0, Color(1, 1, 1, 0.9 * alpha))
 
 
 func _hold_node_screen(chart: Chart, note: Note, relative_beat: float, relative_angle: float, t: float) -> Vector2:
@@ -1503,9 +1549,11 @@ func _draw_holds(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 		var shadow := PackedVector2Array()
 		for p in body:
 			shadow.append(p + Vector2(5, 7))
-		canvas.draw_polyline(shadow, Color(0, 0, 0, 0.34), 18.0, true)
-		canvas.draw_polyline(body, Color(UITheme.AMBER.r, UITheme.AMBER.g, UITheme.AMBER.b, 0.20), 16.0, true)
-		canvas.draw_polyline(body, Color(UITheme.AMBER.r, UITheme.AMBER.g, UITheme.AMBER.b, 0.52), 8.0, true)
+		canvas.draw_polyline(shadow, Color(0, 0, 0, 0.44), 24.0, true)
+		canvas.draw_polyline(body, Color(0, 0, 0, 0.62), 20.0, true)
+		canvas.draw_polyline(body, Color(1, 1, 1, 0.92), 15.0, true)
+		canvas.draw_polyline(body, Color(UITheme.AMBER.r, UITheme.AMBER.g, UITheme.AMBER.b, 0.88), 10.0, true)
+		canvas.draw_polyline(body, Color(1, 1, 0.9, 0.34), 2.6, true)
 		_draw_target_arc(canvas, note.angle, note.width, t, UITheme.AMBER, 12.0)
 		var head := _flying_position(chart, note.angle, note.beat, t, pre)
 		_draw_hexagon(canvas, head, 11.0, UITheme.AMBER)
@@ -1533,9 +1581,9 @@ func _draw_notes(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 				_draw_tap_note(canvas, chart, note, t, pre)
 			"anchor":
 				var p := _flying_position(chart, note.angle, note.beat, t, pre)
-				_draw_diamond(canvas, p, 10.0, UITheme.VIOLET)
-				canvas.draw_line(p + Vector2(0, -3), p + Vector2(0, 5), UITheme.VIOLET, 1.5, true)
-				canvas.draw_line(p + Vector2(0, 5), p + Vector2(5, 8), UITheme.VIOLET, 1.5, true)
+				if _valid_point(p):
+					canvas.draw_circle(p, 18.0, Color(UITheme.VIOLET.r, UITheme.VIOLET.g, UITheme.VIOLET.b, 0.14))
+				_draw_diamond(canvas, p, 11.0, UITheme.VIOLET)
 			"bell":
 				var bell := bell_screen(note, t)
 				if not bell.is_empty():
@@ -1569,11 +1617,16 @@ func _draw_tap_note(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 	var shadow := PackedVector2Array()
 	for p in points:
 		shadow.append(p + Vector2(5, 7))
-	canvas.draw_polyline(shadow, Color(0, 0, 0, 0.34), 20.0, true)
-	canvas.draw_polyline(points, Color(UITheme.CORAL.r, UITheme.CORAL.g, UITheme.CORAL.b, 0.18), 20.0, true)
-	canvas.draw_polyline(points, UITheme.CORAL, 10.0, true)
-	canvas.draw_circle(points[0], 5.0, UITheme.CORAL)
-	canvas.draw_circle(points[-1], 5.0, UITheme.CORAL)
+	canvas.draw_polyline(shadow, Color(0, 0, 0, 0.42), 26.0, true)
+	canvas.draw_polyline(points, Color(UITheme.CORAL.r, UITheme.CORAL.g, UITheme.CORAL.b, 0.10), 26.0, true)
+	canvas.draw_polyline(points, Color(0, 0, 0, 0.68), 19.0, true)
+	canvas.draw_polyline(points, Color(1, 1, 1, 0.94), 14.0, true)
+	canvas.draw_polyline(points, UITheme.CORAL, 9.5, true)
+	canvas.draw_polyline(points, Color(1, 1, 0.94, 0.38), 2.6, true)
+	for cap in [points[0], points[-1]]:
+		canvas.draw_circle(cap, 7.0, Color(0, 0, 0, 0.65))
+		canvas.draw_circle(cap, 5.4, Color(1, 1, 1, 0.95))
+		canvas.draw_circle(cap, 3.6, UITheme.CORAL)
 	var center_data := BoundaryRuntime.eval_point(chart, fposmod(note.angle, 360.0) / 360.0, t)
 	if not bool(center_data.get("gap", false)):
 		var c := project_design(center_data.point * q)
@@ -1596,9 +1649,10 @@ func _draw_traces(canvas: Control, chart: Chart, t: float) -> void:
 			var outline := PackedVector2Array()
 			for p in points:
 				outline.append(p + Vector2(4, 6))
-			canvas.draw_polyline(outline, Color(0, 0, 0, 0.45), 40.0, true)
-			canvas.draw_polyline(points, Color(UITheme.MINT.r, UITheme.MINT.g, UITheme.MINT.b, 0.10), 36.0, true)
-			canvas.draw_polyline(points, Color(UITheme.MINT.r, UITheme.MINT.g, UITheme.MINT.b, 0.24), 28.0, true)
+			canvas.draw_polyline(outline, Color(0, 0, 0, 0.52), 42.0, true)
+			canvas.draw_polyline(points, Color(1, 1, 1, 0.14), 38.0, true)
+			canvas.draw_polyline(points, Color(UITheme.MINT.r, UITheme.MINT.g, UITheme.MINT.b, 0.14), 36.0, true)
+			canvas.draw_polyline(points, Color(UITheme.MINT.r, UITheme.MINT.g, UITheme.MINT.b, 0.30), 28.0, true)
 			canvas.draw_polyline(_offset_polyline(points, 16.0), Color(UITheme.MINT.r, UITheme.MINT.g, UITheme.MINT.b, 0.62), 1.5, true)
 			canvas.draw_polyline(_offset_polyline(points, -16.0), Color(UITheme.MINT.r, UITheme.MINT.g, UITheme.MINT.b, 0.62), 1.5, true)
 			_draw_dashed_polyline(canvas, points, Color(UITheme.MINT.r, UITheme.MINT.g, UITheme.MINT.b, 0.92), 2.0, 6.0)
@@ -1707,28 +1761,65 @@ func _draw_segment_highlight(canvas: Control, segment: BoundarySegment, _index: 
 
 
 func _draw_cursor(canvas: Control, chart: Chart, t: float) -> void:
-	if not mouse_inside and not playtest_mode:
+	if not custom_cursor_visible or (not mouse_inside and not playtest_mode):
+		return
+	_draw_player_cursor(canvas)
+	if playtest_mode:
 		return
 	var p := project_u(cursor_u, t)
-	if not _valid_point(p):
-		return
-	if cursor_valid:
-		canvas.draw_circle(p, 14.0, Color(UITheme.CORAL.r, UITheme.CORAL.g, UITheme.CORAL.b, 0.16))
-		canvas.draw_arc(p, 13.0, 0.0, TAU, 32, UITheme.CORAL, 2.0, true)
-		canvas.draw_circle(p, 4.0, UITheme.INK)
-		canvas.draw_line(p + Vector2(-22, 0), p + Vector2(-9, 0), UITheme.CORAL, 2.0, true)
-		canvas.draw_line(p + Vector2(9, 0), p + Vector2(22, 0), UITheme.CORAL, 2.0, true)
-		canvas.draw_line(p + Vector2(0, -22), p + Vector2(0, -9), UITheme.CORAL, 2.0, true)
-		canvas.draw_line(p + Vector2(0, 9), p + Vector2(0, 22), UITheme.CORAL, 2.0, true)
-	else:
-		canvas.draw_arc(p, 12.0, 0.0, TAU, 24, Color(UITheme.MUTED.r, UITheme.MUTED.g, UITheme.MUTED.b, 0.8), 2.0, true)
-		canvas.draw_string(UITheme.mono_font(), p + Vector2(18, -16), "无有效位置", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, UITheme.MUTED)
-	if _app != null and (_app.trace_draw_mode or _drawing_trace or playtest_mode):
-		var m := mouse_screen
-		canvas.draw_circle(m, 3.0, Color(UITheme.INK.r, UITheme.INK.g, UITheme.INK.b, 0.9))
-		canvas.draw_arc(m, 9.0, 0.0, TAU, 24, Color(UITheme.INK.r, UITheme.INK.g, UITheme.INK.b, 0.45), 1.0, true)
-	if show_debug:
-		canvas.draw_string(UITheme.mono_font(), p + Vector2(18, 26), "u %.1f°" % (cursor_u * 360.0), HORIZONTAL_ALIGNMENT_LEFT, -1, 11, UITheme.MUTED)
+	if cursor_valid and _valid_point(p):
+		canvas.draw_circle(p, 7.0, Color(UITheme.CORAL.r, UITheme.CORAL.g, UITheme.CORAL.b, 0.22))
+		canvas.draw_arc(p, 6.5, 0.0, TAU, 24, UITheme.CORAL, 1.6, true)
+		canvas.draw_circle(p, 1.8, UITheme.CORAL)
+		if show_debug:
+			canvas.draw_string(UITheme.mono_font(), p + Vector2(12, 22), "u %.1f°" % (cursor_u * 360.0), HORIZONTAL_ALIGNMENT_LEFT, -1, 11, UITheme.MUTED)
+
+
+func _draw_player_cursor(canvas: Control) -> void:
+	var accent := UITheme.CYAN if cursor_valid else UITheme.MUTED
+	# osu 风格拖尾：连续线段填补采样空隙，越靠近光标越大、越亮，停手后自然消失。
+	for i in range(1, _cursor_trail.size()):
+		var previous: Dictionary = _cursor_trail[i - 1]
+		var current: Dictionary = _cursor_trail[i]
+		var life := clampf(1.0 - float(current.get("age", 0.0)) / 0.26, 0.0, 1.0)
+		if life <= 0.01:
+			continue
+		var ratio := float(i) / float(maxi(1, _cursor_trail.size() - 1))
+		canvas.draw_line(previous["pos"], current["pos"], Color(accent.r, accent.g, accent.b, 0.10 * life), lerpf(2.5, 9.0, ratio), true)
+	for i in _cursor_trail.size():
+		var item: Dictionary = _cursor_trail[i]
+		var age := float(item.get("age", 0.0))
+		var life := clampf(1.0 - age / 0.26, 0.0, 1.0)
+		if life <= 0.01:
+			continue
+		var ratio := float(i + 1) / float(maxi(1, _cursor_trail.size()))
+		var point: Vector2 = item["pos"]
+		var radius := lerpf(3.0, 10.5, ratio)
+		canvas.draw_circle(point, radius * 1.9, Color(accent.r, accent.g, accent.b, 0.06 * life))
+		canvas.draw_circle(point, radius, Color(accent.r, accent.g, accent.b, 0.26 * life))
+		canvas.draw_circle(point, radius * 0.45, Color(1, 1, 1, 0.16 * life))
+	var m := mouse_screen
+	var spin := Time.get_ticks_msec() / 1000.0 * 2.2
+	canvas.draw_circle(m, 27.0, Color(accent.r, accent.g, accent.b, 0.035))
+	canvas.draw_circle(m, 20.0, Color(accent.r, accent.g, accent.b, 0.06))
+	canvas.draw_arc(m, 19.5, spin, spin + PI * 0.85, 22, Color(accent.r, accent.g, accent.b, 0.72), 1.7, true)
+	canvas.draw_arc(m, 19.5, spin + PI, spin + PI * 1.75, 22, Color(accent.r, accent.g, accent.b, 0.34), 1.2, true)
+	canvas.draw_arc(m, 14.0, 0.0, TAU, 48, Color(0, 0, 0, 0.62), 5.4, true)
+	canvas.draw_arc(m, 14.0, 0.0, TAU, 48, Color(1, 1, 1, 0.96), 2.6, true)
+	canvas.draw_arc(m, 9.2, 0.0, TAU, 36, Color(accent.r, accent.g, accent.b, 0.95), 2.0, true)
+	canvas.draw_circle(m, 4.4, Color(0, 0, 0, 0.78))
+	canvas.draw_circle(m, 2.5, Color(1, 1, 1, 0.98))
+	for k in 4:
+		var direction := Vector2.from_angle(float(k) * PI * 0.5)
+		canvas.draw_line(m + direction * 15.5, m + direction * 19.0, Color(1, 1, 1, 0.42), 1.2, true)
+	if not cursor_valid and playtest_mode and show_debug:
+		canvas.draw_string(UITheme.mono_font(), m + Vector2(18, -16), "环外", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, UITheme.MUTED)
+
+
+func request_redraw() -> void:
+	_mesh_dirty = true
+	if _overlay != null:
+		_overlay.queue_redraw()
 
 
 func add_hit_pulse(point: Vector2, color: Color, label: String = "HIT") -> void:
@@ -1809,7 +1900,7 @@ func _draw_debug(canvas: Control, chart: Chart, t: float) -> void:
 	canvas.draw_string(mono, Vector2(18, 28), "u %.2f°  |  beat %.2f" % [cursor_u * 360.0, t], HORIZONTAL_ALIGNMENT_LEFT, -1, 11, UITheme.INK)
 	canvas.draw_string(mono, Vector2(18, 44), "time %.0f ms  |  %s" % [chart.timing.beat_to_chart_ms(t), "有效" if cursor_valid else "无位置"], HORIZONTAL_ALIGNMENT_LEFT, -1, 11, UITheme.MUTED)
 	canvas.draw_string(mono, Vector2(18, 60), "shape %s  |  zoom %.2f" % [chart.default_shape_id, float(current_view().get("zoom", 1.0))], HORIZONTAL_ALIGNMENT_LEFT, -1, 11, UITheme.MUTED)
-	canvas.draw_string(mono, Vector2(18, 76), "branch 0  |  D %.0f ms  |  %d fps" % [chart.pre_read_ms, Engine.get_frames_per_second()], HORIZONTAL_ALIGNMENT_LEFT, -1, 11, UITheme.MUTED)
+	canvas.draw_string(mono, Vector2(18, 76), "branch 0  |  D %.0f ms ×%.2f  |  %d fps" % [chart.pre_read_ms, flow_scale, Engine.get_frames_per_second()], HORIZONTAL_ALIGNMENT_LEFT, -1, 11, UITheme.MUTED)
 	for i in 12:
 		var u := float(i) / 12.0
 		var p := project_u(u, t)
@@ -1885,10 +1976,12 @@ func _draw_hexagon(canvas: Control, point: Vector2, radius: float, color: Color)
 	for i in 6:
 		var angle := -PI * 0.5 + TAU * float(i) / 6.0
 		points.append(point + Vector2(cos(angle), sin(angle)) * radius)
+	canvas.draw_circle(point, radius + 3.0, Color(0, 0, 0, 0.62))
 	canvas.draw_colored_polygon(points, color)
 	points.append(points[0])
-	canvas.draw_polyline(points, UITheme.BG, 1.5, true)
-	canvas.draw_circle(point, radius * 0.32, UITheme.BG)
+	canvas.draw_polyline(points, Color(1, 1, 1, 0.96), 2.6, true)
+	canvas.draw_circle(point, radius * 0.34, UITheme.BG)
+	canvas.draw_circle(point, radius * 0.20, Color(1, 1, 1, 0.9))
 
 
 func _draw_badge(canvas: Control, text: String, position: Vector2, color: Color) -> void:
@@ -1947,17 +2040,24 @@ func _draw_diamond(canvas: Control, point: Vector2, radius: float, color: Color)
 		point + Vector2(-radius, 0),
 	])
 	points.append(points[0])
-	canvas.draw_polyline(points, color, 2.0, true)
-	canvas.draw_circle(point, 3.0, color)
+	canvas.draw_polyline(points, Color(0, 0, 0, 0.66), 5.0, true)
+	canvas.draw_polyline(points, Color(1, 1, 1, 0.94), 3.0, true)
+	canvas.draw_colored_polygon(PackedVector2Array([points[0], points[1], points[2], points[3]]), Color(color.r, color.g, color.b, 0.32))
+	canvas.draw_polyline(points, color, 1.7, true)
+	canvas.draw_circle(point, maxf(2.0, radius * 0.26), Color(0, 0, 0, 0.68))
+	canvas.draw_circle(point, maxf(1.2, radius * 0.14), Color(1, 1, 1, 0.92))
 
 
 func _draw_bell(canvas: Control, point: Vector2, radius: float, t: float, target: float, pre: float) -> void:
 	var q := clampf((t - (target - pre)) / maxf(0.001, pre), 0.0, 1.0)
 	var r := maxf(6.0, radius) * lerpf(0.65, 1.0, q)
-	canvas.draw_circle(point, r, Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, 0.18))
-	canvas.draw_arc(point, r, 0.0, TAU, 32, UITheme.GOLD, 2.0, true)
-	canvas.draw_circle(point, r * 0.55, Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, 0.85))
+	canvas.draw_circle(point, r + 2.5, Color(0, 0, 0, 0.55))
+	canvas.draw_circle(point, r, Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, 0.20))
+	canvas.draw_arc(point, r, 0.0, TAU, 32, Color(1, 1, 1, 0.92), 2.4, true)
+	canvas.draw_arc(point, r * 0.82, 0.0, TAU, 28, UITheme.GOLD, 1.6, true)
+	canvas.draw_circle(point, r * 0.55, UITheme.GOLD)
 	canvas.draw_circle(point, r * 0.20, UITheme.INK)
+	canvas.draw_arc(point, r * 0.55, -PI * 0.85, -PI * 0.25, 16, Color(1, 1, 1, 0.55), 1.3, true)
 
 
 func bell_screen(note: Note, beat: float) -> Dictionary:

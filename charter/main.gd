@@ -320,6 +320,21 @@ func _build_ui() -> void:
 			_start_play(beat)
 	)
 	transport_row.add_child(rate_option)
+	var flow_label := Label.new()
+	UITheme.style_mono(flow_label, 11, UITheme.MUTED)
+	flow_label.text = "流速"
+	transport_row.add_child(flow_label)
+	var flow_option := OptionButton.new()
+	for item in ["0.5×", "0.75×", "1.0×", "1.25×", "1.5×", "2.0×"]:
+		flow_option.add_item(item)
+	flow_option.selected = 2
+	flow_option.item_selected.connect(func(index: int) -> void:
+		_app.flow_scale = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0][index]
+		_preview.flow_scale = _app.flow_scale
+		_preview.request_redraw()
+		_show_toast("流速 %.2f×（只改预读速度，不改判定）" % _app.flow_scale, "info")
+	)
+	transport_row.add_child(flow_option)
 	var loop_check := CheckBox.new()
 	loop_check.text = "循环"
 	loop_check.toggled.connect(func(pressed: bool) -> void: _loop = pressed)
@@ -478,6 +493,7 @@ func _sync_from_app() -> void:
 	_preview.use_3d_ring = _app.use_3d_ring
 	_preview.mouse_tilt = _app.mouse_tilt
 	_preview.show_debug = _app.debug_overlay
+	_preview.flow_scale = _app.flow_scale
 	_canvas.px_per_beat = _app.zoom_px_per_beat
 	_ensure_audio()
 	_sync_tools()

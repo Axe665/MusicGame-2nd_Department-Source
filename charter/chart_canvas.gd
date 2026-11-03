@@ -393,36 +393,41 @@ func _draw_path(note: Note) -> void:
 	var x0 := _u_to_x(fposmod(note.angle, 360.0) / 360.0)
 	var x1 := _u_to_x(fposmod(note.tail_angle, 360.0) / 360.0)
 	var selected := _is_note_selected(note.id)
-	var points := PackedVector2Array()
-	if note.path_style == "star":
-		var total := maxf(0.001, note.duration())
-		for i in 41:
-			var rel := total * float(i) / 40.0
-			points.append(Vector2(
-				_u_to_x(fposmod(note.path_angle_at(rel), 360.0) / 360.0),
-				_beat_to_y(note.beat + rel)
-			))
-	else:
-		points.append(Vector2(x0, y0))
-		for point in note.visual_pts:
-			points.append(Vector2(
-				_u_to_x(fposmod(note.angle + float(point.get("da", 0.0)), 360.0) / 360.0),
-				_beat_to_y(note.beat + float(point.get("db", 0.0)))
-			))
-		points.append(Vector2(x1, y1))
-	if points.size() > 1:
-		draw_polyline(points, Color(0.52, 0.56, 0.64, 0.28), 14.0, true)
+	var total := maxf(0.001, note.duration())
+	var runs: Array[PackedVector2Array] = []
+	var run := PackedVector2Array()
+	for i in 41:
+		var rel := total * float(i) / 40.0
+		if note.erased_at(rel):
+			if run.size() > 1:
+				runs.append(run)
+			run = PackedVector2Array()
+			continue
+		run.append(Vector2(
+			_u_to_x(fposmod(note.path_angle_at(rel), 360.0) / 360.0),
+			_beat_to_y(note.beat + rel)
+		))
+	if run.size() > 1:
+		runs.append(run)
+	for piece in runs:
+		draw_polyline(piece, Color(0.52, 0.56, 0.64, 0.28), 14.0, true)
 		var dashes := PackedVector2Array()
-		for i in points.size() - 1:
-			_append_dashes(points[i], points[i + 1], 5.0, dashes)
+		for i in piece.size() - 1:
+			_append_dashes(piece[i], piece[i + 1], 5.0, dashes)
 		if dashes.size() > 1:
 			draw_multiline(dashes, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.90), 2.0)
 		for fraction in [0.33, 0.66]:
-			var sample := _polyline_sample(points, fraction)
+			var sample := _polyline_sample(piece, fraction)
 			_draw_arrowhead(sample["point"], sample["direction"], UITheme.CYAN)
 	if note.path_style != "star":
-		for i in range(1, points.size() - 1):
-			draw_circle(points[i], 2.5, UITheme.CYAN)
+		for point in note.visual_pts:
+			var rel := float(point.get("db", 0.0))
+			if note.erased_at(rel):
+				continue
+			draw_circle(Vector2(
+				_u_to_x(fposmod(note.path_angle_at(rel), 360.0) / 360.0),
+				_beat_to_y(note.beat + rel)
+			), 2.5, UITheme.CYAN)
 	_draw_width_band(note.angle, note.width, y0, UITheme.CYAN)
 	_draw_width_band(note.tail_angle, note.tail_width, y1, UITheme.GOLD)
 	_draw_star(Vector2(x0, y0), 9.0 if selected else 8.0, UITheme.CORAL)

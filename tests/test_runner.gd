@@ -18,13 +18,16 @@ func _initialize() -> void:
 		"test_media_formats",
 		"test_lbp_export",
 		"test_osu_std_import",
+		"test_osu_std_readability",
 		"test_osu_taiko_import",
+		"test_osu_taiko_flow",
 		"test_osu_bpm_change",
 		"test_osu_multi_difficulty",
 		"test_json_roundtrip",
 		"test_validation_demo",
 		"test_angle_math",
 		"test_trace_distance",
+		"test_sfx_assets",
 	]
 	for test_name in tests:
 		if call(test_name) != true:
@@ -132,8 +135,17 @@ func test_star_path() -> bool:
 	ok(inside, "star stays inside ring")
 	ok(absf(note.path_local_at(0.8).x - note.path_local_at(1.6).x) > 0.001, "star bends across chords")
 	near(absf(note.path_angle_at(2.0)), 90.0, 1.0, "star judgment stays on head-tail chord")
+	note.path_gaps = [{"from": 0.4, "to": 0.6}]
+	ok(note.erased_at(2.0), "path erase range hits middle")
+	ok(not note.erased_at(0.5), "path erase range leaves head")
+	var erased_sample := false
+	for sample_beat in note.path_sample_beats():
+		if note.erased_at(sample_beat - note.beat):
+			erased_sample = true
+	ok(not erased_sample, "erased path section has no hidden checkpoints")
 	var restored := Note.from_dict(note.to_dict())
 	eq(restored.path_style, "star", "star style survives json")
+	eq(restored.path_gaps.size(), 1, "path gaps survive json")
 	return true
 
 
@@ -254,6 +266,14 @@ func test_lbp_export() -> bool:
 	ok(text.contains("[BoundaryShapes]"), "lbp shapes section")
 	ok(text.contains("[Notes]"), "lbp notes section")
 	ok(text.contains("style=star"), "lbp keeps star path")
+	var gap_note := Note.new("path", 40.0, 0.0, 60.0)
+	gap_note.id = chart.next_note_id()
+	gap_note.end_beat = 44.0
+	gap_note.path_gaps = [{"from": 0.4, "to": 0.6}]
+	chart.notes.append(gap_note)
+	var gap_text := LBPIO.export_chart(chart)
+	ok(gap_text.contains("erase=0.400:0.600"), "lbp keeps path erase range")
+	chart.notes.erase(gap_note)
 	ok(not text.contains("\r"), "lbp uses LF")
 	var path := "user://test_export.lbp"
 	eq(LBPIO.export_to_file(chart, path), OK, "lbp write")
@@ -327,24 +347,105 @@ SliderMultiplier: 1.4
 
 [HitObjects]
 256,192,1000,1,0,0:0:0:0:
-256,192,1500,1,2,0:0:0:0:
-256,192,2000,1,4,0:0:0:0:
-256,192,2500,2,0,B|300:192,1,100,0|0,0:0|0:0,0:0:0:0:
-256,192,3000,8,0,4000,0:0:0:0:
+256,192,1250,1,2,0:0:0:0:
+256,192,1500,1,4,0:0:0:0:
+256,192,1750,1,0,0:0:0:0:
+256,192,2000,2,0,B|300:192,1,280,0|0,0:0|0:0,0:0:0:0:
+256,192,4000,8,0,5000,0:0:0:0:
 """
 	var result := OsuIO.parse_osu(text, "taiko.osu")
 	ok(not result.is_empty(), "osu taiko parsed")
 	if result.is_empty():
 		return false
 	var chart: Chart = result["chart"]
-	eq(chart.notes.size(), 4, "taiko spinner skipped")
+	eq(chart.notes.size(), 5, "taiko spinner skipped, short objects kept")
 	eq(chart.notes[0].type, "tap", "taiko don tap")
-	near(chart.notes[0].angle, 0.0, 0.001, "taiko quadrant 0")
-	near(chart.notes[1].angle, 90.0, 0.001, "taiko quadrant 90")
-	near(chart.notes[2].angle, 180.0, 0.001, "taiko quadrant 180")
-	near(chart.notes[3].angle, 270.0, 0.001, "taiko quadrant 270")
-	eq(chart.notes[3].type, "hold", "taiko drumroll hold")
-	near(chart.notes[3].end_beat, 5.7142857, 0.001, "taiko drumroll duration")
+	near(chart.notes[0].angle, 0.0, 0.001, "taiko don lane")
+	near(chart.notes[1].angle, 90.0, 0.001, "taiko kat lane")
+	eq(chart.notes[1].width, 76.0, "taiko kat width")
+	near(chart.notes[2].angle, 0.0, 0.001, "taiko finish stays don")
+	eq(chart.notes[2].width, 90.0, "taiko finish width")
+	near(chart.notes[3].angle, 0.0, 0.001, "taiko don returns to nearby lane")
+	eq(chart.notes[4].type, "hold", "long taiko slider is a drumroll")
+	near(chart.notes[4].end_beat, 6.0, 0.001, "taiko drumroll duration")
+	return true
+
+
+func test_osu_taiko_flow() -> bool:
+	var text := """osu file format v14
+
+[General]
+Mode: 1
+
+[Metadata]
+Title: Flow
+Artist: A
+Creator: C
+Version: Oni
+
+[Difficulty]
+SliderMultiplier: 1.4
+
+[TimingPoints]
+0,500,4,2,0,100,1,0
+
+[HitObjects]
+256,192,1000,1,0,0:0:0:0:
+256,192,1125,1,2,0:0:0:0:
+256,192,1250,1,0,0:0:0:0:
+256,192,1375,1,2,0:0:0:0:
+256,192,1500,1,0,0:0:0:0:
+"""
+	var result := OsuIO.parse_osu(text, "taiko_flow.osu")
+	ok(not result.is_empty(), "taiko flow parsed")
+	if result.is_empty():
+		return false
+	var chart: Chart = result["chart"]
+	eq(chart.notes.size(), 5, "taiko flow note count")
+	var stacked := true
+	for i in range(1, chart.notes.size()):
+		if absf(JudgeMath.angle_delta(chart.notes[0].angle, chart.notes[i].angle)) > 0.001:
+			stacked = false
+	ok(stacked, "dense taiko notes stack instead of rotating")
+	return true
+
+
+func test_osu_std_readability() -> bool:
+	var text := """osu file format v14
+
+[General]
+Mode: 0
+
+[Metadata]
+Title: Read
+Artist: A
+Creator: C
+Version: H
+
+[Difficulty]
+SliderMultiplier: 1.4
+
+[TimingPoints]
+0,500,4,2,0,100,1,0
+
+[HitObjects]
+256,0,1000,1,0,0:0:0:0:
+512,192,1500,1,0,0:0:0:0:
+256,384,2000,1,0,0:0:0:0:
+0,192,2500,1,0,0:0:0:0:
+256,0,3000,1,0,0:0:0:0:
+"""
+	var result := OsuIO.parse_osu(text, "read.osu")
+	ok(not result.is_empty(), "osu std readability parsed")
+	if result.is_empty():
+		return false
+	var chart: Chart = result["chart"]
+	eq(chart.notes.size(), 5, "std readability note count")
+	var max_step := 0.0
+	for i in range(1, chart.notes.size()):
+		max_step = maxf(max_step, absf(JudgeMath.angle_delta(chart.notes[i - 1].angle, chart.notes[i].angle)))
+	ok(max_step <= 60.1, "std consecutive angle stays readable (max %.1f)" % max_step)
+	near(chart.notes[0].angle, 270.0, 0.001, "std first note keeps absolute angle")
 	return true
 
 
@@ -483,6 +584,13 @@ func test_angle_math() -> bool:
 	near(JudgeMath.total_length(safe), 30.0, 0.001, "subtract red leaves 30deg")
 	var empty_result := JudgeMath.subtract(common, JudgeMath.interval(45.0, 90.0))
 	eq(JudgeMath.total_length(empty_result), 0.0, "red covers all")
+	return true
+
+
+func test_sfx_assets() -> bool:
+	for kind in Playtest.SFX_PATHS:
+		var stream: AudioStream = load(String(Playtest.SFX_PATHS[kind]))
+		ok(stream != null, "sfx loads %s" % kind)
 	return true
 
 

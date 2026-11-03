@@ -6,6 +6,14 @@ signal exit_requested
 const HIT_WINDOW_MS := 40.0
 const BELL_WINDOW_MS := 100.0
 const RED_LIMIT_SEC := 0.2
+const SFX_VOLUME_DB := -7.0
+const SFX_PATHS := {
+	"don": "res://audio/sfx/tap_don.wav",
+	"kat": "res://audio/sfx/tap_kat.wav",
+	"bell": "res://audio/sfx/bell.wav",
+	"trace": "res://audio/sfx/trace.wav",
+	"tail": "res://audio/sfx/path_tail.wav",
+}
 
 var _app: Node = null
 var chart: Chart = null
@@ -37,6 +45,9 @@ var _errors: Array[float] = []
 var _log: Array[String] = []
 var _combo: int = 0
 var _max_combo: int = 0
+var _sfx_streams: Dictionary = {}
+var _sfx_players: Array[AudioStreamPlayer] = []
+var _sfx_index: int = 0
 
 var _top_time: Label
 var _top_stats: Label
@@ -49,7 +60,35 @@ func _ready() -> void:
 	_app = get_node_or_null("/root/App")
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_setup_sfx()
 	_build_ui()
+
+
+func _setup_sfx() -> void:
+	for key in SFX_PATHS:
+		var stream: AudioStream = load(String(SFX_PATHS[key]))
+		if stream != null:
+			_sfx_streams[key] = stream
+	for i in 10:
+		var player := AudioStreamPlayer.new()
+		player.volume_db = SFX_VOLUME_DB
+		add_child(player)
+		_sfx_players.append(player)
+
+
+func _play_sfx(kind: String, pitch: float = 1.0) -> void:
+	var stream: AudioStream = _sfx_streams.get(kind)
+	if stream == null or _sfx_players.is_empty():
+		return
+	var player := _sfx_players[_sfx_index % _sfx_players.size()]
+	_sfx_index += 1
+	player.stream = stream
+	player.pitch_scale = pitch
+	player.play()
+
+
+func _tap_sfx(note: Note) -> String:
+	return "kat" if note.width >= 70.0 and note.width < 85.0 else "don"
 
 
 func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
@@ -61,10 +100,12 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	_preview.chart_override = chart
 	_preview.follow_app = false
 	_preview.playtest_mode = true
+	_preview.custom_cursor_visible = true
 	_preview.show_hud = true
 	_preview.use_3d_ring = true
 	_preview.mouse_tilt = true
 	_preview.show_debug = false
+	_preview.flow_scale = float(_app.flow_scale if _app != null else 1.0)
 	_preview.time_beat = start_beat
 	_preview.playing = true
 	_preview.visible = true
@@ -301,6 +342,7 @@ func _judge_tap(note: Note, ms: float, beat: float, cursor_u: float, valid: bool
 			_combo += 1
 			_max_combo = maxi(_max_combo, _combo)
 			_pulse_at(note.angle, beat, UITheme.CORAL, "HIT")
+			_play_sfx(_tap_sfx(note), randf_range(0.98, 1.02))
 			_record_error(press - target, "Tap #%d HIT" % note.id)
 			return
 	if ms > target + HIT_WINDOW_MS:
@@ -324,6 +366,7 @@ func _judge_hold(note: Note, ms: float, beat: float, cursor_u: float, valid: boo
 				state["started"] = true
 				state["head"] = true
 				_pulse_at(note.angle, beat, UITheme.AMBER, "HOLD")
+				_play_sfx("don", 0.82)
 				_add_log("HOLD #%d HEAD" % note.id)
 				return
 		if ms > target + HIT_WINDOW_MS:
@@ -344,6 +387,7 @@ func _judge_hold(note: Note, ms: float, beat: float, cursor_u: float, valid: boo
 		_combo += 1
 		_max_combo = maxi(_max_combo, _combo)
 		_pulse_at(note.angle, beat, UITheme.AMBER, "HOLD")
+		_play_sfx("don", 1.18)
 		_record_error(ms - end_ms, "HOLD #%d COMPLETE" % note.id)
 
 
@@ -358,6 +402,7 @@ func _judge_path(note: Note, ms: float, beat: float, cursor_u: float, valid: boo
 			_combo += 1
 			_max_combo = maxi(_max_combo, _combo)
 			_pulse_at(note.angle, beat, UITheme.CORAL, "HIT")
+			_play_sfx("don", 1.10)
 			_add_log("PATH #%d HEAD HIT" % note.id)
 			state["head_judged"] = true
 		elif ms > head_ms + HIT_WINDOW_MS:
@@ -373,6 +418,7 @@ func _judge_path(note: Note, ms: float, beat: float, cursor_u: float, valid: boo
 			_combo += 1
 			_max_combo = maxi(_max_combo, _combo)
 			_pulse_at(note.tail_angle, beat, UITheme.GOLD, "HIT")
+			_play_sfx("tail", randf_range(0.98, 1.02))
 			_add_log("PATH #%d TAIL HIT" % note.id)
 			state["tail_judged"] = true
 		elif ms > tail_ms + HIT_WINDOW_MS:
@@ -441,6 +487,7 @@ func _judge_trace(note: Note, ms: float, delta: float, mouse: Vector2) -> void:
 		_combo += 1
 		_max_combo = maxi(_max_combo, _combo)
 		_preview.add_hit_pulse(mouse, UITheme.MINT, "TRACE")
+		_play_sfx("trace", randf_range(0.97, 1.03))
 		_add_log("TRACE #%d HIT (%.0f/%.0f px)" % [note.id, float(state["trace_distance"]), note.move_px])
 		return
 	if ms > end_ms + HIT_WINDOW_MS:
@@ -470,6 +517,7 @@ func _judge_bell(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 			state["done"] = true
 			_bell_hits += 1
 			_preview.add_hit_pulse(bell["center"], UITheme.GOLD, "BELL")
+			_play_sfx("bell", randf_range(0.99, 1.01))
 			_add_log("BELL #%d COLLECTED" % note.id)
 			return
 	if ms > target + BELL_WINDOW_MS:
@@ -490,6 +538,7 @@ func _judge_anchor(note: Note, ms: float, beat: float) -> void:
 		_combo += 1
 		_max_combo = maxi(_max_combo, _combo)
 		_pulse_at(note.angle, beat, UITheme.VIOLET, "HIT")
+		_play_sfx("don", 1.22)
 		_record_error(press - target, "ANCHOR #%d HIT" % note.id)
 		return
 	if ms > target + HIT_WINDOW_MS:
@@ -641,6 +690,7 @@ func _finish() -> void:
 	if _audio != null:
 		_audio.stop()
 	_preview.playing = false
+	_preview.custom_cursor_visible = false
 	var lines: Array[String] = []
 	lines.append("命中 %d / 失误 %d" % [_hit_count, _miss_count])
 	lines.append("调试准确率：%s" % ("—" if _accuracy() < 0.0 else "%.2f%%" % _accuracy()))

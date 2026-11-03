@@ -17,6 +17,7 @@ var radius: float = 24.0
 var tolerance: float = 0.24
 var samples_per_beat: float = 4.0
 var path_style: String = "arc"
+var path_gaps: Array[Dictionary] = []
 var visual_pts: Array[Dictionary] = []
 var trace_pts: Array[Dictionary] = []
 var anchor_pair: int = -1
@@ -102,8 +103,24 @@ func path_sample_beats() -> Array[float]:
 	var density := maxf(0.25, samples_per_beat)
 	var count := maxi(int(ceil(total * density)), 1)
 	for i in count + 1:
-		result.append(beat + total * float(i) / float(count))
+		var rel := total * float(i) / float(count)
+		if erased_at(rel):
+			continue
+		result.append(beat + rel)
 	return result
+
+
+func erased_at(relative_beat: float) -> bool:
+	var total := duration()
+	if total <= 0.000001 or path_gaps.is_empty():
+		return false
+	var p := clampf(relative_beat / total, 0.0, 1.0)
+	for gap in path_gaps:
+		var a := clampf(float(gap.get("from", 0.0)), 0.0, 1.0)
+		var b := clampf(float(gap.get("to", 0.0)), 0.0, 1.0)
+		if p >= minf(a, b) and p <= maxf(a, b):
+			return true
+	return false
 
 
 func _short_delta(from_angle: float, to_angle: float) -> float:
@@ -135,6 +152,8 @@ func to_dict() -> Dictionary:
 			data["samples"] = snappedf(samples_per_beat, 0.001)
 			if path_style != "arc":
 				data["path_style"] = path_style
+			if not path_gaps.is_empty():
+				data["path_gaps"] = _ranges_to_array(path_gaps)
 			if not visual_pts.is_empty():
 				data["visual"] = _points_to_dict(visual_pts)
 		"trace":
@@ -176,9 +195,26 @@ static func from_dict(raw: Dictionary) -> Note:
 	note.center_u = float(raw.get("center_u", 0.25))
 	if raw.has("visual"):
 		note.visual_pts = _points_from_array(raw.get("visual", []))
+	if raw.has("path_gaps"):
+		note.path_gaps = _ranges_from_array(raw.get("path_gaps", []))
 	if raw.has("trace"):
 		note.trace_pts = _points_from_array(raw.get("trace", []))
 	return note
+
+
+static func _ranges_to_array(ranges: Array[Dictionary]) -> Array[Dictionary]:
+	var result: Array[Dictionary] = []
+	for item in ranges:
+		result.append({"from": float(item.get("from", 0.0)), "to": float(item.get("to", 0.0))})
+	return result
+
+
+static func _ranges_from_array(raw: Array) -> Array[Dictionary]:
+	var result: Array[Dictionary] = []
+	for item in raw:
+		if item is Dictionary:
+			result.append({"from": float(item.get("from", 0.0)), "to": float(item.get("to", 0.0))})
+	return result
 
 
 static func _points_to_dict(points: Array[Dictionary]) -> Array[Dictionary]:

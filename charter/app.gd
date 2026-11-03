@@ -16,6 +16,7 @@ var dirty: bool = false
 var playhead_beat: float = 0.0
 var last_import_report: String = ""
 var playtest_offset_ms: float = 0.0
+var flow_scale: float = 1.0
 
 var selected_notes: Array[int] = []
 var selected_region_id: int = -1
