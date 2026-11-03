@@ -1535,7 +1535,7 @@ func _pick_visual_node(screen_position: Vector2) -> int:
 
 func _draw_paths(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 	var visible: Array = []
-	for note in chart.notes:
+	for note in _notes_in_range(chart, t - pre - 128.0, t + pre + 0.5):
 		if note.type == "path" and t >= note.beat - pre and t <= note.end_beat + 0.5:
 			visible.append(note)
 	visible.sort_custom(func(a: Note, b: Note) -> bool: return a.beat > b.beat)
