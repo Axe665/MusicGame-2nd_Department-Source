@@ -1787,19 +1787,6 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 			canvas.draw_circle(p, 3.0 * ns, UITheme.INK)
 
 
-func path_distance(note: Note, relative_beat: float, beat: float, screen_point: Vector2) -> float:
-	var chart := get_chart()
-	if chart == null:
-		return INF
-	var best := INF
-	for offset in [-0.06, 0.0, 0.06]:
-		var rel := clampf(relative_beat + offset, 0.0, note.duration())
-		var p := _path_screen_point(chart, note, rel, beat, false)
-		if _valid_point(p):
-			best = minf(best, p.distance_to(screen_point))
-	return best
-
-
 func path_point(note: Note, relative_beat: float, beat: float) -> Vector2:
 	var chart := get_chart()
 	if chart == null:
@@ -1841,7 +1828,13 @@ func cut_path(note: Note, from_fraction: float, to_fraction: float) -> void:
 		return
 	if not path_cuts.has(note.id):
 		path_cuts[note.id] = []
-	path_cuts[note.id].append({"from": a, "to": b})
+	var ranges: Array = path_cuts[note.id]
+	if not ranges.is_empty() and a <= float(ranges[-1].get("to", 0.0)) + 0.004:
+		ranges[-1]["from"] = minf(float(ranges[-1].get("from", a)), a)
+		ranges[-1]["to"] = maxf(float(ranges[-1].get("to", b)), b)
+	else:
+		ranges.append({"from": a, "to": b})
+	path_cuts[note.id] = ranges
 	if _overlay != null:
 		_overlay.queue_redraw()
 

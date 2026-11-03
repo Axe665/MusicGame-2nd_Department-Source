@@ -300,7 +300,7 @@ func _build_note_page(page: VBoxContainer) -> void:
 		_spin(page, "容差比例", note.tolerance, 0.0, 1.0, 0.01, func(value: float) -> void: note.tolerance = value)
 		_spin(page, "采样/拍", note.samples_per_beat, 0.25, 32.0, 0.25, func(value: float) -> void: note.samples_per_beat = value)
 		_label(page, "平面 Path：星头在环上按键，身体/尾在平面内跟随；尾默认 0.65–0.75R。", 11, UITheme.CYAN)
-		_label(page, "中段采样点：%d；平面点：%d 个（在预览里拖青色节点改形状）" % [note.path_sample_beats().size(), note.trace_pts.size()], 11, UITheme.MUTED)
+		_label(page, "中段只看滑到；平面点：%d 个（在预览里拖青色节点改形状）" % note.trace_pts.size(), 11, UITheme.MUTED)
 		_buttons(page, [
 			{"text": "重画 Path", "callback": func() -> void: _app.set_tool("path")},
 		])

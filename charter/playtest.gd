@@ -205,8 +205,6 @@ func _init_states() -> void:
 			"tail_judged": false,
 			"head_hit": false,
 			"tail_hit": false,
-			"next_sample": 0,
-			"samples": [],
 			"path_frac": 0.0,
 			"path_last_mouse": Vector2.ZERO,
 			"trace_started": false,
@@ -435,47 +433,27 @@ func _judge_path(note: Note, ms: float, beat: float, cursor_u: float, valid: boo
 			_add_log("PATH #%d TAIL MISS" % note.id)
 			state["tail_judged"] = true
 	if state["tail_judged"] and not state["done"]:
-		var samples: Array = state["samples"]
-		var status := "FULL"
-		if not samples.is_empty() and not bool(samples[-1]):
-			status = "LOST"
-		elif samples.has(false):
-			status = "FRAY"
+		var head_ok := bool(state["head_hit"])
+		var tail_ok := bool(state["tail_hit"])
+		var status := "FULL" if head_ok and tail_ok else ("FRAY" if head_ok or tail_ok else "LOST")
 		_add_log("PATH #%d %s" % [note.id, status])
 		var status_color := UITheme.MINT if status == "FULL" else (UITheme.AMBER if status == "FRAY" else UITheme.RED)
 		_pulse_at(note.tail_angle, beat, status_color, status, note.tail_width, "path")
 		state["done"] = true
 	if ms < head_ms or ms > tail_ms:
 		return
-	# 中段平面跟随：跳过的区间直接削掉，不生成失败采样点。
+	# 中段只看“滑到了没有”：不逐点扣分，鼠标划过的轨迹立即削掉。
 	if bool(state.get("head_hit", false)) and valid:
 		var info: Dictionary = _preview.path_fraction(note, mouse, beat)
 		var fraction := float(info.get("fraction", 0.0))
 		var distance_to_path := float(info.get("distance", INF))
 		var previous_fraction := float(state.get("path_frac", 0.0))
-		var last_mouse: Vector2 = state.get("path_last_mouse", mouse)
-		if distance_to_path <= 44.0:
-			if fraction >= previous_fraction + 0.02 and last_mouse.distance_to(mouse) > 60.0:
-				_preview.cut_path(note, previous_fraction, fraction)
+		if distance_to_path <= 56.0 and fraction > previous_fraction + 0.004:
+			_preview.cut_path(note, previous_fraction, fraction)
+			state["path_frac"] = fraction
+		elif fraction + 0.03 >= previous_fraction:
 			state["path_frac"] = maxf(previous_fraction, fraction)
 		state["path_last_mouse"] = mouse
-	# Mid-section samples, one per frame.
-	var sample_beats := note.path_sample_beats()
-	var index: int = state["next_sample"]
-	while index < sample_beats.size():
-		var sample_beat := sample_beats[index]
-		var sample_ms := chart.timing.beat_to_chart_ms(sample_beat)
-		if sample_ms > ms:
-			break
-		var rel := clampf(sample_beat - note.beat, 0.0, note.duration())
-		if not _preview.path_erased(note, rel):
-			var tolerance_px := clampf(24.0 * (note.tolerance / 0.24), 8.0, 64.0)
-			var distance := _preview.path_distance(note, rel, beat, mouse)
-			var samples: Array = state["samples"]
-			samples.append(valid and distance <= tolerance_px)
-			state["samples"] = samples
-		index += 1
-	state["next_sample"] = index
 
 
 func _judge_trace(note: Note, ms: float, beat: float, delta: float, mouse: Vector2) -> void:

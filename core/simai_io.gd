@@ -267,7 +267,7 @@ static func _parse_note(token: String, beat: float, bpm: float) -> Note:
 			if turn > 0:
 				mid_angle = _button_angle(turn)
 		note.trace_pts = _plane_slide_points(
-			start_angle, note.tail_angle, note.wait_beat,
+			start_angle, delta, note.wait_beat,
 			note.end_beat - note.beat, mid_angle
 		)
 		return note
@@ -283,20 +283,33 @@ static func _parse_note(token: String, beat: float, bpm: float) -> Note:
 	return tap
 
 
-static func _plane_slide_points(head_angle: float, tail_angle: float, wait: float, total: float, mid_angle: float = NAN) -> Array[Dictionary]:
+static func _plane_slide_points(head_angle: float, delta: float, wait: float, total: float, mid_angle: float = NAN) -> Array[Dictionary]:
 	var head := Vector2(cos(deg_to_rad(head_angle)), sin(deg_to_rad(head_angle)))
-	var tail := Vector2(cos(deg_to_rad(tail_angle)), sin(deg_to_rad(tail_angle))) * 0.70
-	var control_angle := head_angle + _short_delta(head_angle, tail_angle) * 0.5 if is_nan(mid_angle) else mid_angle
-	var control := Vector2(cos(deg_to_rad(control_angle)), sin(deg_to_rad(control_angle))) * 0.84
+	var tail_angle := head_angle + delta
 	var result: Array[Dictionary] = [{"x": head.x, "y": head.y, "db": 0.0}]
 	if wait > 0.0:
 		result.append({"x": head.x, "y": head.y, "db": wait})
 	var move := maxf(0.001, total - wait)
-	for i in 25:
-		var q := float(i) / 24.0
-		var inverse := 1.0 - q
-		var point := head * inverse * inverse + control * 2.0 * inverse * q + tail * q * q
-		result.append({"x": point.x, "y": point.y, "db": wait + move * q})
+	var has_mid := not is_nan(mid_angle)
+	var split := 0.45 if has_mid else 1.0
+	var head_to_mid := _short_delta(head_angle, mid_angle)
+	var mid_to_tail := _short_delta(mid_angle, tail_angle)
+	var count := 32
+	for i in count + 1:
+		var q := float(i) / float(count)
+		var angle := head_angle + delta * q
+		if has_mid:
+			if q <= split:
+				angle = head_angle + head_to_mid * (q / split)
+			else:
+				angle = mid_angle + mid_to_tail * ((q - split) / (1.0 - split))
+		# 舞萌星星主要贴着环走，只在最后一段收进 0.72R 作为尾点。
+		var radius := 1.0 - 0.07 * smoothstep(0.0, 0.12, q) - 0.21 * smoothstep(0.82, 1.0, q)
+		result.append({
+			"x": cos(deg_to_rad(angle)) * radius,
+			"y": sin(deg_to_rad(angle)) * radius,
+			"db": wait + move * q,
+		})
 	return result
 
 
