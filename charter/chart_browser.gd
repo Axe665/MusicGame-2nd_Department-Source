@@ -151,44 +151,18 @@ func _download_selected() -> void:
 	_choose_difficulty(maidata)
 
 func _fetch_bytes(url: String, label: String = "") -> PackedByteArray:
-	if url.contains("majdata.net"):
-		# Godot 的 HTTPRequest 会被 majdata 的 Cloudflare 挂住；curl 正常。
-		var tmp := "user://majdata_tmp.bin"
-		var output: Array = []
-		var code := OS.execute("curl", ["-sL", "--max-time", "25", "-A", "Mozilla/5.0", "-e", "https://majdata.net/", "-o", ProjectSettings.globalize_path(tmp), url], output, true, false)
-		if code != 0 or not FileAccess.file_exists(tmp):
-			return PackedByteArray()
-		var data := FileAccess.get_file_as_bytes(tmp)
-		DirAccess.remove_absolute(ProjectSettings.globalize_path(tmp))
-		if not label.is_empty():
-			_status.text = "%s  %.0f KB" % [label, float(data.size()) / 1024.0]
-		return data
-	var http := HTTPRequest.new()
-	add_child(http)
-	var done := false
-	var result: Array = []
-	http.request_completed.connect(func(r: Array) -> void:
-		result = r
-		done = true
-	)
-	http.request(url, ["Referer: https://majdata.net/", "User-Agent: Mozilla/5.0"])
-	while not done:
-		await get_tree().process_frame
-		if not label.is_empty():
-			var got := http.get_downloaded_bytes()
-			_status.text = "%s  %.0f KB" % [label, float(got) / 1024.0]
-	http.queue_free()
-	if int(result[0]) != HTTPRequest.RESULT_SUCCESS or int(result[1]) < 200 or int(result[1]) >= 300:
-		# 一次重试，避开 majdata 偶发的空响应/限流。
-		var retry := HTTPRequest.new()
-		add_child(retry)
-		retry.request(url, ["Referer: https://majdata.net/", "User-Agent: Mozilla/5.0"])
-		var rr: Array = await retry.request_completed
-		retry.queue_free()
-		if int(rr[0]) == HTTPRequest.RESULT_SUCCESS and int(rr[1]) == 200:
-			return rr[3]
+	# 统一用 curl：adxdls 和 majdata 都可能让 Godot HTTPRequest 卡住。
+	var tmp := "user://online_tmp.bin"
+	var output: Array = []
+	var referer := "https://majdata.net/" if url.contains("majdata.net") else "https://adxdls.saop.cc/"
+	var code := OS.execute("curl", ["-sL", "--max-time", "30", "-A", "Mozilla/5.0", "-e", referer, "-o", ProjectSettings.globalize_path(tmp), url], output, true, false)
+	if code != 0 or not FileAccess.file_exists(tmp):
 		return PackedByteArray()
-	return result[3]
+	var data := FileAccess.get_file_as_bytes(tmp)
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(tmp))
+	if not label.is_empty():
+		_status.text = "%s  %.0f KB" % [label, float(data.size()) / 1024.0]
+	return data
 
 
 func _refresh_majdata() -> void:
