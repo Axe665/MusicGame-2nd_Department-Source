@@ -1686,7 +1686,8 @@ func _draw_paths(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 	for note in _notes_in_range(chart, t - pre - 128.0, t + pre + 0.5):
 		if note.type == "path" and t >= note.beat - pre and t <= note.end_beat + 0.5:
 			visible.append(note)
-	visible.sort_custom(func(a: Note, b: Note) -> bool: return a.beat > b.beat)
+	# 旧 Path 先画、新的最后画：多星星重叠时，新星和它的擦除缺口始终在最上层。
+	visible.sort_custom(func(a: Note, b: Note) -> bool: return a.beat < b.beat)
 	for i in visible.size():
 		_draw_one_path(canvas, chart, visible[i], t, pre, i == visible.size() - 1)
 	if _drawing_path and _path_points.size() > 1:

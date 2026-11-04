@@ -317,7 +317,12 @@ func _draw_notes(plot: Rect2) -> void:
 	var chart: Chart = _app.chart if _app != null else null
 	if chart == null:
 		return
+	var first_beat := scroll_beat - 2.0
+	var last_beat := scroll_beat + _visible_beats() + 2.0
 	for note in chart.notes:
+		var note_end := note.end_beat if note.type in ["hold", "path", "trace"] else note.beat
+		if note.beat > last_beat or note_end < first_beat:
+			continue
 		match note.type:
 			"tap":
 				_draw_tap(note)
