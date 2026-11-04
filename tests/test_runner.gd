@@ -15,6 +15,7 @@ func _initialize() -> void:
 		"test_plane_path",
 		"test_path_erase_overlap",
 		"test_path_erase_merge",
+		"test_path_run_split",
 		"test_nearest_u",
 		"test_pre_read",
 		"test_shrink_example",
@@ -307,6 +308,31 @@ func test_path_erase_merge() -> bool:
 	eq(head.size(), 1, "head touch creates one gap")
 	if not head.is_empty():
 		near(float(head[0]["from"]), 0.0, 0.001, "head touch starts at the head")
+	return true
+
+
+func test_path_run_split() -> bool:
+	var long_line := PackedVector2Array([
+		Vector2(0, 0), Vector2(500, 0), Vector2(1000, 0), Vector2(1500, 0),
+	])
+	var none: Array[bool] = [false, false, false, false]
+	var continuous := Preview3D.split_path_runs(long_line, none)
+	eq(continuous.size(), 1, "long path is not split by pixel distance")
+	if continuous.size() == 1:
+		eq(continuous[0].size(), 4, "long path keeps every sample")
+	var middle_line := PackedVector2Array([
+		Vector2(0, 0), Vector2(100, 0), Vector2(200, 0),
+		Vector2(300, 0), Vector2(400, 0), Vector2(500, 0),
+	])
+	var middle: Array[bool] = [false, false, true, true, false, false]
+	var split := Preview3D.split_path_runs(middle_line, middle)
+	eq(split.size(), 2, "erased middle splits into two visible runs")
+	var gap := PackedVector2Array([
+		Vector2(0, 0), Vector2(10, 0), Vector2(INF, INF),
+		Vector2(20, 0), Vector2(30, 0),
+	])
+	var gap_flags: Array[bool] = [false, false, false, false, false]
+	eq(Preview3D.split_path_runs(gap, gap_flags).size(), 2, "invalid sample starts a new run")
 	return true
 
 

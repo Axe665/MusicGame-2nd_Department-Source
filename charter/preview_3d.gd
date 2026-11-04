@@ -1705,6 +1705,51 @@ func _draw_paths(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 				canvas.draw_circle(p, 2.5, UITheme.CYAN)
 
 
+func path_screen_runs(note: Note, t: float, grow: float = 1.0) -> Array[PackedVector2Array]:
+	var chart := get_chart()
+	if chart == null:
+		return []
+	var total := note.duration()
+	if total <= 0.001:
+		return []
+	var count := clampi(int(total * 18.0), 40, 96)
+	var points := PackedVector2Array()
+	var erased_flags: Array[bool] = []
+	for i in count + 1:
+		var rel := total * float(i) / float(count)
+		erased_flags.append(path_erased(note, rel))
+		points.append(_path_screen_point(chart, note, rel, t, false, 1.0))
+	var runs := split_path_runs(points, erased_flags)
+	if grow < 0.999:
+		var center := project_design(Vector2.ZERO)
+		var scaled_runs: Array[PackedVector2Array] = []
+		for piece in runs:
+			var scaled := PackedVector2Array()
+			for p in piece:
+				scaled.append(center.lerp(p, grow))
+			scaled_runs.append(scaled)
+		runs = scaled_runs
+	return runs
+
+
+static func split_path_runs(points: PackedVector2Array, erased: Array) -> Array[PackedVector2Array]:
+	# 只在真正擦除/无效点处分段；不再用像素距离阈值，避免长轨迹被误切。
+	var result: Array[PackedVector2Array] = []
+	var run := PackedVector2Array()
+	for i in points.size():
+		var point := points[i]
+		var hidden := i < erased.size() and bool(erased[i])
+		if hidden or not is_finite(point.x) or not is_finite(point.y) or point.x > 1.0e9 or point.y > 1.0e9:
+			if run.size() > 1:
+				result.append(run)
+			run = PackedVector2Array()
+			continue
+		run.append(point)
+	if run.size() > 1:
+		result.append(run)
+	return result
+
+
 func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: float, top: bool) -> void:
 	var total := note.duration()
 	if total <= 0.001:
@@ -1720,28 +1765,14 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 	if _path_runs_cache.has(cache_key):
 		runs = _path_runs_cache[cache_key]
 	else:
-		var run := PackedVector2Array()
-		var count := clampi(int(total * 12.0), 24, 56)
-		var last_valid := Vector2(INF, INF)
+		var count := clampi(int(total * 18.0), 40, 96)
+		var points := PackedVector2Array()
+		var erased_flags: Array[bool] = []
 		for i in count + 1:
 			var rel := total * float(i) / float(count)
-			var erased := path_erased(note, rel)
-			var p := _path_screen_point(chart, note, rel, t, true, 1.0)
-			if erased or not _valid_point(p):
-				if run.size() > 1:
-					runs.append(run)
-				run = PackedVector2Array()
-				last_valid = Vector2(INF, INF)
-				continue
-			# 跳区不连线：断开处直接起新的一段，避免画出跨过擦除区的假轨迹。
-			if last_valid.x < 1.0e9 and p.distance_to(last_valid) > 64.0:
-				if run.size() > 1:
-					runs.append(run)
-				run = PackedVector2Array()
-			run.append(p)
-			last_valid = p
-		if run.size() > 1:
-			runs.append(run)
+			erased_flags.append(path_erased(note, rel))
+			points.append(_path_screen_point(chart, note, rel, t, true, 1.0))
+		runs = split_path_runs(points, erased_flags)
 		if _path_runs_cache.size() > 64:
 			_path_runs_cache.clear()
 		_path_runs_cache[cache_key] = runs
@@ -1763,9 +1794,11 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 		if piece.size() < 2:
 			continue
 		if not top:
-			# 重叠/下层 Path 只画轮廓，避免多星星时几十条全特效拖慢编辑器。
-			canvas.draw_polyline(piece, Color(0, 0, 0, 0.40), 17.0 * ns, true)
-			canvas.draw_polyline(piece, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.24), 9.0 * ns, true)
+			# 下层 Path 保留完整带体，只省略箭头/阴影等重特效。
+			canvas.draw_polyline(piece, Color(0, 0, 0, 0.42), 22.0 * ns, true)
+			canvas.draw_polyline(piece, Color(1, 1, 1, 0.30), 16.0 * ns, true)
+			canvas.draw_polyline(piece, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.52), 10.0 * ns, true)
+			_draw_dashed_polyline(canvas, piece, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.55), 2.0, 6.0)
 			continue
 		var shadow := PackedVector2Array()
 		for p in piece:
@@ -1812,21 +1845,24 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 	var head := _flying_position(chart, note.angle, note.beat, t, pre)
 	# 尾部跟随轨迹一起从圆心长出，只落在平面内，不再回到环上。
 	var tail := _path_screen_point(chart, note, total, t, true, grow)
-	_draw_path_head(canvas, head, top, grow * ns)
-	if _valid_point(head):
-		# 重叠 Path 用不同颜色的外环 + 编号区分星头。
-		var accents: Array[Color] = [UITheme.CORAL, UITheme.CYAN, UITheme.VIOLET, UITheme.MINT]
-		var accent: Color = accents[note.id % accents.size()]
-		canvas.draw_arc(head, 21.0 * ns, 0.0, TAU, 30, Color(accent.r, accent.g, accent.b, 0.95 if top else 0.45), 2.2, true)
-		canvas.draw_string(UITheme.mono_font(), head + Vector2(16, -14), "#%d" % note.id, HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(accent.r, accent.g, accent.b, 0.9 if top else 0.4))
-	if top and _valid_point(head):
-		# 头部的白色箭头指向轨迹内侧，进一步区分头和尾。
-		var ahead := _path_screen_point(chart, note, minf(total, maxf(0.05, total * 0.08)), t, true, grow)
-		if _valid_point(ahead):
-			_draw_arrowhead(canvas, head + (ahead - head).normalized() * 22.0 * ns, ahead - head, Color(1, 1, 1, 0.95))
+	# 试玩时星星头在滑动开始后交给进度球，不再留在起点造成“断开的星头”。
+	var head_visible := not playtest_mode or t < note.beat + wait + 0.02
+	if head_visible:
+		_draw_path_head(canvas, head, top, grow * ns)
+		if _valid_point(head):
+			# 重叠 Path 用不同颜色的外环 + 编号区分星头。
+			var accents: Array[Color] = [UITheme.CORAL, UITheme.CYAN, UITheme.VIOLET, UITheme.MINT]
+			var accent: Color = accents[note.id % accents.size()]
+			canvas.draw_arc(head, 21.0 * ns, 0.0, TAU, 30, Color(accent.r, accent.g, accent.b, 0.95 if top else 0.45), 2.2, true)
+			canvas.draw_string(UITheme.mono_font(), head + Vector2(16, -14), "#%d" % note.id, HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(accent.r, accent.g, accent.b, 0.9 if top else 0.4))
+		if top and _valid_point(head):
+			# 头部的白色箭头指向轨迹内侧，进一步区分头和尾。
+			var ahead := _path_screen_point(chart, note, minf(total, maxf(0.05, total * 0.08)), t, true, grow)
+			if _valid_point(ahead):
+				_draw_arrowhead(canvas, head + (ahead - head).normalized() * 22.0 * ns, ahead - head, Color(1, 1, 1, 0.95))
+		if playtest_mode and top and _valid_point(head):
+			canvas.draw_string(UITheme.bold_font(), head + Vector2(-12, -22), "PATH", HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(UITheme.CORAL.r, UITheme.CORAL.g, UITheme.CORAL.b, 0.85))
 	_draw_path_tail(canvas, tail, top, grow * ns)
-	if playtest_mode and top and _valid_point(head):
-		canvas.draw_string(UITheme.bold_font(), head + Vector2(-12, -22), "PATH", HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(UITheme.CORAL.r, UITheme.CORAL.g, UITheme.CORAL.b, 0.85))
 	# 大号发光球 + 短拖尾：当前进度点始终比星头更亮，方向一目了然。
 	if t >= note.beat and t <= note.end_beat:
 		var rel := progress * total
