@@ -1704,7 +1704,7 @@ func _draw_paths(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 	# 旧 Path 先画、新的最后画：多星星重叠时，新星和它的擦除缺口始终在最上层。
 	visible.sort_custom(func(a: Note, b: Note) -> bool: return a.beat < b.beat)
 	for i in visible.size():
-		_draw_one_path(canvas, chart, visible[i], t, pre, i == visible.size() - 1)
+		_draw_one_path(canvas, chart, visible[i], t, pre, i == visible.size() - 1, visible.size())
 	if _drawing_path and _path_points.size() > 1:
 		var preview := PackedVector2Array()
 		for local in _path_points:
@@ -1762,7 +1762,7 @@ static func split_path_runs(points: PackedVector2Array, erased: Array) -> Array[
 	return result
 
 
-func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: float, top: bool) -> void:
+func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: float, top: bool, visible_count: int = 1) -> void:
 	var total := note.duration()
 	if total <= 0.001:
 		return
@@ -1778,6 +1778,8 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 		runs = _path_runs_cache[cache_key]
 	else:
 		var count := clampi(int(total * 18.0), 40, 96)
+		if visible_count >= 4:
+			count = clampi(int(total * 12.0), 28, 64)
 		var points := PackedVector2Array()
 		var erased_flags: Array[bool] = []
 		for i in count + 1:
@@ -1806,21 +1808,18 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 			continue
 		var path_band := float(_skin()["band"])
 		if not top:
-			# 下层 Path 只留细线 + 箭头，避免多条轨迹叠成白墙。
-			canvas.draw_polyline(piece, Color(0, 0, 0, 0.42), 6.0 * ns, true)
-			canvas.draw_polyline(piece, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.58), 2.5 * ns * path_band, true)
-			_draw_dashed_polyline(canvas, piece, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.55), 2.2, 8.0)
+			# 下层 Path 只留一条低亮度线；星头/尾/进度球只画最上层的一条。
+			canvas.draw_polyline(piece, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.48), 3.2 * ns * path_band, true)
 			continue
-		# 舞萌式滑动：细线打底 + 密集 V 形箭头，不再是一条白色宽带。
-		canvas.draw_polyline(piece, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.10), 18.0 * ns, true)
-		canvas.draw_polyline(piece, Color(0, 0, 0, 0.55), 7.0 * ns * path_band, true)
-		canvas.draw_polyline(piece, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.92), 3.0 * ns * path_band, true)
-		_draw_dashed_polyline(canvas, piece, dash, 2.6, 9.0)
+		# 舞萌式滑动：单条高亮线 + 密集 V 形箭头；把多层描边合并，减少 10k 谱面的 draw call。
+		canvas.draw_polyline(piece, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.95), 5.0 * ns * path_band, true)
+		_draw_dashed_polyline(canvas, piece, dash, 2.4, 10.0)
 		# V 形箭头列：按轨迹长度铺满，像舞萌的滑动箭头链。
 		var piece_length := 0.0
 		for i in piece.size() - 1:
 			piece_length += piece[i].distance_to(piece[i + 1])
-		var chevron_count := clampi(int(piece_length / maxf(12.0, 20.0 * ns)), 3, 32)
+		var chevron_cap := 24 if visible_count < 4 else (16 if visible_count < 8 else 10)
+		var chevron_count := clampi(int(piece_length / maxf(12.0, 20.0 * ns)), 3, chevron_cap)
 		for k in chevron_count:
 			var fraction := (float(k) + 0.5) / float(chevron_count)
 			var sample: Dictionary = _polyline_sample(piece, fraction)
@@ -1845,6 +1844,8 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 			var p := _path_screen_point(chart, note, rel, t, true, grow)
 			if _valid_point(p):
 				_draw_diamond(canvas, p, 4.5, UITheme.GOLD)
+	if not top:
+		return
 	_draw_target_arc(canvas, note.angle, note.width, t, UITheme.CORAL, 14.0)
 	if selected:
 		for point in note.trace_pts:
@@ -2925,11 +2926,8 @@ func _draw_chevron(canvas: Control, point: Vector2, direction: Vector2, color: C
 	var tip := point + dir * size * 0.12
 	var left := point - dir * size + normal * size * 0.80
 	var right := point - dir * size - normal * size * 0.80
-	var arm := PackedVector2Array([left, tip, right])
-	var width := maxf(2.0, size * 0.52)
-	canvas.draw_polyline(arm, Color(0, 0, 0, 0.60), width * 1.45, true)
-	canvas.draw_polyline(arm, color, width, true)
-	canvas.draw_polyline(arm, Color(1, 1, 1, 0.22), width * 0.28, true)
+	# 一条粗 V 形 polyline：比三层描边少 2/3 draw call，也不产生多边形三角化失败。
+	canvas.draw_polyline(PackedVector2Array([left, tip, right]), color, maxf(2.0, size * 0.52), true)
 
 
 func _draw_star(canvas: Control, point: Vector2, radius: float, color: Color) -> void:

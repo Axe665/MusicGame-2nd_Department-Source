@@ -13,6 +13,7 @@ func _ready() -> void:
 	_audit_boundary()
 	_audit_undo_io()
 	_audit_edit_ops()
+	await _audit_note_inspector(app)
 	await _audit_ui(app)
 	_audit_source()
 	print("=== EDITOR AUDIT RESULT passed=%d failed=%d partial=%d ===" % [passed, failed, partial])
@@ -178,6 +179,35 @@ func _audit_undo_io() -> void:
 	var lbp := "/tmp/tamaki_audit_chart.lbp"
 	var lbp_err := LBPIO.export_to_file(chart, lbp)
 	_check("LBP v2 导出", lbp_err == OK and FileAccess.get_file_as_string(lbp).contains("[Notes]"))
+
+
+func _audit_note_inspector(app: Node) -> void:
+	var chart := Chart.new()
+	var tap := _make_note(chart, "tap", 0.0)
+	var hold := _make_note(chart, "hold", 2.0)
+	var path := _make_note(chart, "path", 4.0)
+	var bell := _make_note(chart, "bell", 6.0)
+	app.chart = chart
+	app.chart_path = ""
+	app.selected_notes.clear()
+	var inspector := Inspector.new()
+	inspector.theme = UITheme.build()
+	add_child(inspector)
+	await get_tree().process_frame
+	await get_tree().process_frame
+	app.select_note(tap.id)
+	await get_tree().process_frame
+	_check("Inspector 单音符页", inspector._note_groups["common"].visible and not inspector._note_groups["hold"].visible)
+	app.select_note(hold.id)
+	await get_tree().process_frame
+	_check("Inspector 切到 Hold", inspector._note_groups["hold"].visible and not inspector._note_groups["path"].visible)
+	app.select_note(path.id)
+	await get_tree().process_frame
+	_check("Inspector 切到 Path", inspector._note_groups["path"].visible and not inspector._note_groups["hold"].visible)
+	app.select_note(bell.id)
+	await get_tree().process_frame
+	_check("Inspector 切到 Bell", inspector._note_groups["bell"].visible and not inspector._note_groups["path"].visible)
+	inspector.queue_free()
 
 
 func _audit_ui(app: Node) -> void:

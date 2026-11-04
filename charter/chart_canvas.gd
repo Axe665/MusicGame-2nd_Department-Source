@@ -40,6 +40,11 @@ var _wave_right: PackedVector2Array = PackedVector2Array()
 var _wave_left: PackedVector2Array = PackedVector2Array()
 var _last_playhead_redraw: int = 0
 var _overlay: Control
+var _sorted_notes: Array[Note] = []
+var _sorted_chart: Chart = null
+var _sorted_count: int = -1
+var _sorted_dirty: bool = true
+var _sorted_max_duration: float = 0.0
 
 
 func _ready() -> void:
@@ -94,6 +99,7 @@ func _visible_beats() -> float:
 
 
 func _on_chart_changed() -> void:
+	_sorted_dirty = true
 	_refresh_waveform()
 	queue_redraw()
 
@@ -332,27 +338,60 @@ func _draw_notes(plot: Rect2) -> void:
 		return
 	var first_beat := scroll_beat - 2.0
 	var last_beat := scroll_beat + _visible_beats() + 2.0
-	for note in chart.notes:
-		var note_end := note.end_beat if note.type in ["hold", "path", "trace"] else note.beat
-		if note.beat > last_beat or note_end < first_beat:
-			continue
-		match note.type:
-			"tap":
-				_draw_tap(note)
-			"hold":
-				_draw_hold(note)
-			"path":
-				_draw_path(note)
-			"trace":
-				_draw_trace(note, plot)
-			"anchor":
-				_draw_anchor(note)
-			"bell":
-				_draw_bell(note)
+	if _drag_mode != "" or _drag_width_note != null:
+		# 拖拽时音符会临时改变 beat，直接全量绘制，避免二分索引顺序失效。
+		for note in chart.notes:
+			var note_end := note.end_beat if note.type in ["hold", "path", "trace"] else note.beat
+			if note.beat <= last_beat and note_end >= first_beat:
+				_draw_note(note, plot)
+	else:
+		if _sorted_dirty or _sorted_chart != chart or _sorted_count != chart.notes.size():
+			_sorted_chart = chart
+			_sorted_count = chart.notes.size()
+			_sorted_notes = chart.notes.duplicate()
+			_sorted_notes.sort_custom(func(a: Note, b: Note) -> bool: return a.beat < b.beat)
+			_sorted_max_duration = 0.0
+			for note in _sorted_notes:
+				if note.type in ["hold", "path", "trace"]:
+					_sorted_max_duration = maxf(_sorted_max_duration, note.end_beat - note.beat)
+			_sorted_dirty = false
+		var search_start := first_beat - _sorted_max_duration
+		var low := 0
+		var high := _sorted_notes.size()
+		while low < high:
+			var mid := (low + high) / 2
+			if _sorted_notes[mid].beat < search_start:
+				low = mid + 1
+			else:
+				high = mid
+		for i in range(low, _sorted_notes.size()):
+			var note := _sorted_notes[i]
+			if note.beat > last_beat:
+				break
+			var note_end := note.end_beat if note.type in ["hold", "path", "trace"] else note.beat
+			if note_end < first_beat:
+				continue
+			_draw_note(note, plot)
 	if _pending_path != null:
 		var head := Vector2(_u_to_x(_pending_path.angle / 360.0), _beat_to_y(_pending_path.beat))
 		var tail := Vector2(_u_to_x(_hover_u), _beat_to_y(_hover_beat))
 		draw_dashed_line(head, tail, UITheme.CYAN, 1.5, 6.0)
+
+
+func _draw_note(note: Note, plot: Rect2) -> void:
+	match note.type:
+		"tap":
+			_draw_tap(note)
+		"hold":
+			_draw_hold(note)
+		"path":
+			_draw_path(note)
+		"trace":
+			_draw_trace(note, plot)
+		"anchor":
+			_draw_anchor(note)
+		"bell":
+			_draw_bell(note)
 
 
 func _draw_tap(note: Note) -> void:

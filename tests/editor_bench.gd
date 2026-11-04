@@ -44,14 +44,30 @@ func _ready() -> void:
 		await get_tree().process_frame
 	var preview_ms := float(preview.total_us) / float(maxi(1, preview.draw_count)) / 1000.0
 	print("BENCH preview_overlay_ms=%.2f frames=%d" % [preview_ms, preview.draw_count])
+	print("BENCH preview_sections_ms ", preview.summary())
+	var counts := {"path": 0, "trace": 0, "hold": 0, "tap": 0}
+	for note in chart.notes:
+		if note.type in ["path", "trace", "hold"]:
+			if 400.0 >= note.beat - 2.0 and 400.0 <= note.end_beat + 0.5:
+				counts[note.type] += 1
+		elif absf(note.beat - 400.0) <= 2.0:
+			counts["tap"] += 1
+	print("BENCH visible_counts ", counts)
 	preview.queue_free()
 	await _frames(2)
 
 	var inspector := Inspector.new()
 	inspector.theme = UITheme.build()
+	var inspector_add_t := Time.get_ticks_usec()
 	add_child(inspector)
+	print("BENCH inspector_startup_ms=%.2f" % (float(Time.get_ticks_usec() - inspector_add_t) / 1000.0))
 	await _frames(2)
+	var first_select_t := Time.get_ticks_usec()
 	app.select_note(chart.notes[0].id)
+	print("BENCH inspector_first_select_ms=%.2f" % (float(Time.get_ticks_usec() - first_select_t) / 1000.0))
+	var next_select_t := Time.get_ticks_usec()
+	app.select_note(chart.notes[1].id)
+	print("BENCH inspector_next_select_ms=%.2f" % (float(Time.get_ticks_usec() - next_select_t) / 1000.0))
 	inspector.current_tab = 0
 	await _frames(2)
 	var rebuild_times: Array[float] = []
