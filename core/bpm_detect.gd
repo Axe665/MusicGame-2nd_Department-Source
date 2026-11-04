@@ -46,8 +46,11 @@ static func analyze(samples: PackedFloat32Array, sample_rate: float) -> Dictiona
 		"half_bpm": 0.0,
 		"double_bpm": 0.0,
 		"beats": 0,
+		"duration_ms": 0.0,
 		"error": "",
 	}
+	if sample_rate > 0.0:
+		result["duration_ms"] = float(samples.size()) / sample_rate * 1000.0
 	if sample_rate <= 0.0 or samples.size() < int(sample_rate * 2.0):
 		result["error"] = "音频太短（至少 2 秒）"
 		return result

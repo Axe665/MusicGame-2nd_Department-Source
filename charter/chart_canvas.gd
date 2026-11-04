@@ -9,6 +9,8 @@ const TOP_MARGIN := 24.0
 const BOTTOM_MARGIN := 12.0
 const RIGHT_MARGIN := 12.0
 const WAVE_WIDTH := 24.0
+const NOTE_SNAP_PX := 6.0
+const NOTE_TOOLS := ["tap", "hold", "path", "trace", "anchor", "bell"]
 
 var _app: Node = null
 var px_per_beat: float = 28.0
@@ -45,6 +47,16 @@ var _sorted_chart: Chart = null
 var _sorted_count: int = -1
 var _sorted_dirty: bool = true
 var _sorted_max_duration: float = 0.0
+var _ghost_layer = null
+var _clipboard_notes: Array[Note] = []
+var _clipboard_reference_beat: float = 0.0
+var _clipboard_mouse_beat: float = 0.0
+var _clipboard_active: bool = false
+var _clipboard_cut: bool = false
+var _ghost_last_scroll: float = -INF
+var _ghost_last_px: float = -INF
+var _ghost_last_stretch: float = -INF
+var _ghost_last_size: Vector2 = Vector2.ZERO
 
 
 func _ready() -> void:
@@ -55,11 +67,20 @@ func _ready() -> void:
 	set_process(true)
 	if _app != null:
 		_app.chart_changed.connect(_on_chart_changed)
+		_app.chart_replaced.connect(_clear_clipboard_on_chart_replace)
 		_app.chart_live_changed.connect(_on_chart_live_changed)
 		_app.playhead_changed.connect(_on_playhead_changed)
 		_app.selection_changed.connect(_on_selection_changed)
 		_app.tool_changed.connect(_on_tool_changed)
 		px_per_beat = _app.zoom_px_per_beat
+	var ghost_script: Script = load("res://charter/chart_ghost_layer.gd")
+	if ghost_script != null:
+		_ghost_layer = ghost_script.new()
+		_ghost_layer.name = "GhostLayer"
+		_ghost_layer.visible = false
+		add_child(_ghost_layer)
+		_ghost_layer.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		_ghost_layer._app = _app
 	_overlay = load("res://charter/chart_overlay.gd").new()
 	_overlay.canvas = self
 	add_child(_overlay)
@@ -67,7 +88,14 @@ func _ready() -> void:
 
 
 func _process(_delta: float) -> void:
-	pass
+	if not _clipboard_active or _ghost_layer == null:
+		return
+	var stretch: float = float(_app.vertical_stretch) if _app != null else 0.0
+	if (not is_equal_approx(_ghost_last_scroll, scroll_beat)
+			or not is_equal_approx(_ghost_last_px, px_per_beat)
+			or not is_equal_approx(_ghost_last_stretch, stretch)
+			or _ghost_last_size != size):
+		_sync_ghost_layer()
 
 
 func _plot_rect() -> Rect2:
@@ -84,18 +112,176 @@ func _x_to_u(x: float) -> float:
 	return clampf((x - plot.position.x) / maxf(1.0, plot.size.x), 0.0, 0.999999)
 
 
+func _vertical_scale() -> float:
+	if _app == null:
+		return 1.0
+	return 1.0 + clampf(float(_app.vertical_stretch), 0.0, 10.0) * 0.5
+
+
+func _effective_px_per_beat() -> float:
+	return px_per_beat * _vertical_scale()
+
+
 func _beat_to_y(beat: float) -> float:
 	var plot := _plot_rect()
-	return plot.position.y + (beat - scroll_beat) * px_per_beat
+	return plot.position.y + (beat - scroll_beat) * _effective_px_per_beat()
 
 
 func _y_to_beat(y: float) -> float:
 	var plot := _plot_rect()
-	return scroll_beat + (y - plot.position.y) / maxf(0.1, px_per_beat)
+	return scroll_beat + (y - plot.position.y) / maxf(0.1, _effective_px_per_beat())
 
 
 func _visible_beats() -> float:
-	return size.y / maxf(10.0, px_per_beat)
+	return size.y / maxf(10.0, _effective_px_per_beat())
+
+
+func _clear_clipboard_on_chart_replace() -> void:
+	cancel_clipboard(false)
+
+
+func has_clipboard() -> bool:
+	return _clipboard_active and not _clipboard_notes.is_empty()
+
+
+func copy_selection(cut: bool = false) -> void:
+	if _app == null or _app.chart == null:
+		return
+	var selected: Array[Note] = _app.get_selected_notes()
+	if selected.is_empty():
+		notice.emit("先选中音符，再复制或剪切。", "warning")
+		return
+	var copies: Array[Note] = []
+	var first_beat := INF
+	for note in selected:
+		copies.append(Note.from_dict(note.to_dict()))
+		first_beat = minf(first_beat, note.beat)
+	copies.sort_custom(func(a: Note, b: Note) -> bool: return a.beat < b.beat)
+	_clipboard_notes = copies
+	_clipboard_reference_beat = first_beat
+	_clipboard_mouse_beat = _current_mouse_beat()
+	_clipboard_active = true
+	_clipboard_cut = cut
+	if cut:
+		var ids: Array[int] = []
+		for note in selected:
+			ids.append(note.id)
+		_app.begin_edit()
+		for note in _app.chart.notes.duplicate():
+			if ids.has(note.id):
+				_app.chart.notes.erase(note)
+		_app.finish_edit()
+		_app.clear_selection()
+	_rebuild_ghost()
+	_sync_ghost_layer()
+	notice.emit(
+		("已剪切 %d 个音符；移动鼠标选点，Ctrl+V 粘贴，Ctrl+A 镜像粘贴。" if cut
+		else "已复制 %d 个音符；移动鼠标选点，Ctrl+V 粘贴，Ctrl+A 镜像粘贴。") % copies.size(),
+		"info"
+	)
+
+
+func paste_clipboard(mirror: bool = false) -> bool:
+	if _app == null or _app.chart == null or not has_clipboard():
+		notice.emit("剪贴板为空：先 Ctrl+C 复制或 Ctrl+X 剪切。", "warning")
+		return false
+	var chart: Chart = _app.chart
+	var delta := _clipboard_mouse_beat - _clipboard_reference_beat
+	var new_ids: Array[int] = []
+	_app.begin_edit()
+	for note in _clipboard_notes:
+		var copy := Note.from_dict(note.to_dict())
+		copy.id = chart.next_note_id()
+		copy.beat = maxf(0.0, note.beat + delta)
+		if copy.type in ["hold", "path", "trace"]:
+			copy.end_beat = maxf(copy.beat + 0.25, note.end_beat + delta)
+		if mirror:
+			copy.mirror_u()
+		chart.notes.append(copy)
+		new_ids.append(copy.id)
+	_app.finish_edit()
+	_app.select_notes(new_ids)
+	# A paste consumes the pending clipboard: drop the ghost preview and keep
+	# the freshly pasted notes selected for immediate follow-up editing.
+	cancel_clipboard(false)
+	queue_redraw()
+	notice.emit(("已镜像粘贴 %d 个音符。" if mirror else "已粘贴 %d 个音符。") % new_ids.size(), "info")
+	return true
+
+
+func mirror_selected_note() -> bool:
+	if _app == null or _app.chart == null:
+		return false
+	var selected: Array[Note] = _app.get_selected_notes()
+	if selected.size() != 1:
+		return false
+	var note: Note = selected[0]
+	if note.lock:
+		notice.emit("音符已锁定，无法镜像。", "warning")
+		return false
+	_app.begin_edit()
+	note.mirror_u()
+	_app.finish_edit()
+	queue_redraw()
+	notice.emit("已镜像音符 %d。" % note.id, "info")
+	return true
+
+
+func cancel_clipboard(show_notice: bool = true) -> void:
+	var had_clipboard := _clipboard_active
+	_clipboard_active = false
+	_clipboard_cut = false
+	_clipboard_notes.clear()
+	if _ghost_layer != null:
+		_ghost_layer.ghost_notes.clear()
+		_ghost_layer.visible = false
+		_ghost_layer.queue_redraw()
+	if show_notice and had_clipboard:
+		notice.emit("已取消复制/剪切预览；已剪切的音符可用 Ctrl+Z 恢复。", "info")
+
+
+func _current_mouse_beat() -> float:
+	if _mouse_pos != Vector2.ZERO and _plot_rect().has_point(_mouse_pos):
+		return _y_to_beat(_mouse_pos.y)
+	if _app != null:
+		return _app.playhead_beat
+	return 0.0
+
+
+func _rebuild_ghost() -> void:
+	if _ghost_layer == null:
+		return
+	if not _clipboard_active:
+		_ghost_layer.ghost_notes = []
+		_ghost_layer.visible = false
+		_ghost_layer.queue_redraw()
+		return
+	var delta := _clipboard_mouse_beat - _clipboard_reference_beat
+	var ghosts: Array[Note] = []
+	for note in _clipboard_notes:
+		var copy := Note.from_dict(note.to_dict())
+		copy.id = -1 - ghosts.size()
+		copy.beat = maxf(0.0, note.beat + delta)
+		if copy.type in ["hold", "path", "trace"]:
+			copy.end_beat = maxf(copy.beat + 0.25, note.end_beat + delta)
+		ghosts.append(copy)
+	_ghost_layer.ghost_notes = ghosts
+	_ghost_layer.visible = true
+	_sync_ghost_layer()
+
+
+func _sync_ghost_layer() -> void:
+	if _ghost_layer == null:
+		return
+	_ghost_layer._app = _app
+	_ghost_layer.scroll_beat = scroll_beat
+	_ghost_layer.px_per_beat = px_per_beat
+	_ghost_layer.visible = _clipboard_active
+	_ghost_layer.queue_redraw()
+	_ghost_last_scroll = scroll_beat
+	_ghost_last_px = px_per_beat
+	_ghost_last_stretch = float(_app.vertical_stretch) if _app != null else 0.0
+	_ghost_last_size = size
 
 
 func _on_chart_changed() -> void:
@@ -272,12 +458,46 @@ func _draw_grid(plot: Rect2) -> void:
 			if bar != last_bar:
 				last_bar = bar
 				draw_string(font, Vector2(4, y + 4), "bar %d" % bar, HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(1, 1, 1, 0.52))
+	_draw_beat_subdivisions(plot)
+	_draw_vertical_lines(plot)
 	for point in chart.timing.points:
 		if point.beat < scroll_beat or point.beat > scroll_beat + _visible_beats():
 			continue
 		var y := _beat_to_y(point.beat)
 		draw_line(Vector2(plot.position.x, y), Vector2(plot.end.x, y), Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, 0.55), 1.5)
 		draw_string(font, Vector2(plot.end.x - 120, y - 4), "BPM %.1f" % point.bpm, HORIZONTAL_ALIGNMENT_LEFT, -1, 10, UITheme.GOLD)
+
+
+func _draw_beat_subdivisions(plot: Rect2) -> void:
+	if _app == null:
+		return
+	var offsets := TimingMap.beat_subdivision_offsets(int(_app.beat_subdivisions))
+	if offsets.is_empty():
+		return
+	var first_beat := floori(scroll_beat)
+	var last_beat := ceili(scroll_beat + _visible_beats() + 1.0)
+	var points := PackedVector2Array()
+	for beat in range(first_beat, last_beat + 1):
+		for offset in offsets:
+			var y := _beat_to_y(float(beat) + offset)
+			if y < plot.position.y - 0.5 or y > plot.end.y + 0.5:
+				continue
+			points.append(Vector2(plot.position.x, y))
+			points.append(Vector2(plot.end.x, y))
+	if points.size() >= 2:
+		draw_multiline(points, Color(1, 1, 1, 0.035), 1.0)
+
+
+func _draw_vertical_lines(plot: Rect2) -> void:
+	if _app == null:
+		return
+	var offsets := TimingMap.vertical_line_offsets(int(_app.vertical_lines))
+	if offsets.is_empty():
+		return
+	var color := Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.09)
+	for u in offsets:
+		var x := _u_to_x(u)
+		draw_line(Vector2(x, plot.position.y), Vector2(x, plot.end.y), color, 1.0)
 
 
 func _draw_dashed_vertical(x: float, y0: float, y1: float, color: Color) -> void:
@@ -704,6 +924,9 @@ func _gui_input(event: InputEvent) -> void:
 		_hover_u = _x_to_u(event.position.x)
 		_hover_beat = _y_to_beat(event.position.y)
 		hover_changed.emit(_hover_u, _hover_beat)
+		if _clipboard_active:
+			_clipboard_mouse_beat = _hover_beat
+			_rebuild_ghost()
 		if _drag_mode == "note":
 			_drag_notes_update(event.position, event)
 		elif _drag_mode == "width":
@@ -724,12 +947,27 @@ func _gui_input(event: InputEvent) -> void:
 		_mouse_pos = event.position
 		_hover_u = _x_to_u(event.position.x)
 		_hover_beat = _y_to_beat(event.position.y)
+		if _clipboard_active:
+			_clipboard_mouse_beat = _hover_beat
+			_rebuild_ghost()
 		if event.button_index == MOUSE_BUTTON_WHEEL_UP or event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
 			if event.pressed:
 				_handle_wheel(event)
 			accept_event()
 			return
+		if event.button_index == MOUSE_BUTTON_RIGHT:
+			if event.pressed and _drag_mode == "" and _pending_path == null:
+				_begin_marquee(event.position)
+			accept_event()
+			return
 		if event.button_index == MOUSE_BUTTON_LEFT:
+			# A right-drag starts the marquee; the following left release ends
+			# it and must not be interpreted as a note placement click.
+			if _drag_mode == "marquee":
+				if not event.pressed:
+					_on_left_release(event)
+				accept_event()
+				return
 			if event.pressed:
 				grab_focus()
 				_on_left_press(event)
@@ -742,10 +980,15 @@ func _gui_input(event: InputEvent) -> void:
 			_delete_selection()
 			accept_event()
 		elif event.keycode == KEY_A and event.ctrl_pressed:
-			_select_visible()
+			if has_clipboard():
+				paste_clipboard(true)
+			else:
+				_select_visible()
 			accept_event()
 		elif event.keycode == KEY_ESCAPE:
 			_cancel_pending()
+			if has_clipboard():
+				cancel_clipboard()
 			accept_event()
 
 
@@ -754,7 +997,7 @@ func _handle_wheel(event: InputEventMouseButton) -> void:
 		var beat := _y_to_beat(event.position.y)
 		var factor := 1.12 if event.button_index == MOUSE_BUTTON_WHEEL_UP else 0.89
 		px_per_beat = clampf(px_per_beat * factor, 10.0, 400.0)
-		scroll_beat = maxf(0.0, beat - (event.position.y - _plot_rect().position.y) / px_per_beat)
+		scroll_beat = maxf(0.0, beat - (event.position.y - _plot_rect().position.y) / _effective_px_per_beat())
 		if _app != null:
 			_app.zoom_px_per_beat = px_per_beat
 	else:
@@ -763,6 +1006,62 @@ func _handle_wheel(event: InputEventMouseButton) -> void:
 	queue_redraw()
 	if _overlay != null:
 		_overlay.queue_redraw()
+
+
+func _snap_beat_u(raw_beat: float, raw_u: float, bypass: bool) -> Vector2:
+	## Notes near a coarse beat line or one of the vertical lines are pulled
+	## onto that line. When both are close, the result is their intersection;
+	## otherwise only the close axis moves.
+	if bypass or _app == null:
+		return Vector2(raw_beat, raw_u)
+	var beat: float = _app.snap_beat(raw_beat, false)
+	var u := raw_u
+	var beat_tolerance_px := minf(NOTE_SNAP_PX, _effective_px_per_beat() * 0.18)
+	var nearest_beat := roundf(raw_beat)
+	if absf(raw_beat - nearest_beat) * _effective_px_per_beat() <= beat_tolerance_px:
+		beat = nearest_beat
+	var lines := mini(int(_app.vertical_lines), TimingMap.MAX_VERTICAL_LINES)
+	if lines > 0:
+		var plot := _plot_rect()
+		var nearest_u := TimingMap.nearest_vertical_line_u(raw_u, lines)
+		var step := 1.0 / float(lines + 1)
+		var u_tolerance_px := minf(NOTE_SNAP_PX, step * plot.size.x * 0.25)
+		if absf(raw_u - nearest_u) * plot.size.x <= u_tolerance_px:
+			u = nearest_u
+	return Vector2(beat, u)
+
+
+func _snap_note_placement(screen: Vector2, bypass: bool) -> Vector2:
+	return _snap_beat_u(_y_to_beat(screen.y), _x_to_u(screen.x), bypass)
+
+
+func _snap_dragged_notes(bypass: bool) -> void:
+	## Re-apply the grid magnet when the mouse is released. Every dragged note
+	## is checked independently, so batch drags keep each note on its nearest
+	## line instead of relying on the mouse-up cursor position alone.
+	if _app == null or bypass:
+		return
+	for item in _drag_notes:
+		var note: Note = item["note"]
+		if note.lock:
+			continue
+		var raw_u := fposmod(note.angle, 360.0) / 360.0
+		var snapped := _snap_beat_u(note.beat, raw_u, false)
+		var beat_delta := snapped.x - note.beat
+		var angle_delta := snapped.y * 360.0 - note.angle
+		if absf(beat_delta) <= 0.000001 and absf(angle_delta) <= 0.001:
+			continue
+		note.beat = snapped.x
+		if note.type in ["hold", "path", "trace"]:
+			note.end_beat = maxf(note.beat + 0.25, note.end_beat + beat_delta)
+		if note.type == "bell":
+			note.angle = fposmod(snapped.y * 360.0, 360.0)
+			note.center_u = snapped.y
+		elif note.type != "trace":
+			note.angle = fposmod(note.angle + angle_delta, 360.0)
+			if note.type == "path":
+				note.tail_angle = fposmod(note.tail_angle + angle_delta, 360.0)
+	_app.touch_chart()
 
 
 func _on_left_press(event: InputEventMouseButton) -> void:
@@ -782,6 +1081,10 @@ func _on_left_press(event: InputEventMouseButton) -> void:
 		else:
 			_app.set_playhead(beat)
 		return
+	if _app.tool in NOTE_TOOLS:
+		var placement := _snap_note_placement(event.position, event.alt_pressed)
+		beat = placement.x
+		u = placement.y
 	match _app.tool:
 		"select":
 			_select_press(event)
@@ -801,17 +1104,32 @@ func _on_left_press(event: InputEventMouseButton) -> void:
 			_create_event_at(beat, u)
 
 
-func _on_left_release(_event: InputEventMouseButton) -> void:
+func _on_left_release(event: InputEventMouseButton) -> void:
 	if _app == null:
 		return
+	if _drag_mode == "note":
+		_snap_dragged_notes(event.alt_pressed)
 	if _drag_mode in ["note", "width", "red", "hold_end"]:
 		_app.finish_edit()
 	if _drag_mode == "marquee":
 		_finish_marquee()
+		_marquee = Rect2()
 	_drag_mode = ""
 	_drag_notes.clear()
 	_drag_region = null
 	_drag_width_note = null
+	queue_redraw()
+	if _overlay != null:
+		_overlay.queue_redraw()
+
+
+func _begin_marquee(position: Vector2) -> void:
+	if _app == null:
+		return
+	grab_focus()
+	_drag_mode = "marquee"
+	_drag_start = position
+	_marquee = Rect2(position, Vector2.ZERO)
 	queue_redraw()
 	if _overlay != null:
 		_overlay.queue_redraw()
@@ -823,9 +1141,7 @@ func _select_press(event: InputEventMouseButton) -> void:
 		if event.double_click:
 			_app.set_playhead(_app.snap_beat(_y_to_beat(event.position.y)))
 			return
-		_drag_mode = "marquee"
-		_drag_start = event.position
-		_marquee = Rect2(_drag_start, Vector2.ZERO)
+		_app.clear_selection()
 		return
 	match hit["kind"]:
 		"note":
@@ -1187,9 +1503,13 @@ func _cancel_pending() -> void:
 			_app.clear_selection()
 		_pending_path = null
 	if _drag_mode != "":
+		if _drag_mode == "marquee":
+			_marquee = Rect2()
 		_drag_mode = ""
 		_app.finish_edit()
 	queue_redraw()
+	if _overlay != null:
+		_overlay.queue_redraw()
 
 
 func _find_note(note_id: int) -> Note:

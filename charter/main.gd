@@ -31,6 +31,14 @@ var _last_transport_msec: int = 0
 
 var _tool_buttons: Dictionary = {}
 var _tool_group: ButtonGroup
+var _beat_subdiv_edit: LineEdit
+var _beat_subdiv_error: Label
+var _vertical_lines_edit: LineEdit
+var _vertical_lines_error: Label
+var _stretch_edit: LineEdit
+var _stretch_slider: HSlider
+var _stretch_error: Label
+var _stretch_syncing: bool = false
 var _audio: AudioStreamPlayer
 var _audio_path: String = ""
 var _playing: bool = false
@@ -176,6 +184,101 @@ func _build_ui() -> void:
 		button.pressed.connect(_set_tool.bind(spec[0]))
 		tool_row.add_child(button)
 		_tool_buttons[spec[0]] = button
+
+	var beat_divider := VSeparator.new()
+	tool_row.add_child(beat_divider)
+	var beat_div_label := Label.new()
+	beat_div_label.text = "小节线："
+	beat_div_label.add_theme_font_size_override("font_size", 11)
+	beat_div_label.add_theme_color_override("font_color", UITheme.MUTED)
+	beat_div_label.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	tool_row.add_child(beat_div_label)
+	_beat_subdiv_edit = LineEdit.new()
+	_beat_subdiv_edit.text = str(_app.beat_subdivisions if _app != null else 4)
+	_beat_subdiv_edit.custom_minimum_size = Vector2(48, 26)
+	_beat_subdiv_edit.max_length = 3
+	_beat_subdiv_edit.alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_beat_subdiv_edit.select_all_on_focus = true
+	_beat_subdiv_edit.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_beat_subdiv_edit.tooltip_text = "每拍等分为 N 份（输入 4 → 3 条细小节线）；仅接受 1–%d 的整数" % TimingMap.MAX_BEAT_SUBDIVISIONS
+	_beat_subdiv_edit.text_changed.connect(_on_beat_subdivision_changed)
+	_beat_subdiv_edit.text_submitted.connect(_on_beat_subdivision_submitted)
+	_beat_subdiv_edit.focus_exited.connect(_on_beat_subdivision_focus_exited)
+	tool_row.add_child(_beat_subdiv_edit)
+	_beat_subdiv_error = Label.new()
+	_beat_subdiv_error.text = ""
+	_beat_subdiv_error.visible = false
+	_beat_subdiv_error.add_theme_font_size_override("font_size", 10)
+	_beat_subdiv_error.add_theme_color_override("font_color", UITheme.RED)
+	_beat_subdiv_error.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	tool_row.add_child(_beat_subdiv_error)
+
+	var vertical_divider := VSeparator.new()
+	tool_row.add_child(vertical_divider)
+	var vertical_label := Label.new()
+	vertical_label.text = "竖线"
+	vertical_label.add_theme_font_size_override("font_size", 11)
+	vertical_label.add_theme_color_override("font_color", UITheme.MUTED)
+	vertical_label.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	tool_row.add_child(vertical_label)
+	_vertical_lines_edit = LineEdit.new()
+	_vertical_lines_edit.text = str(_app.vertical_lines if _app != null else 21)
+	_vertical_lines_edit.custom_minimum_size = Vector2(48, 26)
+	_vertical_lines_edit.max_length = 3
+	_vertical_lines_edit.alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_vertical_lines_edit.select_all_on_focus = true
+	_vertical_lines_edit.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_vertical_lines_edit.tooltip_text = "竖线数量（1–%d），等距分布在编辑区；放置音符靠近时自动吸附" % TimingMap.MAX_VERTICAL_LINES
+	_vertical_lines_edit.text_changed.connect(_on_vertical_lines_changed)
+	_vertical_lines_edit.text_submitted.connect(_on_vertical_lines_submitted)
+	_vertical_lines_edit.focus_exited.connect(_on_vertical_lines_focus_exited)
+	tool_row.add_child(_vertical_lines_edit)
+	_vertical_lines_error = Label.new()
+	_vertical_lines_error.text = ""
+	_vertical_lines_error.visible = false
+	_vertical_lines_error.add_theme_font_size_override("font_size", 10)
+	_vertical_lines_error.add_theme_color_override("font_color", UITheme.RED)
+	_vertical_lines_error.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	tool_row.add_child(_vertical_lines_error)
+
+	var stretch_divider := VSeparator.new()
+	tool_row.add_child(stretch_divider)
+	var stretch_label := Label.new()
+	stretch_label.text = "纵向拉伸"
+	stretch_label.add_theme_font_size_override("font_size", 11)
+	stretch_label.add_theme_color_override("font_color", UITheme.MUTED)
+	stretch_label.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	tool_row.add_child(stretch_label)
+	_stretch_edit = LineEdit.new()
+	_stretch_edit.text = _format_stretch(_app.vertical_stretch if _app != null else 0.0)
+	_stretch_edit.custom_minimum_size = Vector2(52, 26)
+	_stretch_edit.max_length = 5
+	_stretch_edit.alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_stretch_edit.select_all_on_focus = true
+	_stretch_edit.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_stretch_edit.tooltip_text = "0–10；每 +1 让每 bar 的距离变为原来的 1.5 倍，音符大小不变"
+	_stretch_edit.text_changed.connect(_on_stretch_changed)
+	_stretch_edit.text_submitted.connect(_on_stretch_submitted)
+	_stretch_edit.focus_exited.connect(_on_stretch_focus_exited)
+	tool_row.add_child(_stretch_edit)
+	_stretch_slider = HSlider.new()
+	_stretch_slider.min_value = 0.0
+	_stretch_slider.max_value = 10.0
+	_stretch_slider.step = 0.1
+	_stretch_slider.value = _app.vertical_stretch if _app != null else 0.0
+	_stretch_slider.custom_minimum_size = Vector2(96, 18)
+	_stretch_slider.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_stretch_slider.tooltip_text = "拖动调节纵向拉伸"
+	_stretch_slider.value_changed.connect(_on_stretch_slider_changed)
+	tool_row.add_child(_stretch_slider)
+	_stretch_error = Label.new()
+	_stretch_error.text = ""
+	_stretch_error.visible = false
+	_stretch_error.add_theme_font_size_override("font_size", 10)
+	_stretch_error.add_theme_color_override("font_color", UITheme.RED)
+	_stretch_error.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	tool_row.add_child(_stretch_error)
+
 	var tool_spacer := Control.new()
 	tool_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	tool_row.add_child(tool_spacer)
@@ -432,6 +535,201 @@ func _status_label(text: String) -> Label:
 	return label
 
 
+func _on_beat_subdivision_changed(text: String) -> void:
+	var value := TimingMap.parse_beat_subdivision(text)
+	if value > 0:
+		_set_beat_subdivision_error(false)
+		if _app != null and _app.beat_subdivisions != value:
+			_app.beat_subdivisions = value
+			if _canvas != null:
+				_canvas.queue_redraw()
+		return
+	# Empty is a transient typing state; only submit/focus loss decides it.
+	if text.strip_edges().is_empty():
+		_set_beat_subdivision_error(false)
+		return
+	_set_beat_subdivision_error(true)
+
+
+func _on_beat_subdivision_submitted(text: String) -> void:
+	_commit_beat_subdivision(text)
+
+
+func _on_beat_subdivision_focus_exited() -> void:
+	if _beat_subdiv_edit != null:
+		_commit_beat_subdivision(_beat_subdiv_edit.text)
+
+
+func _commit_beat_subdivision(text: String) -> void:
+	if _beat_subdiv_edit == null:
+		return
+	var value := TimingMap.parse_beat_subdivision(text)
+	if value > 0:
+		_beat_subdiv_edit.text = str(value)
+		_set_beat_subdivision_error(false)
+		if _app != null and _app.beat_subdivisions != value:
+			_app.beat_subdivisions = value
+			if _canvas != null:
+				_canvas.queue_redraw()
+		return
+	_set_beat_subdivision_error(true)
+	_show_toast("小节线数据有误：请输入 1–%d 的整数。" % TimingMap.MAX_BEAT_SUBDIVISIONS, "error")
+
+
+func _set_beat_subdivision_error(has_error: bool) -> void:
+	if _beat_subdiv_error == null or _beat_subdiv_edit == null:
+		return
+	_beat_subdiv_error.text = "数据有误" if has_error else ""
+	_beat_subdiv_error.visible = has_error
+	if has_error:
+		_beat_subdiv_edit.add_theme_color_override("font_color", UITheme.RED)
+	else:
+		_beat_subdiv_edit.remove_theme_color_override("font_color")
+
+
+func _on_vertical_lines_changed(text: String) -> void:
+	var value := TimingMap.parse_vertical_lines(text)
+	if value > 0:
+		_set_vertical_lines_error(false)
+		if _app != null and _app.vertical_lines != value:
+			_app.vertical_lines = value
+			if _canvas != null:
+				_canvas.queue_redraw()
+		return
+	if text.strip_edges().is_empty():
+		_set_vertical_lines_error(false)
+		return
+	_set_vertical_lines_error(true)
+
+
+func _on_vertical_lines_submitted(text: String) -> void:
+	_commit_vertical_lines(text)
+
+
+func _on_vertical_lines_focus_exited() -> void:
+	if _vertical_lines_edit != null:
+		_commit_vertical_lines(_vertical_lines_edit.text)
+
+
+func _commit_vertical_lines(text: String) -> void:
+	if _vertical_lines_edit == null:
+		return
+	var value := TimingMap.parse_vertical_lines(text)
+	if value > 0:
+		_vertical_lines_edit.text = str(value)
+		_set_vertical_lines_error(false)
+		if _app != null and _app.vertical_lines != value:
+			_app.vertical_lines = value
+			if _canvas != null:
+				_canvas.queue_redraw()
+		return
+	_set_vertical_lines_error(true)
+	_show_toast("竖线数据有误：请输入 1–%d 的整数。" % TimingMap.MAX_VERTICAL_LINES, "error")
+
+
+func _set_vertical_lines_error(has_error: bool) -> void:
+	if _vertical_lines_error == null or _vertical_lines_edit == null:
+		return
+	_vertical_lines_error.text = "数据有误" if has_error else ""
+	_vertical_lines_error.visible = has_error
+	if has_error:
+		_vertical_lines_edit.add_theme_color_override("font_color", UITheme.RED)
+	else:
+		_vertical_lines_edit.remove_theme_color_override("font_color")
+
+
+func _parse_stretch(text: String) -> float:
+	var clean := text.strip_edges().replace(",", ".")
+	if clean.is_empty() or not clean.is_valid_float():
+		return -1.0
+	var value := float(clean)
+	if not is_finite(value) or value < 0.0 or value > 10.0:
+		return -1.0
+	return value
+
+
+func _format_stretch(value: float) -> String:
+	if is_equal_approx(value, roundf(value)):
+		return str(int(roundf(value)))
+	var text := String.num(value, 2)
+	while text.ends_with("0"):
+		text = text.trim_suffix("0")
+	text = text.trim_suffix(".")
+	return text
+
+
+func _on_stretch_changed(text: String) -> void:
+	if _stretch_syncing:
+		return
+	var value := _parse_stretch(text)
+	if value >= 0.0:
+		_set_stretch_error(false)
+		_apply_stretch(value)
+		return
+	if text.strip_edges().is_empty():
+		_set_stretch_error(false)
+		return
+	_set_stretch_error(true)
+
+
+func _on_stretch_submitted(text: String) -> void:
+	_commit_stretch(text)
+
+
+func _on_stretch_focus_exited() -> void:
+	if _stretch_edit != null:
+		_commit_stretch(_stretch_edit.text)
+
+
+func _commit_stretch(text: String) -> void:
+	if _stretch_edit == null:
+		return
+	var value := _parse_stretch(text)
+	if value < 0.0:
+		_set_stretch_error(true)
+		_show_toast("纵向拉伸数据有误：请输入 0–10 的数值。", "error")
+		return
+	_stretch_syncing = true
+	_stretch_edit.text = _format_stretch(value)
+	_stretch_syncing = false
+	_set_stretch_error(false)
+	_apply_stretch(value)
+
+
+func _on_stretch_slider_changed(value: float) -> void:
+	_stretch_syncing = true
+	if _stretch_edit != null:
+		_stretch_edit.text = _format_stretch(value)
+	_stretch_syncing = false
+	_set_stretch_error(false)
+	_apply_stretch(value)
+
+
+func _apply_stretch(value: float) -> void:
+	var stretched := clampf(value, 0.0, 10.0)
+	if _stretch_slider != null:
+		_stretch_slider.set_value_no_signal(stretched)
+	if _app == null or is_equal_approx(_app.vertical_stretch, stretched):
+		return
+	_app.vertical_stretch = stretched
+	if _canvas != null:
+		_canvas.queue_redraw()
+	if _event_track != null:
+		_event_track.queue_redraw()
+	_update_transport()
+
+
+func _set_stretch_error(has_error: bool) -> void:
+	if _stretch_error == null or _stretch_edit == null:
+		return
+	_stretch_error.text = "数据有误" if has_error else ""
+	_stretch_error.visible = has_error
+	if has_error:
+		_stretch_edit.add_theme_color_override("font_color", UITheme.RED)
+	else:
+		_stretch_edit.remove_theme_color_override("font_color")
+
+
 func _menu(title: String, items: Array) -> MenuButton:
 	var menu := MenuButton.new()
 	menu.text = title
@@ -622,6 +920,19 @@ func _sync_from_app() -> void:
 	_preview.hit_fx_style = _app.hit_fx_style
 	_sfx.set_style(_app.hit_sfx_style)
 	_canvas.px_per_beat = _app.zoom_px_per_beat
+	if _beat_subdiv_edit != null:
+		_beat_subdiv_edit.text = str(_app.beat_subdivisions)
+		_set_beat_subdivision_error(false)
+	if _vertical_lines_edit != null:
+		_vertical_lines_edit.text = str(_app.vertical_lines)
+		_set_vertical_lines_error(false)
+	if _stretch_edit != null:
+		_stretch_syncing = true
+		_stretch_edit.text = _format_stretch(_app.vertical_stretch)
+		_stretch_syncing = false
+		if _stretch_slider != null:
+			_stretch_slider.set_value_no_signal(_app.vertical_stretch)
+		_set_stretch_error(false)
 	_ensure_audio()
 	_sync_tools()
 	_update_transport()
@@ -817,8 +1128,18 @@ func _process(_delta: float) -> void:
 				if _beat_label != null:
 					_beat_label.add_theme_color_override("font_color", UITheme.GOLD)
 			)
-		if beat >= _app.chart.duration_beats() + 2.0:
+		var audio_playing := _audio.stream != null and _audio.playing
+		if beat >= _app.chart.duration_beats() + 2.0 and not audio_playing:
 			_stop_play()
+
+
+func _playback_total_ms() -> float:
+	if _app == null or _app.chart == null:
+		return 0.0
+	var total_ms: float = _app.chart.timing.beat_to_chart_ms(_app.chart.duration_beats())
+	if _audio != null and _audio.stream != null:
+		total_ms = maxf(total_ms, _audio.stream.get_length() * 1000.0 + _app.chart.offset_ms)
+	return total_ms
 
 
 func _update_transport(force: bool = false) -> void:
@@ -828,10 +1149,11 @@ func _update_transport(force: bool = false) -> void:
 	if not force and now - _last_transport_msec < 50:
 		return
 	_last_transport_msec = now
-	var total_ms: float = _app.chart.timing.beat_to_chart_ms(_app.chart.duration_beats())
+	var total_ms := _playback_total_ms()
+	var total_beats: float = maxf(1.0, _app.chart.timing.chart_ms_to_beat(total_ms))
 	var current_ms: float = _app.chart.timing.beat_to_chart_ms(_app.playhead_beat)
 	_time_label.text = "%s / %s" % [_format_ms(current_ms), _format_ms(total_ms)]
-	_progress.value = 100.0 * _app.playhead_beat / maxf(1.0, _app.chart.duration_beats())
+	_progress.value = 100.0 * _app.playhead_beat / total_beats
 	_beat_label.text = _app.chart.timing.format_beat(_app.playhead_beat)
 	_bpm_label.text = "%.1f BPM" % _app.chart.timing.bpm_at(_app.playhead_beat)
 	_save_label.text = ("● 未保存" if _app.dirty else "已保存") + ("  %s" % _app.chart_path.get_file() if not _app.chart_path.is_empty() else "")
@@ -1126,24 +1448,36 @@ func _unhandled_input(event: InputEvent) -> void:
 				accept_event()
 			KEY_C:
 				if event.ctrl_pressed:
-					_app.copy_selected_notes()
+					_canvas.copy_selection(false)
 					accept_event()
+			KEY_X:
+				if event.ctrl_pressed:
+					_canvas.copy_selection(true)
+				else:
+					_canvas._delete_selection()
+				accept_event()
 			KEY_V:
 				if event.ctrl_pressed and event.shift_pressed:
 					_inspector.current_tab = 4
 					_show_toast("视频属性在「视图/设置」页；offset / FPS / 透明度 / 隐藏都在那里。", "info")
 					accept_event()
 				elif event.ctrl_pressed:
-					_app.paste_notes()
+					_canvas.paste_clipboard(false)
+					accept_event()
+			KEY_A:
+				if event.ctrl_pressed:
+					if _canvas.has_clipboard():
+						_canvas.paste_clipboard(true)
+					else:
+						_canvas._select_visible()
+					accept_event()
+				elif _canvas.mirror_selected_note():
 					accept_event()
 			KEY_M:
 				_app.mirror_selected_notes()
 				accept_event()
 			KEY_R:
 				_app.rotate_selected_notes(90.0)
-				accept_event()
-			KEY_X:
-				_canvas._delete_selection()
 				accept_event()
 			KEY_K:
 				_inspector.add_view_state_at_playhead()
@@ -1155,6 +1489,8 @@ func _unhandled_input(event: InputEvent) -> void:
 			KEY_ESCAPE:
 				if _playing:
 					_stop_play()
+				elif _canvas.has_clipboard():
+					_canvas.cancel_clipboard()
 				else:
 					_app.clear_selection()
 				accept_event()

@@ -167,6 +167,19 @@ func _short_delta(from_angle: float, to_angle: float) -> float:
 	return delta
 
 
+func mirror_u() -> void:
+	## Mirror across the horizontal centre of the u×time editor: u -> 1-u.
+	## Time, widths and judging radii are unchanged.
+	angle = fposmod(-angle, 360.0)
+	tail_angle = fposmod(-tail_angle, 360.0)
+	center_u = 1.0 - center_u
+	plane_x = 1.0 - plane_x
+	for point in trace_pts:
+		point["x"] = 1.0 - float(point.get("x", 0.0))
+	for point in visual_pts:
+		point["da"] = -float(point.get("da", 0.0))
+
+
 func to_dict() -> Dictionary:
 	var data := {
 		"id": id,

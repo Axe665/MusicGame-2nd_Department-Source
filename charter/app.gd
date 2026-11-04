@@ -1,6 +1,7 @@
 extends Node
 
 signal chart_changed
+signal chart_replaced
 signal chart_live_changed
 signal selection_changed
 signal playhead_changed(beat: float)
@@ -35,6 +36,9 @@ var selected_view_index: int = -1
 
 var tool: String = "select"
 var snap_denominator: int = 4
+var beat_subdivisions: int = 4
+var vertical_lines: int = 21
+var vertical_stretch: float = 0.0
 var snap_triplet: bool = false
 var snap_quint: bool = false
 var zoom_px_per_beat: float = 28.0
@@ -106,6 +110,7 @@ func _set_initial_focus_notice() -> void:
 
 func set_chart(new_chart: Chart, path: String = "", mark_dirty: bool = false) -> void:
 	_live_change_pending = false
+	chart_replaced.emit()
 	chart = new_chart
 	chart_path = path
 	dirty = mark_dirty
@@ -123,6 +128,50 @@ func set_chart(new_chart: Chart, path: String = "", mark_dirty: bool = false) ->
 	save_state_changed.emit()
 	status_changed.emit()
 	_emit_validation()
+
+
+func set_ffmpeg_path(path: String) -> void:
+	var clean := path.strip_edges()
+	ffmpeg_path = clean if not clean.is_empty() else "ffmpeg"
+	MediaIO.set_ffmpeg_exe(ffmpeg_path)
+
+
+func apply_detected_timing(bpm: float, offset_ms: float, apply_offset: bool, audio_path: String) -> bool:
+	if chart == null:
+		return false
+	if not is_finite(bpm) or bpm <= 0.0:
+		notice.emit("BPM 无效，未应用音频。", "error")
+		return false
+	if not is_finite(offset_ms):
+		notice.emit("offset 无效，未应用音频。", "error")
+		return false
+	if apply_offset:
+		var period_ms := 60000.0 / maxf(1.0, bpm)
+		if absf(offset_ms) > period_ms + 1.0:
+			notice.emit("offset 超出单拍范围，未应用音频。", "error")
+			return false
+	var prepared := MediaIO.prepare_audio(audio_path)
+	if prepared.is_empty():
+		notice.emit("音频读取失败：%s" % MediaIO.last_error, "error")
+		return false
+	var stream := ChartIO.audio_stream_from_path(prepared)
+	if stream == null or stream.get_length() <= 0.0:
+		notice.emit("音频播放流加载失败：%s" % audio_path.get_file(), "error")
+		return false
+	var length_ms := stream.get_length() * 1000.0
+	begin_edit()
+	chart.audio_path = audio_path
+	if not chart.timing.points.is_empty():
+		chart.timing.points[0].bpm = clampf(bpm, 20.0, 600.0)
+		chart.timing.sort_points()
+	if apply_offset:
+		chart.offset_ms = offset_ms
+		chart.timing.offset_ms = offset_ms
+	finish_edit()
+	notice.emit("已应用 %s：%.1f BPM，offset %.0f ms，音频 %.2f 秒。" % [
+		audio_path.get_file(), chart.timing.bpm_at(0.0), chart.offset_ms, length_ms / 1000.0,
+	], "info")
+	return true
 
 
 func snapshot() -> Dictionary:

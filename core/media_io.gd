@@ -6,6 +6,7 @@ extends RefCounted
 ## path, so replacing or re-linking the source still works.
 
 const NATIVE_AUDIO := ["wav", "ogg", "mp3"]
+const SUPPORTED_AUDIO := ["wav", "ogg", "mp3", "flac"]
 const NATIVE_VIDEO := ["ogv"]
 
 static var _ffmpeg_checked := false
@@ -14,18 +15,29 @@ static var last_error: String = ""
 static var ffmpeg_exe: String = "ffmpeg"
 
 
+static func set_ffmpeg_exe(path: String) -> void:
+	var clean := path.strip_edges()
+	ffmpeg_exe = clean if not clean.is_empty() else "ffmpeg"
+	_ffmpeg_checked = false
+	_ffmpeg_available = false
+
+
 static func has_ffmpeg() -> bool:
 	if _ffmpeg_checked:
 		return _ffmpeg_available
 	_ffmpeg_checked = true
 	var output: Array = []
-	var code := OS.execute("ffmpeg", ["-version"], output, true, false)
+	var code := OS.execute(ffmpeg_exe, ["-version"], output, true, false)
 	_ffmpeg_available = code == 0
 	return _ffmpeg_available
 
 
 static func is_native_audio(path: String) -> bool:
 	return path.get_extension().to_lower() in NATIVE_AUDIO
+
+
+static func is_supported_audio(path: String) -> bool:
+	return path.get_extension().to_lower() in SUPPORTED_AUDIO
 
 
 static func is_native_video(path: String) -> bool:
@@ -51,7 +63,7 @@ static func prepare_audio(path: String) -> String:
 		ProjectSettings.globalize_path(target),
 	]
 	var output: Array = []
-	var code := OS.execute("ffmpeg", args, output, true, false)
+	var code := OS.execute(ffmpeg_exe, args, output, true, false)
 	if code != 0 or not FileAccess.file_exists(target):
 		last_error = "音频转换失败：%s" % path.get_file()
 		return ""
@@ -78,7 +90,7 @@ static func prepare_video(path: String) -> String:
 		ProjectSettings.globalize_path(target),
 	]
 	var output: Array = []
-	var code := OS.execute("ffmpeg", args, output, true, false)
+	var code := OS.execute(ffmpeg_exe, args, output, true, false)
 	if code != 0 or not FileAccess.file_exists(target):
 		last_error = "视频转换失败：%s" % path.get_file()
 		return ""

@@ -25,6 +25,7 @@ godot --path .
 - Ctrl+Z / Ctrl+Y：撤销 / 重做（200 步）
 - 1–7：Tap / Hold / Path / Trace / Anchor / Bell / Red
 - B：边界编辑；E：事件；H：HUD；Delete：删除选中
+- 右键拖拽：框选音符；随后左键松开结束选择（结束动作不会放置音符）
 - 预览窗：拖动边界控制点；双击分段拆分；Trace 工具在预览窗拖拽绘制擦带
 
 ## 界面
@@ -40,6 +41,13 @@ godot --path .
 ## 已实现
 
 - `core/`：TimingMap、BoundaryShape/Segment/Event、ViewState、Region、Note、Chart、ChartIO、Validator、JudgeMath、UndoStack
+- 小节线：顶部“小节线”输入每拍等分份数 N（1–64），画布用 N−1 条细线等分每拍（如 4 → 3 条）；0、负数、小数、非数字提示“数据有误”
+- 竖线：顶部“竖线”输入内部竖线数量 N（1–64，默认 21），画布等距绘制 N 条竖线，与左右编辑区边界共同构成 N+2 条竖向边界；0、负数、小数、非数字提示“数据有误”
+- 音符固定：放置 Tap/Hold/Path/Trace/Anchor/Bell 时，位置靠近横向小节线或竖线会吸附到最近的线，两者都靠近时落在交点；拖动结束（含批量拖动）会再次吸附；按住 Alt 仍可临时绕过
+- 批量剪贴：选中音符后 Ctrl+C 复制、Ctrl+X 剪切，半透明预览跟随鼠标时间；Ctrl+V 粘贴，Ctrl+A 镜像粘贴，粘贴成功后清除预览并选中新音符；单个音符选中时按 A 原地镜像
+- 纵向拉伸：顶部“纵向拉伸”支持 0–10 的整数/小数输入与滑条；每 bar 距离变为原来的 `1 + n×0.5` 倍，小节线等比拉伸，音符头/图标尺寸不变
+- 音频：支持 WAV/OGG/MP3/FLAC（FLAC 经 ffmpeg 解码缓存）；应用条件为 BPM 检测成功、offset 在单拍范围内、播放流时长与解码音频时长一致
+- 新建谱面：选择音频后自动测量 BPM 与 offset；BPM 最多保留 3 位小数，只有 1 位小数时四舍五入取整；offset 保留 3 位小数
 - 打击音效：试玩命中与编辑器播放共用 `HitSfx` 音效池（don/kat/铃/Path 尾/擦带），10 路播放器轮转 + 轻微随机音高；资源在 `audio/sfx/`
 - 编辑器播放打击音：运输条“打击音”开关，播放时按音符时间触发 Tap、Hold 头/尾、Path 头/尾、Anchor、Bell、Trace；不影响试玩
 - 光标：Estella 风格白色环 + 青色内环 + 旋转弧 + 深色描边 + 拖尾；预览内始终隐藏系统光标并绘制自定义光标
@@ -107,9 +115,14 @@ godot --headless --path . --import
 godot --headless --path . --script res://tests/test_runner.gd
 ```
 
-当前结果：**198 passed, 0 failed**。测试覆盖：
+当前结果：**259 passed, 0 failed**。测试覆盖：
 
 - 120 BPM / 变速 / offset 的时间换算与反解
+- 新建谱面 BPM 三位小数/一位小数取整与 offset 三位小数规范化
+- 每拍小节线细分数的合法性（0/负数/小数/非数字）与 N−1 条等分细线偏移
+- 竖线数量合法性、21 条竖线的等分位置与最近竖线吸附
+- 音符镜像的 Tap 角度、Bell center_u、Path 头尾/轨迹点/视觉偏移
+- FLAC 纳入可读取音频格式（经 ffmpeg 解码缓存）
 - 圆的 C(u)、最近点反解、五角星 Path 表现层
 - `.lbp` 导出头部/段落/Path 五角星/换行
 - osu!std 导入的 offset/BPM/circle/slider/spinner 跳过、连续环流角度、可变宽度、Slide Trace/Hold 分类、B/L/C/P 曲线采样、负拍平移
