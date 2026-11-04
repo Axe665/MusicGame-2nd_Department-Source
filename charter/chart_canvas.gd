@@ -35,6 +35,9 @@ var _trace_hint_shown: bool = false
 var _waveform_peaks: PackedFloat32Array = PackedFloat32Array()
 var _waveform_duration: float = 0.0
 var _waveform_audio_path: String = ""
+var _wave_key: String = ""
+var _wave_right: PackedVector2Array = PackedVector2Array()
+var _wave_left: PackedVector2Array = PackedVector2Array()
 var _last_playhead_redraw: int = 0
 var _overlay: Control
 
@@ -138,6 +141,7 @@ func _refresh_waveform() -> void:
 	_waveform_audio_path = path
 	_waveform_peaks.clear()
 	_waveform_duration = 0.0
+	_wave_key = ""
 	if path.is_empty() or not path.to_lower().ends_with(".wav"):
 		return
 	var resolved := path
@@ -198,25 +202,34 @@ func _draw_waveform(plot: Rect2) -> void:
 		draw_string(UITheme.mono_font(), Vector2(strip.position.x - 2, plot.position.y + 12), "WAVE", HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(1, 1, 1, 0.22))
 		return
 	var chart: Chart = _app.chart
-	var right := PackedVector2Array()
-	var left := PackedVector2Array()
-	var center_x := strip.position.x + strip.size.x * 0.5
-	var half := strip.size.x * 0.5 - 2.0
-	for y in range(int(plot.position.y), int(plot.end.y), 2):
-		var beat := _y_to_beat(float(y))
-		var chart_ms := chart.timing.beat_to_chart_ms(beat)
-		var audio_ms := chart_ms - chart.offset_ms
-		var fraction := audio_ms / 1000.0 / _waveform_duration
-		if fraction < 0.0 or fraction > 1.0:
-			continue
-		var index := clampi(int(fraction * _waveform_peaks.size()), 0, _waveform_peaks.size() - 1)
-		var peak := _waveform_peaks[index]
-		right.append(Vector2(center_x + peak * half, y))
-		left.append(Vector2(center_x - peak * half, y))
-	if right.size() > 1:
-		draw_polyline(right, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.42), 1.0, true)
-	if left.size() > 1:
-		draw_polyline(left, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.26), 1.0, true)
+	var timing_sig := "%.3f|%d" % [chart.offset_ms, chart.timing.points.size()]
+	for point in chart.timing.points:
+		timing_sig += "|%.4f" % point.bpm
+	var key := "%s|%.4f|%.4f|%.1f|%.1f|%.1f|%d|%s" % [
+		_waveform_audio_path, _waveform_duration, scroll_beat, px_per_beat,
+		plot.position.y, plot.size.y, _waveform_peaks.size(), timing_sig,
+	]
+	if key != _wave_key:
+		_wave_key = key
+		_wave_right = PackedVector2Array()
+		_wave_left = PackedVector2Array()
+		var center_x := strip.position.x + strip.size.x * 0.5
+		var half := strip.size.x * 0.5 - 2.0
+		for y in range(int(plot.position.y), int(plot.end.y), 2):
+			var beat := _y_to_beat(float(y))
+			var chart_ms := chart.timing.beat_to_chart_ms(beat)
+			var audio_ms := chart_ms - chart.offset_ms
+			var fraction := audio_ms / 1000.0 / _waveform_duration
+			if fraction < 0.0 or fraction > 1.0:
+				continue
+			var index := clampi(int(fraction * _waveform_peaks.size()), 0, _waveform_peaks.size() - 1)
+			var peak := _waveform_peaks[index]
+			_wave_right.append(Vector2(center_x + peak * half, y))
+			_wave_left.append(Vector2(center_x - peak * half, y))
+	if _wave_right.size() > 1:
+		draw_polyline(_wave_right, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.42), 1.0, true)
+	if _wave_left.size() > 1:
+		draw_polyline(_wave_left, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.26), 1.0, true)
 
 
 func _draw_grid(plot: Rect2) -> void:

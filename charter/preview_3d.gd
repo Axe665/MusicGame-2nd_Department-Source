@@ -1886,6 +1886,17 @@ static func path_erase_ranges(points: PackedVector2Array, from: Vector2, to: Vec
 	return ranges
 
 
+func _point_polyline_distance(points: PackedVector2Array, point: Vector2) -> float:
+	var best := INF
+	for i in points.size() - 1:
+		var a := points[i]
+		var b := points[i + 1]
+		if not a.is_finite() or not b.is_finite():
+			continue
+		best = minf(best, point.distance_to(Geometry2D.get_closest_point_to_segment(point, a, b)))
+	return best
+
+
 func erase_path_overlap(note: Note, from: Vector2, to: Vector2, beat: float) -> bool:
 	var chart := get_chart()
 	if chart == null:
@@ -1897,7 +1908,13 @@ func erase_path_overlap(note: Note, from: Vector2, to: Vector2, beat: float) -> 
 	var points := PackedVector2Array()
 	for i in count + 1:
 		points.append(_path_screen_point(chart, note, total * float(i) / float(count), beat, false))
-	var ranges := path_erase_ranges(points, from, to, 26.0 * _note_scale())
+	var brush := 26.0 * _note_scale()
+	# 多星星保护：只有鼠标当前或上一帧确实贴着这条 Path 时才擦，
+	# 避免从 A 星移到 B 星时把路上穿过的 C 星误削。
+	var guard := 72.0 * _note_scale()
+	if minf(_point_polyline_distance(points, from), _point_polyline_distance(points, to)) > guard:
+		return false
+	var ranges := path_erase_ranges(points, from, to, brush)
 	var furthest := 0.0
 	for span in ranges:
 		furthest = maxf(furthest, float(span.y))
