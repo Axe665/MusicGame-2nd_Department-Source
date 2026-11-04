@@ -380,41 +380,44 @@ static func _convert_std_continuous(objects_raw: Array, chart: Chart, timing_raw
 	play.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return float(a["beat"]) < float(b["beat"]))
 
 	var infos: Array[Dictionary] = []
+	var lane := 0
+	var stream_dir := 0
 	var prev_u := 0.0
 	var prev_end_beat := 0.0
+	var prev_end_pos := Vector2.ZERO
 	var first := true
 	for i in play.size():
 		var current: Dictionary = play[i]
 		var pos: Vector2 = current["pos"]
 		var beat := float(current["beat"])
 		var raw_start := _std_angle(pos)
-		var u := raw_start
+		var closest := _std_closest_lane(raw_start)
 		var is_jump := false
-		if not first:
+		# 落道与流向照 Sentakki 的 BeatmapConverter：道号 = 相对场地中心最接近的 45°，
+		# 流内逐道推进，大跳用两端道差，长间隔直接回绝对位置。
+		if first:
+			lane = closest
+			first = false
+		else:
 			var prev: Dictionary = play[i - 1]
-			var prev_prev: Dictionary = play[i - 2] if i >= 2 else {}
+			var before: Dictionary = play[i - 2] if i >= 2 else {}
 			var gap_beats := beat - prev_end_beat
 			if gap_beats > 1.0:
-				# 长间隔重新锚定到 osu 绝对角度，避免长句累积漂移。
-				u = raw_start
+				lane = closest
+				stream_dir = 0
+			elif prev_end_pos.distance_to(pos) >= STD_JUMP_DISTANCE:
+				stream_dir = 0
+				is_jump = true
+				lane += closest - _std_closest_lane(_std_angle(prev["end_pos"]))
 			else:
-				var midpoint := _std_midpoint(prev, prev_prev, current)
-				var prev_flow := _std_angle_between(midpoint, prev["end_pos"])
-				var curr_flow := _std_angle_between(midpoint, pos)
-				var raw_delta := _std_short_delta(prev_flow, curr_flow)
-				is_jump = (prev["end_pos"] as Vector2).distance_to(pos) >= STD_JUMP_DISTANCE
-				var delta := 0.0
-				if is_jump:
-					delta = raw_delta * STD_JUMP_COMPRESSION
-				elif absf(raw_delta) > 5.0 and absf(absf(raw_delta) - 180.0) > 5.0:
-					# 流内只沿方向走固定步长，避免中点角度来回摆成两堵墙。
-					delta = (1.0 if raw_delta > 0.0 else -1.0) * STD_STREAM_STEP
-				var bpm := maxf(1.0, chart.timing.bpm_at(beat))
-				var dt := maxf(0.0001, gap_beats * 60.0 / bpm)
-				var max_delta := STD_MAX_DEG_PER_SEC * dt
-				delta = clampf(delta, -max_delta, max_delta)
-				u = prev_u + delta
-		first = false
+				var after: Vector2 = play[i + 1]["pos"] if i + 1 < play.size() else pos
+				stream_dir = _std_stream_direction(prev_end_pos, before, pos, after, stream_dir)
+				lane += stream_dir
+				var overlap := prev_end_pos.distance_squared_to(pos) <= pow(circle_radius * 2.0, 2.0)
+				if not overlap:
+					lane += 1 if stream_dir == 0 else stream_dir
+		lane = posmod(lane, 8)
+		var u := float(lane) * 45.0
 
 		var note: Note
 		var tail_u := u
@@ -474,6 +477,7 @@ static func _convert_std_continuous(objects_raw: Array, chart: Chart, timing_raw
 		})
 		prev_u = tail_u if is_path else u
 		prev_end_beat = end_beat
+		prev_end_pos = current["end_pos"]
 
 	for i in infos.size():
 		var info: Dictionary = infos[i]
@@ -537,6 +541,32 @@ static func _std_angle_between(from: Vector2, to: Vector2) -> float:
 
 static func _std_short_delta(from_angle: float, to_angle: float) -> float:
 	return JudgeMath.angle_delta(from_angle, to_angle)
+
+
+## 位置角 → 最接近的道号（0–7，每道 45°）。
+static func _std_closest_lane(angle: float) -> int:
+	return posmod(int(round(fposmod(angle, 360.0) / 45.0)), 8)
+
+
+## Sentakki 的流向判定：取「上一点终点 + 当前终点 + 下一点」的中点，
+## 比较中点指向当前终点与下一点的角度差，符号决定顺/逆时针。
+static func _std_stream_direction(current_end: Vector2, previous: Dictionary, current_pos: Vector2, next_pos: Vector2, fallback: int) -> int:
+	var sum: Vector2 = current_end + next_pos
+	var count := 2
+	if not previous.is_empty():
+		sum += previous.get("end_pos", current_pos)
+		count += 1
+	if current_pos.distance_to(current_end) > 0.01:
+		sum += current_pos
+		count += 1
+	var midpoint := Vector2(256.0, 192.0) if count <= 2 else sum / float(count)
+	var delta := _std_short_delta(_std_angle_between(midpoint, current_end), _std_angle_between(midpoint, next_pos))
+	var magnitude := absf(delta)
+	if magnitude <= 5.0:
+		return fallback
+	if absf(magnitude - 180.0) <= 5.0:
+		return 0
+	return 1 if delta > 0.0 else -1
 
 
 static func _std_midpoint(current: Dictionary, previous: Dictionary, next: Dictionary) -> Vector2:

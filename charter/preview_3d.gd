@@ -11,6 +11,8 @@ const MOUSE_TILT_DEGREES := 11.0
 ## Path / Trace 的视觉尺寸：相对旧版 ×2。只放大笔画与头尾，不改轨迹几何与判定。
 const PATH_SIZE_SCALE := 2.0
 const TRACE_SIZE_SCALE := 2.0
+## Hold 身体长度：旧版从 0.28R 画到 1R（0.72R），新版要 2 倍 → 从圆心画到 1.44R。
+const HOLD_BODY_SCALE := 1.44
 
 var chart_override: Chart = null
 var follow_app: bool = true
@@ -22,6 +24,8 @@ var show_hud: bool = true
 var show_debug: bool = false
 var flow_scale: float = 1.0
 var star_speed: float = 1.0
+## 星星轨迹提前显示偏移（拍）：+1 更早、-1 更晚。
+var star_lead_beats: float = 0.0
 var custom_cursor_visible: bool = true
 var mouse_tilt: bool = true
 var use_3d_ring: bool = true:
@@ -1703,18 +1707,20 @@ func _pick_visual_node(screen_position: Vector2) -> int:
 
 
 func _draw_paths(canvas: Control, chart: Chart, t: float, pre: float) -> void:
+	# 星星提前显示：只在 Path 上生效，Tap / Hold 仍按原预读。
+	var star_pre := maxf(0.05, pre + star_lead_beats)
 	var visible: Array = []
 	for note in _notes_in_range(chart, t - pre - 128.0, t + pre + 0.5):
 		if note.type != "path":
 			continue
 		var bpm := chart.timing.bpm_at(note.beat)
 		var tail := note.end_beat + note.tail_offset_beat(bpm)
-		if t >= note.beat - pre and t <= tail + 0.5:
+		if t >= note.beat - star_pre and t <= tail + 0.5:
 			visible.append(note)
 	# 旧 Path 先画、新的最后画：多星星重叠时，新星和它的擦除缺口始终在最上层。
 	visible.sort_custom(func(a: Note, b: Note) -> bool: return a.beat < b.beat)
 	for i in visible.size():
-		_draw_one_path(canvas, chart, visible[i], t, pre, i == visible.size() - 1, visible.size())
+		_draw_one_path(canvas, chart, visible[i], t, star_pre, i == visible.size() - 1, visible.size())
 	if _drawing_path and _path_points.size() > 1:
 		var preview := PackedVector2Array()
 		for local in _path_points:
@@ -2249,9 +2255,10 @@ func _draw_holds(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 			if bool(data.get("gap", false)):
 				continue
 			var outer := project_design(data.point)
-			# 身体长度：起点从 0.28R 挪到圆心，整根从圆心长到判定环。
+			# 身体 = 旧版 0.72R 的两倍：从圆心画到 1.44R，外端越过判定环 0.44R。
+			var tip := center.lerp(outer, HOLD_BODY_SCALE)
 			for i in 7:
-				body.append(center.lerp(outer, grow * float(i) / 6.0))
+				body.append(center.lerp(tip, grow * float(i) / 6.0))
 		if body.size() < 2:
 			continue
 		var boundary: Vector2 = body[-1]

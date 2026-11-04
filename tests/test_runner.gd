@@ -46,6 +46,7 @@ func _initialize() -> void:
 		"test_simai_osu_friendly",
 		"test_note_length_system",
 		"test_path_start_delay",
+		"test_osu_std_lanes",
 	]
 	for test_name in tests:
 		if call(test_name) != true:
@@ -1224,4 +1225,50 @@ func test_path_start_delay() -> bool:
 	near(loaded.start_delay_ms, 500.0, 0.001, "delay roundtrips")
 	path.start_delay_ms = 0.0
 	ok(not path.to_dict().has("delay_ms"), "zero delay writes no field")
+	return true
+
+
+func test_osu_std_lanes() -> bool:
+	# 落道照 Sentakki：角度只能落在 8 个 45° 道上。
+	var text := """osu file format v14
+
+[General]
+AudioFilename: a.mp3
+Mode: 0
+
+[Metadata]
+Title: Lane
+Version: Test
+
+[Difficulty]
+CircleSize: 4
+ApproachRate: 5
+SliderMultiplier: 1.4
+
+[TimingPoints]
+0,500,4,2,0,100,1,0
+
+[HitObjects]
+128,192,1000,1,0,0:0:0:0:
+256,192,1500,1,0,0:0:0:0:
+384,192,2000,1,0,0:0:0:0:
+256,64,2500,1,0,0:0:0:0:
+64,64,3000,1,0,0:0:0:0:
+"""
+	var result := OsuIO.parse_osu(text, "lane.osu")
+	ok(result.get("chart") != null, "lane chart imports")
+	var chart: Chart = result.get("chart")
+	if chart == null:
+		return true
+	var lanes: Array[int] = []
+	for note in chart.notes:
+		var lane := posmod(int(round(fposmod(note.angle, 360.0) / 45.0)), 8)
+		near(note.angle, float(lane) * 45.0, 0.001, "std angle snaps to a 45° lane")
+		lanes.append(lane)
+	eq(lanes.size(), 5, "five circles import")
+	if lanes.size() == 5:
+		eq(lanes[0], 4, "left circle lands on lane 4")
+		eq(lanes[2], 0, "right circle lands on lane 0")
+		eq(lanes[3], 6, "top circle lands on lane 6")
+		eq(lanes[4], 5, "top-left circle lands on lane 5")
 	return true

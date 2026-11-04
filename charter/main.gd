@@ -473,6 +473,24 @@ func _build_ui() -> void:
 		_show_toast("星速 %.2f×（滑条引导星与跟随距离一起缩放）" % _app.star_speed, "info")
 	)
 	transport_row.add_child(star_option)
+	# 星星轨迹提前显示：-1.0 更晚、+1.0 更早，单位是拍。
+	var lead_label := Label.new()
+	UITheme.style_mono(lead_label, 11, UITheme.MUTED)
+	lead_label.text = "星显"
+	transport_row.add_child(lead_label)
+	var lead_spin := SpinBox.new()
+	lead_spin.min_value = -1.0
+	lead_spin.max_value = 1.0
+	lead_spin.step = 0.1
+	lead_spin.value = _app.star_lead_beats
+	lead_spin.custom_minimum_size = Vector2(76, 0)
+	lead_spin.tooltip_text = "星星轨迹提前显示：+1 拍更早出现，-1 拍更晚，0 = 默认预读"
+	lead_spin.value_changed.connect(func(value: float) -> void:
+		_app.star_lead_beats = value
+		_preview.star_lead_beats = value
+		_preview.request_redraw()
+	)
+	transport_row.add_child(lead_spin)
 	var loop_check := CheckBox.new()
 	loop_check.text = "循环"
 	loop_check.toggled.connect(func(pressed: bool) -> void: _loop = pressed)
