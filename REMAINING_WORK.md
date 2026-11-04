@@ -1,6 +1,6 @@
 # Tamaki₃ 剩余工作清单
 
-> 基线：分支 `feat/tamaki3-charter`，测试 217 passed / 0 failed。
+> 基线：分支 `feat/tamaki3-charter`，测试 222 passed / 0 failed。
 > 最近提交：Path 平面化、Hold 弯条、osu/Simai 平面 Path、编辑器平面绘制。
 
 ## A. Path 平面化重构（最高优先）
@@ -29,7 +29,7 @@
 ## B. 导入改造
 
 - [x] osu 滑条 → 平面 Path（Sentakki：head tap + wait/shoot delay + B/L/C/P 采样），不再生成滑条 Trace。
-- [x] Simai Slide → 平面 Path：按形状区分直线/弧线/v/p/q/s/z/V/w，按轨迹长度分配时间，尾 0.72R。
+- [x] Simai Slide → 平面 Path：按 Sentakki 思路区分直线/弧线/v/p/q/s/z/V/w，按轨迹长度分配时间，尾落回按钮环位。
 - [x] 双押继续删一侧。
 - [x] 导入报告改为 Path 计数；不再生成滑条 Trace。
 - [x] `Trace` 仅保留给手绘擦带，不再由 osu 滑条生成。
@@ -85,6 +85,7 @@
 
 未完成：
 
+- [x] Path 运行缓存按缺口/形变失效；下层 Path 简化绘制；时间轴只画可视音符。
 - [ ] 每帧只算一次环中心与 `note_scale`。
 - [ ] Overlay 静态/动态拆层（评估后收益低，暂缓）。
 - [ ] 3D 环网格变形限频 30Hz。
@@ -112,7 +113,7 @@
 - [x] Bell 80px 吸附、250ms 窗口。
 - [x] 打击音整体 +4–6dB。
 - [x] FULL/FRAY/LOST 尾端文字。
-- [x] 逐类型打击特效形状。
+- [x] 逐类型打击特效形状；Bell 吸附收缩环 + 四向吸点；快速爆发 + 扩散环。
 - [x] 八套音效按类型调电平。
 
 未完成：
