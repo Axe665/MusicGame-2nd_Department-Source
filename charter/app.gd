@@ -55,6 +55,7 @@ var _autosave_timer: Timer
 
 
 func _ready() -> void:
+	_load_settings()
 	_autosave_timer = Timer.new()
 	_autosave_timer.wait_time = 60.0
 	_autosave_timer.autostart = true
@@ -73,6 +74,29 @@ func _ready() -> void:
 		from_repo = true
 	set_chart(start_chart, demo_path, from_repo)
 	call_deferred("_set_initial_focus_notice")
+
+
+const SETTINGS_PATH := "user://settings.json"
+
+
+func _load_settings() -> void:
+	if not FileAccess.file_exists(SETTINGS_PATH):
+		return
+	var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(SETTINGS_PATH))
+	if not (parsed is Dictionary):
+		return
+	var data: Dictionary = parsed
+	note_skin = String(data.get("note_skin", note_skin))
+	hit_fx_style = String(data.get("hit_fx_style", hit_fx_style))
+	hit_sfx_style = String(data.get("hit_sfx_style", hit_sfx_style))
+
+
+func save_settings() -> void:
+	var data := {"note_skin": note_skin, "hit_fx_style": hit_fx_style, "hit_sfx_style": hit_sfx_style}
+	var file := FileAccess.open(SETTINGS_PATH, FileAccess.WRITE)
+	if file != null:
+		file.store_string(JSON.stringify(data, "\t"))
+		file.close()
 
 
 func _set_initial_focus_notice() -> void:

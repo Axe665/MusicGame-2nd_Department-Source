@@ -892,6 +892,7 @@ func _cycle_note_skin(step: int) -> void:
 	_preview.note_skin = String(keys[posmod(index + step, keys.size())])
 	if _app != null:
 		_app.note_skin = _preview.note_skin
+		_app.save_settings()
 	_update_top_bar(_chart_ms(), chart.timing.chart_ms_to_beat(_chart_ms()))
 
 
@@ -901,6 +902,7 @@ func _cycle_hit_fx(step: int) -> void:
 	_preview.hit_fx_style = String(keys[posmod(index + step, keys.size())])
 	if _app != null:
 		_app.hit_fx_style = _preview.hit_fx_style
+		_app.save_settings()
 	_update_top_bar(_chart_ms(), chart.timing.chart_ms_to_beat(_chart_ms()))
 
 

@@ -555,6 +555,7 @@ func _build_view_page(page: VBoxContainer) -> void:
 		skin_labels.append(String(skin_presets[key].get("label", key)))
 	_setting_option(page, "音符皮肤", skin_labels, maxi(0, skin_keys.find(_app.note_skin)), func(index: int) -> void:
 		_app.note_skin = String(skin_keys[index])
+		_app.save_settings()
 		_app.appearance_changed.emit()
 		_app.notice.emit("音符皮肤：%s" % skin_labels[index], "info")
 	)
@@ -565,6 +566,7 @@ func _build_view_page(page: VBoxContainer) -> void:
 		fx_labels.append(String(fx_presets[key]))
 	_setting_option(page, "打击特效", fx_labels, maxi(0, fx_keys.find(_app.hit_fx_style)), func(index: int) -> void:
 		_app.hit_fx_style = String(fx_keys[index])
+		_app.save_settings()
 		_app.appearance_changed.emit()
 		_app.notice.emit("打击特效：%s" % fx_labels[index], "info")
 	)
@@ -572,6 +574,7 @@ func _build_view_page(page: VBoxContainer) -> void:
 	var sfx_labels: Array[String] = ["原声", "清脆", "厚重", "静音"]
 	_setting_option(page, "打击音效", sfx_labels, maxi(0, sfx_keys.find(_app.hit_sfx_style)), func(index: int) -> void:
 		_app.hit_sfx_style = sfx_keys[index]
+		_app.save_settings()
 		_app.appearance_changed.emit()
 		_app.preview_sfx.emit()
 		_app.notice.emit("打击音效：%s" % sfx_labels[index], "info")
