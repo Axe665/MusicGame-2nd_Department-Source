@@ -2278,26 +2278,36 @@ func _draw_tap_donut(canvas: Control, point: Vector2, radius: float, color: Colo
 
 
 func _draw_tap_note(canvas: Control, chart: Chart, note: Note, t: float, pre: float) -> void:
+	# 本作 Tap 是可变宽度长条：note.width 直接决定条带长度。
 	var ns := _note_scale()
+	var width := maxf(note.width, 6.0)
+	var steps := clampi(int(width / 4.0), 10, 96)
 	var q := clampf((t - (note.beat - pre)) / maxf(0.001, pre), 0.0, 1.0)
-	var center := project_design(Vector2.ZERO)
-	var data := _boundary_point(chart, fposmod(note.angle, 360.0) / 360.0, t)
-	if bool(data.get("gap", false)):
+	var points := PackedVector2Array()
+	for i in steps + 1:
+		var angle := note.angle - width * 0.5 + width * float(i) / float(steps)
+		var data := _boundary_point(chart, fposmod(angle, 360.0) / 360.0, t)
+		if bool(data.get("gap", false)):
+			continue
+		var p := project_design(data.point * q)
+		if _valid_point(p):
+			points.append(p)
+	if points.size() < 2:
 		return
-	var boundary := project_design(data.point)
-	var point := center.lerp(boundary, q)
-	var radius := 20.0 * ns * lerpf(0.45, 1.0, q)
-	_draw_tap_donut(canvas, point, radius, UITheme.PINK)
-	# 飞入时的接近环：和固定圆环一起收束，不改变宽度。
-	if q < 0.999:
-		canvas.draw_arc(point, radius + 20.0 * (1.0 - q), 0.0, TAU, 32, Color(UITheme.PINK.r, UITheme.PINK.g, UITheme.PINK.b, 0.30 * (1.0 - q)), 1.6, true)
-	# 宽度只影响判定；编辑器里用一条细弧提示，不再画成宽带。
-	if not playtest_mode or show_debug:
-		var target_points := _arc_points(note.angle, maxf(note.width, 6.0), t, 28)
-		if target_points.size() > 1:
-			canvas.draw_polyline(target_points, Color(UITheme.PINK.r, UITheme.PINK.g, UITheme.PINK.b, 0.14), 1.6, true)
+	_stroke_band(canvas, points, UITheme.PINK, 18.0 * ns)
+	var cap_scale := ns * float(_skin()["scale"])
+	# 两端圆头：让长条读成一根胶囊，而不是一段没有边界的弧。
+	for cap in [points[0], points[-1]]:
+		canvas.draw_circle(cap, 12.0 * cap_scale, Color(0, 0, 0, 0.66))
+		canvas.draw_circle(cap, 9.5 * cap_scale, Color(1, 1, 1, 0.94))
+		canvas.draw_circle(cap, 6.0 * cap_scale, UITheme.PINK)
+	# 中心命中点：宽度变化时仍然知道该按哪里。
+	var center_point := points[points.size() / 2]
+	canvas.draw_circle(center_point, 8.0 * cap_scale, Color(0, 0, 0, 0.55))
+	canvas.draw_circle(center_point, 6.0 * cap_scale, Color(1, 1, 1, 0.96))
+	canvas.draw_circle(center_point, 3.0 * cap_scale, UITheme.PINK)
 	if show_debug:
-		canvas.draw_string(UITheme.bold_font(), point + Vector2(-10, -radius - 10.0), "TAP", HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(UITheme.PINK.r, UITheme.PINK.g, UITheme.PINK.b, 0.85))
+		canvas.draw_string(UITheme.bold_font(), center_point + Vector2(-12, -22), "TAP %.0f°" % note.width, HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(UITheme.PINK.r, UITheme.PINK.g, UITheme.PINK.b, 0.85))
 
 
 func _draw_traces(canvas: Control, chart: Chart, t: float) -> void:

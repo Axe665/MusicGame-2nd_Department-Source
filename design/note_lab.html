@@ -179,6 +179,21 @@
   .stat .coral { color: var(--coral); }
   .stat .cyan { color: var(--cyan); }
   .stat .gold { color: var(--gold); }
+  .tap-width {
+    margin-top: auto;
+    padding-top: 14px;
+    border-top: 1px solid var(--border);
+  }
+  .tap-width-head {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    color: var(--muted);
+    font-size: 12px;
+    margin-bottom: 8px;
+  }
+  .tap-width-head b { color: var(--ink); font-variant-numeric: tabular-nums; }
+  .tap-width input { width: 100%; accent-color: var(--accent); cursor: pointer; }
 
   .picker { margin-top: 54px; }
   .section-head {
@@ -386,7 +401,7 @@
       <div class="stage-main">
         <div class="stage-head">
           <h1>选一套看得清、打得准的音符</h1>
-          <p>同一套判定参数下，只换外观和命中反馈。Tap 改为<b>固定大小的粉色圆环</b>，宽度只用于判定；Hold / Path / Trace / Anchor / Bell 放大。判定窗口已放宽到 <b>100 / 170 / 260 ms</b>。</p>
+          <p>同一套判定参数下，只换外观和命中反馈。Tap 是<b>可变宽度的粉色长条</b>，<b>width</b> 直接决定条带长度；Hold / Path / Trace / Anchor / Bell 放大。判定窗口已放宽到 <b>100 / 170 / 260 ms</b>。</p>
         </div>
         <canvas id="hero" aria-label="所选音符外观与打击特效的实时预览"></canvas>
       </div>
@@ -399,6 +414,10 @@
         <div class="stat"><span>Path 头 / 尾</span><b class="coral">92 / 96 px</b></div>
         <div class="stat"><span>Bell 收取</span><b class="coral">112 px</b></div>
         <div class="stat"><span>Trace 接触</span><b class="coral">56 px</b></div>
+        <div class="tap-width">
+          <div class="tap-width-head"><span>Tap 宽度</span><b id="tap-width-value">56°</b></div>
+          <input id="tap-width" type="range" min="16" max="120" step="2" value="56" aria-label="Tap 宽度">
+        </div>
       </aside>
     </section>
 
@@ -426,7 +445,7 @@
       <div class="ref-grid">
         <figure>
           <img src="reference/maimai_hold_tap.jpg" alt="maimai 实机帧：粉色 Tap 圆环与金色 Hold 胶囊">
-          <figcaption>Tap 是固定大小的粉色圆环；Hold 是金色胶囊 + 金色圆环头，不再拉成长条。</figcaption>
+          <figcaption>Hold 参考：金色胶囊 + 金色圆环头。右侧粉环是 maimai 的 Tap；本作 Tap 仍保留可变宽条，不照搬圆环。</figcaption>
         </figure>
         <figure>
           <img src="reference/maimai_slide.jpg" alt="maimai 实机帧：黄色 Slide 箭头链">
@@ -506,7 +525,14 @@
     }
   };
 
-  const state = { skin: "candy", fx: "burst" };
+  const state = { skin: "candy", fx: "burst", tapWidth: 56 };
+
+  const tapWidthInput = document.getElementById("tap-width");
+  const tapWidthValue = document.getElementById("tap-width-value");
+  tapWidthInput.addEventListener("input", () => {
+    state.tapWidth = Number(tapWidthInput.value);
+    tapWidthValue.textContent = `${state.tapWidth}°`;
+  });
 
   function hexToRgb(hex) {
     const h = hex.replace("#", "");
@@ -759,6 +785,115 @@
     ctx.restore();
   }
 
+  function tap(ctx, cx, cy, rx, ry, deg, skin, alpha = 1, widthDeg = 56) {
+    const span = Math.max(6, widthDeg);
+    const pts = ellipseArc(cx, cy, rx, ry, deg - span / 2, deg + span / 2, Math.max(10, Math.round(span / 3)));
+    strokeBand(ctx, pts, PALETTE.pink, 18, skin, alpha);
+    const cap = skin.scale;
+    for (const p of [pts[0], pts[pts.length - 1]]) {
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = `rgba(0,0,0,${0.66 * alpha})`;
+      ctx.beginPath(); ctx.arc(p.x, p.y, 12 * cap, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = `rgba(255,255,255,${0.94 * alpha})`;
+      ctx.beginPath(); ctx.arc(p.x, p.y, 9.5 * cap, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = rgba(PALETTE.pink, 0.95 * alpha);
+      ctx.beginPath(); ctx.arc(p.x, p.y, 6 * cap, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+    }
+    const c = pts[Math.floor(pts.length / 2)];
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = `rgba(0,0,0,${0.55 * alpha})`;
+    ctx.beginPath(); ctx.arc(c.x, c.y, 8 * cap, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = `rgba(255,255,255,${0.96 * alpha})`;
+    ctx.beginPath(); ctx.arc(c.x, c.y, 6 * cap, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = rgba(PALETTE.pink, 0.95 * alpha);
+    ctx.beginPath(); ctx.arc(c.x, c.y, 3 * cap, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
+
+  function hold(ctx, cx, cy, rx, ry, deg, skin, alpha = 1) {
+    const pts = linear(cx, cy, Math.min(rx, ry) * 0.38, rx, deg);
+    strokeBand(ctx, pts, PALETTE.gold, 22, skin, alpha);
+    const hs = skin.scale;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    for (const p of pts) {
+      ctx.fillStyle = rgba(PALETTE.gold, 0.9);
+      ctx.beginPath(); ctx.arc(p.x, p.y, 13 * hs, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = `rgba(255,255,255,${0.28 * alpha})`;
+      ctx.beginPath(); ctx.arc(p.x, p.y, 7 * hs, 0, Math.PI * 2); ctx.fill();
+    }
+    // end ring
+    const end = pts[pts.length - 1];
+    ctx.strokeStyle = rgba(PALETTE.gold, 0.95 * alpha);
+    ctx.lineWidth = 4 * hs;
+    ctx.beginPath(); ctx.arc(end.x, end.y, 20 * hs, 0, Math.PI * 2); ctx.stroke();
+    ctx.restore();
+  }
+
+  function donut(ctx, x, y, r, color, skin, alpha = 1) {
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = rgba(color, 0.10 * skin.glow);
+    ctx.beginPath(); ctx.arc(x, y, r + 10, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = `rgba(0,0,0,${0.66 * alpha})`;
+    ctx.beginPath(); ctx.arc(x, y, r + 3.5 * skin.outline, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = `rgba(255,255,255,${0.94 * alpha})`;
+    ctx.beginPath(); ctx.arc(x, y, r + 1.2, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = rgba(color, 0.95 * alpha);
+    ctx.beginPath(); ctx.arc(x, y, r - 1, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = `rgba(8,10,14,${0.92 * alpha})`;
+    ctx.beginPath(); ctx.arc(x, y, r * 0.58, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = `rgba(255,255,255,${0.55 * alpha})`;
+    ctx.lineWidth = 1.4;
+    ctx.beginPath(); ctx.arc(x, y, r * 0.58, 0, Math.PI * 2); ctx.stroke();
+    ctx.fillStyle = rgba(color, 0.65 * alpha);
+    ctx.beginPath(); ctx.arc(x, y, r * 0.18, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
+
+  function sampleAt(pts, fraction) {
+    const total = [];
+    let length = 0;
+    for (let i = 0; i < pts.length - 1; i++) {
+      const d = Math.hypot(pts[i + 1].x - pts[i].x, pts[i + 1].y - pts[i].y);
+      total.push(d); length += d;
+    }
+    const target = fraction * length;
+    let cursor = 0;
+    for (let i = 0; i < total.length; i++) {
+      if (cursor + total[i] >= target) {
+        const q = (target - cursor) / Math.max(0.001, total[i]);
+        return {
+          point: { x: pts[i].x + (pts[i + 1].x - pts[i].x) * q, y: pts[i].y + (pts[i + 1].y - pts[i].y) * q },
+          direction: { x: pts[i + 1].x - pts[i].x, y: pts[i + 1].y - pts[i].y }
+        };
+      }
+      cursor += total[i];
+    }
+    return { point: pts[pts.length - 1], direction: { x: 1, y: 0 } };
+  }
+
+  function chevron(ctx, point, direction, color, size, alpha = 1) {
+    const len = Math.hypot(direction.x, direction.y) || 1;
+    const dx = direction.x / len, dy = direction.y / len;
+    const nx = -dy, ny = dx;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    const tipX = point.x + dx * size * 0.12, tipY = point.y + dy * size * 0.12;
+    const lx = point.x - dx * size + nx * size * 0.80, ly = point.y - dy * size + ny * size * 0.80;
+    const rx2 = point.x - dx * size - nx * size * 0.80, ry2 = point.y - dy * size - ny * size * 0.80;
+    const width = Math.max(2, size * 0.52);
+    ctx.lineCap = "round";
+    ctx.beginPath(); ctx.moveTo(lx, ly); ctx.lineTo(tipX, tipY); ctx.lineTo(rx2, ry2);
+    ctx.strokeStyle = `rgba(0,0,0,${0.60 * alpha})`; ctx.lineWidth = width * 1.45; ctx.stroke();
+    ctx.strokeStyle = rgba(color, 0.95 * alpha); ctx.lineWidth = width; ctx.stroke();
+    ctx.strokeStyle = `rgba(255,255,255,${0.22 * alpha})`; ctx.lineWidth = width * 0.28; ctx.stroke();
+    ctx.restore();
+  }
+
   function tap(ctx, cx, cy, rx, ry, deg, skin, alpha = 1) {
     const p = ringPoint(cx, cy, rx, ry, deg);
     donut(ctx, p.x, p.y, Math.min(24, Math.max(12, rx * 0.055)), PALETTE.pink, skin, alpha);
@@ -847,7 +982,7 @@
     diamond(ctx, p.x, p.y, 16 * skin.scale, PALETTE.violet, alpha);
   }
 
-  function drawStage(ctx, w, h, skin, effectAge) {
+  function drawStage(ctx, w, h, skin, effectAge, tapWidth = 56) {
     const cx = w * 0.5, cy = h * 0.54;
     const rx = Math.min(w * 0.38, 430), ry = rx * 0.46;
     ctx.clearRect(0, 0, w, h);
@@ -879,7 +1014,7 @@
     }
     ctx.restore();
 
-    tap(ctx, cx, cy, rx, ry, 215, skin, 1);
+    tap(ctx, cx, cy, rx, ry, 215, skin, 1, tapWidth);
     hold(ctx, cx, cy, rx, ry, 285, skin, 1);
     pathNote(ctx, cx, cy, rx, ry, skin, 1);
     traceNote(ctx, cx, cy, rx, ry, skin, 1);
@@ -1088,7 +1223,7 @@
     ctx.lineWidth = 2;
     ctx.beginPath(); ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2); ctx.stroke();
     ctx.restore();
-    tap(ctx, cx, cy, rx, ry, 215, skin, 1);
+    tap(ctx, cx, cy, rx, ry, 215, skin, 1, 56);
     hold(ctx, cx, cy, rx, ry, 285, skin, 0.95);
     pathNote(ctx, cx, cy, rx, ry, skin, 0.9);
     traceNote(ctx, cx, cy, rx, ry, skin, 0.8);
@@ -1163,7 +1298,7 @@
     const effectAge = loop > 1.15 ? loop - 1.15 : -1;
 
     const heroFit = fit(hero);
-    drawStage(heroFit.ctx, heroFit.w, heroFit.h, SKINS[state.skin], effectAge);
+    drawStage(heroFit.ctx, heroFit.w, heroFit.h, SKINS[state.skin], effectAge, state.tapWidth);
 
     document.querySelectorAll("[data-fx]").forEach(el => {
       const canvas = el.querySelector("canvas");
