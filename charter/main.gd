@@ -1124,6 +1124,31 @@ func _unhandled_input(event: InputEvent) -> void:
 			KEY_E:
 				_set_tool("event")
 				accept_event()
+			KEY_C:
+				if event.ctrl_pressed:
+					_app.copy_selected_notes()
+					accept_event()
+			KEY_V:
+				if event.ctrl_pressed and event.shift_pressed:
+					_inspector.current_tab = 4
+					_show_toast("视频属性在「视图/设置」页；offset / FPS / 透明度 / 隐藏都在那里。", "info")
+					accept_event()
+				elif event.ctrl_pressed:
+					_app.paste_notes()
+					accept_event()
+			KEY_M:
+				_app.mirror_selected_notes()
+				accept_event()
+			KEY_R:
+				_app.rotate_selected_notes(90.0)
+				accept_event()
+			KEY_X:
+				_canvas._delete_selection()
+				accept_event()
+			KEY_K:
+				_inspector.add_view_state_at_playhead()
+				_inspector.current_tab = 4
+				accept_event()
 			KEY_DELETE:
 				_canvas._delete_selection()
 				accept_event()

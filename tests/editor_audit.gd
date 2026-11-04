@@ -12,6 +12,7 @@ func _ready() -> void:
 	_audit_validation()
 	_audit_boundary()
 	_audit_undo_io()
+	_audit_edit_ops()
 	await _audit_ui(app)
 	_audit_source()
 	print("=== EDITOR AUDIT RESULT passed=%d failed=%d partial=%d ===" % [passed, failed, partial])
@@ -139,6 +140,28 @@ func _audit_boundary() -> void:
 	_check("BPM/拍号字段", chart.timing.points[0].bpm > 0.0 and chart.timing.points[0].beats_per_bar >= 1)
 
 
+func _audit_edit_ops() -> void:
+	var app = load("res://charter/app.gd").new()
+	var chart := Chart.new()
+	var note := _make_note(chart, "tap", 2.0)
+	note.angle = 30.0
+	app.chart = chart
+	app.chart_path = ""
+	app.playhead_beat = 10.0
+	app.select_note(note.id)
+	app.copy_selected_notes()
+	app.paste_notes()
+	_check("复制/粘贴可用", chart.notes.size() == 2)
+	if chart.notes.size() == 2:
+		_check("粘贴落在播放头", absf(chart.notes[1].beat - 10.0) < 0.001, "beat=%.2f" % chart.notes[1].beat)
+	app.select_note(note.id)
+	app.mirror_selected_notes()
+	_check("镜像角度", absf(note.angle - 330.0) < 0.001, "angle=%.1f" % note.angle)
+	app.rotate_selected_notes(90.0)
+	_check("旋转角度", absf(note.angle - 60.0) < 0.001, "angle=%.1f" % note.angle)
+	app.free()
+
+
 func _audit_undo_io() -> void:
 	var undo := UndoStack.new()
 	for i in 205:
@@ -190,6 +213,7 @@ func _audit_source() -> void:
 	var main_text := FileAccess.get_file_as_string("res://charter/main.gd")
 	var canvas_text := FileAccess.get_file_as_string("res://charter/chart_canvas.gd")
 	var preview_text := FileAccess.get_file_as_string("res://charter/preview_3d.gd")
+	var inspector_text := FileAccess.get_file_as_string("res://charter/inspector.gd")
 	_check("工具 1–7", main_text.contains("KEY_1, KEY_2, KEY_3, KEY_4, KEY_5, KEY_6, KEY_7"))
 	_check("边界 B/事件 E", main_text.contains("KEY_B") and main_text.contains("KEY_E"))
 	_check("HUD H", main_text.contains("KEY_H"))
@@ -203,14 +227,14 @@ func _audit_source() -> void:
 	var hold_end := preview_text.find("func _draw_notes(", hold_start)
 	_check("Hold 体节点渲染", hold_start >= 0 and hold_end > hold_start and preview_text.substr(hold_start, hold_end - hold_start).contains("visual_pts"))
 	_check("复制/粘贴快捷键", main_text.contains("KEY_C") and main_text.contains("KEY_V"))
-	_check("全选快捷键", main_text.contains("KEY_A"))
+	_check("全选快捷键", canvas_text.contains("KEY_A"))
 	_check("镜像/旋转", main_text.contains("mirror") or main_text.contains("rotate_selected"))
 	_check("Ctrl+滚轮缩放", canvas_text.contains("MOUSE_BUTTON_WHEEL"))
 	_check("Alt+单击重叠循环", canvas_text.contains("alt_pressed"))
 	_check("K 形变关键帧快捷键", main_text.contains("KEY_K"))
 	_check("X 擦除快捷键", main_text.contains("KEY_X"))
 	_check("Ctrl+Shift+V 视频属性", main_text.contains("KEY_V") and main_text.contains("ctrl_pressed") and main_text.contains("shift_pressed"))
-	_check("Anchor 双锚点创建", main_text.contains("_add_anchor_pair") or canvas_text.contains("_add_anchor_pair"))
+	_check("Anchor 双锚点创建", inspector_text.contains("_add_anchor_pair"))
 	_check("多语言切换", main_text.contains("tr(") or FileAccess.file_exists("res://assets/translations"))
 	_check("色盲/减少动效设置", main_text.contains("colorblind") or main_text.contains("reduce_motion"))
 	if not (main_text.contains("KEY_C") and main_text.contains("KEY_V")):
@@ -219,5 +243,5 @@ func _audit_source() -> void:
 		_part("选择变换", "无镜像/旋转")
 	if not (main_text.contains("colorblind") or main_text.contains("reduce_motion")):
 		_part("可访问性", "无色盲模式/减少动效/多语言")
-	if not (main_text.contains("_add_anchor_pair") or canvas_text.contains("_add_anchor_pair")):
+	if not inspector_text.contains("_add_anchor_pair"):
 		_part("Anchor 配对", "字段可手填，但没有双锚点一次创建工具")

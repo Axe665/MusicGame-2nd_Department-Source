@@ -1668,12 +1668,19 @@ func _pick_visual_node(screen_position: Vector2) -> int:
 	if _app == null:
 		return -1
 	var note: Note = _app.get_selected_note()
-	if note == null or note.type != "path":
+	if note == null or note.type not in ["path", "hold"]:
 		return -1
 	var chart := get_chart()
 	if chart == null:
 		return -1
 	var t := get_time_beat()
+	if note.type == "hold":
+		for i in note.visual_pts.size():
+			var point: Dictionary = note.visual_pts[i]
+			var p := _hold_node_screen(chart, note, float(point.get("db", 0.0)), float(point.get("da", 0.0)), t)
+			if _valid_point(p) and p.distance_to(screen_position) <= 12.0:
+				return i
+		return -1
 	for i in note.trace_pts.size():
 		var point: Dictionary = note.trace_pts[i]
 		var local := Vector2(float(point.get("x", 0.0)), float(point.get("y", 0.0)))
@@ -2191,8 +2198,18 @@ func _draw_holds(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 		var grow := clampf((t - (note.beat - pre)) / maxf(0.001, pre), 0.0, 1.0)
 		var center := project_design(Vector2.ZERO)
 		var body := PackedVector2Array()
-		var curved := note.hold_style == "curved"
-		if curved:
+		var curved := note.hold_style == "curved" and note.visual_pts.is_empty()
+		if not note.visual_pts.is_empty():
+			# Hold 体节点：和 Path 共用 visual_pts，节点只改画面，不改头部判定。
+			var design_points: Array[Dictionary] = [{"db": 0.0, "da": 0.0}]
+			design_points.append_array(note.visual_pts)
+			design_points.append({"db": note.duration(), "da": 0.0})
+			design_points.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return float(a.get("db", 0.0)) < float(b.get("db", 0.0)))
+			for point in design_points:
+				var p := _hold_node_screen(chart, note, float(point.get("db", 0.0)), float(point.get("da", 0.0)), t)
+				if _valid_point(p):
+					body.append(center.lerp(p, grow))
+		elif curved:
 			# 弯 Hold：本体沿环弯曲，尾部有明确端环。
 			var span := clampf(16.0 + note.duration() * 12.0, 20.0, 64.0)
 			var steps := maxi(10, int(span / 3.0))
@@ -2239,6 +2256,13 @@ func _draw_holds(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 		if t >= note.beat and t <= note.end_beat:
 			var glow := 0.5 + 0.5 * sin(t * PI)
 			canvas.draw_arc(boundary, 28.0 * hs, 0.0, TAU, 32, Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, 0.28 * glow), 2.6, true)
+		if _app != null and not note.visual_pts.is_empty():
+			var selected: Note = _app.get_selected_note()
+			if selected != null and selected.id == note.id:
+				for point in note.visual_pts:
+					var marker := _hold_node_screen(chart, note, float(point.get("db", 0.0)), float(point.get("da", 0.0)), t)
+					if _valid_point(marker):
+						_draw_diamond(canvas, marker, 5.5, UITheme.GOLD)
 
 
 func _draw_notes(canvas: Control, chart: Chart, t: float, pre: float) -> void:

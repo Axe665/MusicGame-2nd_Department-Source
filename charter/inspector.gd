@@ -357,6 +357,29 @@ func _build_note_page(page: VBoxContainer) -> void:
 			{"text": "直 Hold", "callback": func() -> void: _set_hold_style(note, "straight")},
 			{"text": "弯 Hold", "callback": func() -> void: _set_hold_style(note, "curved")},
 		])
+		_section(page, "体节点（与 Path 共用）")
+		var hold_list := ItemList.new()
+		hold_list.custom_minimum_size = Vector2(0, 88)
+		for i in note.visual_pts.size():
+			var point: Dictionary = note.visual_pts[i]
+			hold_list.add_item("%02d  Δbeat %.2f  Δangle %.1f" % [i, float(point.get("db", 0.0)), float(point.get("da", 0.0))])
+		_selected_visual = clampi(_selected_visual, 0, maxi(0, note.visual_pts.size() - 1))
+		if _selected_visual < hold_list.item_count:
+			hold_list.select(_selected_visual)
+		hold_list.item_selected.connect(func(index: int) -> void:
+			_selected_visual = index
+			_rebuild()
+		)
+		page.add_child(hold_list)
+		_buttons(page, [
+			{"text": "加体节点", "callback": func() -> void: _add_visual_point(note)},
+			{"text": "删体节点", "callback": func() -> void: _delete_visual_point(note)},
+		])
+		if _selected_visual >= 0 and _selected_visual < note.visual_pts.size():
+			var point: Dictionary = note.visual_pts[_selected_visual]
+			_spin(page, "Δbeat", float(point.get("db", 0.0)), 0.0, maxf(0.25, note.duration()), 0.01, func(value: float) -> void: point["db"] = value)
+			_spin(page, "Δangle", float(point.get("da", 0.0)), -720.0, 720.0, 0.5, func(value: float) -> void: point["da"] = value)
+		_label(page, "节点只改画面，不改 Hold 头部判定；在预览里拖动金色菱形。", 11, UITheme.MUTED)
 	if note.type == "trace":
 		_spin(page, "移动距离 px", note.move_px, 0.0, 1000.0, 1.0, func(value: float) -> void: note.move_px = value)
 		_label(page, "二维点：%d 个；在预览窗用 Trace 工具拖拽重画。" % note.trace_pts.size(), 11, UITheme.MUTED)
@@ -368,6 +391,7 @@ func _build_note_page(page: VBoxContainer) -> void:
 	if note.type == "anchor":
 		_spin(page, "配对角度", note.anchor_pair, -1.0, 90.0, 90.0, func(value: float) -> void: note.anchor_pair = int(value))
 		_text(page, "pairId", note.pair_id, func(value: String) -> void: note.pair_id = value)
+		_buttons(page, [{"text": "创建反向配对", "callback": func() -> void: _add_anchor_pair(note)}])
 		_label(page, "Anchor 只判时间；配对需同拍反向。", 11, UITheme.MUTED)
 	_spin(page, "颜色槽", note.color, 0.0, 15.0, 1.0, func(value: float) -> void: note.color = int(value))
 	_check(page, "锁定（不可拖动）", note.lock, func(value: bool) -> void: note.lock = value)
@@ -844,6 +868,22 @@ func _delete_note(note: Note) -> void:
 	_app.clear_selection()
 
 
+func _add_anchor_pair(note: Note) -> void:
+	if note.type != "anchor":
+		return
+	_apply(func() -> void:
+		var pair_id := note.pair_id if not note.pair_id.is_empty() else "P%d" % note.id
+		note.anchor_pair = 0
+		note.pair_id = pair_id
+		var partner := Note.new("anchor", note.beat, fposmod(note.angle + 180.0, 360.0), note.width)
+		partner.id = _app.chart.next_note_id()
+		partner.anchor_pair = 0
+		partner.pair_id = pair_id
+		_app.chart.notes.append(partner)
+	)
+	_rebuild()
+
+
 func _duplicate_note(note: Note) -> void:
 	var copy := Note.from_dict(note.to_dict())
 	copy.id = _app.chart.next_note_id()
@@ -981,6 +1021,10 @@ func _delete_event(event: BoundaryEvent) -> void:
 	_app.chart.events.erase(event)
 	_app.finish_edit()
 	_app.clear_selection()
+
+
+func add_view_state_at_playhead() -> void:
+	_add_view_state()
 
 
 func _add_view_state() -> void:
