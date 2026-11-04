@@ -214,15 +214,22 @@ static func _anchor_partner(chart: Chart, note: Note) -> Note:
 
 
 static func _check_playability(chart: Chart, issues: Array[Dictionary]) -> void:
-	var beats := {}
+	# 按拍预分组，避免每个拍点都扫描全部音符（10k 音符时会退化成 O(n²)）。
+	var groups: Dictionary = {}
 	for note in chart.notes:
 		if note.type in ["tap", "hold", "path"]:
-			beats[snappedf(note.beat, 0.001)] = true
+			var key := snappedf(note.beat, 0.001)
+			if not groups.has(key):
+				groups[key] = []
+			groups[key].append(note)
 		if note.type == "path":
-			beats[snappedf(note.end_beat, 0.001)] = true
-	for beat_key in beats.keys():
+			var tail_key := snappedf(note.end_beat, 0.001)
+			if not groups.has(tail_key):
+				groups[tail_key] = []
+			groups[tail_key].append(note)
+	for beat_key in groups.keys():
 		var beat := float(beat_key)
-		var lists := JudgeMath.intervals_for_notes(chart.notes, beat)
+		var lists := JudgeMath.intervals_for_notes(groups[beat_key], beat)
 		if lists.is_empty():
 			continue
 		var common := JudgeMath.intersect_all(lists)

@@ -110,19 +110,56 @@ static func polyline_self_intersects(points: Array[Vector2], closed: bool) -> bo
 	if n < 4:
 		return false
 	var segment_count := n if closed else n - 1
+	var min_x := INF
+	var min_y := INF
+	var max_x := -INF
+	var max_y := -INF
+	for point in points:
+		min_x = minf(min_x, point.x)
+		min_y = minf(min_y, point.y)
+		max_x = maxf(max_x, point.x)
+		max_y = maxf(max_y, point.y)
+	var span := maxf(max_x - min_x, max_y - min_y)
+	var cell := maxf(4.0, span / maxf(8.0, sqrt(float(segment_count))))
+	# 网格粗筛：只和同一格/相邻格里的线段做精确相交测试。
+	var buckets: Dictionary = {}
 	for i in segment_count:
 		var a := points[i]
 		var b := points[(i + 1) % n]
-		for j in range(i + 1, segment_count):
-			if j == i + 1:
-				continue
-			if closed and i == 0 and j == segment_count - 1:
-				continue
-			var c := points[j]
-			var d := points[(j + 1) % n]
-			var hit: Variant = Geometry2D.segment_intersects_segment(a, b, c, d)
-			if hit != null:
-				return true
+		var x0 := floori(minf(a.x, b.x) / cell)
+		var x1 := floori(maxf(a.x, b.x) / cell)
+		var y0 := floori(minf(a.y, b.y) / cell)
+		var y1 := floori(maxf(a.y, b.y) / cell)
+		for gx in range(x0, x1 + 1):
+			for gy in range(y0, y1 + 1):
+				var key := Vector2i(gx, gy)
+				if not buckets.has(key):
+					buckets[key] = []
+				buckets[key].append(i)
+	var seen := PackedInt32Array()
+	seen.resize(segment_count)
+	for i in segment_count:
+		var a := points[i]
+		var b := points[(i + 1) % n]
+		var x0 := floori(minf(a.x, b.x) / cell)
+		var x1 := floori(maxf(a.x, b.x) / cell)
+		var y0 := floori(minf(a.y, b.y) / cell)
+		var y1 := floori(maxf(a.y, b.y) / cell)
+		for gx in range(x0, x1 + 1):
+			for gy in range(y0, y1 + 1):
+				var candidates: Array = buckets.get(Vector2i(gx, gy), [])
+				for j in candidates:
+					if j <= i or j == i + 1:
+						continue
+					if closed and i == 0 and j == segment_count - 1:
+						continue
+					if seen[j] == i + 1:
+						continue
+					seen[j] = i + 1
+					var c := points[j]
+					var d := points[(j + 1) % n]
+					if Geometry2D.segment_intersects_segment(a, b, c, d) != null:
+						return true
 	return false
 
 
