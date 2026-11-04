@@ -234,18 +234,25 @@ static func copy_audio_to_user(source: String) -> String:
 static func audio_stream_from_path(path: String) -> AudioStream:
 	if path.is_empty():
 		return null
-	if path.begins_with("res://"):
+	var ext := path.get_extension().to_lower()
+	if path.begins_with("res://") and ext in MediaIO.NATIVE_AUDIO:
 		return load(path) as AudioStream
 	var resolved := path
 	if path.begins_with("user://"):
 		resolved = ProjectSettings.globalize_path(path)
-	match resolved.get_extension().to_lower():
+	match ext:
 		"ogg":
 			return AudioStreamOggVorbis.load_from_file(resolved)
 		"wav":
 			return AudioStreamWAV.load_from_file(resolved)
 		"mp3":
 			return AudioStreamMP3.load_from_file(resolved)
+	# FLAC is not a native Godot stream class; decode it through ffmpeg into
+	# the cached OGG and load that instead.
+	if ext == "flac":
+		var prepared := MediaIO.prepare_audio(path)
+		if not prepared.is_empty() and prepared != path:
+			return audio_stream_from_path(prepared)
 	return load(path) as AudioStream
 
 

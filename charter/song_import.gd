@@ -26,6 +26,9 @@ var _ffmpeg_edit: LineEdit
 var _apply_button: Button
 var _browse_dialog: FileDialog
 var _cancel_button: Button
+var _stream_ms: float = -1.0
+var _stream_error: String = ""
+var _read_ok: bool = false
 
 
 func _ready() -> void:
@@ -41,6 +44,7 @@ func _ready() -> void:
 
 func _build() -> void:
 	_apply_button = get_ok_button()
+	_apply_button.disabled = true
 	var content := VBoxContainer.new()
 	content.add_theme_constant_override("separation", 8)
 	content.custom_minimum_size = Vector2(480, 0)
@@ -70,6 +74,7 @@ func _build() -> void:
 	_bpm_spin.step = 0.1
 	_bpm_spin.value = 120.0
 	_bpm_spin.custom_minimum_size = Vector2(160, 0)
+	_bpm_spin.value_changed.connect(func(_value: float) -> void: _refresh_checks())
 	grid.add_child(_bpm_spin)
 
 	grid.add_child(_grid_label("offset ms"))
@@ -79,6 +84,7 @@ func _build() -> void:
 	_offset_spin.step = 1.0
 	_offset_spin.value = 0.0
 	_offset_spin.custom_minimum_size = Vector2(160, 0)
+	_offset_spin.value_changed.connect(func(_value: float) -> void: _refresh_checks())
 	grid.add_child(_offset_spin)
 
 	var tempo_row := HBoxContainer.new()
@@ -129,7 +135,7 @@ func _build() -> void:
 	var hint := Label.new()
 	UITheme.style_label(hint, 11, UITheme.FAINT)
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	hint.text = "WAV 直接读取；mp3 / ogg / flac / m4a 需要 ffmpeg 解码一次并缓存。识别结果只是初值，应用后仍可在“时间”页微调。"
+	hint.text = "支持 WAV / OGG / MP3 / FLAC；FLAC 等压缩格式通过 ffmpeg 解码一次并缓存。应用条件：BPM 检测成功、offset 校准成功、播放流时长与解码音频时长一致。"
 	content.add_child(hint)
 
 
@@ -146,7 +152,13 @@ func open_for(path: String) -> void:
 		return
 	_path = path
 	_result = {}
+	_stream_ms = -1.0
+	_stream_error = ""
+	_read_ok = false
+	if _apply_button != null:
+		_apply_button.disabled = true
 	_status.text = "分析中：%s" % path.get_file()
+	_status.add_theme_color_override("font_color", UITheme.INK)
 	_detail.text = "解码音频 → 起始包络 → 自相关 → 拍点跟踪"
 	popup_centered()
 	if _running:
@@ -196,25 +208,69 @@ func _process(_delta: float) -> void:
 func _populate() -> void:
 	var ok := bool(_result.get("ok", false))
 	if ok:
-		var bpm := float(_result.get("bpm", 120.0))
-		var offset := float(_result.get("offset_ms", 0.0))
-		_bpm_spin.value = bpm
-		_offset_spin.value = offset
-		var confidence := int(round(float(_result.get("confidence", 0.0)) * 100.0))
-		_status.text = "识别完成：%.1f BPM · offset %.0f ms" % [bpm, offset]
-		_detail.text = "置信度 %d%% · 匹配 %d 拍 · 半速 %.1f / 倍速 %.1f BPM" % [
-			confidence, int(_result.get("beats", 0)),
-			float(_result.get("half_bpm", 0.0)), float(_result.get("double_bpm", 0.0)),
-		]
+		_bpm_spin.set_value_no_signal(float(_result.get("bpm", 120.0)))
+		_offset_spin.set_value_no_signal(float(_result.get("offset_ms", 0.0)))
 	else:
-		var error := String(_result.get("error", "识别失败"))
-		_status.text = "没能识别出节拍：%s" % error
-		_detail.text = "下面是谱面当前的 BPM / offset，可直接改数值后应用。"
 		if _app != null and _app.chart != null:
-			_bpm_spin.value = _app.chart.timing.bpm_at(0.0)
-			_offset_spin.value = _app.chart.offset_ms
-	if _apply_button != null:
-		_apply_button.disabled = false
+			_bpm_spin.set_value_no_signal(_app.chart.timing.bpm_at(0.0))
+			_offset_spin.set_value_no_signal(_app.chart.offset_ms)
+	_measure_playback()
+	_refresh_checks()
+
+
+func _measure_playback() -> void:
+	_stream_ms = -1.0
+	_stream_error = ""
+	var prepared := MediaIO.prepare_audio(_path)
+	if prepared.is_empty():
+		_stream_error = MediaIO.last_error
+		return
+	var stream := ChartIO.audio_stream_from_path(prepared)
+	if stream == null:
+		_stream_error = "无法加载播放流：%s" % _path.get_file()
+		return
+	_stream_ms = stream.get_length() * 1000.0
+
+
+func _refresh_checks() -> void:
+	if _bpm_spin == null or _offset_spin == null:
+		return
+	if _result.is_empty():
+		_apply_button.disabled = true
+		return
+	var detected := bool(_result.get("ok", false))
+	var bpm := _bpm_spin.value
+	var offset := _offset_spin.value
+	var period_ms := 60000.0 / maxf(1.0, bpm)
+	var bpm_ok := detected and bpm > 0.0
+	var offset_ok := detected and is_finite(offset) and absf(offset) <= period_ms + 1.0
+	var decoded_ms := float(_result.get("duration_ms", 0.0))
+	var duration_ok := (decoded_ms > 0.0 and _stream_ms > 0.0
+		and absf(_stream_ms - decoded_ms) <= maxf(200.0, decoded_ms * 0.01))
+	_read_ok = bpm_ok and offset_ok and duration_ok
+	var checks := "BPM %s · offset %s · 时长 %s" % [
+		"通过" if bpm_ok else "失败",
+		"通过" if offset_ok else "失败",
+		"通过" if duration_ok else "失败",
+	]
+	var confidence := int(round(float(_result.get("confidence", 0.0)) * 100.0))
+	var detail := "置信度 %d%% · 匹配 %d 拍 · 解码 %.2fs / 播放 %.2fs\n%s" % [
+		confidence, int(_result.get("beats", 0)),
+		decoded_ms / 1000.0, maxf(0.0, _stream_ms) / 1000.0, checks,
+	]
+	if not _stream_error.is_empty():
+		detail += "\n播放流：%s" % _stream_error
+	_detail.text = detail
+	if _read_ok:
+		_status.text = "读取成功：BPM / offset / 时长校验通过"
+		_status.add_theme_color_override("font_color", UITheme.GREEN)
+	elif not detected:
+		_status.text = "读取失败：BPM 自动测量未成功（%s）" % String(_result.get("error", "未知原因"))
+		_status.add_theme_color_override("font_color", UITheme.RED)
+	else:
+		_status.text = "读取失败：%s" % checks
+		_status.add_theme_color_override("font_color", UITheme.RED)
+	_apply_button.disabled = not _read_ok
 
 
 func _restart() -> void:
@@ -262,6 +318,11 @@ func _commit(apply_offset: bool) -> void:
 	if _app == null or _path.is_empty():
 		hide()
 		return
-	_app.apply_detected_timing(_bpm_spin.value, _offset_spin.value, apply_offset, _path)
+	_refresh_checks()
+	if not _read_ok:
+		_status.text = "读取未通过，未写入谱面：请先修复 BPM / offset / 时长校验。"
+		return
+	if not _app.apply_detected_timing(_bpm_spin.value, _offset_spin.value, apply_offset, _path):
+		return
 	applied.emit()
 	hide()

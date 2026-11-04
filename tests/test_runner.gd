@@ -33,6 +33,7 @@ func _initialize() -> void:
 		"test_json_roundtrip",
 		"test_validation_demo",
 		"test_angle_math",
+		"test_note_mirror",
 		"test_trace_distance",
 		"test_sfx_assets",
 		"test_simai_import",
@@ -85,6 +86,41 @@ func test_timing() -> bool:
 	eq(map.format_beat(16.0), "4:0:4", "timing format beat")
 	near(map.parse_beat("4:0:4"), 16.0, 0.001, "timing parse beat")
 	near(map.parse_beat("4:2:4"), 18.0, 0.001, "timing parse half bar")
+	eq(TimingMap.parse_beat_subdivision("4"), 4, "beat subdivision parse 4")
+	eq(TimingMap.parse_beat_subdivision(" 8 "), 8, "beat subdivision parse trims spaces")
+	eq(TimingMap.parse_beat_subdivision("0"), 0, "beat subdivision rejects zero")
+	eq(TimingMap.parse_beat_subdivision("-2"), 0, "beat subdivision rejects negative")
+	eq(TimingMap.parse_beat_subdivision("3.5"), 0, "beat subdivision rejects fraction")
+	eq(TimingMap.parse_beat_subdivision("abc"), 0, "beat subdivision rejects text")
+	eq(TimingMap.parse_beat_subdivision(""), 0, "beat subdivision rejects empty")
+	eq(TimingMap.parse_beat_subdivision("65"), 0, "beat subdivision rejects over max")
+	var offsets := TimingMap.beat_subdivision_offsets(4)
+	eq(offsets.size(), 3, "beat subdivision 4 has 3 thin lines")
+	near(offsets[0], 0.25, 0.00001, "beat subdivision offset 0")
+	near(offsets[1], 0.5, 0.00001, "beat subdivision offset 1")
+	near(offsets[2], 0.75, 0.00001, "beat subdivision offset 2")
+	eq(TimingMap.beat_subdivision_offsets(1).size(), 0, "beat subdivision 1 draws no thin line")
+	eq(TimingMap.parse_vertical_lines("21"), 21, "vertical lines parse 21")
+	eq(TimingMap.parse_vertical_lines("64"), 64, "vertical lines parse max 64")
+	eq(TimingMap.parse_vertical_lines("65"), 0, "vertical lines reject over max")
+	eq(TimingMap.parse_vertical_lines("0"), 0, "vertical lines reject zero")
+	eq(TimingMap.parse_vertical_lines("2.5"), 0, "vertical lines reject fraction")
+	eq(TimingMap.parse_vertical_lines("abc"), 0, "vertical lines reject text")
+	var vlines := TimingMap.vertical_line_offsets(21)
+	eq(vlines.size(), 21, "vertical lines 21 has 21 lines")
+	near(vlines[0], 1.0 / 22.0, 0.00001, "vertical lines first at 1/22")
+	near(vlines[20], 21.0 / 22.0, 0.00001, "vertical lines last at 21/22")
+	near(vlines[1] - vlines[0], 1.0 / 22.0, 0.00001, "vertical lines are evenly spaced")
+	near(TimingMap.nearest_vertical_line_u(0.51, 21), 11.0 / 22.0, 0.00001, "vertical lines snap to nearest interior line")
+	eq(TimingMap.vertical_line_offsets(0).size(), 0, "vertical lines 0 draws nothing")
+	near(TimingMap.normalize_bpm(120.0), 120.0, 0.0001, "bpm keeps integer")
+	near(TimingMap.normalize_bpm(120.5), 121.0, 0.0001, "bpm one decimal rounds to integer")
+	near(TimingMap.normalize_bpm(120.25), 120.25, 0.0001, "bpm keeps two decimals")
+	near(TimingMap.normalize_bpm(120.255), 120.255, 0.0001, "bpm keeps three decimals")
+	near(TimingMap.normalize_bpm(120.2554), 120.255, 0.0001, "bpm rounds to three decimals")
+	near(TimingMap.normalize_offset_ms(500.0206), 500.021, 0.0001, "offset keeps three decimals")
+	near(TimingMap.normalize_offset_ms(-18.0004), -18.0, 0.0001, "offset negative rounds to three decimals")
+	near(TimingMap.normalize_offset_ms(0.0004), 0.0, 0.0001, "offset zero is normalized")
 	return true
 
 
@@ -396,6 +432,8 @@ func test_playability_validator() -> bool:
 func test_media_formats() -> bool:
 	ok(MediaIO.is_native_audio("a.wav"), "wav is native audio")
 	ok(MediaIO.is_native_audio("a.mp3"), "mp3 is native audio")
+	ok(MediaIO.is_supported_audio("a.flac"), "flac is accepted through the decode cache")
+	ok(not MediaIO.is_native_audio("a.flac"), "flac is not a native stream class")
 	ok(MediaIO.is_native_video("a.ogv"), "ogv is native video")
 	eq(MediaIO.prepare_audio("res://audio/demo_click.wav"), "res://audio/demo_click.wav", "native audio passes through")
 	return true
@@ -872,6 +910,27 @@ func test_angle_math() -> bool:
 	near(JudgeMath.total_length(safe), 30.0, 0.001, "subtract red leaves 30deg")
 	var empty_result := JudgeMath.subtract(common, JudgeMath.interval(45.0, 90.0))
 	eq(JudgeMath.total_length(empty_result), 0.0, "red covers all")
+	return true
+
+
+func test_note_mirror() -> bool:
+	var tap := Note.new("tap", 2.0, 90.0, 60.0)
+	tap.mirror_u()
+	near(tap.angle, 270.0, 0.001, "mirror tap angle")
+	near(tap.beat, 2.0, 0.001, "mirror keeps beat")
+	var bell := Note.new("bell", 4.0, 0.0, 0.0)
+	bell.center_u = 0.25
+	bell.mirror_u()
+	near(bell.center_u, 0.75, 0.001, "mirror bell center_u")
+	var path := Note.new("path", 1.0, 30.0, 60.0)
+	path.tail_angle = 60.0
+	path.trace_pts = [{"x": 0.2, "y": 0.3, "db": 0.0}, {"x": 0.8, "y": 0.6, "db": 1.0}]
+	path.visual_pts = [{"db": 0.5, "da": 15.0}]
+	path.mirror_u()
+	near(path.angle, 330.0, 0.001, "mirror path head")
+	near(path.tail_angle, 300.0, 0.001, "mirror path tail")
+	near(float(path.trace_pts[0]["x"]), 0.8, 0.001, "mirror path trace x")
+	near(float(path.visual_pts[0]["da"]), -15.0, 0.001, "mirror path visual delta")
 	return true
 
 
