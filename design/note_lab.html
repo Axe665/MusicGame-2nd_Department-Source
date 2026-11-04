@@ -365,7 +365,7 @@
       <div class="stage-main">
         <div class="stage-head">
           <h1>选一套看得清、打得准的音符</h1>
-          <p>同一套判定参数下，只换外观和命中反馈。放大的是 <b>Hold / Path / Trace / Anchor / Bell</b>，Tap 保持原尺寸；判定窗口已放宽到 <b>100 / 170 / 260 ms</b>。</p>
+          <p>同一套判定参数下，只换外观和命中反馈。Tap 改为<b>固定大小的粉色圆环</b>，宽度只用于判定；Hold / Path / Trace / Anchor / Bell 放大。判定窗口已放宽到 <b>100 / 170 / 260 ms</b>。</p>
         </div>
         <canvas id="hero" aria-label="所选音符外观与打击特效的实时预览"></canvas>
       </div>
@@ -411,7 +411,7 @@
 
   <footer>
     <span>外观只改绘制参数，不影响判定；判定半径与时间窗在 charter/playtest.gd 中统一配置。</span>
-    <span>参考：舞萌的落点白闪与冲击环，osu 的 hit circle 与收束环。</span>
+    <span>参考：maimai 实机谱面 BV1C34y187NU 的 Tap / Hold / Slide 帧，osu 的 hit circle 与收束环。</span>
   </footer>
 </div>
 
@@ -422,7 +422,7 @@
   const PALETTE = {
     bg: "#0B0C10", panel: "#12141A", raised: "#191C24",
     border: "#2A2F3A", ink: "#F2F0EA", muted: "#9AA0AC",
-    accent: "#FFDE00", coral: "#F2583E", cyan: "#5FD8CF",
+    accent: "#FFDE00", coral: "#F2583E", pink: "#FF6FAE", cyan: "#5FD8CF",
     gold: "#F0C36A", mint: "#6FE3A8", violet: "#9C8CFF", red: "#D94B3D"
   };
 
@@ -660,34 +660,118 @@
     ctx.restore();
   }
 
-  function tap(ctx, cx, cy, rx, ry, deg, skin, alpha = 1) {
-    const pts = ellipseArc(cx, cy, rx, ry, deg - 11, deg + 11, 20);
-    strokeBand(ctx, pts, PALETTE.coral, 22, skin, alpha, 1);
-    const center = ringPoint(cx, cy, rx, ry, deg);
+  function donut(ctx, x, y, r, color, skin, alpha = 1) {
     ctx.save();
     ctx.globalAlpha = alpha;
-    ctx.fillStyle = "rgba(0,0,0,0.55)";
-    ctx.beginPath(); ctx.arc(center.x, center.y, 9, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = "rgba(255,255,255,0.96)";
-    ctx.beginPath(); ctx.arc(center.x, center.y, 7, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = PALETTE.coral;
-    ctx.beginPath(); ctx.arc(center.x, center.y, 4.2, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = rgba(color, 0.10 * skin.glow);
+    ctx.beginPath(); ctx.arc(x, y, r + 10, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = `rgba(0,0,0,${0.66 * alpha})`;
+    ctx.beginPath(); ctx.arc(x, y, r + 3.5 * skin.outline, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = `rgba(255,255,255,${0.94 * alpha})`;
+    ctx.beginPath(); ctx.arc(x, y, r + 1.2, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = rgba(color, 0.95 * alpha);
+    ctx.beginPath(); ctx.arc(x, y, r - 1, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = `rgba(8,10,14,${0.92 * alpha})`;
+    ctx.beginPath(); ctx.arc(x, y, r * 0.58, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = `rgba(255,255,255,${0.55 * alpha})`;
+    ctx.lineWidth = 1.4;
+    ctx.beginPath(); ctx.arc(x, y, r * 0.58, 0, Math.PI * 2); ctx.stroke();
+    ctx.fillStyle = rgba(color, 0.65 * alpha);
+    ctx.beginPath(); ctx.arc(x, y, r * 0.18, 0, Math.PI * 2); ctx.fill();
     ctx.restore();
+  }
+
+  function sampleAt(pts, fraction) {
+    const total = [];
+    let length = 0;
+    for (let i = 0; i < pts.length - 1; i++) {
+      const d = Math.hypot(pts[i + 1].x - pts[i].x, pts[i + 1].y - pts[i].y);
+      total.push(d); length += d;
+    }
+    const target = fraction * length;
+    let cursor = 0;
+    for (let i = 0; i < total.length; i++) {
+      if (cursor + total[i] >= target) {
+        const q = (target - cursor) / Math.max(0.001, total[i]);
+        return {
+          point: { x: pts[i].x + (pts[i + 1].x - pts[i].x) * q, y: pts[i].y + (pts[i + 1].y - pts[i].y) * q },
+          direction: { x: pts[i + 1].x - pts[i].x, y: pts[i + 1].y - pts[i].y }
+        };
+      }
+      cursor += total[i];
+    }
+    return { point: pts[pts.length - 1], direction: { x: 1, y: 0 } };
+  }
+
+  function chevron(ctx, point, direction, color, size, alpha = 1) {
+    const len = Math.hypot(direction.x, direction.y) || 1;
+    const dx = direction.x / len, dy = direction.y / len;
+    const nx = -dy, ny = dx;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.strokeStyle = rgba(color, 0.95 * alpha);
+    ctx.lineWidth = Math.max(2, size * 0.22);
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(point.x - dx * size * 0.55 + nx * size * 0.55, point.y - dy * size * 0.55 + ny * size * 0.55);
+    ctx.lineTo(point.x, point.y);
+    ctx.lineTo(point.x - dx * size * 0.55 - nx * size * 0.55, point.y - dy * size * 0.55 - ny * size * 0.55);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function tap(ctx, cx, cy, rx, ry, deg, skin, alpha = 1) {
+    const p = ringPoint(cx, cy, rx, ry, deg);
+    donut(ctx, p.x, p.y, Math.min(24, Math.max(12, rx * 0.055)), PALETTE.pink, skin, alpha);
+  }
+
+  function hold(ctx, cx, cy, rx, ry, deg, skin, alpha = 1) {
+    const pts = linear(cx, cy, Math.min(rx, ry) * 0.38, rx, deg);
+    strokeBand(ctx, pts, PALETTE.gold, 16, skin, alpha);
+    const hs = skin.scale;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = rgba(PALETTE.gold, 0.90 * alpha);
+    ctx.beginPath(); ctx.arc(pts[0].x, pts[0].y, 10 * hs, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = `rgba(255,255,255,${0.28 * alpha})`;
+    ctx.beginPath(); ctx.arc(pts[0].x, pts[0].y, 5 * hs, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+    const end = pts[pts.length - 1];
+    donut(ctx, end.x, end.y, Math.min(22, Math.max(11, rx * 0.05)) * 1.1, PALETTE.pink, skin, alpha);
   }
 
   function pathNote(ctx, cx, cy, rx, ry, skin, alpha = 1) {
     const head = ringPoint(cx, cy, rx, ry, 310);
-    const trail = ellipseArc(cx, cy, rx * 0.78, ry * 0.78, 310, 20, 34);
-    strokeBand(ctx, trail, "rgba(116,238,233,1)", 21, skin, alpha * 0.9);
+    const trail = ellipseArc(cx, cy, rx * 0.78, ry * 0.78, 310, 20, 40);
     ctx.save();
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.strokeStyle = rgba(PALETTE.cyan, 0.10 * alpha);
+    ctx.lineWidth = 18 * skin.scale;
+    poly(ctx, trail); ctx.stroke();
+    ctx.strokeStyle = `rgba(0,0,0,${0.55 * alpha})`;
+    ctx.lineWidth = 9 * skin.band;
+    poly(ctx, trail); ctx.stroke();
     ctx.strokeStyle = rgba(PALETTE.cyan, 0.92 * alpha);
-    ctx.setLineDash([2.4, 7]);
+    ctx.lineWidth = 4.5 * skin.band;
+    poly(ctx, trail); ctx.stroke();
+    ctx.strokeStyle = rgba(PALETTE.cyan, 0.85 * alpha);
+    ctx.setLineDash([3, 8]);
     ctx.lineWidth = 2.4;
     poly(ctx, trail); ctx.stroke();
     ctx.restore();
+    for (let k = 0; k < 8; k++) {
+      const sample = sampleAt(trail, (k + 0.5) / 8);
+      chevron(ctx, sample.point, sample.direction, PALETTE.cyan, 13 * skin.scale, alpha);
+    }
     const tail = trail[trail.length - 1];
-    tailRing(ctx, tail.x, tail.y, 13, PALETTE.gold, skin, alpha);
-    star(ctx, head.x, head.y, 18, PALETTE.coral, skin, alpha);
+    ctx.save();
+    ctx.strokeStyle = rgba(PALETTE.gold, 0.55 * alpha);
+    ctx.lineWidth = 1.8;
+    ctx.beginPath(); ctx.arc(tail.x, tail.y, 17 * skin.scale, 0, Math.PI * 2); ctx.stroke();
+    ctx.restore();
+    star(ctx, tail.x, tail.y, 12, PALETTE.gold, skin, alpha);
+    star(ctx, head.x, head.y, 18, PALETTE.cyan, skin, alpha);
     ctx.save();
     ctx.strokeStyle = rgba(PALETTE.ink, 0.9);
     ctx.lineWidth = 2.4;
@@ -697,10 +781,15 @@
 
   function traceNote(ctx, cx, cy, rx, ry, skin, alpha = 1) {
     const pts = ellipseArc(cx, cy, rx * 0.84, ry * 0.84, 62, 118, 30);
-    strokeBand(ctx, pts, PALETTE.mint, 30, skin, alpha * 0.8);
+    strokeBand(ctx, pts, PALETTE.mint, 16, skin, alpha * 0.75);
     const head = pts[0], tail = pts[pts.length - 1];
     star(ctx, head.x, head.y, 18, PALETTE.cyan, skin, alpha);
-    tailRing(ctx, tail.x, tail.y, 13, PALETTE.cyan, skin, alpha);
+    ctx.save();
+    ctx.strokeStyle = rgba(PALETTE.cyan, 0.55 * alpha);
+    ctx.lineWidth = 1.8;
+    ctx.beginPath(); ctx.arc(tail.x, tail.y, 17 * skin.scale, 0, Math.PI * 2); ctx.stroke();
+    ctx.restore();
+    star(ctx, tail.x, tail.y, 12, PALETTE.cyan, skin, alpha);
     ctx.save();
     ctx.strokeStyle = rgba(PALETTE.mint, 0.9 * alpha);
     ctx.fillStyle = rgba(PALETTE.mint, 0.92 * alpha);
@@ -756,7 +845,8 @@
     pathNote(ctx, cx, cy, rx, ry, skin, 1);
     traceNote(ctx, cx, cy, rx, ry, skin, 1);
     anchor(ctx, cx, cy, rx, ry, skin, 1);
-    bell(ctx, cx, cy, rx * 0.055, skin, 1);
+    const bellPoint = ringPoint(cx, cy, rx, ry, 340);
+    bell(ctx, bellPoint.x, bellPoint.y, rx * 0.055, skin, 1);
 
     // hit pulse on the tap note
     const hit = ringPoint(cx, cy, rx, ry, 215);
@@ -794,6 +884,20 @@
       ctx.beginPath(); ctx.arc(x, y, 26 * flash + 5, 0, Math.PI * 2); ctx.fill();
       ctx.fillStyle = `rgba(255,255,255,${0.92 * flash})`;
       ctx.beginPath(); ctx.arc(x, y, 13 * flash + 3, 0, Math.PI * 2); ctx.fill();
+      const spin = -Math.PI / 2 + age * 0.9;
+      ctx.beginPath();
+      for (let i = 0; i < 8; i++) {
+        const a = spin + Math.PI * 2 * i / 8;
+        const rr = i % 2 === 0 ? 40 * flash + 10 : 13 * flash + 5;
+        const px = x + Math.cos(a) * rr, py = y + Math.sin(a) * rr;
+        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+      ctx.fillStyle = `rgba(255,255,255,${0.26 * flash})`;
+      ctx.fill();
+      ctx.strokeStyle = `rgba(255,255,255,${0.78 * flash})`;
+      ctx.lineWidth = 2;
+      ctx.stroke();
     }
     ctx.fillStyle = rgba(color, 0.12 * fade);
     ctx.beginPath(); ctx.arc(x, y, 30 + 42 * t, 0, Math.PI * 2); ctx.fill();
@@ -950,7 +1054,8 @@
     pathNote(ctx, cx, cy, rx, ry, skin, 0.9);
     traceNote(ctx, cx, cy, rx, ry, skin, 0.8);
     anchor(ctx, cx, cy, rx, ry, skin, 0.95);
-    bell(ctx, cx, cy, Math.max(8, rx * 0.06), skin, 0.95);
+    const bellPoint = ringPoint(cx, cy, rx, ry, 340);
+    bell(ctx, bellPoint.x, bellPoint.y, Math.max(8, rx * 0.06), skin, 0.95);
   }
 
   // ---------- build cards ----------
