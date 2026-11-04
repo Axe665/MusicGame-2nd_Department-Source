@@ -256,6 +256,26 @@
     line-height: 1.5;
   }
 
+  .ref-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+  }
+  .ref-grid figure {
+    margin: 0;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+  .ref-grid img { display: block; width: 100%; height: auto; }
+  .ref-grid figcaption {
+    padding: 12px 14px 14px;
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.5;
+  }
+
   .apply {
     margin-top: 54px;
     display: grid;
@@ -331,6 +351,7 @@
   @media (max-width: 760px) {
     .shell { padding: 20px 18px 48px; }
     .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .ref-grid { grid-template-columns: minmax(0, 1fr); }
     .apply { grid-template-columns: minmax(0, 1fr); align-items: start; }
     .readout { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .bar-meta { display: none; }
@@ -395,6 +416,23 @@
         <span class="hint">F6 按顺序切换 · 六种 Note 同屏对比</span>
       </div>
       <div class="cards" id="skin-cards"></div>
+    </section>
+
+    <section class="picker rise">
+      <div class="section-head">
+        <h2>参考实机帧</h2>
+        <span class="hint">BV1C34y187NU · 形状和比例的直接依据</span>
+      </div>
+      <div class="ref-grid">
+        <figure>
+          <img src="reference/maimai_hold_tap.jpg" alt="maimai 实机帧：粉色 Tap 圆环与金色 Hold 胶囊">
+          <figcaption>Tap 是固定大小的粉色圆环；Hold 是金色胶囊 + 金色圆环头，不再拉成长条。</figcaption>
+        </figure>
+        <figure>
+          <img src="reference/maimai_slide.jpg" alt="maimai 实机帧：黄色 Slide 箭头链">
+          <figcaption>Slide 是星头 + 密排实心 V 形箭头链；没有白色宽带，箭头本身承担可读性。</figcaption>
+        </figure>
+      </div>
     </section>
 
     <section class="apply rise">
@@ -709,14 +747,15 @@
     const nx = -dy, ny = dx;
     ctx.save();
     ctx.globalAlpha = alpha;
-    ctx.strokeStyle = rgba(color, 0.95 * alpha);
-    ctx.lineWidth = Math.max(2, size * 0.22);
+    const tipX = point.x + dx * size * 0.12, tipY = point.y + dy * size * 0.12;
+    const lx = point.x - dx * size + nx * size * 0.80, ly = point.y - dy * size + ny * size * 0.80;
+    const rx2 = point.x - dx * size - nx * size * 0.80, ry2 = point.y - dy * size - ny * size * 0.80;
+    const width = Math.max(2, size * 0.52);
     ctx.lineCap = "round";
-    ctx.beginPath();
-    ctx.moveTo(point.x - dx * size * 0.55 + nx * size * 0.55, point.y - dy * size * 0.55 + ny * size * 0.55);
-    ctx.lineTo(point.x, point.y);
-    ctx.lineTo(point.x - dx * size * 0.55 - nx * size * 0.55, point.y - dy * size * 0.55 - ny * size * 0.55);
-    ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(lx, ly); ctx.lineTo(tipX, tipY); ctx.lineTo(rx2, ry2);
+    ctx.strokeStyle = `rgba(0,0,0,${0.60 * alpha})`; ctx.lineWidth = width * 1.45; ctx.stroke();
+    ctx.strokeStyle = rgba(color, 0.95 * alpha); ctx.lineWidth = width; ctx.stroke();
+    ctx.strokeStyle = `rgba(255,255,255,${0.22 * alpha})`; ctx.lineWidth = width * 0.28; ctx.stroke();
     ctx.restore();
   }
 
@@ -737,7 +776,7 @@
     ctx.beginPath(); ctx.arc(pts[0].x, pts[0].y, 5 * hs, 0, Math.PI * 2); ctx.fill();
     ctx.restore();
     const end = pts[pts.length - 1];
-    donut(ctx, end.x, end.y, Math.min(22, Math.max(11, rx * 0.05)) * 1.1, PALETTE.pink, skin, alpha);
+    donut(ctx, end.x, end.y, Math.min(22, Math.max(11, rx * 0.05)) * 1.1, PALETTE.gold, skin, alpha);
   }
 
   function pathNote(ctx, cx, cy, rx, ry, skin, alpha = 1) {
@@ -750,19 +789,19 @@
     ctx.lineWidth = 18 * skin.scale;
     poly(ctx, trail); ctx.stroke();
     ctx.strokeStyle = `rgba(0,0,0,${0.55 * alpha})`;
-    ctx.lineWidth = 9 * skin.band;
+    ctx.lineWidth = 7 * skin.band;
     poly(ctx, trail); ctx.stroke();
     ctx.strokeStyle = rgba(PALETTE.cyan, 0.92 * alpha);
-    ctx.lineWidth = 4.5 * skin.band;
+    ctx.lineWidth = 3 * skin.band;
     poly(ctx, trail); ctx.stroke();
     ctx.strokeStyle = rgba(PALETTE.cyan, 0.85 * alpha);
     ctx.setLineDash([3, 8]);
     ctx.lineWidth = 2.4;
     poly(ctx, trail); ctx.stroke();
     ctx.restore();
-    for (let k = 0; k < 8; k++) {
-      const sample = sampleAt(trail, (k + 0.5) / 8);
-      chevron(ctx, sample.point, sample.direction, PALETTE.cyan, 13 * skin.scale, alpha);
+    for (let k = 0; k < 12; k++) {
+      const sample = sampleAt(trail, (k + 0.5) / 12);
+      chevron(ctx, sample.point, sample.direction, PALETTE.cyan, 14 * skin.scale, alpha);
     }
     const tail = trail[trail.length - 1];
     ctx.save();

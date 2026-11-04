@@ -1800,25 +1800,24 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 		var path_band := float(_skin()["band"])
 		if not top:
 			# 下层 Path 只留细线 + 箭头，避免多条轨迹叠成白墙。
-			canvas.draw_polyline(piece, Color(0, 0, 0, 0.42), 8.0 * ns, true)
-			canvas.draw_polyline(piece, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.58), 3.5 * ns * path_band, true)
+			canvas.draw_polyline(piece, Color(0, 0, 0, 0.42), 6.0 * ns, true)
+			canvas.draw_polyline(piece, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.58), 2.5 * ns * path_band, true)
 			_draw_dashed_polyline(canvas, piece, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.55), 2.2, 8.0)
 			continue
 		# 舞萌式滑动：细线打底 + 密集 V 形箭头，不再是一条白色宽带。
 		canvas.draw_polyline(piece, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.10), 18.0 * ns, true)
-		canvas.draw_polyline(piece, Color(0, 0, 0, 0.55), 9.0 * ns * path_band, true)
-		canvas.draw_polyline(piece, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.92), 4.5 * ns * path_band, true)
-		canvas.draw_polyline(piece, Color(1, 1, 1, 0.35), 1.2 * ns, true)
+		canvas.draw_polyline(piece, Color(0, 0, 0, 0.55), 7.0 * ns * path_band, true)
+		canvas.draw_polyline(piece, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.92), 3.0 * ns * path_band, true)
 		_draw_dashed_polyline(canvas, piece, dash, 2.6, 9.0)
 		# V 形箭头列：按轨迹长度铺满，像舞萌的滑动箭头链。
 		var piece_length := 0.0
 		for i in piece.size() - 1:
 			piece_length += piece[i].distance_to(piece[i + 1])
-		var chevron_count := clampi(int(piece_length / maxf(18.0, 30.0 * ns)), 3, 24)
+		var chevron_count := clampi(int(piece_length / maxf(12.0, 20.0 * ns)), 3, 32)
 		for k in chevron_count:
 			var fraction := (float(k) + 0.5) / float(chevron_count)
 			var sample: Dictionary = _polyline_sample(piece, fraction)
-			_draw_chevron(canvas, sample["point"], sample["direction"], passed if fraction < progress else future, 15.0 * ns)
+			_draw_chevron(canvas, sample["point"], sample["direction"], passed if fraction < progress else future, 16.0 * ns)
 	var selected_note: Note = _app.get_selected_note() if _app != null else null
 	var selected := selected_note != null and selected_note.id == note.id
 	if selected:
@@ -2217,7 +2216,7 @@ func _draw_holds(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 		canvas.draw_circle(body[0], 5.0 * hs, Color(1, 1, 1, 0.28 * fade))
 		_draw_target_arc(canvas, note.angle, note.width, t, UITheme.GOLD, 12.0)
 		# 外端是粉色 Tap 环，方便读松手时机。
-		_draw_tap_donut(canvas, boundary, 20.0 * hs, UITheme.PINK, fade)
+		_draw_tap_donut(canvas, boundary, 20.0 * hs, UITheme.GOLD, fade)
 		if t >= note.beat and t <= note.end_beat:
 			var progress := clampf((t - note.beat) / maxf(0.001, note.duration()), 0.0, 1.0)
 			var marker_index := progress * float(body.size() - 1)
@@ -2229,7 +2228,7 @@ func _draw_holds(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 			canvas.draw_circle(marker, 4.0 * hs, UITheme.GOLD)
 		if fade > 0.999 and t < note.beat + 0.02:
 			var head := _flying_position(chart, note.angle, note.beat, t, pre)
-			_draw_tap_donut(canvas, head, 18.0 * hs * clampf(grow, 0.35, 1.0), UITheme.PINK, fade)
+			_draw_tap_donut(canvas, head, 18.0 * hs * clampf(grow, 0.35, 1.0), UITheme.GOLD, fade)
 			if show_debug and _valid_point(head):
 				canvas.draw_string(UITheme.bold_font(), head + Vector2(-14, -22), "HOLD", HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, 0.85))
 		if t >= note.beat and t <= note.end_beat:
@@ -2884,11 +2883,14 @@ func _draw_chevron(canvas: Control, point: Vector2, direction: Vector2, color: C
 	if dir.length_squared() < 0.1:
 		return
 	var normal := Vector2(-dir.y, dir.x)
-	canvas.draw_polyline(PackedVector2Array([
-		point - dir * size + normal * size * 0.75,
-		point,
-		point - dir * size - normal * size * 0.75,
-	]), color, 2.4, true)
+	var tip := point + dir * size * 0.12
+	var left := point - dir * size + normal * size * 0.80
+	var right := point - dir * size - normal * size * 0.80
+	var arm := PackedVector2Array([left, tip, right])
+	var width := maxf(2.0, size * 0.52)
+	canvas.draw_polyline(arm, Color(0, 0, 0, 0.60), width * 1.45, true)
+	canvas.draw_polyline(arm, color, width, true)
+	canvas.draw_polyline(arm, Color(1, 1, 1, 0.22), width * 0.28, true)
 
 
 func _draw_star(canvas: Control, point: Vector2, radius: float, color: Color) -> void:
