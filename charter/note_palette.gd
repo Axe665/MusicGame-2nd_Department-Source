@@ -3,6 +3,7 @@ extends Control
 
 const CARDS := [
 	{"type": "tap", "label": "Tap", "key": "1", "color": UITheme.CORAL},
+	{"type": "tap_sized", "label": "大小 Tap", "key": "8", "color": UITheme.PINK},
 	{"type": "hold", "label": "Hold", "key": "2", "color": UITheme.AMBER},
 	{"type": "path", "label": "Path", "key": "3", "color": UITheme.CYAN},
 	{"type": "trace", "label": "Trace", "key": "4", "color": UITheme.MINT},
@@ -102,7 +103,7 @@ func _selected_type() -> String:
 		return "red"
 	var note = _app.get_selected_note()
 	if note != null:
-		return String(note.type)
+		return "tap_sized" if note.sized else String(note.type)
 	return ""
 
 
@@ -114,6 +115,12 @@ func _draw_icon(type: String, center: Vector2, r: float, color: Color) -> void:
 				var x := center.x - r + (2.0 * r) * float(i) / 4.0
 				draw_line(Vector2(x, center.y - 4), Vector2(x, center.y + 4), Color(0, 0, 0, 0.22), 1.0)
 			draw_line(center + Vector2(0, -8), center + Vector2(0, 8), UITheme.INK, 2.0)
+		"tap_sized":
+			# 大小 Tap：一段可伸缩的长条 + 两端的调整标记。
+			draw_line(center + Vector2(-r * 0.35, -r * 0.45), center + Vector2(r * 0.35, -r * 0.45), Color(color.r, color.g, color.b, 0.45), 6.0, true)
+			draw_line(center + Vector2(-r * 0.85, r * 0.25), center + Vector2(r * 0.85, r * 0.25), color, 8.0, true)
+			draw_line(center + Vector2(-r * 0.85, r * 0.05), center + Vector2(-r * 0.85, r * 0.45), UITheme.INK, 2.0)
+			draw_line(center + Vector2(r * 0.85, r * 0.05), center + Vector2(r * 0.85, r * 0.45), UITheme.INK, 2.0)
 		"hold":
 			var points := PackedVector2Array([
 				center + Vector2(-r * 0.8, -r * 0.45),

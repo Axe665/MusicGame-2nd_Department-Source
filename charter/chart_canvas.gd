@@ -10,7 +10,7 @@ const BOTTOM_MARGIN := 12.0
 const RIGHT_MARGIN := 12.0
 const WAVE_WIDTH := 24.0
 const NOTE_SNAP_PX := 6.0
-const NOTE_TOOLS := ["tap", "hold", "path", "trace", "anchor", "bell"]
+const NOTE_TOOLS := ["tap", "tap_sized", "hold", "path", "trace", "anchor", "bell"]
 
 var _app: Node = null
 var px_per_beat: float = 28.0
@@ -31,6 +31,7 @@ var _drag_width_note: Note = null
 var _drag_width_origin: float = 0.0
 var _drag_width_start: float = 0.0
 var _marquee: Rect2 = Rect2()
+var _right_hit: Dictionary = {}
 var _pending_path: Note = null
 var _trace_hint_shown: bool = false
 
@@ -626,7 +627,7 @@ func _draw_tap(note: Note) -> void:
 		if _show_type_label(note):
 			_draw_type_label("PLANE TAP", point + Vector2(9, 12), UITheme.CORAL)
 		return
-	for interval in _u_intervals(note.angle, note.width):
+	for interval in _u_intervals(note.angle, note.arc_width()):
 		var x0 := _u_to_x(interval.x)
 		var x1 := _u_to_x(interval.y)
 		if x1 - x0 < 1.0:
@@ -668,7 +669,7 @@ func _draw_hold(note: Note) -> void:
 		draw_circle(body[i], 3.0, UITheme.MINT)
 	_draw_hexagon(Vector2(x, y0), 9.0 if selected else 8.0, color)
 	_draw_ring(Vector2(x, y1), 6.0, color)
-	_draw_width_band(note.angle, note.width, y0, color)
+	_draw_width_band(note.angle, note.arc_width(), y0, color)
 	if _show_type_label(note):
 		_draw_type_label("HOLD", Vector2(x + 11.0, y0 + 12.0), color)
 
@@ -937,6 +938,12 @@ func _gui_input(event: InputEvent) -> void:
 			_drag_hold_update(event.position, event)
 		elif _drag_mode == "marquee":
 			_marquee = Rect2(_drag_start, event.position - _drag_start).abs()
+		elif _drag_mode == "right_delete":
+			# 动过就当成框选，避免右键拖选时误删。
+			if event.position.distance_to(_drag_start) > 5.0:
+				_drag_mode = ""
+				_right_hit = {}
+				_begin_marquee(_drag_start)
 		if _drag_mode != "" or _pending_path != null:
 			queue_redraw()
 		if _overlay != null:
@@ -956,8 +963,22 @@ func _gui_input(event: InputEvent) -> void:
 			accept_event()
 			return
 		if event.button_index == MOUSE_BUTTON_RIGHT:
+			# 右键单击音符 = 删除；右键按住拖动 = 框选（沿用旧操作）。
 			if event.pressed and _drag_mode == "" and _pending_path == null:
-				_begin_marquee(event.position)
+				var hit := _hit_test(event.position)
+				if hit.is_empty():
+					_begin_marquee(event.position)
+				else:
+					_drag_mode = "right_delete"
+					_drag_start = event.position
+					_right_hit = hit
+			elif not event.pressed and _drag_mode == "right_delete":
+				_delete_hit(_right_hit)
+				_drag_mode = ""
+				_right_hit = {}
+				queue_redraw()
+				if _overlay != null:
+					_overlay.queue_redraw()
 			accept_event()
 			return
 		if event.button_index == MOUSE_BUTTON_LEFT:
@@ -1090,6 +1111,8 @@ func _on_left_press(event: InputEventMouseButton) -> void:
 			_select_press(event)
 		"tap", "anchor", "bell":
 			_create_simple(_app.tool, beat, u)
+		"tap_sized":
+			_create_sized_tap(beat, u)
 		"hold":
 			_create_hold(beat, u)
 		"path":
@@ -1175,7 +1198,7 @@ func _hit_test(pos: Vector2) -> Dictionary:
 			if not edge.is_empty():
 				return edge
 			var note_y := _beat_to_y(note.beat)
-			if absf(pos.y - note_y) <= 7.0 and JudgeMath.in_arc(_x_to_u(pos.x) * 360.0, note.angle, note.width):
+			if absf(pos.y - note_y) <= 7.0 and JudgeMath.in_arc(_x_to_u(pos.x) * 360.0, note.angle, note.arc_width()):
 				return {"kind": "note", "id": note.id, "part": "body"}
 		if note.type == "hold" or note.type == "path" or note.type == "trace":
 			var y0 := _beat_to_y(note.beat)
@@ -1207,7 +1230,7 @@ func _width_edge_hit(note: Note, pos: Vector2) -> Dictionary:
 	if absf(pos.y - y) > 7.0:
 		return {}
 	var center := fposmod(note.angle, 360.0) / 360.0
-	var half := note.width / 720.0
+	var half := note.arc_width() / 720.0
 	var left := fposmod(center - half + 1.0, 1.0)
 	var right := fposmod(center + half, 1.0)
 	if absf(pos.x - _u_to_x(left)) < 6.0 or absf(pos.x - _u_to_x(right)) < 6.0:
@@ -1311,7 +1334,9 @@ func _drag_width_update(screen: Vector2) -> void:
 		return
 	var u := _x_to_u(screen.x)
 	var delta := (u - _drag_width_origin) * 360.0
-	var new_width := _drag_width_start + delta * 2.0 * float(_drag_width_side)
+	# 画出来的是 width × length_ratio，把鼠标位移换算回 width，边缘才跟手。
+	var visual := maxf(0.05, _drag_width_note.length_ratio())
+	var new_width := _drag_width_start + delta * 2.0 * float(_drag_width_side) / visual
 	_drag_width_note.width = clampf(new_width, 5.0, 360.0)
 	_app.touch_chart()
 
@@ -1329,6 +1354,20 @@ func _create_simple(type: String, beat: float, u: float) -> void:
 		note.width = 0.0
 		note.center_u = u
 		note.radius = 26.0
+	_app.begin_edit()
+	chart.notes.append(note)
+	_app.finish_edit()
+	_app.select_note(note.id)
+
+
+func _create_sized_tap(beat: float, u: float) -> void:
+	var chart: Chart = _app.chart
+	if chart == null:
+		return
+	# 默认与旧版 Tap 同长（1.0 l），按下去就能在检查器里改成 0–1.5 l 的任意值。
+	var note := Note.new("tap", beat, u * 360.0, 60.0)
+	note.id = chart.next_note_id()
+	note.set_size_ratio(1.0)
 	_app.begin_edit()
 	chart.notes.append(note)
 	_app.finish_edit()
@@ -1470,6 +1509,33 @@ func _select_visible() -> void:
 		if note.beat >= top and note.beat <= bottom:
 			ids.append(note.id)
 	_app.select_notes(ids)
+
+
+func _delete_hit(hit: Dictionary) -> void:
+	# 右键单击直接删掉命中的那一个：音符 / 红区 / 事件。
+	if _app == null or _app.chart == null or hit.is_empty():
+		return
+	var chart: Chart = _app.chart
+	_app.begin_edit()
+	match String(hit.get("kind", "")):
+		"note":
+			var note_id := int(hit.get("id", -1))
+			for note in chart.notes.duplicate():
+				if note.id == note_id:
+					chart.notes.erase(note)
+		"region":
+			var region_id := int(hit.get("id", -1))
+			for region in chart.regions.duplicate():
+				if region.id == region_id:
+					chart.regions.erase(region)
+		"event":
+			var event_id := String(hit.get("id", ""))
+			for event in chart.events.duplicate():
+				if event.id == event_id:
+					chart.events.erase(event)
+	_app.finish_edit()
+	_app.clear_selection()
+	_pending_path = null
 
 
 func _delete_selection() -> void:

@@ -330,7 +330,7 @@ func _judge_tap(note: Note, ms: float, beat: float) -> void:
 	var target := chart.timing.beat_to_chart_ms(note.beat)
 	if ms < target - HIT_WINDOW_MS:
 		return
-	var press := _take_key_for_arc(target - HIT_WINDOW_MS, target + HIT_WINDOW_MS, note.angle, note.width)
+	var press := _take_key_for_arc(target - HIT_WINDOW_MS, target + HIT_WINDOW_MS, note.angle, note.arc_width())
 	if not press.is_empty():
 		var tier := _tier_for(float(press["time"]) - target)
 		state["done"] = true
@@ -338,7 +338,7 @@ func _judge_tap(note: Note, ms: float, beat: float) -> void:
 		_combo += 1
 		_max_combo = maxi(_max_combo, _combo)
 		_add_judgement(tier)
-		_pulse_at(note.angle, beat, _tier_color(tier), tier, note.width, "tap")
+		_pulse_at(note.angle, beat, _tier_color(tier), tier, note.arc_width(), "tap")
 		_sfx.play(HitSfx.kind_for_note(note), randf_range(0.98, 1.02))
 		_record_error(float(press["time"]) - target, "Tap #%d %s" % [note.id, tier])
 		return
@@ -347,7 +347,7 @@ func _judge_tap(note: Note, ms: float, beat: float) -> void:
 		_miss_count += 1
 		_add_judgement("MISS")
 		_combo = 0
-		_pulse_at(note.angle, beat, UITheme.RED, "MISS", note.width)
+		_pulse_at(note.angle, beat, UITheme.RED, "MISS", note.arc_width())
 		_add_log("MISS Tap #%d @ %.0fms" % [note.id, target])
 
 
@@ -358,14 +358,14 @@ func _judge_hold(note: Note, ms: float, beat: float) -> void:
 	if not state["started"]:
 		if ms < target - HIT_WINDOW_MS:
 			return
-		var press := _take_key_for_arc(target - HIT_WINDOW_MS, target + HIT_WINDOW_MS, note.angle, note.width + HOLD_ARC_PAD)
+		var press := _take_key_for_arc(target - HIT_WINDOW_MS, target + HIT_WINDOW_MS, note.angle, note.arc_width() + HOLD_ARC_PAD)
 		if not press.is_empty():
 			var head_tier := _tier_for(float(press["time"]) - target)
 			state["started"] = true
 			state["head"] = true
 			state["key"] = int(press.get("key", 0))
 			state["head_tier"] = head_tier
-			_pulse_at(note.angle, beat, _tier_color(head_tier), head_tier, note.width, "hold")
+			_pulse_at(note.angle, beat, _tier_color(head_tier), head_tier, note.arc_width(), "hold")
 			_sfx.play("hold", 0.92)
 			_add_log("HOLD #%d HEAD %s" % [note.id, head_tier])
 			return
@@ -374,7 +374,7 @@ func _judge_hold(note: Note, ms: float, beat: float) -> void:
 			_miss_count += 1
 			_add_judgement("MISS")
 			_combo = 0
-			_pulse_at(note.angle, beat, UITheme.RED, "MISS", note.width)
+			_pulse_at(note.angle, beat, UITheme.RED, "MISS", note.arc_width())
 			_add_log("MISS Hold #%d (head)" % note.id)
 		return
 	# Hold 绑定起手键：松开起手键才算断，换成另一个键点 Tap 不会误续。
@@ -384,7 +384,7 @@ func _judge_hold(note: Note, ms: float, beat: float) -> void:
 		_miss_count += 1
 		_add_judgement("MISS")
 		_combo = 0
-		_pulse_at(note.angle, beat, UITheme.RED, "MISS", note.width)
+		_pulse_at(note.angle, beat, UITheme.RED, "MISS", note.arc_width())
 		_add_log("MISS Hold #%d (key released)" % note.id)
 		return
 	if ms >= end_ms:
@@ -394,7 +394,7 @@ func _judge_hold(note: Note, ms: float, beat: float) -> void:
 		_combo += 1
 		_max_combo = maxi(_max_combo, _combo)
 		_add_judgement(tier)
-		_pulse_at(note.angle, beat, _tier_color(tier), tier, note.width, "tap")
+		_pulse_at(note.angle, beat, _tier_color(tier), tier, note.arc_width(), "tap")
 		_sfx.play("hold", 1.08)
 		_record_error(ms - end_ms, "HOLD #%d COMPLETE %s" % [note.id, tier])
 
@@ -424,7 +424,7 @@ func _judge_path(note: Note, ms: float, beat: float, cursor_u: float, valid: boo
 				_miss_count += 1
 				_add_judgement("MISS")
 				_combo = 0
-				_pulse_at(note.angle, beat, UITheme.RED, "MISS", note.width)
+				_pulse_at(note.angle, beat, UITheme.RED, "MISS", note.arc_width())
 				_add_log("PATH #%d HEAD MISS" % note.id)
 				state["head_judged"] = true
 	if not state["tail_judged"] and ms >= tail_ms - HIT_WINDOW_MS:
@@ -623,7 +623,7 @@ func _judge_anchor(note: Note, ms: float, beat: float) -> void:
 		_combo += 1
 		_max_combo = maxi(_max_combo, _combo)
 		_add_judgement(tier)
-		_pulse_at(note.angle, beat, _tier_color(tier), tier, note.width, "tap")
+		_pulse_at(note.angle, beat, _tier_color(tier), tier, note.arc_width(), "tap")
 		_sfx.play("anchor", 1.0)
 		_record_error(float(press["time"]) - target, "ANCHOR #%d %s" % [note.id, tier])
 		return

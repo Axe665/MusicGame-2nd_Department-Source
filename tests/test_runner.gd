@@ -44,6 +44,7 @@ func _initialize() -> void:
 		"test_simai_directive_slot",
 		"test_simai_bend_shapes",
 		"test_simai_osu_friendly",
+		"test_note_length_system",
 	]
 	for test_name in tests:
 		if call(test_name) != true:
@@ -464,8 +465,11 @@ func test_playability_validator() -> bool:
 	var chart := Chart.new()
 	var a := Note.new("tap", 0.0, 0.0, 120.0)
 	a.id = 1
+	# 普通 Tap 现在只有 0.5 l；这里用 1.0 l 的大小 Tap 保持 120° 的命中弧。
+	a.set_size_ratio(1.0)
 	var b := Note.new("tap", 0.0, 90.0, 120.0)
 	b.id = 2
+	b.set_size_ratio(1.0)
 	chart.notes = [a, b]
 	var issues := Validator.validate(chart)
 	if Validator.errors(issues).is_empty():
@@ -1154,4 +1158,36 @@ func test_simai_bend_shapes() -> bool:
 			var side_q := (Vector2(float(mid_q["x"]), float(mid_q["y"])) - head).cross(tail - head)
 			ok(signf(side_p) != signf(side_q), "p and q curve to opposite sides")
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	return true
+
+
+func test_note_length_system() -> bool:
+	# 长度体系：l = note.width；普通 Tap / Hold 头 = 0.5 l，大小 Tap = ratio × l。
+	var tap := Note.new("tap", 0.0, 0.0, 60.0)
+	near(tap.arc_width(), 30.0, 0.0001, "normal tap is 0.5 l")
+	near(tap.length_ratio(), 0.5, 0.0001, "normal tap ratio is 0.5")
+	tap.set_size_ratio(0.0)
+	near(tap.arc_width(), 0.0, 0.0001, "sized tap can be 0 l")
+	tap.set_size_ratio(1.5)
+	near(tap.arc_width(), 90.0, 0.0001, "sized tap can reach 1.5 l")
+	tap.set_size_ratio(0.735)
+	near(tap.size_ratio, 0.74, 0.0001, "sized tap snaps to two decimals")
+	near(tap.arc_width(), 44.4, 0.001, "sized tap length follows the ratio")
+	var hold := Note.new("hold", 0.0, 0.0, 60.0)
+	near(hold.arc_width(), 30.0, 0.0001, "hold head is 0.5 l")
+	near(hold.length_ratio(), 0.5, 0.0001, "hold ignores the sized flag")
+	var path := Note.new("path", 0.0, 0.0, 60.0)
+	near(path.arc_width(), 60.0, 0.0001, "path keeps its head width")
+	near(Note.SPAWN_LENGTH_RATIO, 1.0 / 6.0, 0.000001, "spawn length is 1/6 l")
+	# 序列化：只有大小 Tap 写 sized/size，普通 Tap 不写。
+	var sized := Note.new("tap", 1.0, 45.0, 60.0)
+	sized.set_size_ratio(0.75)
+	var data := sized.to_dict()
+	ok(bool(data.get("sized", false)), "sized tap persists the flag")
+	near(float(data.get("size", 0.0)), 0.75, 0.001, "sized tap persists the ratio")
+	var loaded := Note.from_dict(data)
+	ok(loaded.sized, "sized tap roundtrips the flag")
+	near(loaded.arc_width(), 45.0, 0.001, "sized tap roundtrips the length")
+	var plain := Note.new("tap", 2.0, 0.0, 60.0)
+	ok(not plain.to_dict().has("sized"), "plain tap writes no size fields")
 	return true

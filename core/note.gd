@@ -3,11 +3,26 @@ extends RefCounted
 
 const TYPES := ["tap", "hold", "path", "trace", "anchor", "bell"]
 
+## 本作把"长度"统一到 l 上：l = 旧版 tap 与判定环重合时的条带长度，
+## 也就是 note.width 这个角度（默认 60°）画出来的弧长。
+##   普通 Tap / Hold 头 = 0.5 l
+##   大小 Tap（sized）= size_ratio × l，size_ratio ∈ [0, 1.5]
+## 数值同时用于绘制与判定，看到的长度就是能打到的长度。
+const TAP_LENGTH_SCALE := 0.5
+const HOLD_HEAD_LENGTH_SCALE := 0.5
+const SIZED_TAP_MIN := 0.0
+const SIZED_TAP_MAX := 1.5
+## 出现时（环心）的长度 = 1/6 l，飞向判定环的过程中长到 1 l。
+const SPAWN_LENGTH_RATIO := 1.0 / 6.0
+
 var id: int = 1
 var type: String = "tap"
 var beat: float = 0.0
 var angle: float = 0.0
 var width: float = 60.0
+## 大小 Tap：sized 为 true 时长度取 size_ratio × l，否则按 TAP_LENGTH_SCALE 固定。
+var sized: bool = false
+var size_ratio: float = 1.0
 var end_beat: float = 0.0
 var wait_beat: float = 0.0
 var tail_angle: float = 0.0
@@ -46,6 +61,26 @@ func _init(p_type: String = "tap", p_beat: float = 0.0, p_angle: float = 0.0, p_
 
 func duration() -> float:
 	return maxf(0.0, end_beat - beat)
+
+
+## 相对 l 的倍率。Path / Trace / Anchor / Bell 不参与长度系统，返回 1。
+func length_ratio() -> float:
+	if type == "tap":
+		return clampf(size_ratio, SIZED_TAP_MIN, SIZED_TAP_MAX) if sized else TAP_LENGTH_SCALE
+	if type == "hold":
+		return HOLD_HEAD_LENGTH_SCALE
+	return 1.0
+
+
+## 到判定环时的实际角度宽度。绘制与判定都走这里，保证"看到多长 = 能打多长"。
+func arc_width() -> float:
+	return maxf(0.0, width * length_ratio())
+
+
+## 大小 Tap 只允许 Tap 使用；给编辑器一个统一的入口。
+func set_size_ratio(value: float) -> void:
+	sized = true
+	size_ratio = clampf(snappedf(value, 0.01), SIZED_TAP_MIN, SIZED_TAP_MAX)
 
 
 func is_point_target() -> bool:
@@ -196,6 +231,10 @@ func to_dict() -> Dictionary:
 		data["plane_y"] = snappedf(plane_y, 0.0001)
 		data["plane_radius"] = snappedf(plane_radius, 0.0001)
 	match type:
+		"tap":
+			if sized:
+				data["sized"] = true
+				data["size"] = snappedf(size_ratio, 0.01)
 		"hold":
 			data["end_beat"] = snappedf(end_beat, 0.001)
 			data["hold"] = hold
@@ -271,6 +310,8 @@ static func from_dict(raw: Dictionary) -> Note:
 	note.anchor_pair = int(raw.get("pair", -1))
 	note.pair_id = String(raw.get("pair_id", ""))
 	note.center_u = float(raw.get("center_u", 0.25))
+	note.sized = bool(raw.get("sized", false)) and note.type == "tap"
+	note.size_ratio = clampf(float(raw.get("size", 1.0)), SIZED_TAP_MIN, SIZED_TAP_MAX)
 	if raw.has("visual"):
 		note.visual_pts = _points_from_array(raw.get("visual", []))
 	if raw.has("path_gaps"):

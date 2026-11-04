@@ -1440,6 +1440,9 @@ func _unhandled_input(event: InputEvent) -> void:
 			KEY_1, KEY_2, KEY_3, KEY_4, KEY_5, KEY_6, KEY_7:
 				_set_tool(["tap", "hold", "path", "trace", "anchor", "bell", "red"][event.keycode - KEY_1])
 				accept_event()
+			KEY_8:
+				_set_tool("tap_sized")
+				accept_event()
 			KEY_B:
 				_set_tool("boundary")
 				accept_event()

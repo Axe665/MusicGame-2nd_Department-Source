@@ -372,6 +372,15 @@ func _build_note_page_for(page: VBoxContainer, note: Note) -> void:
 	)
 	_note_widgets["width"] = width_spin
 	_remember_row("width", width_spin)
+	# 大小 Tap：到判定环的长度，单位是 l（旧版 tap 的长度）。0.00–1.50，两位小数。
+	var length_spin := _spin(common, "长度 ×l", note.length_ratio(), Note.SIZED_TAP_MIN, Note.SIZED_TAP_MAX, 0.01, func(value: float) -> void:
+		if _active_note != null and _active_note.type == "tap":
+			_active_note.set_size_ratio(value)
+	)
+	_note_widgets["length"] = length_spin
+	_remember_row("length", length_spin)
+	var tap_group := _note_group(page, "tapsize", "长度")
+	_label(tap_group, "普通 Tap 与 Hold 头都固定 0.50 l；大小 Tap 可调 0.00–1.50 l（两位小数）；环心出现时是 1/6 l。", 11, UITheme.MUTED)
 
 	var plane := _note_group(page, "plane", "平面音符")
 	var px := _spin(plane, "平面 x", note.plane_x, 0.0, 1.0, 0.001, func(value: float) -> void:
@@ -623,13 +632,18 @@ func _refresh_note_page() -> void:
 	_note_widgets["end"].text = _app.chart.timing.format_beat(note.end_beat)
 	_note_widgets["angle"].value = note.angle
 	_note_widgets["width"].value = note.width
+	_note_widgets["length"].value = note.length_ratio()
 	var is_plane := note.space == "plane" and note.type not in ["path", "trace"]
 	var is_bell := note.type == "bell"
 	_note_rows["end"].visible = note.type in ["hold", "path", "trace"]
 	_note_rows["angle"].visible = not is_bell and not is_plane
 	_note_rows["width"].visible = not is_bell and not is_plane
+	_note_rows["length"].visible = note.type == "tap"
+	if note.type == "tap":
+		_note_widgets["length"].tooltip_text = "到判定环的长度 %.1f°（= %.2f l，普通 Tap 固定 0.50 l）" % [note.arc_width(), note.length_ratio()]
 	_note_groups["common"].visible = true
 	_note_groups["misc"].visible = true
+	_note_groups["tapsize"].visible = note.type == "tap"
 	_note_groups["plane"].visible = is_plane
 	_note_groups["bell"].visible = is_bell
 	_note_groups["path"].visible = note.type == "path"
