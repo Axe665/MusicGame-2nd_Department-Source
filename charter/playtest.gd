@@ -3,12 +3,19 @@ extends Control
 
 signal exit_requested
 
-const PERFECT_MS := 90.0
-const GREAT_MS := 150.0
-const GOOD_MS := 230.0
+const PERFECT_MS := 100.0
+const GREAT_MS := 170.0
+const GOOD_MS := 260.0
 const HIT_WINDOW_MS := GOOD_MS
-const BELL_WINDOW_MS := 250.0
+const BELL_WINDOW_MS := 300.0
 const RED_LIMIT_SEC := 0.2
+# 鼠标判定半径：非 Tap 音符统一放大，避免要求像素级瞄准。
+const PATH_HEAD_RADIUS := 92.0
+const PATH_TAIL_RADIUS := 96.0
+const TRACE_HEAD_RADIUS := 72.0
+const TRACE_CONTACT_PX := 56.0
+const BELL_COLLECT_RADIUS := 112.0
+const HOLD_ARC_PAD := 10.0
 
 var _app: Node = null
 var chart: Chart = null
@@ -47,6 +54,7 @@ var _sfx: HitSfx
 
 var _top_time: Label
 var _top_stats: Label
+var _style_label: Label
 var _results: PanelContainer
 var _results_text: RichTextLabel
 var _results_button: Button
@@ -59,6 +67,7 @@ func _ready() -> void:
 	_sfx = HitSfx.new()
 	_sfx.name = "PlaytestHitSfx"
 	add_child(_sfx)
+	_sfx.set_style(String(_app.hit_sfx_style) if _app != null else "default")
 	_build_ui()
 
 
@@ -78,6 +87,10 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	_preview.show_debug = false
 	_preview.flow_scale = float(_app.flow_scale if _app != null else 1.0)
 	_preview.star_speed = float(_app.star_speed if _app != null else 1.0)
+	_preview.note_skin = String(_app.note_skin if _app != null else "candy")
+	_preview.hit_fx_style = String(_app.hit_fx_style if _app != null else "burst")
+	# 鼠标移动不再按帧累积，瞄准反馈早一帧到达。
+	Input.set_use_accumulated_input(false)
 	_preview.time_beat = start_beat
 	_preview.playing = true
 	_preview.visible = true
@@ -123,6 +136,10 @@ func _build_ui() -> void:
 	hint.add_theme_font_size_override("font_size", 11)
 	hint.add_theme_color_override("font_color", UITheme.MUTED)
 	row.add_child(hint)
+	_style_label = Label.new()
+	_style_label.add_theme_font_size_override("font_size", 11)
+	_style_label.add_theme_color_override("font_color", UITheme.ACCENT)
+	row.add_child(_style_label)
 
 	var stats_panel := PanelContainer.new()
 	stats_panel.name = "StatsBar"
@@ -166,7 +183,7 @@ func _build_ui() -> void:
 	box.add_child(_results_button)
 
 	var bottom := Label.new()
-	bottom.text = "任意有效键：Tap / Hold / Anchor；Path / Bell / Trace 用鼠标定位；Red 停留 200ms 断连；[ / ] 调整判定偏移。"
+	bottom.text = "任意有效键：Tap / Hold / Anchor；Path / Bell / Trace 用鼠标定位；Red 停留 200ms 断连；[ / ] 判定偏移；F6 换音符外观；F7 换打击特效。"
 	bottom.add_theme_font_size_override("font_size", 11)
 	bottom.add_theme_color_override("font_color", Color(UITheme.MUTED.r, UITheme.MUTED.g, UITheme.MUTED.b, 0.8))
 	bottom.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -341,7 +358,7 @@ func _judge_hold(note: Note, ms: float, beat: float) -> void:
 	if not state["started"]:
 		if ms < target - HIT_WINDOW_MS:
 			return
-		var press := _take_key_for_arc(target - HIT_WINDOW_MS, target + HIT_WINDOW_MS, note.angle, note.width)
+		var press := _take_key_for_arc(target - HIT_WINDOW_MS, target + HIT_WINDOW_MS, note.angle, note.width + HOLD_ARC_PAD)
 		if not press.is_empty():
 			var head_tier := _tier_for(float(press["time"]) - target)
 			state["started"] = true
@@ -390,7 +407,7 @@ func _judge_path(note: Note, ms: float, beat: float, cursor_u: float, valid: boo
 	if not state["head_judged"]:
 		if ms >= head_ms - HIT_WINDOW_MS:
 			# 头部：鼠标到环上星头 + 按键，和 Tap 同一套宽松判定。
-			var press := _take_key_for_point(head_ms - HIT_WINDOW_MS, head_ms + HIT_WINDOW_MS, head_point, 58.0)
+			var press := _take_key_for_point(head_ms - HIT_WINDOW_MS, head_ms + HIT_WINDOW_MS, head_point, PATH_HEAD_RADIUS)
 			if not press.is_empty():
 				var tier := _tier_for(float(press["time"]) - head_ms)
 				state["head_hit"] = true
@@ -412,7 +429,7 @@ func _judge_path(note: Note, ms: float, beat: float, cursor_u: float, valid: boo
 				state["head_judged"] = true
 	if not state["tail_judged"] and ms >= tail_ms - HIT_WINDOW_MS:
 		var tail_point: Vector2 = _preview.path_point(note, note.duration(), beat)
-		if mouse.is_finite() and tail_point.is_finite() and mouse.distance_to(tail_point) <= 60.0:
+		if mouse.is_finite() and tail_point.is_finite() and mouse.distance_to(tail_point) <= PATH_TAIL_RADIUS:
 			var tier := _tier_for(ms - tail_ms)
 			state["tail_hit"] = true
 			_hit_count += 1
@@ -441,16 +458,21 @@ func _judge_path(note: Note, ms: float, beat: float, cursor_u: float, valid: boo
 		state["done"] = true
 	if ms < head_ms or ms > tail_ms:
 		return
-	# 中段只看“滑到了没有”：不逐点扣分；鼠标扫过的轨迹按重叠区域削掉。
+	# 中段只看“滑到了没有”：不逐点扣分；轨迹按时间进度连续消失。
 	if bool(state.get("head_hit", false)):
+		var total := note.duration()
+		var wait := clampf(note.wait_beat, 0.0, maxf(0.0, total - 0.001))
+		var q := clampf((beat - note.beat - wait) / maxf(0.001, total - wait), 0.0, 1.0)
+		var progress := 1.0 - pow(1.0 - q, maxf(0.05, note.path_speed))
+		var target := progress
 		if valid:
-			var last: Vector2 = state.get("path_last_mouse", Vector2(INF, INF))
-			if not last.is_finite():
-				last = mouse
-			_preview.erase_path_overlap(note, last, mouse, beat)
-			state["path_last_mouse"] = mouse
-		else:
-			state["path_last_mouse"] = Vector2(INF, INF)
+			var info: Dictionary = _preview.path_fraction(note, mouse, beat)
+			var fraction := float(info.get("fraction", 0.0))
+			# 鼠标只允许领先当前进度一小段；避免停在远处把整条轨迹提前削光。
+			if float(info.get("distance", INF)) <= 64.0 and fraction > progress and fraction <= progress + 0.20:
+				target = fraction
+		_preview.set_path_erased_to(note, target)
+		state["path_last_mouse"] = mouse
 
 
 func _judge_trace(note: Note, ms: float, beat: float, delta: float, mouse: Vector2) -> void:
@@ -465,7 +487,7 @@ func _judge_trace(note: Note, ms: float, beat: float, delta: float, mouse: Vecto
 		if note.trace_style == "slider":
 			var points := _preview.trace_screen_points(note, beat)
 			var head: Vector2 = points[0] if not points.is_empty() else mouse
-			var press := _take_key_for_point(start_ms - HIT_WINDOW_MS, start_ms + HIT_WINDOW_MS, head, 42.0)
+			var press := _take_key_for_point(start_ms - HIT_WINDOW_MS, start_ms + HIT_WINDOW_MS, head, TRACE_HEAD_RADIUS)
 			if not press.is_empty():
 				started = true
 				_sfx.play("path", 0.94)
@@ -518,7 +540,7 @@ func _judge_trace(note: Note, ms: float, beat: float, delta: float, mouse: Vecto
 			var last: Vector2 = state["trace_last"]
 			var step := last.distance_to(mouse)
 			var previous_fraction := float(state.get("trace_frac", 0.0))
-			var jumped := fraction >= previous_fraction + 0.02 and step > 60.0 and distance_to_path <= 40.0
+			var jumped := fraction >= previous_fraction + 0.02 and step > 60.0 and distance_to_path <= TRACE_CONTACT_PX
 			if jumped:
 				# 鼠标向前跳区：跳过的段落从画面削掉，且不累计移动距离。
 				_preview.cut_trace(note, previous_fraction, fraction)
@@ -565,7 +587,7 @@ func _trace_contact(note: Note, mouse: Vector2, beat: float) -> bool:
 	var polyline: Array[Vector2] = []
 	for point in _preview.trace_screen_points(note, beat):
 		polyline.append(point)
-	return JudgeMath.trace_distance(mouse, polyline) <= 34.0
+	return JudgeMath.trace_distance(mouse, polyline) <= TRACE_CONTACT_PX
 
 
 func _judge_bell(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
@@ -576,7 +598,7 @@ func _judge_bell(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 	if ms <= target + BELL_WINDOW_MS:
 		var bell: Dictionary = _preview.bell_screen(note, beat)
 		# 鼠标瞄准有误差：Bell 给一个至少 42px 的收取半径。
-		if not bell.is_empty() and mouse.distance_to(bell["center"]) <= maxf(80.0, float(bell["radius"])):
+		if not bell.is_empty() and mouse.distance_to(bell["center"]) <= maxf(BELL_COLLECT_RADIUS, float(bell["radius"])):
 			state["done"] = true
 			_bell_hits += 1
 			_preview.add_hit_pulse(bell["center"], UITheme.GOLD, "BELL", "bell")
@@ -708,6 +730,10 @@ func _update_top_bar(ms: float, beat: float) -> void:
 	_top_time.text = "%s / %s" % [_format_ms(ms), _format_ms(total)]
 	var accuracy := _accuracy()
 	var offset := float(_app.playtest_offset_ms if _app != null else 0.0)
+	var skin_label := String(Preview3D.skin_presets().get(_preview.note_skin, {}).get("label", _preview.note_skin))
+	var fx_label := String(Preview3D.hit_fx_presets().get(_preview.hit_fx_style, _preview.hit_fx_style))
+	if _style_label != null:
+		_style_label.text = "%s · %s" % [skin_label, fx_label]
 	_top_stats.text = "HIT %d  MISS %d  ACC %s  COMBO %d  |  BELL %d/%d  RED %d  |  OFF %+.0fms" % [
 		_hit_count,
 		_miss_count,
@@ -792,6 +818,14 @@ func _input(event: InputEvent) -> void:
 			get_viewport().set_input_as_handled()
 			return
 		if event.pressed and not event.echo:
+			if event.keycode == KEY_F6:
+				_cycle_note_skin(1)
+				get_viewport().set_input_as_handled()
+				return
+			if event.keycode == KEY_F7:
+				_cycle_hit_fx(1)
+				get_viewport().set_input_as_handled()
+				return
 			if event.keycode == KEY_BRACKETLEFT or event.keycode == KEY_BRACKETRIGHT:
 				var delta := 5.0 if event.keycode == KEY_BRACKETRIGHT else -5.0
 				if _app != null:
@@ -837,6 +871,12 @@ func _finish() -> void:
 	])
 	lines.append("Bell 收集：%d / %d" % [_bell_hits, _bell_total])
 	lines.append("Red 断连：%d 次" % _red_breaks)
+	var average_error := 0.0
+	for error in _errors:
+		average_error += error
+	if not _errors.is_empty():
+		average_error /= float(_errors.size())
+	lines.append("平均误差：%+.1fms（[ / ] 可继续微调判定偏移）" % average_error)
 	lines.append("")
 	lines.append("事件日志（最近 24 条）：")
 	for i in range(maxi(0, _log.size() - 24), _log.size()):
@@ -846,11 +886,33 @@ func _finish() -> void:
 	Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
 
 
+func _cycle_note_skin(step: int) -> void:
+	var keys := Preview3D.skin_presets().keys()
+	var index := keys.find(_preview.note_skin)
+	_preview.note_skin = String(keys[posmod(index + step, keys.size())])
+	if _app != null:
+		_app.note_skin = _preview.note_skin
+		_app.save_settings()
+	_update_top_bar(_chart_ms(), chart.timing.chart_ms_to_beat(_chart_ms()))
+
+
+func _cycle_hit_fx(step: int) -> void:
+	var keys := Preview3D.hit_fx_presets().keys()
+	var index := keys.find(_preview.hit_fx_style)
+	_preview.hit_fx_style = String(keys[posmod(index + step, keys.size())])
+	if _app != null:
+		_app.hit_fx_style = _preview.hit_fx_style
+		_app.save_settings()
+	_update_top_bar(_chart_ms(), chart.timing.chart_ms_to_beat(_chart_ms()))
+
+
 func _exit() -> void:
+	Input.set_use_accumulated_input(true)
 	Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
 	exit_requested.emit()
 
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_PREDELETE or what == NOTIFICATION_WM_CLOSE_REQUEST:
+		Input.set_use_accumulated_input(true)
 		Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)

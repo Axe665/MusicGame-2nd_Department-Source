@@ -37,8 +37,16 @@ var _trace_hint_shown: bool = false
 var _waveform_peaks: PackedFloat32Array = PackedFloat32Array()
 var _waveform_duration: float = 0.0
 var _waveform_audio_path: String = ""
+var _wave_key: String = ""
+var _wave_right: PackedVector2Array = PackedVector2Array()
+var _wave_left: PackedVector2Array = PackedVector2Array()
 var _last_playhead_redraw: int = 0
 var _overlay: Control
+var _sorted_notes: Array[Note] = []
+var _sorted_chart: Chart = null
+var _sorted_count: int = -1
+var _sorted_dirty: bool = true
+var _sorted_max_duration: float = 0.0
 var _ghost_layer = null
 var _clipboard_notes: Array[Note] = []
 var _clipboard_reference_beat: float = 0.0
@@ -277,6 +285,7 @@ func _sync_ghost_layer() -> void:
 
 
 func _on_chart_changed() -> void:
+	_sorted_dirty = true
 	_refresh_waveform()
 	queue_redraw()
 
@@ -324,6 +333,7 @@ func _refresh_waveform() -> void:
 	_waveform_audio_path = path
 	_waveform_peaks.clear()
 	_waveform_duration = 0.0
+	_wave_key = ""
 	if path.is_empty() or not path.to_lower().ends_with(".wav"):
 		return
 	var resolved := path
@@ -384,25 +394,34 @@ func _draw_waveform(plot: Rect2) -> void:
 		draw_string(UITheme.mono_font(), Vector2(strip.position.x - 2, plot.position.y + 12), "WAVE", HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(1, 1, 1, 0.22))
 		return
 	var chart: Chart = _app.chart
-	var right := PackedVector2Array()
-	var left := PackedVector2Array()
-	var center_x := strip.position.x + strip.size.x * 0.5
-	var half := strip.size.x * 0.5 - 2.0
-	for y in range(int(plot.position.y), int(plot.end.y), 2):
-		var beat := _y_to_beat(float(y))
-		var chart_ms := chart.timing.beat_to_chart_ms(beat)
-		var audio_ms := chart_ms - chart.offset_ms
-		var fraction := audio_ms / 1000.0 / _waveform_duration
-		if fraction < 0.0 or fraction > 1.0:
-			continue
-		var index := clampi(int(fraction * _waveform_peaks.size()), 0, _waveform_peaks.size() - 1)
-		var peak := _waveform_peaks[index]
-		right.append(Vector2(center_x + peak * half, y))
-		left.append(Vector2(center_x - peak * half, y))
-	if right.size() > 1:
-		draw_polyline(right, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.42), 1.0, true)
-	if left.size() > 1:
-		draw_polyline(left, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.26), 1.0, true)
+	var timing_sig := "%.3f|%d" % [chart.offset_ms, chart.timing.points.size()]
+	for point in chart.timing.points:
+		timing_sig += "|%.4f" % point.bpm
+	var key := "%s|%.4f|%.4f|%.1f|%.1f|%.1f|%d|%s" % [
+		_waveform_audio_path, _waveform_duration, scroll_beat, px_per_beat,
+		plot.position.y, plot.size.y, _waveform_peaks.size(), timing_sig,
+	]
+	if key != _wave_key:
+		_wave_key = key
+		_wave_right = PackedVector2Array()
+		_wave_left = PackedVector2Array()
+		var center_x := strip.position.x + strip.size.x * 0.5
+		var half := strip.size.x * 0.5 - 2.0
+		for y in range(int(plot.position.y), int(plot.end.y), 2):
+			var beat := _y_to_beat(float(y))
+			var chart_ms := chart.timing.beat_to_chart_ms(beat)
+			var audio_ms := chart_ms - chart.offset_ms
+			var fraction := audio_ms / 1000.0 / _waveform_duration
+			if fraction < 0.0 or fraction > 1.0:
+				continue
+			var index := clampi(int(fraction * _waveform_peaks.size()), 0, _waveform_peaks.size() - 1)
+			var peak := _waveform_peaks[index]
+			_wave_right.append(Vector2(center_x + peak * half, y))
+			_wave_left.append(Vector2(center_x - peak * half, y))
+	if _wave_right.size() > 1:
+		draw_polyline(_wave_right, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.42), 1.0, true)
+	if _wave_left.size() > 1:
+		draw_polyline(_wave_left, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.26), 1.0, true)
 
 
 func _draw_grid(plot: Rect2) -> void:
@@ -537,24 +556,62 @@ func _draw_notes(plot: Rect2) -> void:
 	var chart: Chart = _app.chart if _app != null else null
 	if chart == null:
 		return
-	for note in chart.notes:
-		match note.type:
-			"tap":
-				_draw_tap(note)
-			"hold":
-				_draw_hold(note)
-			"path":
-				_draw_path(note)
-			"trace":
-				_draw_trace(note, plot)
-			"anchor":
-				_draw_anchor(note)
-			"bell":
-				_draw_bell(note)
+	var first_beat := scroll_beat - 2.0
+	var last_beat := scroll_beat + _visible_beats() + 2.0
+	if _drag_mode != "" or _drag_width_note != null:
+		# 拖拽时音符会临时改变 beat，直接全量绘制，避免二分索引顺序失效。
+		for note in chart.notes:
+			var note_end := note.end_beat if note.type in ["hold", "path", "trace"] else note.beat
+			if note.beat <= last_beat and note_end >= first_beat:
+				_draw_note(note, plot)
+	else:
+		if _sorted_dirty or _sorted_chart != chart or _sorted_count != chart.notes.size():
+			_sorted_chart = chart
+			_sorted_count = chart.notes.size()
+			_sorted_notes = chart.notes.duplicate()
+			_sorted_notes.sort_custom(func(a: Note, b: Note) -> bool: return a.beat < b.beat)
+			_sorted_max_duration = 0.0
+			for note in _sorted_notes:
+				if note.type in ["hold", "path", "trace"]:
+					_sorted_max_duration = maxf(_sorted_max_duration, note.end_beat - note.beat)
+			_sorted_dirty = false
+		var search_start := first_beat - _sorted_max_duration
+		var low := 0
+		var high := _sorted_notes.size()
+		while low < high:
+			var mid := (low + high) / 2
+			if _sorted_notes[mid].beat < search_start:
+				low = mid + 1
+			else:
+				high = mid
+		for i in range(low, _sorted_notes.size()):
+			var note := _sorted_notes[i]
+			if note.beat > last_beat:
+				break
+			var note_end := note.end_beat if note.type in ["hold", "path", "trace"] else note.beat
+			if note_end < first_beat:
+				continue
+			_draw_note(note, plot)
 	if _pending_path != null:
 		var head := Vector2(_u_to_x(_pending_path.angle / 360.0), _beat_to_y(_pending_path.beat))
 		var tail := Vector2(_u_to_x(_hover_u), _beat_to_y(_hover_beat))
 		draw_dashed_line(head, tail, UITheme.CYAN, 1.5, 6.0)
+
+
+func _draw_note(note: Note, plot: Rect2) -> void:
+	match note.type:
+		"tap":
+			_draw_tap(note)
+		"hold":
+			_draw_hold(note)
+		"path":
+			_draw_path(note)
+		"trace":
+			_draw_trace(note, plot)
+		"anchor":
+			_draw_anchor(note)
+		"bell":
+			_draw_bell(note)
 
 
 func _draw_tap(note: Note) -> void:

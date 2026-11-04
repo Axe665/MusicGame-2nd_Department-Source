@@ -9,6 +9,13 @@ var _rebuilding: bool = false
 var _video_dialog: FileDialog
 var _selected_timing: int = 0
 var _selected_visual: int = 0
+var _note_page_ready: bool = false
+var _note_page_chart: Chart = null
+var _active_note: Note = null
+var _note_groups: Dictionary = {}
+var _note_rows: Dictionary = {}
+var _note_widgets: Dictionary = {}
+var _note_empty_label: Label = null
 var _tap_times: Array[int] = []
 var _tap_label: Label
 var _timing_base_spin: SpinBox
@@ -27,6 +34,8 @@ func _ready() -> void:
 		_app.tool_changed.connect(_on_tool_changed)
 		tab_changed.connect(_on_tab_changed)
 	_rebuild()
+	if _app != null:
+		_prebuild_note_page()
 
 
 func _build_tabs() -> void:
@@ -82,9 +91,21 @@ func _rebuild() -> void:
 	if _app == null or _rebuilding:
 		return
 	_rebuilding = true
-	for page in _page_list:
-		for child in page.get_children():
-			child.queue_free()
+	if current_tab == 0 and _note_page_ready and _note_page_chart == _app.chart and _app.selected_notes.size() == 1 and _app.get_selected_note() != null:
+		_refresh_note_page()
+		refresh_tab_titles()
+		_rebuilding = false
+		return
+	if current_tab == 0 and _note_page_ready and _note_page_chart == _app.chart and _app.selected_notes.is_empty():
+		_show_note_empty()
+		refresh_tab_titles()
+		_rebuilding = false
+		return
+	var current_page: VBoxContainer = _page_list[clampi(current_tab, 0, _page_list.size() - 1)]
+	for child in current_page.get_children():
+		child.queue_free()
+	if current_tab == 0:
+		_note_page_ready = false
 	match current_tab:
 		0:
 			_build_note_page(_pages["音符"])
@@ -112,7 +133,7 @@ func refresh_tab_titles() -> void:
 	set_tab_title(1, "区域" if _app.selected_region_id < 0 else "区域 · %d" % _app.selected_region_id)
 	set_tab_title(2, "边界")
 	set_tab_title(3, "事件" if _app.selected_event_id.is_empty() else "事件 · %s" % _app.selected_event_id)
-	set_tab_title(4, "视图")
+	set_tab_title(4, "视图/设置")
 	set_tab_title(5, "时间")
 	set_tab_title(6, "谱面")
 
@@ -123,11 +144,12 @@ func _empty(title: String, hint: String) -> void:
 	_label(page, hint, 12, UITheme.MUTED)
 
 
-func _section(page: VBoxContainer, title: String) -> void:
+func _section(page: VBoxContainer, title: String) -> Label:
 	var label := Label.new()
 	label.text = title
 	UITheme.style_section(label)
 	page.add_child(label)
+	return label
 
 
 func _label(page: VBoxContainer, text: String, size: int = 12, color: Color = UITheme.MUTED, wrap: bool = true) -> Label:
@@ -140,7 +162,7 @@ func _label(page: VBoxContainer, text: String, size: int = 12, color: Color = UI
 	return label
 
 
-func _row(page: VBoxContainer, label_text: String, control: Control) -> void:
+func _row(page: VBoxContainer, label_text: String, control: Control) -> HBoxContainer:
 	var row := HBoxContainer.new()
 	row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	var label := Label.new()
@@ -152,6 +174,7 @@ func _row(page: VBoxContainer, label_text: String, control: Control) -> void:
 	control.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	row.add_child(control)
 	page.add_child(row)
+	return row
 
 
 func _spin(page: VBoxContainer, label_text: String, value: float, min_value: float, max_value: float, step: float, callback: Callable) -> SpinBox:
@@ -212,6 +235,19 @@ func _option(page: VBoxContainer, label_text: String, items: Array[String], sele
 	return option
 
 
+func _setting_option(page: VBoxContainer, label_text: String, items: Array[String], selected: int, callback: Callable) -> OptionButton:
+	var option := OptionButton.new()
+	for item in items:
+		option.add_item(item)
+	option.selected = clampi(selected, 0, maxi(0, items.size() - 1))
+	option.item_selected.connect(func(index: int) -> void:
+		if not _applying:
+			callback.call(index)
+	)
+	_row(page, label_text, option)
+	return option
+
+
 func _check(page: VBoxContainer, label_text: String, value: bool, callback: Callable) -> CheckBox:
 	var check := CheckBox.new()
 	check.text = label_text
@@ -224,7 +260,7 @@ func _check(page: VBoxContainer, label_text: String, value: bool, callback: Call
 	return check
 
 
-func _buttons(page: VBoxContainer, specs: Array[Dictionary]) -> void:
+func _buttons(page: VBoxContainer, specs: Array[Dictionary]) -> HBoxContainer:
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 6)
 	for spec in specs:
@@ -235,6 +271,7 @@ func _buttons(page: VBoxContainer, specs: Array[Dictionary]) -> void:
 		button.pressed.connect(callback)
 		row.add_child(button)
 	page.add_child(row)
+	return row
 
 
 func _apply(callback: Callable) -> void:
@@ -245,13 +282,33 @@ func _apply(callback: Callable) -> void:
 	_applying = false
 
 
+func _note_group(page: VBoxContainer, key: String, title: String) -> VBoxContainer:
+	var group := VBoxContainer.new()
+	group.add_theme_constant_override("separation", 4)
+	var label := Label.new()
+	label.text = title
+	UITheme.style_section(label)
+	group.add_child(label)
+	var body := VBoxContainer.new()
+	body.add_theme_constant_override("separation", 4)
+	group.add_child(body)
+	page.add_child(group)
+	_note_groups[key] = group
+	return body
+
+
+func _remember_row(key: String, control: Control) -> void:
+	_note_rows[key] = control.get_parent()
+
+
 func _build_note_page(page: VBoxContainer) -> void:
 	if _app.selected_notes.size() > 1:
+		_note_page_ready = false
 		_section(page, "多选")
 		_label(page, "已选中 %d 个音符。拖动可整体移动；数值混合时不显示单一值。" % _app.selected_notes.size(), 12, UITheme.INK)
 		var types := {}
-		for note in _app.get_selected_notes():
-			types[note.type] = true
+		for item in _app.get_selected_notes():
+			types[item.type] = true
 		_label(page, "类型：%s" % ",".join(types.keys()), 12, UITheme.MUTED)
 		_buttons(page, [
 			{"text": "删除选中", "callback": _delete_selected},
@@ -260,109 +317,378 @@ func _build_note_page(page: VBoxContainer) -> void:
 		return
 	var note: Note = _app.get_selected_note()
 	if note == null:
+		_note_page_ready = false
 		_empty("音符", "在上方类型卡片（或 1–7 快捷键）选择工具；点击画布放置，预览窗可点边界放置。")
 		return
-	_section(page, "%s · #%d" % [note.type.to_upper(), note.id])
-	_row(page, "类型", _readonly(note.type))
-	_row(page, "id", _readonly(str(note.id)))
-	_beat(page, "开始拍", note.beat, func(value: float) -> void:
-		var delta := value - note.beat
-		note.beat = value
-		if note.type in ["hold", "path", "trace"]:
-			note.end_beat = maxf(note.beat + 0.25, note.end_beat + delta)
+	if _note_page_ready and _note_page_chart == _app.chart:
+		_refresh_note_page()
+		return
+	_note_page_ready = true
+	_note_page_chart = _app.chart
+	_active_note = note
+	_build_note_page_for(page, note)
+	_refresh_note_page()
+
+
+func _build_note_page_for(page: VBoxContainer, note: Note) -> void:
+	_note_groups.clear()
+	_note_rows.clear()
+	_note_widgets.clear()
+
+	var common := _note_group(page, "common", "音符")
+	var type_value := _readonly("")
+	_note_rows["type"] = _row(common, "类型", type_value)
+	_note_widgets["type"] = type_value
+	var id_value := _readonly("")
+	_note_rows["id"] = _row(common, "id", id_value)
+	_note_widgets["id"] = id_value
+	var start_edit := _beat(common, "开始拍", note.beat, func(value: float) -> void:
+		var n := _active_note
+		if n == null:
+			return
+		var delta := value - n.beat
+		n.beat = value
+		if n.type in ["hold", "path", "trace"]:
+			n.end_beat = maxf(n.beat + 0.25, n.end_beat + delta)
 	)
-	if note.type in ["hold", "path", "trace"]:
-		_beat(page, "结束拍", note.end_beat, func(value: float) -> void:
-			note.end_beat = maxf(note.beat + 0.25, value)
-		)
-	if note.type == "bell":
-		_spin(page, "中心 u", note.center_u, 0.0, 0.9999, 0.001, func(value: float) -> void: note.center_u = value)
-		_spin(page, "半径 px", note.radius, 4.0, 200.0, 1.0, func(value: float) -> void: note.radius = value)
-	elif note.space == "plane" and note.type not in ["path", "trace"]:
-		_spin(page, "平面 x", note.plane_x, 0.0, 1.0, 0.001, func(value: float) -> void: note.plane_x = value)
-		_spin(page, "平面 y", note.plane_y, 0.0, 1.0, 0.001, func(value: float) -> void: note.plane_y = value)
-		_spin(page, "判定半径", note.plane_radius, 0.02, 0.3, 0.005, func(value: float) -> void: note.plane_radius = value)
-		_label(page, "平面 Tap：按 osu 原 2D 坐标；鼠标进入半径 + 按键判定，不占用环上角度。", 11, UITheme.MUTED)
-	else:
-		_spin(page, "逻辑角度", note.angle, 0.0, 360.0, 0.5, func(value: float) -> void: note.angle = fposmod(value, 360.0))
-		_spin(page, "宽度", note.width, 0.0, 360.0, 1.0, func(value: float) -> void: note.width = value)
-	if note.type == "path":
-		var tail_local := note.path_tail_local()
-		var tail_radius := tail_local.length()
-		var tail_degrees := rad_to_deg(atan2(tail_local.y, tail_local.x))
-		_spin(page, "尾半径 R", tail_radius, 0.05, 1.0, 0.01, func(value: float) -> void:
-			_set_path_tail(note, value, tail_degrees)
-		)
-		_spin(page, "尾角度", tail_degrees, 0.0, 360.0, 0.5, func(value: float) -> void:
-			_set_path_tail(note, tail_radius, value)
-		)
-		_spin(page, "尾宽度", note.tail_width, 0.0, 360.0, 1.0, func(value: float) -> void: note.tail_width = value)
-		_spin(page, "容差比例", note.tolerance, 0.0, 1.0, 0.01, func(value: float) -> void: note.tolerance = value)
-		_spin(page, "采样/拍", note.samples_per_beat, 0.25, 32.0, 0.25, func(value: float) -> void: note.samples_per_beat = value)
-		_spin(page, "滑动速度", note.path_speed, 0.5, 3.0, 0.05, func(value: float) -> void: note.path_speed = value)
-		_label(page, "平面 Path：星头在环上按键，身体/尾在平面内跟随；尾默认 0.65–0.75R。", 11, UITheme.CYAN)
-		_label(page, "中间判定点：%d 个（宽松：滑到即可）；平面点：%d 个" % [note.path_sample_beats().size(), note.trace_pts.size()], 11, UITheme.MUTED)
-		_buttons(page, [
-			{"text": "重画 Path", "callback": func() -> void: _app.set_tool("path")},
-		])
-		_section(page, "中间判定点（设计）")
-		var design_list := ItemList.new()
-		design_list.custom_minimum_size = Vector2(0, 96)
-		for i in note.visual_pts.size():
-			var point: Dictionary = note.visual_pts[i]
-			design_list.add_item("%02d  Δbeat %.2f  Δangle %.1f" % [i, float(point.get("db", 0.0)), float(point.get("da", 0.0))])
-		_selected_visual = clampi(_selected_visual, 0, maxi(0, note.visual_pts.size() - 1))
-		if _selected_visual < design_list.item_count:
-			design_list.select(_selected_visual)
-		design_list.item_selected.connect(func(index: int) -> void:
-			_selected_visual = index
-			_rebuild()
-		)
-		page.add_child(design_list)
-		_buttons(page, [
-			{"text": "加判定点", "callback": func() -> void: _add_visual_point(note)},
-			{"text": "删判定点", "callback": func() -> void: _delete_visual_point(note)},
-		])
-		if _selected_visual >= 0 and _selected_visual < note.visual_pts.size():
-			var point: Dictionary = note.visual_pts[_selected_visual]
-			_spin(page, "Δbeat", float(point.get("db", 0.0)), 0.0, maxf(0.25, note.duration()), 0.01, func(value: float) -> void: point["db"] = value)
-			_spin(page, "Δangle", float(point.get("da", 0.0)), -720.0, 720.0, 0.5, func(value: float) -> void: point["da"] = value)
-		_label(page, "判定点只做编辑器标记；中段仍是滑到即可，不逐点扣分。", 11, UITheme.MUTED)
-		_section(page, "跳区 / 擦除")
-		_spin(page, "中段擦除 %", _path_erase_width(note) * 100.0, 0.0, 80.0, 5.0, func(value: float) -> void:
-			_set_path_erase_width(note, value / 100.0)
-		)
-		_buttons(page, [{"text": "清除擦除", "callback": func() -> void:
-			_apply(func() -> void: _set_path_erase_width(note, 0.0))
-			_rebuild()
-		}])
-		_label(page, "擦除段不渲染、不生成中段检查点；头尾仍各自判定。", 11, UITheme.MUTED)
-	if note.type == "hold":
-		_section(page, "Hold 形态")
-		_label(page, "直 Hold：从内圈笔直连到环上，导入默认使用。" if note.hold_style != "curved" else "弯 Hold：本体沿环弯曲，适合手摆造型。", 11, UITheme.MUTED)
-		_buttons(page, [
-			{"text": "直 Hold", "callback": func() -> void: _set_hold_style(note, "straight")},
-			{"text": "弯 Hold", "callback": func() -> void: _set_hold_style(note, "curved")},
-		])
-	if note.type == "trace":
-		_spin(page, "移动距离 px", note.move_px, 0.0, 1000.0, 1.0, func(value: float) -> void: note.move_px = value)
-		_label(page, "二维点：%d 个；在预览窗用 Trace 工具拖拽重画。" % note.trace_pts.size(), 11, UITheme.MUTED)
-		if note.trace_style == "slider":
-			_label(page, "平面滑条：std 导入的 B/L/C/P 二维轨迹，起始接触 + 沿带移动判定；不再占用环上角度。", 11, UITheme.CYAN)
-		_buttons(page, [
-			{"text": "重画 Trace", "callback": func() -> void: _app.set_tool("trace")},
-		])
-	if note.type == "anchor":
-		_spin(page, "配对角度", note.anchor_pair, -1.0, 90.0, 90.0, func(value: float) -> void: note.anchor_pair = int(value))
-		_text(page, "pairId", note.pair_id, func(value: String) -> void: note.pair_id = value)
-		_label(page, "Anchor 只判时间；配对需同拍反向。", 11, UITheme.MUTED)
-	_spin(page, "颜色槽", note.color, 0.0, 15.0, 1.0, func(value: float) -> void: note.color = int(value))
-	_check(page, "锁定（不可拖动）", note.lock, func(value: bool) -> void: note.lock = value)
-	_buttons(page, [
-		{"text": "定位播放头", "callback": func() -> void: _app.set_playhead(note.beat)},
-		{"text": "复制", "callback": func() -> void: _duplicate_note(note)},
-		{"text": "删除", "callback": func() -> void: _delete_note(note)},
+	_note_widgets["start"] = start_edit
+	_remember_row("start", start_edit)
+	var end_edit := _beat(common, "结束拍", note.end_beat, func(value: float) -> void:
+		var n := _active_note
+		if n != null:
+			n.end_beat = maxf(n.beat + 0.25, value)
+	)
+	_note_widgets["end"] = end_edit
+	_remember_row("end", end_edit)
+	var angle_spin := _spin(common, "逻辑角度", note.angle, 0.0, 360.0, 0.5, func(value: float) -> void:
+		if _active_note != null:
+			_active_note.angle = fposmod(value, 360.0)
+	)
+	_note_widgets["angle"] = angle_spin
+	_remember_row("angle", angle_spin)
+	var width_spin := _spin(common, "宽度", note.width, 0.0, 360.0, 1.0, func(value: float) -> void:
+		if _active_note != null:
+			_active_note.width = value
+	)
+	_note_widgets["width"] = width_spin
+	_remember_row("width", width_spin)
+
+	var plane := _note_group(page, "plane", "平面音符")
+	var px := _spin(plane, "平面 x", note.plane_x, 0.0, 1.0, 0.001, func(value: float) -> void:
+		if _active_note != null:
+			_active_note.plane_x = value
+	)
+	_note_widgets["plane_x"] = px
+	var py := _spin(plane, "平面 y", note.plane_y, 0.0, 1.0, 0.001, func(value: float) -> void:
+		if _active_note != null:
+			_active_note.plane_y = value
+	)
+	_note_widgets["plane_y"] = py
+	var pr := _spin(plane, "判定半径", note.plane_radius, 0.02, 0.3, 0.005, func(value: float) -> void:
+		if _active_note != null:
+			_active_note.plane_radius = value
+	)
+	_note_widgets["plane_r"] = pr
+	_label(plane, "平面 Tap：按 osu 原 2D 坐标；鼠标进入半径 + 按键判定，不占用环上角度。", 11, UITheme.MUTED)
+
+	var bell := _note_group(page, "bell", "Bell")
+	var bu := _spin(bell, "中心 u", note.center_u, 0.0, 0.9999, 0.001, func(value: float) -> void:
+		if _active_note != null:
+			_active_note.center_u = value
+	)
+	_note_widgets["bell_u"] = bu
+	var br := _spin(bell, "半径 px", note.radius, 4.0, 200.0, 1.0, func(value: float) -> void:
+		if _active_note != null:
+			_active_note.radius = value
+	)
+	_note_widgets["bell_r"] = br
+
+	var path_body := _note_group(page, "path", "Path")
+	var tail_local := note.path_tail_local()
+	var tail_radius := tail_local.length()
+	var tail_degrees := rad_to_deg(atan2(tail_local.y, tail_local.x))
+	var tr := _spin(path_body, "尾半径 R", tail_radius, 0.05, 1.0, 0.01, func(value: float) -> void:
+		var n := _active_note
+		if n == null:
+			return
+		var local := n.path_tail_local()
+		_set_path_tail(n, value, rad_to_deg(atan2(local.y, local.x)))
+	)
+	_note_widgets["path_tail_r"] = tr
+	var ta := _spin(path_body, "尾角度", tail_degrees, 0.0, 360.0, 0.5, func(value: float) -> void:
+		var n := _active_note
+		if n == null:
+			return
+		_set_path_tail(n, n.path_tail_local().length(), value)
+	)
+	_note_widgets["path_tail_a"] = ta
+	var tw := _spin(path_body, "尾宽度", note.tail_width, 0.0, 360.0, 1.0, func(value: float) -> void:
+		if _active_note != null:
+			_active_note.tail_width = value
+	)
+	_note_widgets["path_tail_w"] = tw
+	var tol := _spin(path_body, "容差比例", note.tolerance, 0.0, 1.0, 0.01, func(value: float) -> void:
+		if _active_note != null:
+			_active_note.tolerance = value
+	)
+	_note_widgets["path_tol"] = tol
+	var samples := _spin(path_body, "采样/拍", note.samples_per_beat, 0.25, 32.0, 0.25, func(value: float) -> void:
+		if _active_note != null:
+			_active_note.samples_per_beat = value
+	)
+	_note_widgets["path_samples"] = samples
+	var speed := _spin(path_body, "滑动速度", note.path_speed, 0.5, 3.0, 0.05, func(value: float) -> void:
+		if _active_note != null:
+			_active_note.path_speed = value
+	)
+	_note_widgets["path_speed"] = speed
+	var path_counts := _label(path_body, "", 11, UITheme.MUTED)
+	_note_widgets["path_counts"] = path_counts
+	_buttons(path_body, [{"text": "重画 Path", "callback": func() -> void: _app.set_tool("path")}])
+	_label(path_body, "中间判定点（设计）", 12, UITheme.INK)
+	var path_list := ItemList.new()
+	path_list.custom_minimum_size = Vector2(0, 96)
+	path_list.item_selected.connect(func(index: int) -> void:
+		_selected_visual = index
+		_refresh_note_page()
+	)
+	path_body.add_child(path_list)
+	_note_widgets["path_list"] = path_list
+	_buttons(path_body, [
+		{"text": "加判定点", "callback": func() -> void: _add_visual_point(_active_note)},
+		{"text": "删判定点", "callback": func() -> void: _delete_visual_point(_active_note)},
 	])
+	var pdb := _spin(path_body, "Δbeat", 0.0, 0.0, 1.0, 0.01, func(value: float) -> void:
+		var n := _active_note
+		if n != null and _selected_visual >= 0 and _selected_visual < n.visual_pts.size():
+			n.visual_pts[_selected_visual]["db"] = value
+	)
+	_note_widgets["path_db"] = pdb
+	_remember_row("path_db", pdb)
+	var pda := _spin(path_body, "Δangle", 0.0, -720.0, 720.0, 0.5, func(value: float) -> void:
+		var n := _active_note
+		if n != null and _selected_visual >= 0 and _selected_visual < n.visual_pts.size():
+			n.visual_pts[_selected_visual]["da"] = value
+	)
+	_note_widgets["path_da"] = pda
+	_remember_row("path_da", pda)
+	_label(path_body, "判定点只做编辑器标记；中段仍是滑到即可，不逐点扣分。", 11, UITheme.MUTED)
+	_label(path_body, "跳区 / 擦除", 12, UITheme.INK)
+	var erase := _spin(path_body, "中段擦除 %", 0.0, 0.0, 80.0, 5.0, func(value: float) -> void:
+		if _active_note != null:
+			_set_path_erase_width(_active_note, value / 100.0)
+	)
+	_note_widgets["path_erase"] = erase
+	_buttons(path_body, [{"text": "清除擦除", "callback": func() -> void:
+		if _active_note != null:
+			_apply(func() -> void: _set_path_erase_width(_active_note, 0.0))
+			_refresh_note_page()
+	}])
+	_label(path_body, "擦除段不渲染、不生成中段检查点；头尾仍各自判定。", 11, UITheme.MUTED)
+
+	var hold_body := _note_group(page, "hold", "Hold")
+	var hold_style_label := _label(hold_body, "", 11, UITheme.MUTED)
+	_note_widgets["hold_style_label"] = hold_style_label
+	_buttons(hold_body, [
+		{"text": "直 Hold", "callback": func() -> void:
+			if _active_note != null:
+				_set_hold_style(_active_note, "straight")},
+		{"text": "弯 Hold", "callback": func() -> void:
+			if _active_note != null:
+				_set_hold_style(_active_note, "curved")},
+	])
+	var hold_list := ItemList.new()
+	hold_list.custom_minimum_size = Vector2(0, 88)
+	hold_list.item_selected.connect(func(index: int) -> void:
+		_selected_visual = index
+		_refresh_note_page()
+	)
+	hold_body.add_child(hold_list)
+	_note_widgets["hold_list"] = hold_list
+	_buttons(hold_body, [
+		{"text": "加体节点", "callback": func() -> void: _add_visual_point(_active_note)},
+		{"text": "删体节点", "callback": func() -> void: _delete_visual_point(_active_note)},
+	])
+	var hdb := _spin(hold_body, "Δbeat", 0.0, 0.0, 1.0, 0.01, func(value: float) -> void:
+		var n := _active_note
+		if n != null and _selected_visual >= 0 and _selected_visual < n.visual_pts.size():
+			n.visual_pts[_selected_visual]["db"] = value
+	)
+	_note_widgets["hold_db"] = hdb
+	_remember_row("hold_db", hdb)
+	var hda := _spin(hold_body, "Δangle", 0.0, -720.0, 720.0, 0.5, func(value: float) -> void:
+		var n := _active_note
+		if n != null and _selected_visual >= 0 and _selected_visual < n.visual_pts.size():
+			n.visual_pts[_selected_visual]["da"] = value
+	)
+	_note_widgets["hold_da"] = hda
+	_remember_row("hold_da", hda)
+	_label(hold_body, "节点只改画面，不改 Hold 头部判定；在预览里拖动金色菱形。", 11, UITheme.MUTED)
+
+	var trace_body := _note_group(page, "trace", "Trace")
+	var move := _spin(trace_body, "移动距离 px", note.move_px, 0.0, 1000.0, 1.0, func(value: float) -> void:
+		if _active_note != null:
+			_active_note.move_px = value
+	)
+	_note_widgets["trace_move"] = move
+	var trace_label := _label(trace_body, "", 11, UITheme.MUTED)
+	_note_widgets["trace_label"] = trace_label
+	_buttons(trace_body, [{"text": "重画 Trace", "callback": func() -> void: _app.set_tool("trace")}])
+
+	var anchor_body := _note_group(page, "anchor", "Anchor")
+	var pair := _spin(anchor_body, "配对角度", note.anchor_pair, -1.0, 90.0, 90.0, func(value: float) -> void:
+		if _active_note != null:
+			_active_note.anchor_pair = int(value)
+	)
+	_note_widgets["anchor_pair"] = pair
+	var pair_id := _text(anchor_body, "pairId", note.pair_id, func(value: String) -> void:
+		if _active_note != null:
+			_active_note.pair_id = value
+	)
+	_note_widgets["anchor_pair_id"] = pair_id
+	_buttons(anchor_body, [{"text": "创建反向配对", "callback": func() -> void:
+		if _active_note != null:
+			_add_anchor_pair(_active_note)
+	}])
+	_label(anchor_body, "Anchor 只判时间；配对需同拍反向。", 11, UITheme.MUTED)
+
+	var misc := _note_group(page, "misc", "通用")
+	var color := _spin(misc, "颜色槽", note.color, 0.0, 15.0, 1.0, func(value: float) -> void:
+		if _active_note != null:
+			_active_note.color = int(value)
+	)
+	_note_widgets["color"] = color
+	var lock := _check(misc, "锁定（不可拖动）", note.lock, func(value: bool) -> void:
+		if _active_note != null:
+			_active_note.lock = value
+	)
+	_note_widgets["lock"] = lock
+	_buttons(misc, [
+		{"text": "定位播放头", "callback": func() -> void:
+			if _active_note != null:
+				_app.set_playhead(_active_note.beat)},
+		{"text": "复制", "callback": func() -> void:
+			if _active_note != null:
+				_duplicate_note(_active_note)},
+		{"text": "删除", "callback": func() -> void:
+			if _active_note != null:
+				_delete_note(_active_note)},
+	])
+
+
+func _prepare_note_empty_label(page: VBoxContainer) -> void:
+	if _note_empty_label != null and is_instance_valid(_note_empty_label):
+		return
+	_note_empty_label = Label.new()
+	_note_empty_label.text = "选择一个音符开始编辑；画布单击或预览边界可放置。"
+	_note_empty_label.add_theme_font_size_override("font_size", 12)
+	_note_empty_label.add_theme_color_override("font_color", UITheme.MUTED)
+	page.add_child(_note_empty_label)
+
+
+func _show_note_empty() -> void:
+	var page: VBoxContainer = _pages["音符"]
+	_prepare_note_empty_label(page)
+	for group in _note_groups.values():
+		if group is Control:
+			group.visible = false
+	_note_empty_label.visible = true
+
+
+func _prebuild_note_page() -> void:
+	# 启动时一次性构建静态页，之后选择音符只刷新数值，不再创建中文控件。
+	var page: VBoxContainer = _pages["音符"]
+	for child in page.get_children():
+		child.queue_free()
+	var dummy := Note.new("tap", 0.0, 0.0, 60.0)
+	dummy.id = -1
+	_build_note_page_for(page, dummy)
+	_note_page_ready = true
+	_note_page_chart = _app.chart
+	_active_note = null
+	_show_note_empty()
+
+
+func _refresh_note_page() -> void:
+	var note: Note = _app.get_selected_note()
+	if note == null or not _note_page_ready:
+		return
+	_active_note = note
+	if _note_empty_label != null and is_instance_valid(_note_empty_label):
+		_note_empty_label.visible = false
+	_applying = true
+	_note_widgets["type"].text = note.type
+	_note_widgets["id"].text = str(note.id)
+	_note_widgets["start"].text = _app.chart.timing.format_beat(note.beat)
+	_note_widgets["end"].text = _app.chart.timing.format_beat(note.end_beat)
+	_note_widgets["angle"].value = note.angle
+	_note_widgets["width"].value = note.width
+	var is_plane := note.space == "plane" and note.type not in ["path", "trace"]
+	var is_bell := note.type == "bell"
+	_note_rows["end"].visible = note.type in ["hold", "path", "trace"]
+	_note_rows["angle"].visible = not is_bell and not is_plane
+	_note_rows["width"].visible = not is_bell and not is_plane
+	_note_groups["common"].visible = true
+	_note_groups["misc"].visible = true
+	_note_groups["plane"].visible = is_plane
+	_note_groups["bell"].visible = is_bell
+	_note_groups["path"].visible = note.type == "path"
+	_note_groups["hold"].visible = note.type == "hold"
+	_note_groups["trace"].visible = note.type == "trace"
+	_note_groups["anchor"].visible = note.type == "anchor"
+	_note_widgets["plane_x"].value = note.plane_x
+	_note_widgets["plane_y"].value = note.plane_y
+	_note_widgets["plane_r"].value = note.plane_radius
+	_note_widgets["bell_u"].value = note.center_u
+	_note_widgets["bell_r"].value = note.radius
+	if note.type == "path":
+		var local := note.path_tail_local()
+		_note_widgets["path_tail_r"].value = local.length()
+		_note_widgets["path_tail_a"].value = rad_to_deg(atan2(local.y, local.x))
+		_note_widgets["path_tail_w"].value = note.tail_width
+		_note_widgets["path_tol"].value = note.tolerance
+		_note_widgets["path_samples"].value = note.samples_per_beat
+		_note_widgets["path_speed"].value = note.path_speed
+		_note_widgets["path_counts"].text = "中间判定点：%d 个；平面点：%d 个" % [note.path_sample_beats().size(), note.trace_pts.size()]
+		_fill_visual_list(_note_widgets["path_list"], note)
+		_note_widgets["path_erase"].value = _path_erase_width(note) * 100.0
+	if note.type == "hold":
+		_note_widgets["hold_style_label"].text = "直 Hold：从内圈笔直连到环上。" if note.hold_style != "curved" else "弯 Hold：本体沿环弯曲。"
+		_fill_visual_list(_note_widgets["hold_list"], note)
+	if note.type == "trace":
+		_note_widgets["trace_move"].value = note.move_px
+		_note_widgets["trace_label"].text = "二维点：%d 个；在预览窗用 Trace 工具拖拽重画。" % note.trace_pts.size()
+	if note.type == "anchor":
+		_note_widgets["anchor_pair"].value = note.anchor_pair
+		_note_widgets["anchor_pair_id"].text = note.pair_id
+	_note_widgets["color"].value = note.color
+	_note_widgets["lock"].button_pressed = note.lock
+	_applying = false
+
+
+func _fill_visual_list(list: ItemList, note: Note) -> void:
+	list.clear()
+	for i in note.visual_pts.size():
+		var point: Dictionary = note.visual_pts[i]
+		list.add_item("%02d  Δbeat %.2f  Δangle %.1f" % [i, float(point.get("db", 0.0)), float(point.get("da", 0.0))])
+	_selected_visual = clampi(_selected_visual, 0, maxi(0, note.visual_pts.size() - 1))
+	if _selected_visual < list.item_count:
+		list.select(_selected_visual)
+	var has_point := _selected_visual >= 0 and _selected_visual < note.visual_pts.size()
+	if _note_rows.has("path_db"):
+		_note_rows["path_db"].visible = has_point and note.type == "path"
+		_note_rows["path_da"].visible = has_point and note.type == "path"
+	if _note_rows.has("hold_db"):
+		_note_rows["hold_db"].visible = has_point and note.type == "hold"
+		_note_rows["hold_da"].visible = has_point and note.type == "hold"
+	if has_point:
+		var point: Dictionary = note.visual_pts[_selected_visual]
+		if note.type == "path":
+			_note_widgets["path_db"].value = float(point.get("db", 0.0))
+			_note_widgets["path_da"].value = float(point.get("da", 0.0))
+		elif note.type == "hold":
+			_note_widgets["hold_db"].value = float(point.get("db", 0.0))
+			_note_widgets["hold_da"].value = float(point.get("da", 0.0))
 
 
 func _path_erase_width(note: Note) -> float:
@@ -534,6 +860,39 @@ func _build_event_page(page: VBoxContainer) -> void:
 
 
 func _build_view_page(page: VBoxContainer) -> void:
+	_section(page, "音符与音效")
+	var skin_presets := Preview3D.skin_presets()
+	var skin_keys: Array = skin_presets.keys()
+	var skin_labels: Array[String] = []
+	for key in skin_keys:
+		skin_labels.append(String(skin_presets[key].get("label", key)))
+	_setting_option(page, "音符皮肤", skin_labels, maxi(0, skin_keys.find(_app.note_skin)), func(index: int) -> void:
+		_app.note_skin = String(skin_keys[index])
+		_app.save_settings()
+		_app.appearance_changed.emit()
+		_app.notice.emit("音符皮肤：%s" % skin_labels[index], "info")
+	)
+	var fx_presets := Preview3D.hit_fx_presets()
+	var fx_keys: Array = fx_presets.keys()
+	var fx_labels: Array[String] = []
+	for key in fx_keys:
+		fx_labels.append(String(fx_presets[key]))
+	_setting_option(page, "打击特效", fx_labels, maxi(0, fx_keys.find(_app.hit_fx_style)), func(index: int) -> void:
+		_app.hit_fx_style = String(fx_keys[index])
+		_app.save_settings()
+		_app.appearance_changed.emit()
+		_app.notice.emit("打击特效：%s" % fx_labels[index], "info")
+	)
+	var sfx_keys: Array[String] = ["default", "crisp", "deep", "mute"]
+	var sfx_labels: Array[String] = ["原声", "清脆", "厚重", "静音"]
+	_setting_option(page, "打击音效", sfx_labels, maxi(0, sfx_keys.find(_app.hit_sfx_style)), func(index: int) -> void:
+		_app.hit_sfx_style = sfx_keys[index]
+		_app.save_settings()
+		_app.appearance_changed.emit()
+		_app.preview_sfx.emit()
+		_app.notice.emit("打击音效：%s" % sfx_labels[index], "info")
+	)
+	_label(page, "试玩中 F6 换皮肤、F7 换特效；音效只改打击音色，不改判定。", 11, UITheme.MUTED)
 	_section(page, "显示")
 	_check(page, "正对镜头（忽略倾斜）", bool(_app.chart.metadata.get("face_camera", true)), func(value: bool) -> void:
 		_app.mutate(func() -> void: _app.chart.metadata["face_camera"] = value)
@@ -798,6 +1157,22 @@ func _delete_note(note: Note) -> void:
 	_app.clear_selection()
 
 
+func _add_anchor_pair(note: Note) -> void:
+	if note.type != "anchor":
+		return
+	_apply(func() -> void:
+		var pair_id := note.pair_id if not note.pair_id.is_empty() else "P%d" % note.id
+		note.anchor_pair = 0
+		note.pair_id = pair_id
+		var partner := Note.new("anchor", note.beat, fposmod(note.angle + 180.0, 360.0), note.width)
+		partner.id = _app.chart.next_note_id()
+		partner.anchor_pair = 0
+		partner.pair_id = pair_id
+		_app.chart.notes.append(partner)
+	)
+	_rebuild()
+
+
 func _duplicate_note(note: Note) -> void:
 	var copy := Note.from_dict(note.to_dict())
 	copy.id = _app.chart.next_note_id()
@@ -935,6 +1310,10 @@ func _delete_event(event: BoundaryEvent) -> void:
 	_app.chart.events.erase(event)
 	_app.finish_edit()
 	_app.clear_selection()
+
+
+func add_view_state_at_playhead() -> void:
+	_add_view_state()
 
 
 func _add_view_state() -> void:

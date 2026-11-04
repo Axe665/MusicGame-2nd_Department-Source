@@ -90,7 +90,7 @@ static func total_length(intervals: Array[Vector2]) -> float:
 	return total
 
 
-static func intervals_for_notes(notes: Array[Note], beat: float) -> Array:
+static func intervals_for_notes(notes: Array, beat: float) -> Array:
 	var lists: Array = []
 	for note in notes:
 		match note.type:

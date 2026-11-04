@@ -83,6 +83,7 @@ func _ready() -> void:
 	_sfx = HitSfx.new()
 	_sfx.name = "EditorHitSfx"
 	add_child(_sfx)
+	_sfx.set_style(String(_app.hit_sfx_style) if _app != null else "default")
 	_build_dialogs()
 	if _app != null:
 		_app.chart_changed.connect(_on_chart_changed)
@@ -93,6 +94,11 @@ func _ready() -> void:
 		_app.status_changed.connect(_update_status)
 		_app.save_state_changed.connect(_update_status)
 		_app.notice.connect(_show_toast)
+		_app.appearance_changed.connect(_sync_appearance)
+		_app.preview_sfx.connect(func() -> void:
+			if _sfx != null:
+				_sfx.play("don")
+		)
 		_app.validation_changed.connect(_update_validation)
 		_app.chart_changed.emit()
 	_sync_from_app()
@@ -891,6 +897,16 @@ func _build_dialogs() -> void:
 	DirAccess.make_dir_recursive_absolute(charts_dir)
 
 
+func _sync_appearance() -> void:
+	if _app == null:
+		return
+	_preview.note_skin = _app.note_skin
+	_preview.hit_fx_style = _app.hit_fx_style
+	_preview.refresh_style()
+	if _sfx != null:
+		_sfx.set_style(_app.hit_sfx_style)
+
+
 func _sync_from_app() -> void:
 	if _app == null or _app.chart == null:
 		return
@@ -900,6 +916,9 @@ func _sync_from_app() -> void:
 	_preview.show_debug = _app.debug_overlay
 	_preview.flow_scale = _app.flow_scale
 	_preview.star_speed = _app.star_speed
+	_preview.note_skin = _app.note_skin
+	_preview.hit_fx_style = _app.hit_fx_style
+	_sfx.set_style(_app.hit_sfx_style)
 	_canvas.px_per_beat = _app.zoom_px_per_beat
 	if _beat_subdiv_edit != null:
 		_beat_subdiv_edit.text = str(_app.beat_subdivisions)
@@ -1434,9 +1453,15 @@ func _unhandled_input(event: InputEvent) -> void:
 			KEY_X:
 				if event.ctrl_pressed:
 					_canvas.copy_selection(true)
-					accept_event()
+				else:
+					_canvas._delete_selection()
+				accept_event()
 			KEY_V:
-				if event.ctrl_pressed:
+				if event.ctrl_pressed and event.shift_pressed:
+					_inspector.current_tab = 4
+					_show_toast("视频属性在「视图/设置」页；offset / FPS / 透明度 / 隐藏都在那里。", "info")
+					accept_event()
+				elif event.ctrl_pressed:
 					_canvas.paste_clipboard(false)
 					accept_event()
 			KEY_A:
@@ -1448,6 +1473,16 @@ func _unhandled_input(event: InputEvent) -> void:
 					accept_event()
 				elif _canvas.mirror_selected_note():
 					accept_event()
+			KEY_M:
+				_app.mirror_selected_notes()
+				accept_event()
+			KEY_R:
+				_app.rotate_selected_notes(90.0)
+				accept_event()
+			KEY_K:
+				_inspector.add_view_state_at_playhead()
+				_inspector.current_tab = 4
+				accept_event()
 			KEY_DELETE:
 				_canvas._delete_selection()
 				accept_event()

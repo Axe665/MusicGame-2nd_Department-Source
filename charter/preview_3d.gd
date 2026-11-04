@@ -93,6 +93,7 @@ var _sorted_notes_chart: Chart = null
 var _last_view_key: String = ""
 var _last_fit_key: String = ""
 var _last_mesh_key: String = ""
+var _last_mesh_usec: int = 0
 var _last_process_time: float = -9999.0
 var _last_mouse_screen: Vector2 = Vector2(-9999, -9999)
 var _cursor_trail: Array[Dictionary] = []
@@ -124,8 +125,14 @@ var _red_start_beat: float = 0.0
 var _red_start_mouse: Vector2 = Vector2.ZERO
 var _pulses: Array[Dictionary] = []
 var _arc_flashes: Array[Dictionary] = []
+# 音符外观与打击特效方案（网页 Note & Hit Lab 里可对比选择）。
+var note_skin: String = "candy"
+var hit_fx_style: String = "burst"
+var _skin_cache: Dictionary = {}
+var _skin_cache_key: String = ""
 var trace_cuts: Dictionary = {}
 var path_cuts: Dictionary = {}
+var path_cut_versions: Dictionary = {}
 var _drawing_path: bool = false
 var _path_points: Array[Vector2] = []
 var _path_head_angle: float = 0.0
@@ -414,9 +421,13 @@ func _process(_delta: float) -> void:
 	var view_changed := _update_transform(t)
 	var flat_dirty := _mesh_dirty and not use_3d_ring
 	if use_3d_ring and (_mesh_dirty or mesh_key != _last_mesh_key):
-		_update_ring_mesh(chart, t)
-		_last_mesh_key = mesh_key
-		view_changed = true
+		# 形变动画只需 30Hz；拖动几何时立即重建，避免手感发飘。
+		var now_usec := Time.get_ticks_usec()
+		if _mesh_dirty or now_usec - _last_mesh_usec >= 33333:
+			_update_ring_mesh(chart, t)
+			_last_mesh_key = mesh_key
+			_last_mesh_usec = now_usec
+			view_changed = true
 	if not use_3d_ring and _mesh_dirty:
 		_mesh_dirty = false
 	_update_background(chart)
@@ -773,6 +784,7 @@ func _on_chart_changed() -> void:
 	_trace_cache.clear()
 	trace_cuts.clear()
 	path_cuts.clear()
+	path_cut_versions.clear()
 	_path_runs_cache.clear()
 	_boundary_frame_cache = null
 	_path_local_cache.clear()
@@ -791,6 +803,7 @@ func _on_chart_live_changed() -> void:
 	_trace_cache.clear()
 	trace_cuts.clear()
 	path_cuts.clear()
+	path_cut_versions.clear()
 	_path_runs_cache.clear()
 	_boundary_frame_cache = null
 	_path_local_cache.clear()
@@ -1655,12 +1668,19 @@ func _pick_visual_node(screen_position: Vector2) -> int:
 	if _app == null:
 		return -1
 	var note: Note = _app.get_selected_note()
-	if note == null or note.type != "path":
+	if note == null or note.type not in ["path", "hold"]:
 		return -1
 	var chart := get_chart()
 	if chart == null:
 		return -1
 	var t := get_time_beat()
+	if note.type == "hold":
+		for i in note.visual_pts.size():
+			var point: Dictionary = note.visual_pts[i]
+			var p := _hold_node_screen(chart, note, float(point.get("db", 0.0)), float(point.get("da", 0.0)), t)
+			if _valid_point(p) and p.distance_to(screen_position) <= 12.0:
+				return i
+		return -1
 	for i in note.trace_pts.size():
 		var point: Dictionary = note.trace_pts[i]
 		var local := Vector2(float(point.get("x", 0.0)), float(point.get("y", 0.0)))
@@ -1681,9 +1701,10 @@ func _draw_paths(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 	for note in _notes_in_range(chart, t - pre - 128.0, t + pre + 0.5):
 		if note.type == "path" and t >= note.beat - pre and t <= note.end_beat + 0.5:
 			visible.append(note)
-	visible.sort_custom(func(a: Note, b: Note) -> bool: return a.beat > b.beat)
+	# 旧 Path 先画、新的最后画：多星星重叠时，新星和它的擦除缺口始终在最上层。
+	visible.sort_custom(func(a: Note, b: Note) -> bool: return a.beat < b.beat)
 	for i in visible.size():
-		_draw_one_path(canvas, chart, visible[i], t, pre, i == visible.size() - 1)
+		_draw_one_path(canvas, chart, visible[i], t, pre, i == visible.size() - 1, visible.size())
 	if _drawing_path and _path_points.size() > 1:
 		var preview := PackedVector2Array()
 		for local in _path_points:
@@ -1696,7 +1717,52 @@ func _draw_paths(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 				canvas.draw_circle(p, 2.5, UITheme.CYAN)
 
 
-func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: float, top: bool) -> void:
+func path_screen_runs(note: Note, t: float, grow: float = 1.0) -> Array[PackedVector2Array]:
+	var chart := get_chart()
+	if chart == null:
+		return []
+	var total := note.duration()
+	if total <= 0.001:
+		return []
+	var count := clampi(int(total * 18.0), 40, 96)
+	var points := PackedVector2Array()
+	var erased_flags: Array[bool] = []
+	for i in count + 1:
+		var rel := total * float(i) / float(count)
+		erased_flags.append(path_erased(note, rel))
+		points.append(_path_screen_point(chart, note, rel, t, false, 1.0))
+	var runs := split_path_runs(points, erased_flags)
+	if grow < 0.999:
+		var center := project_design(Vector2.ZERO)
+		var scaled_runs: Array[PackedVector2Array] = []
+		for piece in runs:
+			var scaled := PackedVector2Array()
+			for p in piece:
+				scaled.append(center.lerp(p, grow))
+			scaled_runs.append(scaled)
+		runs = scaled_runs
+	return runs
+
+
+static func split_path_runs(points: PackedVector2Array, erased: Array) -> Array[PackedVector2Array]:
+	# 只在真正擦除/无效点处分段；不再用像素距离阈值，避免长轨迹被误切。
+	var result: Array[PackedVector2Array] = []
+	var run := PackedVector2Array()
+	for i in points.size():
+		var point := points[i]
+		var hidden := i < erased.size() and bool(erased[i])
+		if hidden or not is_finite(point.x) or not is_finite(point.y) or point.x > 1.0e9 or point.y > 1.0e9:
+			if run.size() > 1:
+				result.append(run)
+			run = PackedVector2Array()
+			continue
+		run.append(point)
+	if run.size() > 1:
+		result.append(run)
+	return result
+
+
+func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: float, top: bool, visible_count: int = 1) -> void:
 	var total := note.duration()
 	if total <= 0.001:
 		return
@@ -1706,127 +1772,126 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 	var q := clampf((t - note.beat - wait) / maxf(0.001, total - wait), 0.0, 1.0)
 	var progress := 1.0 - pow(1.0 - q, maxf(0.05, note.path_speed))
 	var runs: Array[PackedVector2Array] = []
-	var cache_key := "%d|%d|%s|%.0f|%.0f" % [note.id, (path_cuts.get(note.id, []) as Array).size(), _last_view_key, size.x, size.y]
-	if grow >= 0.999 and _path_runs_cache.has(cache_key):
+	var mesh := "%s|%s|%.0f|%.0f" % [_mesh_key(chart, t), _last_view_key, size.x, size.y]
+	var cache_key := "%d|%d|%s" % [note.id, int(path_cut_versions.get(note.id, 0)), mesh]
+	if _path_runs_cache.has(cache_key):
 		runs = _path_runs_cache[cache_key]
 	else:
-		var run := PackedVector2Array()
-		var count := 80
-		var last_valid := Vector2(INF, INF)
+		var count := clampi(int(total * 18.0), 40, 96)
+		if visible_count >= 4:
+			count = clampi(int(total * 12.0), 28, 64)
+		var points := PackedVector2Array()
+		var erased_flags: Array[bool] = []
 		for i in count + 1:
 			var rel := total * float(i) / float(count)
-			var erased := path_erased(note, rel)
-			var p := _path_screen_point(chart, note, rel, t, true, 1.0)
-			if erased or not _valid_point(p):
-				if run.size() > 1:
-					runs.append(run)
-				run = PackedVector2Array()
-				last_valid = Vector2(INF, INF)
-				continue
-			# 跳区不连线：断开处直接起新的一段，避免画出跨过擦除区的假轨迹。
-			if last_valid.x < 1.0e9 and p.distance_to(last_valid) > 64.0:
-				if run.size() > 1:
-					runs.append(run)
-				run = PackedVector2Array()
-			run.append(p)
-			last_valid = p
-		if run.size() > 1:
-			runs.append(run)
-		if grow < 0.999:
-			var center := project_design(Vector2.ZERO)
-			for r in range(runs.size()):
-				var scaled := PackedVector2Array()
-				for p in runs[r]:
-					scaled.append(center.lerp(p, grow))
-				runs[r] = scaled
-		else:
-			_path_runs_cache[cache_key] = runs
-	var body := Color(0.78, 0.80, 0.79, 0.62 if top else 0.22)
+			erased_flags.append(path_erased(note, rel))
+			points.append(_path_screen_point(chart, note, rel, t, true, 1.0))
+		runs = split_path_runs(points, erased_flags)
+		if _path_runs_cache.size() > 64:
+			_path_runs_cache.clear()
+		_path_runs_cache[cache_key] = runs
+	if grow < 0.999:
+		# 缓存的是完整轨迹；飞入阶段只缩放副本，不能改缓存。
+		var center := project_design(Vector2.ZERO)
+		var scaled_runs: Array[PackedVector2Array] = []
+		for piece in runs:
+			var scaled := PackedVector2Array()
+			for p in piece:
+				scaled.append(center.lerp(p, grow))
+			scaled_runs.append(scaled)
+		runs = scaled_runs
 	var dash := Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.92 if top else 0.34)
 	var future := Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.98 if top else 0.38)
 	var passed := Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.26 if top else 0.12)
 	for piece in runs:
 		if piece.size() < 2:
 			continue
-		if top:
-			var shadow := PackedVector2Array()
-			for p in piece:
-				shadow.append(p + Vector2(6, 8))
-			canvas.draw_polyline(shadow, Color(0, 0, 0, 0.45), 32.0 * ns, true)
-		canvas.draw_polyline(piece, Color(0, 0, 0, 0.55), 27.0 * ns, true)
-		canvas.draw_polyline(piece, Color(1, 1, 1, 0.20 if top else 0.07), 22.0 * ns, true)
-		canvas.draw_polyline(piece, body, 13.0 * ns, true)
-		canvas.draw_polyline(piece, Color(1, 1, 1, 0.12 if top else 0.04), 3.5 * ns, true)
-		_draw_dashed_polyline(canvas, piece, dash, 2.0, 6.0)
-		# V 形箭头列：已过的段变暗，未到的段保持高亮。
-		var chevron_count := clampi(int(total * 2.0), 3, 8)
+		var path_band := float(_skin()["band"])
+		if not top:
+			# 下层 Path 只留一条低亮度线；星头/尾/进度球只画最上层的一条。
+			canvas.draw_polyline(piece, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.48), 3.2 * ns * path_band, true)
+			continue
+		# 舞萌式滑动：单条高亮线 + 密集 V 形箭头；把多层描边合并，减少 10k 谱面的 draw call。
+		canvas.draw_polyline(piece, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.95), 5.0 * ns * path_band, true)
+		_draw_dashed_polyline(canvas, piece, dash, 2.4, 10.0)
+		# V 形箭头列：按轨迹长度铺满，像舞萌的滑动箭头链。
+		var piece_length := 0.0
+		for i in piece.size() - 1:
+			piece_length += piece[i].distance_to(piece[i + 1])
+		var chevron_cap := 24 if visible_count < 4 else (16 if visible_count < 8 else 10)
+		var chevron_count := clampi(int(piece_length / maxf(12.0, 20.0 * ns)), 3, chevron_cap)
 		for k in chevron_count:
-			var fraction := (float(k) + 1.0) / float(chevron_count + 1)
+			var fraction := (float(k) + 0.5) / float(chevron_count)
 			var sample: Dictionary = _polyline_sample(piece, fraction)
-			_draw_chevron(canvas, sample["point"], sample["direction"], passed if fraction < progress else future, 9.0 * ns)
-	# 中间判定点：保留设计/预览用的采样点，不参与严格扣分。
-	for sample_beat in note.path_sample_beats():
-		var rel := clampf(sample_beat - note.beat, 0.0, total)
-		if path_erased(note, rel):
-			continue
-		var p := _path_screen_point(chart, note, rel, t, true, grow)
-		if _valid_point(p):
-			canvas.draw_circle(p, 2.6 * ns, Color(0, 0, 0, 0.5))
-			canvas.draw_circle(p, 1.8 * ns, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.85 if top else 0.28))
-	# 手动放置的中间设计点。
-	for point in note.visual_pts:
-		var rel := clampf(float(point.get("db", 0.0)), 0.0, total)
-		if path_erased(note, rel):
-			continue
-		var p := _path_screen_point(chart, note, rel, t, true, grow)
-		if _valid_point(p):
-			_draw_diamond(canvas, p, 4.5, UITheme.GOLD)
-	_draw_target_arc(canvas, note.angle, note.width, t, UITheme.CORAL, 10.0)
-	if _app != null:
-		var selected_note: Note = _app.get_selected_note()
-		if selected_note != null and selected_note.id == note.id:
-			for point in note.trace_pts:
-				var node := _path_local_screen(chart, Vector2(float(point.get("x", 0.0)), float(point.get("y", 0.0))), t, grow)
-				if _valid_point(node):
-					_draw_diamond(canvas, node, 5.0, UITheme.CYAN)
-					canvas.draw_circle(node, 1.8, UITheme.INK)
+			_draw_chevron(canvas, sample["point"], sample["direction"], passed if fraction < progress else future, 16.0 * ns)
+	var selected_note: Note = _app.get_selected_note() if _app != null else null
+	var selected := selected_note != null and selected_note.id == note.id
+	if selected:
+		# 中间判定点只在选中时绘制，避免多星星铺满采样点拖慢编辑器。
+		for sample_beat in note.path_sample_beats():
+			var rel := clampf(sample_beat - note.beat, 0.0, total)
+			if path_erased(note, rel):
+				continue
+			var p := _path_screen_point(chart, note, rel, t, true, grow)
+			if _valid_point(p):
+				canvas.draw_circle(p, 2.6 * ns, Color(0, 0, 0, 0.5))
+				canvas.draw_circle(p, 1.8 * ns, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.85 if top else 0.28))
+		# 手动放置的中间设计点。
+		for point in note.visual_pts:
+			var rel := clampf(float(point.get("db", 0.0)), 0.0, total)
+			if path_erased(note, rel):
+				continue
+			var p := _path_screen_point(chart, note, rel, t, true, grow)
+			if _valid_point(p):
+				_draw_diamond(canvas, p, 4.5, UITheme.GOLD)
+	if not top:
+		return
+	_draw_target_arc(canvas, note.angle, note.width, t, UITheme.CORAL, 14.0)
+	if selected:
+		for point in note.trace_pts:
+			var node := _path_local_screen(chart, Vector2(float(point.get("x", 0.0)), float(point.get("y", 0.0))), t, grow)
+			if _valid_point(node):
+				_draw_diamond(canvas, node, 5.0, UITheme.CYAN)
+				canvas.draw_circle(node, 1.8, UITheme.INK)
 	var head := _flying_position(chart, note.angle, note.beat, t, pre)
 	# 尾部跟随轨迹一起从圆心长出，只落在平面内，不再回到环上。
 	var tail := _path_screen_point(chart, note, total, t, true, grow)
-	_draw_path_head(canvas, head, top, grow * ns)
-	if _valid_point(head):
-		# 重叠 Path 用不同颜色的外环 + 编号区分星头。
-		var accents: Array[Color] = [UITheme.CORAL, UITheme.CYAN, UITheme.VIOLET, UITheme.MINT]
-		var accent: Color = accents[note.id % accents.size()]
-		canvas.draw_arc(head, 21.0 * ns, 0.0, TAU, 30, Color(accent.r, accent.g, accent.b, 0.95 if top else 0.45), 2.2, true)
-		canvas.draw_string(UITheme.mono_font(), head + Vector2(16, -14), "#%d" % note.id, HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(accent.r, accent.g, accent.b, 0.9 if top else 0.4))
-	if top and _valid_point(head):
-		# 头部的白色箭头指向轨迹内侧，进一步区分头和尾。
-		var ahead := _path_screen_point(chart, note, minf(total, maxf(0.05, total * 0.08)), t, true, grow)
-		if _valid_point(ahead):
-			_draw_arrowhead(canvas, head + (ahead - head).normalized() * 22.0 * ns, ahead - head, Color(1, 1, 1, 0.95))
+	# 试玩时星星头在滑动开始后交给进度球，不再留在起点造成“断开的星头”。
+	var head_visible := not playtest_mode or t < note.beat + wait + 0.02
+	if head_visible:
+		_draw_path_head(canvas, head, top, grow * ns, UITheme.CYAN)
+		if _valid_point(head):
+			# 重叠 Path 用不同颜色的外环 + 编号区分星头。
+			var accents: Array[Color] = [UITheme.CORAL, UITheme.CYAN, UITheme.VIOLET, UITheme.MINT]
+			var accent: Color = accents[note.id % accents.size()]
+			canvas.draw_arc(head, 28.0 * ns, 0.0, TAU, 30, Color(accent.r, accent.g, accent.b, 0.95 if top else 0.45), 2.8, true)
+			canvas.draw_string(UITheme.mono_font(), head + Vector2(20, -18), "#%d" % note.id, HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(accent.r, accent.g, accent.b, 0.9 if top else 0.4))
+		if top and _valid_point(head):
+			# 头部的白色箭头指向轨迹内侧，进一步区分头和尾。
+			var ahead := _path_screen_point(chart, note, minf(total, maxf(0.05, total * 0.08)), t, true, grow)
+			if _valid_point(ahead):
+				_draw_arrowhead(canvas, head + (ahead - head).normalized() * 29.0 * ns, ahead - head, Color(1, 1, 1, 0.95))
+		if show_debug and top and _valid_point(head):
+			canvas.draw_string(UITheme.bold_font(), head + Vector2(-12, -22), "PATH", HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(UITheme.CORAL.r, UITheme.CORAL.g, UITheme.CORAL.b, 0.85))
 	_draw_path_tail(canvas, tail, top, grow * ns)
-	if playtest_mode and top and _valid_point(head):
-		canvas.draw_string(UITheme.bold_font(), head + Vector2(-12, -22), "PATH", HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(UITheme.CORAL.r, UITheme.CORAL.g, UITheme.CORAL.b, 0.85))
 	# 大号发光球 + 短拖尾：当前进度点始终比星头更亮，方向一目了然。
 	if t >= note.beat and t <= note.end_beat:
-		# 指示球贴着已完成轨迹的前沿，擦除后不会悬在缺口里。
-		var rel := maxf(progress, path_erased_extent(note)) * total
+		var rel := progress * total
 		for trail_index in range(4, 0, -1):
 			var trail_rel := rel - float(trail_index) * 0.035 * total
 			if trail_rel < 0.0 or path_erased(note, trail_rel):
 				continue
 			var trail_point := _path_screen_point(chart, note, trail_rel, t, false)
 			if _valid_point(trail_point):
-				var fade := 0.30 * (1.0 - float(trail_index) / 5.0)
-				canvas.draw_circle(trail_point, (13.0 - float(trail_index) * 1.4) * ns, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, fade))
+				var fade := 0.34 * (1.0 - float(trail_index) / 5.0)
+				canvas.draw_circle(trail_point, (18.0 - float(trail_index) * 1.6) * ns, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, fade))
 		var p := _path_screen_point(chart, note, rel, t, false)
 		if _valid_point(p):
-			canvas.draw_circle(p, 24.0 * ns, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.18 if top else 0.07))
-			canvas.draw_circle(p, 14.0 * ns, Color(0, 0, 0, 0.55))
-			canvas.draw_circle(p, 12.0 * ns, UITheme.CYAN if top else Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.5))
-			canvas.draw_circle(p, 7.0 * ns, Color(1, 1, 1, 0.96))
-			canvas.draw_circle(p, 3.0 * ns, UITheme.INK)
+			canvas.draw_circle(p, 32.0 * ns, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.18 if top else 0.07))
+			canvas.draw_circle(p, 19.0 * ns, Color(0, 0, 0, 0.58))
+			canvas.draw_circle(p, 16.0 * ns, UITheme.CYAN if top else Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.5))
+			canvas.draw_circle(p, 10.0 * ns, Color(1, 1, 1, 0.96))
+			canvas.draw_circle(p, 4.5 * ns, UITheme.INK)
 
 
 func path_point(note: Note, relative_beat: float, beat: float) -> Vector2:
@@ -1870,6 +1935,17 @@ static func path_erase_ranges(points: PackedVector2Array, from: Vector2, to: Vec
 	return ranges
 
 
+func _point_polyline_distance(points: PackedVector2Array, point: Vector2) -> float:
+	var best := INF
+	for i in points.size() - 1:
+		var a := points[i]
+		var b := points[i + 1]
+		if not a.is_finite() or not b.is_finite():
+			continue
+		best = minf(best, point.distance_to(Geometry2D.get_closest_point_to_segment(point, a, b)))
+	return best
+
+
 func erase_path_overlap(note: Note, from: Vector2, to: Vector2, beat: float) -> bool:
 	var chart := get_chart()
 	if chart == null:
@@ -1881,28 +1957,84 @@ func erase_path_overlap(note: Note, from: Vector2, to: Vector2, beat: float) -> 
 	var points := PackedVector2Array()
 	for i in count + 1:
 		points.append(_path_screen_point(chart, note, total * float(i) / float(count), beat, false))
-	var ranges := path_erase_ranges(points, from, to, 26.0 * _note_scale())
-	var furthest := 0.0
+	var brush := 26.0 * _note_scale()
+	# 多星星保护：只有鼠标当前或上一帧确实贴着这条 Path 时才擦，
+	# 避免从 A 星移到 B 星时把路上穿过的 C 星误削。
+	var guard := 72.0 * _note_scale()
+	if minf(_point_polyline_distance(points, from), _point_polyline_distance(points, to)) > guard:
+		return false
+	var ranges := path_erase_ranges(points, from, to, brush)
 	for span in ranges:
-		furthest = maxf(furthest, float(span.y))
-	if furthest > path_erased_extent(note) + 0.001:
-		set_path_erased_to(note, furthest)
+		_add_path_erase_range(note, span.x, span.y)
 	return not ranges.is_empty()
 
 
-func path_erased_extent(note: Note) -> float:
-	var result := 0.0
-	for gap in path_cuts.get(note.id, []):
-		result = maxf(result, float(gap.get("to", 0.0)))
-	return result
+static func merge_erase_ranges(ranges: Array, from_fraction: float, to_fraction: float) -> Array:
+	var a := clampf(minf(from_fraction, to_fraction), 0.0, 1.0)
+	var b := clampf(maxf(from_fraction, to_fraction), 0.0, 1.0)
+	if a < 0.08:
+		a = 0.0
+	if b - a <= 0.002:
+		return ranges
+	var all: Array = ranges.duplicate(true)
+	all.append({"from": a, "to": b})
+	all.sort_custom(func(x: Dictionary, y: Dictionary) -> bool: return float(x.get("from", 0.0)) < float(y.get("from", 0.0)))
+	var merged: Array = []
+	for item in all:
+		if merged.is_empty() or float(item.get("from", 0.0)) > float(merged[-1].get("to", 0.0)) + 0.035:
+			merged.append({"from": float(item.get("from", 0.0)), "to": float(item.get("to", 0.0))})
+		else:
+			merged[-1]["to"] = maxf(float(merged[-1].get("to", 0.0)), float(item.get("to", 0.0)))
+	return merged
 
 
 func set_path_erased_to(note: Note, fraction: float) -> void:
-	# 舞萌式擦除：已滑过的部分保持一个连续缺口，不留下碎片。
-	var target := maxf(path_erased_extent(note), clampf(fraction, 0.0, 1.0))
+	# 试玩时只保留一个连续缺口：从头部到当前进度，轨迹始终是连续的一段。
+	var target := clampf(fraction, 0.0, 1.0)
 	if target <= 0.004:
 		return
+	var current: Array = path_cuts.get(note.id, [])
+	if current.size() == 1 and absf(float(current[0].get("to", -1.0)) - target) <= 0.001:
+		return
 	path_cuts[note.id] = [{"from": 0.0, "to": target}]
+	path_cut_versions[note.id] = int(path_cut_versions.get(note.id, 0)) + 1
+	if _overlay != null:
+		_overlay.queue_redraw()
+
+
+func path_fraction(note: Note, mouse: Vector2, beat: float) -> Dictionary:
+	var chart := get_chart()
+	if chart == null:
+		return {"fraction": 0.0, "distance": INF}
+	var points := PackedVector2Array()
+	var count := 48
+	for i in count + 1:
+		var p := _path_screen_point(chart, note, note.duration() * float(i) / float(count), beat, false)
+		if _valid_point(p):
+			points.append(p)
+	if points.size() < 2:
+		return {"fraction": 0.0, "distance": INF}
+	var best := INF
+	var best_fraction := 0.0
+	for i in points.size() - 1:
+		var a := points[i]
+		var b := points[i + 1]
+		var ab := b - a
+		var length_squared := ab.length_squared()
+		var q := 0.0 if length_squared <= 0.0001 else clampf((mouse - a).dot(ab) / length_squared, 0.0, 1.0)
+		var distance := mouse.distance_to(a + ab * q)
+		if distance < best:
+			best = distance
+			best_fraction = (float(i) + q) / float(points.size() - 1)
+	return {"fraction": best_fraction, "distance": best}
+
+
+func _add_path_erase_range(note: Note, from_fraction: float, to_fraction: float) -> void:
+	var merged := merge_erase_ranges(path_cuts.get(note.id, []), from_fraction, to_fraction)
+	if merged == path_cuts.get(note.id, []):
+		return
+	path_cuts[note.id] = merged
+	path_cut_versions[note.id] = int(path_cut_versions.get(note.id, 0)) + 1
 	if _overlay != null:
 		_overlay.queue_redraw()
 
@@ -1944,13 +2076,74 @@ func _path_screen_point(chart: Chart, note: Note, relative_beat: float, t: float
 	return _path_local_screen(chart, local, t, scale)
 
 
+static func skin_presets() -> Dictionary:
+	return {
+		"candy": {"label": "糖霜胶囊", "scale": 1.20, "band": 1.14, "outline": 1.0, "glow": 1.3, "gloss": 0.6, "shadow": 0.8, "fill": 0.95},
+		"neon": {"label": "霓虹线框", "scale": 1.10, "band": 1.06, "outline": 0.45, "glow": 2.0, "gloss": 0.15, "shadow": 0.0, "fill": 0.70},
+		"glass": {"label": "玻璃棱镜", "scale": 1.16, "band": 1.10, "outline": 0.8, "glow": 0.9, "gloss": 0.9, "shadow": 0.35, "fill": 0.42},
+		"sticker": {"label": "街机贴纸", "scale": 1.28, "band": 1.20, "outline": 1.55, "glow": 0.15, "gloss": 0.0, "shadow": 1.0, "fill": 1.0},
+	}
+
+
+static func hit_fx_presets() -> Dictionary:
+	return {"burst": "迸裂", "ring": "圆环", "prism": "棱镜", "ink": "墨滴"}
+
+
+func refresh_style() -> void:
+	if _overlay != null:
+		_overlay.queue_redraw()
+
+
+func _skin() -> Dictionary:
+	if _skin_cache_key == note_skin and not _skin_cache.is_empty():
+		return _skin_cache
+	var presets := skin_presets()
+	var chosen: Dictionary = presets.get(note_skin, {})
+	if chosen.is_empty():
+		chosen = presets["candy"]
+	_skin_cache = chosen.duplicate()
+	_skin_cache["id"] = note_skin if presets.has(note_skin) else "candy"
+	_skin_cache_key = note_skin
+	return _skin_cache
+
+
+func _stroke_band(canvas: Control, points: PackedVector2Array, color: Color, width: float, alpha: float = 1.0, size_scale: float = -1.0) -> void:
+	# 所有音符共用同一套描边/高光/发光，换肤只改参数，不改判定。
+	if points.size() < 2:
+		return
+	var skin := _skin()
+	var k := float(skin["scale"]) if size_scale < 0.0 else size_scale
+	var band := float(skin["band"]) if size_scale < 0.0 else 1.0
+	var outline := float(skin["outline"])
+	var glow := float(skin["glow"])
+	var gloss := float(skin["gloss"])
+	var shadow := float(skin["shadow"])
+	var w := width * k * band
+	if glow > 0.01:
+		canvas.draw_polyline(points, Color(color.r, color.g, color.b, 0.10 * glow * alpha), w + 18.0, true)
+	if shadow > 0.01:
+		var offset := PackedVector2Array()
+		for p in points:
+			offset.append(p + Vector2(5, 7) * shadow)
+		canvas.draw_polyline(offset, Color(0, 0, 0, 0.38 * shadow * alpha), w + 10.0, true)
+	canvas.draw_polyline(points, Color(0, 0, 0, 0.62 * outline * alpha), w + 5.0 * outline, true)
+	canvas.draw_polyline(points, Color(1, 1, 1, 0.92 * alpha), w, true)
+	canvas.draw_polyline(points, Color(color.r, color.g, color.b, 0.94 * alpha), maxf(3.0, w * 0.62), true)
+	if gloss > 0.01:
+		canvas.draw_polyline(points, Color(1, 1, 0.94, 0.34 * gloss * alpha), maxf(1.5, w * 0.16), true)
+	if String(skin["id"]) == "neon":
+		canvas.draw_polyline(points, Color(0.04, 0.06, 0.08, 0.85 * alpha), maxf(2.0, w * 0.20), true)
+
+
 func _draw_path_head(canvas: Control, point: Vector2, top: bool, scale: float = 1.0, color: Color = UITheme.CORAL) -> void:
 	if not _valid_point(point):
 		return
 	var alpha := 1.0 if top else 0.45
-	var s := clampf(scale, 0.2, 2.0)
-	canvas.draw_circle(point, 24.0 * s, Color(color.r, color.g, color.b, 0.18 * alpha))
-	_draw_star_filled(canvas, point, 14.0 * s, Color(color.r, color.g, color.b, alpha))
+	var s := clampf(scale, 0.2, 2.0) * float(_skin()["scale"])
+	canvas.draw_circle(point, 31.0 * s, Color(color.r, color.g, color.b, 0.18 * alpha))
+	canvas.draw_circle(point, 24.0 * s, Color(0, 0, 0, 0.32 * alpha))
+	canvas.draw_arc(point, 24.0 * s, 0.0, TAU, 30, Color(1, 1, 1, 0.30 * alpha), 2.0, true)
+	_draw_star_filled(canvas, point, 18.0 * s, Color(color.r, color.g, color.b, alpha))
 
 
 func _draw_star_filled(canvas: Control, point: Vector2, radius: float, color: Color) -> void:
@@ -1972,13 +2165,11 @@ func _draw_path_tail(canvas: Control, point: Vector2, top: bool, scale: float = 
 	if not _valid_point(point):
 		return
 	var alpha := 1.0 if top else 0.45
-	var s := clampf(scale, 0.2, 2.0)
-	# 尾端用空心环，和实心星头明确区分，避免读反。
-	canvas.draw_circle(point, 13.0 * s, Color(color.r, color.g, color.b, 0.10 * alpha))
-	canvas.draw_circle(point, 11.0 * s, Color(0, 0, 0, 0.52 * alpha))
-	canvas.draw_arc(point, 9.0 * s, 0.0, TAU, 30, Color(color.r, color.g, color.b, 0.96 * alpha), 2.6 * s, true)
-	canvas.draw_arc(point, 9.0 * s, 0.0, TAU, 30, Color(1, 1, 1, 0.55 * alpha), 1.0, true)
-	canvas.draw_circle(point, 1.8 * s, Color(color.r, color.g, color.b, 0.9 * alpha))
+	var s := clampf(scale, 0.2, 2.0) * float(_skin()["scale"])
+	# 舞萌的滑动终点也是一颗星；比头小一圈，并用外环区分。
+	canvas.draw_circle(point, 20.0 * s, Color(color.r, color.g, color.b, 0.10 * alpha))
+	canvas.draw_arc(point, 17.0 * s, 0.0, TAU, 30, Color(color.r, color.g, color.b, 0.55 * alpha), 1.8, true)
+	_draw_star_filled(canvas, point, 12.0 * s, Color(color.r, color.g, color.b, alpha))
 
 
 func _hold_node_screen(chart: Chart, note: Note, relative_beat: float, relative_angle: float, t: float) -> Vector2:
@@ -2008,8 +2199,18 @@ func _draw_holds(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 		var grow := clampf((t - (note.beat - pre)) / maxf(0.001, pre), 0.0, 1.0)
 		var center := project_design(Vector2.ZERO)
 		var body := PackedVector2Array()
-		var curved := note.hold_style == "curved"
-		if curved:
+		var curved := note.hold_style == "curved" and note.visual_pts.is_empty()
+		if not note.visual_pts.is_empty():
+			# Hold 体节点：和 Path 共用 visual_pts，节点只改画面，不改头部判定。
+			var design_points: Array[Dictionary] = [{"db": 0.0, "da": 0.0}]
+			design_points.append_array(note.visual_pts)
+			design_points.append({"db": note.duration(), "da": 0.0})
+			design_points.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return float(a.get("db", 0.0)) < float(b.get("db", 0.0)))
+			for point in design_points:
+				var p := _hold_node_screen(chart, note, float(point.get("db", 0.0)), float(point.get("da", 0.0)), t)
+				if _valid_point(p):
+					body.append(center.lerp(p, grow))
+		elif curved:
 			# 弯 Hold：本体沿环弯曲，尾部有明确端环。
 			var span := clampf(16.0 + note.duration() * 12.0, 20.0, 64.0)
 			var steps := maxi(10, int(span / 3.0))
@@ -2031,42 +2232,38 @@ func _draw_holds(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 		if body.size() < 2:
 			continue
 		var boundary: Vector2 = body[-1]
-		var shadow := PackedVector2Array()
-		for p in body:
-			shadow.append(p + Vector2(5, 7))
-		canvas.draw_polyline(shadow, Color(0, 0, 0, 0.44 * fade), 26.0 * ns, true)
-		canvas.draw_polyline(body, Color(0, 0, 0, 0.62 * fade), 22.0 * ns, true)
-		canvas.draw_polyline(body, Color(1, 1, 1, 0.92 * fade), 17.0 * ns, true)
-		canvas.draw_polyline(body, Color(UITheme.AMBER.r, UITheme.AMBER.g, UITheme.AMBER.b, 0.90 * fade), 12.0 * ns, true)
-		canvas.draw_polyline(body, Color(1, 1, 0.9, 0.34 * fade), 3.0 * ns, true)
-		# 圆头端点，让 Hold 读成胶囊而不是一根线。
-		for cap in [body[0], body[-1]]:
-			canvas.draw_circle(cap, 8.5 * ns, Color(UITheme.AMBER.r, UITheme.AMBER.g, UITheme.AMBER.b, 0.90 * fade))
-			canvas.draw_circle(cap, 4.5 * ns, Color(1, 1, 1, 0.28 * fade))
-		_draw_target_arc(canvas, note.angle, note.width, t, UITheme.AMBER, 12.0)
-		# Hold 尾：明确的端环，方便读松手时机。
-		canvas.draw_arc(boundary, 13.0 * ns, 0.0, TAU, 30, Color(UITheme.AMBER.r, UITheme.AMBER.g, UITheme.AMBER.b, 0.95 * fade), 3.2 * ns, true)
-		canvas.draw_arc(boundary, 13.0 * ns, 0.0, TAU, 30, Color(1, 1, 1, 0.6 * fade), 1.0, true)
-		var end_dir := (boundary - body[maxi(0, body.size() - 2)]).normalized()
-		var end_normal := Vector2(-end_dir.y, end_dir.x)
-		canvas.draw_line(boundary - end_normal * 17.0 * ns, boundary + end_normal * 17.0 * ns, Color(0, 0, 0, 0.55 * fade), 1.5 * ns, true)
+		var hs := ns * float(_skin()["scale"])
+		# 舞萌式 Hold：金色胶囊 + 粉色圆环头，不再用六边形。
+		_stroke_band(canvas, body, UITheme.GOLD, 16.0 * ns, fade)
+		canvas.draw_circle(body[0], 10.0 * hs, Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, 0.90 * fade))
+		canvas.draw_circle(body[0], 5.0 * hs, Color(1, 1, 1, 0.28 * fade))
+		_draw_target_arc(canvas, note.angle, note.width, t, UITheme.GOLD, 12.0)
+		# 外端是粉色 Tap 环，方便读松手时机。
+		_draw_tap_donut(canvas, boundary, 20.0 * hs, UITheme.GOLD, fade)
 		if t >= note.beat and t <= note.end_beat:
 			var progress := clampf((t - note.beat) / maxf(0.001, note.duration()), 0.0, 1.0)
 			var marker_index := progress * float(body.size() - 1)
 			var lower := clampi(int(marker_index), 0, body.size() - 1)
 			var upper := mini(lower + 1, body.size() - 1)
 			var marker := body[lower].lerp(body[upper], marker_index - float(lower))
-			canvas.draw_circle(marker, 8.0 * ns, Color(1, 1, 1, 0.28))
-			canvas.draw_circle(marker, 5.2 * ns, Color(1, 1, 1, 0.96))
-			canvas.draw_circle(marker, 2.4 * ns, UITheme.AMBER)
-		if fade > 0.999:
+			canvas.draw_circle(marker, 12.0 * hs, Color(1, 1, 1, 0.28))
+			canvas.draw_circle(marker, 8.0 * hs, Color(1, 1, 1, 0.96))
+			canvas.draw_circle(marker, 4.0 * hs, UITheme.GOLD)
+		if fade > 0.999 and t < note.beat + 0.02:
 			var head := _flying_position(chart, note.angle, note.beat, t, pre)
-			_draw_hexagon(canvas, head, 9.0 * ns * clampf(grow, 0.35, 1.0), UITheme.AMBER)
-			if playtest_mode and _valid_point(head):
-				canvas.draw_string(UITheme.bold_font(), head + Vector2(-14, -22), "HOLD", HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(UITheme.AMBER.r, UITheme.AMBER.g, UITheme.AMBER.b, 0.85))
+			_draw_tap_donut(canvas, head, 18.0 * hs * clampf(grow, 0.35, 1.0), UITheme.GOLD, fade)
+			if show_debug and _valid_point(head):
+				canvas.draw_string(UITheme.bold_font(), head + Vector2(-14, -22), "HOLD", HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, 0.85))
 		if t >= note.beat and t <= note.end_beat:
 			var glow := 0.5 + 0.5 * sin(t * PI)
-			canvas.draw_arc(boundary, 18.0, 0.0, TAU, 32, Color(UITheme.AMBER.r, UITheme.AMBER.g, UITheme.AMBER.b, 0.28 * glow), 2.0, true)
+			canvas.draw_arc(boundary, 28.0 * hs, 0.0, TAU, 32, Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, 0.28 * glow), 2.6, true)
+		if _app != null and not note.visual_pts.is_empty():
+			var selected: Note = _app.get_selected_note()
+			if selected != null and selected.id == note.id:
+				for point in note.visual_pts:
+					var marker := _hold_node_screen(chart, note, float(point.get("db", 0.0)), float(point.get("da", 0.0)), t)
+					if _valid_point(marker):
+						_draw_diamond(canvas, marker, 5.5, UITheme.GOLD)
 
 
 func _draw_notes(canvas: Control, chart: Chart, t: float, pre: float) -> void:
@@ -2085,20 +2282,37 @@ func _draw_notes(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 				var grow := clampf((t - (note.beat - pre)) / maxf(0.001, pre), 0.0, 1.0)
 				var p := _flying_position(chart, note.angle, note.beat, t, pre)
 				if _valid_point(p):
-					canvas.draw_circle(p, 18.0 * grow, Color(UITheme.VIOLET.r, UITheme.VIOLET.g, UITheme.VIOLET.b, 0.14))
-				_draw_diamond(canvas, p, 11.0 * clampf(grow, 0.35, 1.0), UITheme.VIOLET)
+					canvas.draw_circle(p, 27.0 * grow, Color(UITheme.VIOLET.r, UITheme.VIOLET.g, UITheme.VIOLET.b, 0.14))
+				_draw_diamond(canvas, p, 16.0 * clampf(grow, 0.35, 1.0), UITheme.VIOLET)
 			"bell":
 				var bell := bell_screen(note, t)
 				if not bell.is_empty():
 					_draw_bell(canvas, bell["center"], bell["radius"], t, note.beat, pre)
 
 
+func _draw_tap_donut(canvas: Control, point: Vector2, radius: float, color: Color, alpha: float = 1.0) -> void:
+	# 舞萌式 Tap：固定大小的粉色圆环，不随判定宽度拉成长条。
+	var skin := _skin()
+	var outline := float(skin["outline"])
+	var glow := float(skin["glow"])
+	var gloss := float(skin["gloss"])
+	canvas.draw_circle(point, radius + 10.0, Color(color.r, color.g, color.b, 0.10 * glow * alpha))
+	canvas.draw_circle(point, radius + 3.5 * outline, Color(0, 0, 0, 0.66 * alpha))
+	canvas.draw_circle(point, radius + 1.2, Color(1, 1, 1, 0.94 * alpha))
+	canvas.draw_circle(point, radius - 1.0, Color(color.r, color.g, color.b, 0.95 * alpha))
+	canvas.draw_circle(point, radius * 0.58, Color(0.04, 0.05, 0.07, 0.92 * alpha))
+	canvas.draw_arc(point, radius * 0.58, 0.0, TAU, 28, Color(1, 1, 1, 0.55 * alpha), 1.4, true)
+	canvas.draw_circle(point, radius * 0.18, Color(color.r, color.g, color.b, 0.65 * alpha))
+	if gloss > 0.01:
+		canvas.draw_arc(point, radius * 0.82, -PI * 0.85, -PI * 0.25, 16, Color(1, 1, 1, 0.42 * gloss * alpha), 2.0, true)
+
+
 func _draw_tap_note(canvas: Control, chart: Chart, note: Note, t: float, pre: float) -> void:
+	# 本作 Tap 是可变宽度长条：note.width 直接决定条带长度。
 	var ns := _note_scale()
 	var width := maxf(note.width, 6.0)
-	var steps := clampi(int(width / 5.0), 8, 96)
+	var steps := clampi(int(width / 4.0), 10, 96)
 	var q := clampf((t - (note.beat - pre)) / maxf(0.001, pre), 0.0, 1.0)
-	var center := project_design(Vector2.ZERO)
 	var points := PackedVector2Array()
 	for i in steps + 1:
 		var angle := note.angle - width * 0.5 + width * float(i) / float(steps)
@@ -2108,37 +2322,22 @@ func _draw_tap_note(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 		var p := project_design(data.point * q)
 		if _valid_point(p):
 			points.append(p)
-	var target_points := PackedVector2Array()
-	for i in steps + 1:
-		var angle := note.angle - width * 0.5 + width * float(i) / float(steps)
-		var p := project_u(fposmod(angle, 360.0) / 360.0, t)
-		if _valid_point(p):
-			target_points.append(p)
-	if target_points.size() > 1:
-		canvas.draw_polyline(target_points, Color(UITheme.CORAL.r, UITheme.CORAL.g, UITheme.CORAL.b, 0.16), 9.0, true)
 	if points.size() < 2:
 		return
-	var shadow := PackedVector2Array()
-	for p in points:
-		shadow.append(p + Vector2(5, 7))
-	canvas.draw_polyline(shadow, Color(0, 0, 0, 0.42), 32.0 * ns, true)
-	canvas.draw_polyline(points, Color(UITheme.CORAL.r, UITheme.CORAL.g, UITheme.CORAL.b, 0.10), 32.0 * ns, true)
-	canvas.draw_polyline(points, Color(0, 0, 0, 0.68), 27.0 * ns, true)
-	canvas.draw_polyline(points, Color(1, 1, 1, 0.94), 22.0 * ns, true)
-	canvas.draw_polyline(points, UITheme.CORAL, 13.0 * ns, true)
-	canvas.draw_polyline(points, Color(1, 1, 0.94, 0.38), 3.5 * ns, true)
+	_stroke_band(canvas, points, UITheme.PINK, 18.0 * ns)
+	var cap_scale := ns * float(_skin()["scale"])
+	# 两端圆头：让长条读成一根胶囊，而不是一段没有边界的弧。
 	for cap in [points[0], points[-1]]:
-		canvas.draw_circle(cap, 8.0 * ns, Color(0, 0, 0, 0.65))
-		canvas.draw_circle(cap, 6.2 * ns, Color(1, 1, 1, 0.95))
-		canvas.draw_circle(cap, 4.2 * ns, UITheme.CORAL)
-	if playtest_mode:
-		var label_point := points[points.size() / 2]
-		canvas.draw_string(UITheme.bold_font(), label_point + Vector2(-10, -20), "TAP", HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(UITheme.CORAL.r, UITheme.CORAL.g, UITheme.CORAL.b, 0.85))
-	var center_data := _boundary_point(chart, fposmod(note.angle, 360.0) / 360.0, t)
-	if not bool(center_data.get("gap", false)):
-		var c := project_design(center_data.point * q)
-		canvas.draw_line(c, center.lerp(c, 0.84), UITheme.INK, 2.0, true)
-		canvas.draw_circle(c, 2.0, UITheme.INK)
+		canvas.draw_circle(cap, 12.0 * cap_scale, Color(0, 0, 0, 0.66))
+		canvas.draw_circle(cap, 9.5 * cap_scale, Color(1, 1, 1, 0.94))
+		canvas.draw_circle(cap, 6.0 * cap_scale, UITheme.PINK)
+	# 中心命中点：宽度变化时仍然知道该按哪里。
+	var center_point := points[points.size() / 2]
+	canvas.draw_circle(center_point, 8.0 * cap_scale, Color(0, 0, 0, 0.55))
+	canvas.draw_circle(center_point, 6.0 * cap_scale, Color(1, 1, 1, 0.96))
+	canvas.draw_circle(center_point, 3.0 * cap_scale, UITheme.PINK)
+	if show_debug:
+		canvas.draw_string(UITheme.bold_font(), center_point + Vector2(-12, -22), "TAP %.0f°" % note.width, HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(UITheme.PINK.r, UITheme.PINK.g, UITheme.PINK.b, 0.85))
 
 
 func _draw_traces(canvas: Control, chart: Chart, t: float) -> void:
@@ -2161,16 +2360,11 @@ func _draw_traces(canvas: Control, chart: Chart, t: float) -> void:
 		if points.size() > 1:
 			var duration := maxf(0.001, note.duration())
 			var progress := clampf((t - note.beat) / duration, 0.0, 1.0)
-			var outline := PackedVector2Array()
-			for p in points:
-				outline.append(p + Vector2(4, 6))
-			canvas.draw_polyline(outline, Color(0, 0, 0, 0.52), 42.0, true)
-			canvas.draw_polyline(points, Color(1, 1, 1, 0.14), 38.0, true)
-			canvas.draw_polyline(points, Color(UITheme.MINT.r, UITheme.MINT.g, UITheme.MINT.b, 0.14), 36.0, true)
-			canvas.draw_polyline(points, Color(UITheme.MINT.r, UITheme.MINT.g, UITheme.MINT.b, 0.30), 28.0, true)
-			canvas.draw_polyline(_offset_polyline(points, 16.0), Color(UITheme.MINT.r, UITheme.MINT.g, UITheme.MINT.b, 0.62), 1.5, true)
-			canvas.draw_polyline(_offset_polyline(points, -16.0), Color(UITheme.MINT.r, UITheme.MINT.g, UITheme.MINT.b, 0.62), 1.5, true)
-			_draw_dashed_polyline(canvas, points, Color(UITheme.MINT.r, UITheme.MINT.g, UITheme.MINT.b, 0.92), 2.0, 6.0)
+			var ns_trace := _note_scale() * float(_skin()["scale"])
+			_stroke_band(canvas, points, Color(UITheme.MINT.r, UITheme.MINT.g, UITheme.MINT.b, 0.85), 16.0 * ns_trace, 0.78)
+			canvas.draw_polyline(_offset_polyline(points, 12.0), Color(UITheme.MINT.r, UITheme.MINT.g, UITheme.MINT.b, 0.62), 1.6, true)
+			canvas.draw_polyline(_offset_polyline(points, -12.0), Color(UITheme.MINT.r, UITheme.MINT.g, UITheme.MINT.b, 0.62), 1.6, true)
+			_draw_dashed_polyline(canvas, points, Color(UITheme.MINT.r, UITheme.MINT.g, UITheme.MINT.b, 0.92), 2.4, 7.0)
 			var arrow_count := 5
 			for k in arrow_count:
 				var fraction := (float(k) + 0.5) / float(arrow_count)
@@ -2183,13 +2377,14 @@ func _draw_traces(canvas: Control, chart: Chart, t: float) -> void:
 				_draw_diamond(canvas, points[i], 3.2, Color(UITheme.MINT.r, UITheme.MINT.g, UITheme.MINT.b, 0.85))
 			_draw_trace_cap(canvas, points[0], true)
 			_draw_trace_cap(canvas, points[-1], false)
-			_draw_label(canvas, "TRACE", points[0] + Vector2(14, -14), UITheme.MINT)
+			if show_debug:
+				_draw_label(canvas, "TRACE", points[0] + Vector2(14, -14), UITheme.MINT)
 		var position := _trace_position(note, t)
 		if _valid_point(position):
-			canvas.draw_circle(position, 16.0, Color(UITheme.MINT.r, UITheme.MINT.g, UITheme.MINT.b, 0.14))
-			canvas.draw_circle(position, 10.0, Color(UITheme.MINT.r, UITheme.MINT.g, UITheme.MINT.b, 0.92))
-			canvas.draw_circle(position, 4.0, UITheme.INK)
-			canvas.draw_arc(position, 13.0, 0.0, TAU, 28, Color(UITheme.MINT.r, UITheme.MINT.g, UITheme.MINT.b, 0.75), 1.5, true)
+			canvas.draw_circle(position, 24.0, Color(UITheme.MINT.r, UITheme.MINT.g, UITheme.MINT.b, 0.14))
+			canvas.draw_circle(position, 15.0, Color(UITheme.MINT.r, UITheme.MINT.g, UITheme.MINT.b, 0.92))
+			canvas.draw_circle(position, 6.0, UITheme.INK)
+			canvas.draw_arc(position, 20.0, 0.0, TAU, 28, Color(UITheme.MINT.r, UITheme.MINT.g, UITheme.MINT.b, 0.75), 2.0, true)
 	if _drawing_trace and _trace_points.size() > 1:
 		var temp := PackedVector2Array()
 		for p in _trace_points:
@@ -2237,15 +2432,8 @@ func _draw_slider_trace(canvas: Control, note: Note, points: PackedVector2Array,
 	for run in runs:
 		if run.size() < 2:
 			continue
-		var shadow := PackedVector2Array()
-		for point in run:
-			shadow.append(point + Vector2(5, 7))
 		# 宽笔刷主体：去掉中心虚线和箭头，让星头、带体、尾环读成同一条轨迹。
-		canvas.draw_polyline(shadow, Color(0, 0, 0, 0.46), 32.0 * ns, true)
-		canvas.draw_polyline(run, Color(0, 0, 0, 0.58), 27.0 * ns, true)
-		canvas.draw_polyline(run, Color(1, 1, 1, 0.94), 22.0 * ns, true)
-		canvas.draw_polyline(run, Color(0.74, 0.78, 0.79, 0.92), 13.0 * ns, true)
-		canvas.draw_polyline(run, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.16), 3.5 * ns, true)
+		_stroke_band(canvas, run, Color(0.78, 0.94, 0.92), 16.0 * ns)
 	# 流动高光：跟着引导星走的一小段亮带。
 	var from_index := clampi(int((progress - 0.16) * float(points.size())), 0, points.size() - 1)
 	var to_index := clampi(int((progress + 0.04) * float(points.size())) + 1, from_index + 1, points.size())
@@ -2254,7 +2442,7 @@ func _draw_slider_trace(canvas: Control, note: Note, points: PackedVector2Array,
 		if not _trace_index_cut(note, i, points.size()):
 			highlight.append(points[i])
 	if highlight.size() > 1:
-		canvas.draw_polyline(highlight, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.30), 28.0, true)
+		canvas.draw_polyline(highlight, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.30), 18.0, true)
 		canvas.draw_polyline(highlight, Color(1, 1, 1, 0.82), 8.0, true)
 	# 星头和圆环尾都是轨迹的一部分：固定画在轨迹两端，尾部不单独飞入。
 	_draw_path_head(canvas, points[0], true, grow * ns, UITheme.CYAN)
@@ -2264,10 +2452,11 @@ func _draw_slider_trace(canvas: Control, note: Note, points: PackedVector2Array,
 	_draw_path_tail(canvas, points[-1], true, grow * ns, UITheme.CYAN)
 	var position := _trace_position(note, t)
 	if _valid_point(position):
-		canvas.draw_circle(position, 11.0, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.20))
-		canvas.draw_circle(position, 7.5, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.92))
-		canvas.draw_circle(position, 3.0, UITheme.INK)
-	_draw_label(canvas, "SLIDE", points[0] + Vector2(16, -14), UITheme.CYAN)
+		canvas.draw_circle(position, 17.0, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.20))
+		canvas.draw_circle(position, 11.5, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.92))
+		canvas.draw_circle(position, 4.5, UITheme.INK)
+	if show_debug:
+		_draw_label(canvas, "SLIDE", points[0] + Vector2(18, -16), UITheme.CYAN)
 
 
 func _trace_visible_runs(note: Note, points: PackedVector2Array) -> Array[PackedVector2Array]:
@@ -2299,12 +2488,12 @@ func _draw_trace_cap(canvas: Control, point: Vector2, start: bool) -> void:
 	if not _valid_point(point):
 		return
 	var color := Color(UITheme.MINT.r, UITheme.MINT.g, UITheme.MINT.b, 0.95)
-	canvas.draw_circle(point, 8.0, Color(UITheme.MINT.r, UITheme.MINT.g, UITheme.MINT.b, 0.16))
-	canvas.draw_arc(point, 7.0, 0.0, TAU, 20, color, 1.5, true)
+	canvas.draw_circle(point, 14.0, Color(UITheme.MINT.r, UITheme.MINT.g, UITheme.MINT.b, 0.16))
+	canvas.draw_arc(point, 12.0, 0.0, TAU, 20, color, 2.4, true)
 	if start:
-		canvas.draw_circle(point, 3.0, color)
+		canvas.draw_circle(point, 5.0, color)
 	else:
-		_draw_diamond(canvas, point, 4.0, color)
+		_draw_diamond(canvas, point, 7.0, color)
 
 
 func _offset_polyline(points: PackedVector2Array, offset: float) -> PackedVector2Array:
@@ -2439,7 +2628,7 @@ func add_hit_pulse(point: Vector2, color: Color, label: String = "HIT", kind: St
 	if not _valid_point(point):
 		return
 	var sparks: Array[float] = []
-	for i in 10:
+	for i in 16:
 		sparks.append(randf_range(0.0, TAU))
 	_pulses.append({"pos": point, "age": 0.0, "color": color, "label": label, "kind": kind, "sparks": sparks})
 	if _overlay != null:
@@ -2470,36 +2659,150 @@ func _draw_arc_flashes(canvas: Control) -> void:
 func _draw_pulses(canvas: Control) -> void:
 	for pulse in _pulses:
 		var age := float(pulse.get("age", 0.0))
-		var alpha := clampf(1.0 - age / 0.5, 0.0, 1.0)
+		var alpha := clampf(1.0 - age / 0.42, 0.0, 1.0)
 		var point: Vector2 = pulse["pos"]
 		var color: Color = pulse["color"]
-		var radius := 10.0 + age * 82.0
-		# 白色瞬闪 + 扩散环，给命中一个明确的“落点”。
-		canvas.draw_circle(point, 26.0 * clampf(1.0 - age / 0.16, 0.0, 1.0), Color(1, 1, 1, 0.42 * alpha))
-		canvas.draw_arc(point, radius, 0.0, TAU, 36, Color(color.r, color.g, color.b, 0.6 * alpha), 1.6 + 2.6 * alpha, true)
-		canvas.draw_arc(point, radius * 1.45, 0.0, TAU, 40, Color(color.r, color.g, color.b, 0.20 * alpha), 1.0, true)
-		canvas.draw_circle(point, 4.5 * alpha, Color(color.r, color.g, color.b, alpha))
-		# 切向火花：命中的方向感。
-		for spark_angle in pulse.get("sparks", []):
-			var direction := Vector2(cos(float(spark_angle)), sin(float(spark_angle)))
-			var inner := point + direction * (6.0 + age * 28.0)
-			var outer := point + direction * (18.0 + age * 96.0)
-			canvas.draw_line(inner, outer, Color(color.r, color.g, color.b, 0.85 * alpha), 2.2 * alpha + 0.4, true)
-			canvas.draw_circle(outer, 2.0 * alpha, Color(1, 1, 1, 0.8 * alpha))
+		var sparks: Array = pulse.get("sparks", [])
+		match hit_fx_style:
+			"ring":
+				_draw_fx_ring(canvas, point, color, age, sparks)
+			"prism":
+				_draw_fx_prism(canvas, point, color, age, sparks)
+			"ink":
+				_draw_fx_ink(canvas, point, color, age, sparks)
+			_:
+				_draw_fx_burst(canvas, point, color, age, sparks)
 		match String(pulse.get("kind", "tap")):
 			"hold":
-				canvas.draw_line(point + Vector2(0, -80.0 * (1.0 - alpha)), point - Vector2(0, 20), Color(color.r, color.g, color.b, 0.35 * alpha), 10.0, true)
+				canvas.draw_line(point + Vector2(0, -92.0 * (1.0 - alpha)), point - Vector2(0, 20), Color(color.r, color.g, color.b, 0.35 * alpha), 12.0, true)
 			"bell":
-				canvas.draw_arc(point, radius * 0.55, 0.0, TAU, 28, Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, alpha), 3.0, true)
+				canvas.draw_arc(point, 28.0 + age * 20.0, 0.0, TAU, 28, Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, alpha), 3.4, true)
+				for k in 8:
+					var a := float(k) * TAU / 8.0
+					var inner := point + Vector2(cos(a), sin(a)) * (12.0 + age * 26.0)
+					var outer := point + Vector2(cos(a), sin(a)) * (28.0 + age * 62.0)
+					canvas.draw_line(inner, outer, Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, 0.75 * alpha), 2.4, true)
 			"path":
 				for k in 5:
 					var a := float(k) * TAU / 5.0
-					canvas.draw_circle(point + Vector2(cos(a), sin(a)) * (18.0 + age * 50.0), 3.0 * alpha, Color(1, 1, 1, alpha))
+					canvas.draw_circle(point + Vector2(cos(a), sin(a)) * (22.0 + age * 54.0), 3.6 * alpha, Color(1, 1, 1, alpha))
 			"trace":
-				canvas.draw_line(point - Vector2(46, 0), point + Vector2(46, 0), Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.5 * alpha), 8.0 * alpha + 1.0, true)
-		var text_scale := 1.0 + 0.25 * clampf(1.0 - age / 0.12, 0.0, 1.0)
-		canvas.draw_string_outline(UITheme.bold_font(), point + Vector2(14, -16 - age * 30), String(pulse.get("label", "")), HORIZONTAL_ALIGNMENT_LEFT, -1, int(12.0 * text_scale), 3, Color(0, 0, 0, 0.55 * alpha))
-		canvas.draw_string(UITheme.bold_font(), point + Vector2(14, -16 - age * 30), String(pulse.get("label", "")), HORIZONTAL_ALIGNMENT_LEFT, -1, int(12.0 * text_scale), Color(color.r, color.g, color.b, alpha))
+				canvas.draw_line(point - Vector2(52, 0), point + Vector2(52, 0), Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.5 * alpha), 9.0 * alpha + 1.0, true)
+		var text_scale := 1.0 + 0.28 * clampf(1.0 - age / 0.12, 0.0, 1.0)
+		canvas.draw_string_outline(UITheme.bold_font(), point + Vector2(30, -36 - age * 30), String(pulse.get("label", "")), HORIZONTAL_ALIGNMENT_LEFT, -1, int(13.0 * text_scale), 4, Color(0, 0, 0, 0.55 * alpha))
+		canvas.draw_string(UITheme.bold_font(), point + Vector2(30, -36 - age * 30), String(pulse.get("label", "")), HORIZONTAL_ALIGNMENT_LEFT, -1, int(13.0 * text_scale), Color(color.r, color.g, color.b, alpha))
+
+
+func _draw_fx_burst(canvas: Control, point: Vector2, color: Color, age: float, sparks: Array) -> void:
+	# 舞萌式：白闪 + 冲击环 + 锥形碎片，落点最明确。
+	var t := clampf(age / 0.40, 0.0, 1.0)
+	var fade := 1.0 - t
+	var flash := clampf(1.0 - age / 0.16, 0.0, 1.0)
+	if flash > 0.0:
+		canvas.draw_circle(point, 48.0 * flash + 8.0, Color(color.r, color.g, color.b, 0.18 * flash))
+		canvas.draw_circle(point, 26.0 * flash + 5.0, Color(1, 1, 1, 0.30 * flash))
+		canvas.draw_circle(point, 13.0 * flash + 3.0, Color(1, 1, 1, 0.92 * flash))
+		# 舞萌式四角星：命中瞬间在音符上炸开一颗星。
+		var star_points := PackedVector2Array()
+		var spin := -PI * 0.5 + age * 0.9
+		for i in 8:
+			var angle := spin + TAU * float(i) / 8.0
+			var radius := (40.0 * flash + 10.0) if i % 2 == 0 else (13.0 * flash + 5.0)
+			star_points.append(point + Vector2(cos(angle), sin(angle)) * radius)
+		canvas.draw_colored_polygon(star_points, Color(1, 1, 1, 0.26 * flash))
+		var star_outline := star_points.duplicate()
+		star_outline.append(star_points[0])
+		canvas.draw_polyline(star_outline, Color(1, 1, 1, 0.78 * flash), 2.0, true)
+	# 实心冲击盘 + 双层环。
+	canvas.draw_circle(point, 30.0 + 42.0 * t, Color(color.r, color.g, color.b, 0.12 * fade))
+	var ring_radius := 14.0 + 82.0 * (1.0 - pow(1.0 - t, 3.0))
+	canvas.draw_arc(point, ring_radius, 0.0, TAU, 40, Color(color.r, color.g, color.b, 0.78 * fade), 3.0 + 6.0 * fade, true)
+	canvas.draw_arc(point, ring_radius * 1.26, 0.0, TAU, 40, Color(color.r, color.g, color.b, 0.24 * fade), 1.2 + 2.0 * fade, true)
+	for i in sparks.size():
+		var angle := float(sparks[i])
+		var length := 0.40 + 0.60 * absf(sin(float(i) * 2.3))
+		var direction := Vector2(cos(angle), sin(angle))
+		var normal := Vector2(-direction.y, direction.x)
+		var inner := point + direction * (9.0 + 16.0 * t)
+		var outer := point + direction * (24.0 + 88.0 * t * length)
+		var half := 3.6 * (1.0 - t) + 1.0
+		canvas.draw_colored_polygon(PackedVector2Array([inner + normal * half, inner - normal * half, outer]), Color(color.r, color.g, color.b, 0.88 * fade))
+		canvas.draw_line(inner, outer, Color(1, 1, 1, 0.72 * fade), 1.2, true)
+		canvas.draw_circle(outer, 3.4 * fade, Color(1, 1, 1, 0.90 * fade))
+	# 四向长星芒，给“打中了”一个明确的中心。
+	for k in 4:
+		var angle := PI * 0.25 + float(k) * PI * 0.5 + age * 0.6
+		var direction := Vector2(cos(angle), sin(angle))
+		var normal := Vector2(-direction.y, direction.x)
+		var tip := point + direction * (42.0 + 58.0 * t)
+		var base := point + direction * (10.0 + 16.0 * t)
+		canvas.draw_colored_polygon(PackedVector2Array([base + normal * 2.4, base - normal * 2.4, tip]), Color(1, 1, 1, 0.34 * fade))
+	canvas.draw_circle(point, 8.0 * fade, Color(color.r, color.g, color.b, fade))
+
+
+func _draw_fx_ring(canvas: Control, point: Vector2, color: Color, age: float, sparks: Array) -> void:
+	# osu 式：实心 hit circle + 向外扩散的光环，干净不挡读谱。
+	var t := clampf(age / 0.40, 0.0, 1.0)
+	var fade := 1.0 - t
+	var flash := clampf(1.0 - age / 0.12, 0.0, 1.0)
+	var core := 34.0 * (1.0 - 0.50 * t)
+	if flash > 0.0:
+		canvas.draw_circle(point, core + 18.0 * flash, Color(1, 1, 1, 0.22 * flash))
+	canvas.draw_circle(point, core + 9.0, Color(color.r, color.g, color.b, 0.26 * fade))
+	canvas.draw_circle(point, core, Color(1, 1, 1, 0.92 * fade))
+	canvas.draw_arc(point, core + 2.5, 0.0, TAU, 32, Color(color.r, color.g, color.b, 0.95 * fade), 4.0 * fade + 1.0, true)
+	canvas.draw_arc(point, maxf(2.0, core - 6.0), 0.0, TAU, 28, Color(color.r, color.g, color.b, 0.55 * fade), 1.6, true)
+	var ring_radius := 20.0 + 74.0 * (1.0 - pow(1.0 - t, 2.0))
+	canvas.draw_arc(point, ring_radius, 0.0, TAU, 40, Color(color.r, color.g, color.b, 0.80 * fade), 2.6 + 2.0 * fade, true)
+	canvas.draw_arc(point, ring_radius + 11.0, 0.0, TAU, 40, Color(color.r, color.g, color.b, 0.28 * fade), 1.2, true)
+	for k in 4:
+		var angle := PI * 0.25 + float(k) * PI * 0.5
+		var spark := point + Vector2(cos(angle), sin(angle)) * (30.0 + 48.0 * t)
+		_draw_diamond(canvas, spark, 8.5 * fade, color)
+	canvas.draw_circle(point, 6.0 * fade, Color(color.r, color.g, color.b, fade))
+
+
+func _draw_fx_prism(canvas: Control, point: Vector2, color: Color, age: float, sparks: Array) -> void:
+	# 棱镜式：三色三角碎片旋出，适合高亮曲目。
+	var t := clampf(age / 0.32, 0.0, 1.0)
+	var fade := 1.0 - t
+	var flash := clampf(1.0 - age / 0.12, 0.0, 1.0)
+	canvas.draw_circle(point, 26.0 * flash + 4.0, Color(1, 1, 1, 0.55 * flash))
+	var palette: Array[Color] = [color, UITheme.CYAN, UITheme.GOLD]
+	for i in 3:
+		var base := float(sparks[i % maxi(1, sparks.size())]) if not sparks.is_empty() else float(i) * TAU / 3.0
+		var angle := base + t * 1.6
+		var center := point + Vector2(cos(angle), sin(angle)) * (12.0 + 72.0 * t)
+		var size := (13.0 + 7.0 * sin(float(i))) * (1.0 - 0.5 * t)
+		var spin := angle + PI * 0.5 + t * 2.4 * float(i - 1)
+		var triangle := PackedVector2Array()
+		for j in 3:
+			var a := spin + TAU * float(j) / 3.0
+			triangle.append(center + Vector2(cos(a), sin(a)) * size)
+		var tint: Color = palette[i % palette.size()]
+		canvas.draw_colored_polygon(triangle, Color(tint.r, tint.g, tint.b, 0.44 * fade))
+		triangle.append(triangle[0])
+		canvas.draw_polyline(triangle, Color(1, 1, 1, 0.80 * fade), 1.8, true)
+	canvas.draw_circle(point, 8.0 * fade, Color(1, 1, 1, 0.90 * fade))
+	canvas.draw_arc(point, 18.0 + 40.0 * t, 0.0, TAU, 28, Color(color.r, color.g, color.b, 0.45 * fade), 1.2, true)
+
+
+func _draw_fx_ink(canvas: Control, point: Vector2, color: Color, age: float, sparks: Array) -> void:
+	# 墨滴式：低多边形飞溅，安静但有重量。
+	var t := clampf(age / 0.45, 0.0, 1.0)
+	var fade := 1.0 - t
+	canvas.draw_circle(point, 18.0 * (1.0 - 0.6 * t), Color(color.r, color.g, color.b, 0.55 * fade))
+	canvas.draw_circle(point, 10.0 * (1.0 - 0.5 * t), Color(color.r, color.g, color.b, 0.78 * fade))
+	var count := mini(10, sparks.size())
+	for i in count:
+		var angle := float(sparks[i])
+		var distance := (10.0 + 80.0 * t) * (0.35 + 0.65 * absf(sin(float(i) * 1.7)))
+		var radius := (3.0 + 5.0 * absf(cos(float(i) * 2.1))) * (1.0 - t)
+		canvas.draw_circle(point + Vector2(cos(angle), sin(angle)) * distance, radius, Color(color.r, color.g, color.b, 0.60 * fade))
+	if not sparks.is_empty():
+		var angle0 := float(sparks[0])
+		canvas.draw_line(point, point + Vector2(cos(angle0), sin(angle0)) * (36.0 + 72.0 * t), Color(color.r, color.g, color.b, 0.50 * fade), 3.5 * (1.0 - t) + 0.5, true)
+	canvas.draw_circle(point, 3.0 * fade, Color(1, 1, 1, 0.65 * fade))
 
 
 func _draw_hud(canvas: Control, chart: Chart, t: float) -> void:
@@ -2620,11 +2923,11 @@ func _draw_chevron(canvas: Control, point: Vector2, direction: Vector2, color: C
 	if dir.length_squared() < 0.1:
 		return
 	var normal := Vector2(-dir.y, dir.x)
-	canvas.draw_polyline(PackedVector2Array([
-		point - dir * size + normal * size * 0.75,
-		point,
-		point - dir * size - normal * size * 0.75,
-	]), color, 2.4, true)
+	var tip := point + dir * size * 0.12
+	var left := point - dir * size + normal * size * 0.80
+	var right := point - dir * size - normal * size * 0.80
+	# 一条粗 V 形 polyline：比三层描边少 2/3 draw call，也不产生多边形三角化失败。
+	canvas.draw_polyline(PackedVector2Array([left, tip, right]), color, maxf(2.0, size * 0.52), true)
 
 
 func _draw_star(canvas: Control, point: Vector2, radius: float, color: Color) -> void:
@@ -2723,16 +3026,31 @@ func _draw_diamond(canvas: Control, point: Vector2, radius: float, color: Color)
 
 func _draw_bell(canvas: Control, point: Vector2, radius: float, t: float, target: float, pre: float) -> void:
 	var q := clampf((t - (target - pre)) / maxf(0.001, pre), 0.0, 1.0)
-	var r := maxf(6.0, radius) * lerpf(0.65, 1.0, q)
+	var r := maxf(10.0, radius * 1.35) * lerpf(0.65, 1.0, q)
 	var p := project_design(Vector2.ZERO).lerp(point, q)
-	canvas.draw_circle(p, r + 2.5, Color(0, 0, 0, 0.55))
-	canvas.draw_circle(p, r + 18.0, Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, 0.10))
+	canvas.draw_circle(p, r + 3.0, Color(0, 0, 0, 0.55))
+	canvas.draw_circle(p, r + 24.0, Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, 0.10))
 	canvas.draw_circle(p, r, Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, 0.20))
 	canvas.draw_arc(p, r, 0.0, TAU, 32, Color(1, 1, 1, 0.92), 2.4, true)
 	canvas.draw_arc(p, r * 0.82, 0.0, TAU, 28, UITheme.GOLD, 1.6, true)
 	canvas.draw_circle(p, r * 0.55, UITheme.GOLD)
 	canvas.draw_circle(p, r * 0.20, UITheme.INK)
 	canvas.draw_arc(p, r * 0.55, -PI * 0.85, -PI * 0.25, 16, Color(1, 1, 1, 0.55), 1.3, true)
+	# Bell 吸附：鼠标靠近时显示收缩环 + 四向吸点。
+	var snap := maxf(96.0, r)
+	if mouse_inside:
+		var distance := mouse_screen.distance_to(p)
+		if distance <= snap * 1.7:
+			var pull := clampf(1.0 - distance / snap, 0.0, 1.0)
+			canvas.draw_arc(p, snap, 0.0, TAU, 48, Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, 0.08 + 0.20 * pull), 1.2 + 1.4 * pull, true)
+			var ring := lerpf(snap, r + 4.0, pull)
+			canvas.draw_arc(p, ring, 0.0, TAU, 36, Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, 0.45 + 0.45 * pull), 2.2, true)
+			canvas.draw_arc(p, ring + 5.0, 0.0, TAU, 36, Color(1, 1, 1, 0.18 + 0.30 * pull), 1.0, true)
+			for i in 4:
+				var a := t * TAU * 1.5 + float(i) * TAU / 4.0
+				var spark := p + Vector2(cos(a), sin(a)) * lerpf(snap * 0.95, r * 0.72, pull)
+				canvas.draw_circle(spark, 1.6 + 1.4 * pull, Color(1, 1, 1, 0.55 + 0.35 * pull))
+				canvas.draw_circle(spark, 3.2 + 2.0 * pull, Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, 0.16 + 0.20 * pull))
 
 
 func bell_screen(note: Note, beat: float) -> Dictionary:

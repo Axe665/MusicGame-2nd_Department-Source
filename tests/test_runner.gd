@@ -14,6 +14,9 @@ func _initialize() -> void:
 		"test_self_intersection",
 		"test_plane_path",
 		"test_path_erase_overlap",
+		"test_path_erase_merge",
+		"test_path_run_split",
+		"test_style_presets",
 		"test_nearest_u",
 		"test_pre_read",
 		"test_shrink_example",
@@ -40,6 +43,7 @@ func _initialize() -> void:
 		"test_osu_std_sentakki_rules",
 		"test_simai_directive_slot",
 		"test_simai_bend_shapes",
+		"test_simai_osu_friendly",
 	]
 	for test_name in tests:
 		if call(test_name) != true:
@@ -325,6 +329,64 @@ func test_path_erase_overlap() -> bool:
 	eq(overlapping.size(), 2, "overlapping passes are erased separately, not as one huge span")
 	if overlapping.size() == 2:
 		ok(overlapping[0].x < 0.01 and overlapping[1].y > 0.99, "both overlapping passes are covered")
+	return true
+
+
+func test_path_erase_merge() -> bool:
+	var local := Preview3D.merge_erase_ranges([], 0.47, 0.53)
+	eq(local.size(), 1, "local touch creates one gap")
+	if not local.is_empty():
+		ok(float(local[0]["from"]) > 0.4, "local touch does not erase from the head")
+	var followed := Preview3D.merge_erase_ranges(local, 0.51, 0.60)
+	eq(followed.size(), 1, "following merges into one continuous gap")
+	var separate := Preview3D.merge_erase_ranges(followed, 0.85, 0.90)
+	eq(separate.size(), 2, "far touch stays a separate gap")
+	var head := Preview3D.merge_erase_ranges([], 0.02, 0.10)
+	eq(head.size(), 1, "head touch creates one gap")
+	if not head.is_empty():
+		near(float(head[0]["from"]), 0.0, 0.001, "head touch starts at the head")
+	return true
+
+
+func test_path_run_split() -> bool:
+	var long_line := PackedVector2Array([
+		Vector2(0, 0), Vector2(500, 0), Vector2(1000, 0), Vector2(1500, 0),
+	])
+	var none: Array[bool] = [false, false, false, false]
+	var continuous := Preview3D.split_path_runs(long_line, none)
+	eq(continuous.size(), 1, "long path is not split by pixel distance")
+	if continuous.size() == 1:
+		eq(continuous[0].size(), 4, "long path keeps every sample")
+	var middle_line := PackedVector2Array([
+		Vector2(0, 0), Vector2(100, 0), Vector2(200, 0),
+		Vector2(300, 0), Vector2(400, 0), Vector2(500, 0),
+	])
+	var middle: Array[bool] = [false, false, true, true, false, false]
+	var split := Preview3D.split_path_runs(middle_line, middle)
+	eq(split.size(), 2, "erased middle splits into two visible runs")
+	var gap := PackedVector2Array([
+		Vector2(0, 0), Vector2(10, 0), Vector2(INF, INF),
+		Vector2(20, 0), Vector2(30, 0),
+	])
+	var gap_flags: Array[bool] = [false, false, false, false, false]
+	eq(Preview3D.split_path_runs(gap, gap_flags).size(), 2, "invalid sample starts a new run")
+	return true
+
+
+func test_style_presets() -> bool:
+	var skins := Preview3D.skin_presets()
+	for key in ["candy", "neon", "glass", "sticker"]:
+		ok(skins.has(key), "skin preset %s exists" % key)
+		if skins.has(key):
+			ok(float(skins[key].get("scale", 0.0)) > 1.0, "skin %s enlarges notes" % key)
+	var effects := Preview3D.hit_fx_presets()
+	for key in ["burst", "ring", "prism", "ink"]:
+		ok(effects.has(key), "hit effect %s exists" % key)
+	ok(Playtest.PATH_HEAD_RADIUS >= 80.0, "path head judgement is forgiving")
+	ok(Playtest.PATH_TAIL_RADIUS >= 80.0, "path tail judgement is forgiving")
+	ok(Playtest.TRACE_CONTACT_PX >= 50.0, "trace contact is forgiving")
+	ok(Playtest.BELL_COLLECT_RADIUS >= 100.0, "bell collect is forgiving")
+	ok(Playtest.GOOD_MS >= 250.0, "good window is forgiving")
 	return true
 
 
@@ -981,6 +1043,36 @@ func test_simai_import() -> bool:
 	return true
 
 
+func test_simai_osu_friendly() -> bool:
+	var text := "&title=T\n&wholebpm=120\n&lv_1=1\n&inote_1=(120){4},1p5[16:1],,,,\nE\n"
+	var path := "user://test_simai_friendly.txt"
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	if file == null:
+		ok(false, "simai friendly fixture")
+		return true
+	file.store_string(text)
+	file.close()
+	var chart := SimaiIO.import_maidata(path, 1)
+	ok(chart != null, "simai friendly chart imports")
+	if chart != null and not chart.notes.is_empty():
+		var note: Note = chart.notes[0]
+		eq(note.type, "path", "short p slide still imports")
+		var head := Vector2(float(note.trace_pts[0]["x"]), float(note.trace_pts[0]["y"]))
+		var tail := Vector2(float(note.trace_pts[-1]["x"]), float(note.trace_pts[-1]["y"]))
+		var max_deviation := 0.0
+		for point in note.trace_pts:
+			var p := Vector2(float(point["x"]), float(point["y"]))
+			var q := clampf((p - head).dot(tail - head) / maxf(0.0001, (tail - head).length_squared()), 0.0, 1.0)
+			max_deviation = maxf(max_deviation, p.distance_to(head.lerp(tail, q)))
+		ok(max_deviation < 0.05, "over-fast star degrades to a straight osu-friendly path")
+	var loop: Array[Vector2] = [
+		Vector2(0, 0), Vector2(1, 1), Vector2(1, 0), Vector2(0, 1),
+	]
+	ok(SimaiIO._polyline_self_intersects(loop), "self-intersecting star is detected")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	return true
+
+
 func test_osu_std_sentakki_rules() -> bool:
 	eq(OsuIO.STD_STREAM_STEP, 45.0, "osu std stream step is 8-lane 45deg")
 	var text := """osu file format v14
@@ -1030,7 +1122,7 @@ func test_simai_directive_slot() -> bool:
 
 
 func test_simai_bend_shapes() -> bool:
-	var text := "&title=T\n&wholebpm=120\n&lv_1=1\n&inote_1=(120){4},1v5[4:1],1p3[4:1],\nE\n"
+	var text := "&title=T\n&wholebpm=120\n&lv_1=1\n&inote_1=(120){4},1v5[4:1],,,,,1p3[4:1],,,,,1q3[4:1],\nE\n"
 	var path := "user://test_simai_bend.txt"
 	var file := FileAccess.open(path, FileAccess.WRITE)
 	if file == null:
@@ -1041,12 +1133,25 @@ func test_simai_bend_shapes() -> bool:
 	var chart := SimaiIO.import_maidata(path, 1)
 	ok(chart != null, "simai bend chart imports")
 	if chart != null:
-		var bent := 0
+		var paths: Array[Note] = []
 		for note in chart.notes:
-			if note.type == "path" and note.trace_pts.size() >= 20:
+			if note.type == "path":
+				paths.append(note)
+		eq(paths.size(), 3, "v/p/q all import as paths")
+		if paths.size() == 3:
+			for note in paths:
 				var tail: Dictionary = note.trace_pts[-1]
-				if sqrt(pow(float(tail["x"]), 2) + pow(float(tail["y"]), 2)) < 0.75:
-					bent += 1
-		ok(bent >= 1, "v/p shapes become plane paths")
+				near(sqrt(pow(float(tail["x"]), 2) + pow(float(tail["y"]), 2)), 1.0, 0.01, "star tail lands on the ring")
+			var min_radius := 1.0
+			for point in paths[0].trace_pts:
+				min_radius = minf(min_radius, sqrt(pow(float(point["x"]), 2) + pow(float(point["y"]), 2)))
+			ok(min_radius < 0.15, "v shape passes through the center")
+			var mid_p: Dictionary = paths[1].trace_pts[paths[1].trace_pts.size() / 2]
+			var mid_q: Dictionary = paths[2].trace_pts[paths[2].trace_pts.size() / 2]
+			var head := Vector2(float(paths[1].trace_pts[0]["x"]), float(paths[1].trace_pts[0]["y"]))
+			var tail := Vector2(float(paths[1].trace_pts[-1]["x"]), float(paths[1].trace_pts[-1]["y"]))
+			var side_p := (Vector2(float(mid_p["x"]), float(mid_p["y"])) - head).cross(tail - head)
+			var side_q := (Vector2(float(mid_q["x"]), float(mid_q["y"])) - head).cross(tail - head)
+			ok(signf(side_p) != signf(side_q), "p and q curve to opposite sides")
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
 	return true

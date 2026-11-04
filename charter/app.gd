@@ -10,6 +10,8 @@ signal status_changed
 signal save_state_changed
 signal validation_changed(issues: Array)
 signal notice(message: String, level: String)
+signal appearance_changed
+signal preview_sfx
 
 var chart: Chart = null
 var chart_path: String = ""
@@ -20,8 +22,12 @@ var playtest_offset_ms: float = 0.0
 var flow_scale: float = 1.0
 var ffmpeg_path: String = "ffmpeg"
 var star_speed: float = 1.0
+var note_skin: String = "candy"
+var hit_fx_style: String = "burst"
+var hit_sfx_style: String = "default"
 
 var selected_notes: Array[int] = []
+var clipboard_notes: Array[Dictionary] = []
 var selected_region_id: int = -1
 var selected_event_id: String = ""
 var selected_shape_id: String = "S0"
@@ -54,6 +60,7 @@ var _autosave_timer: Timer
 
 
 func _ready() -> void:
+	_load_settings()
 	_autosave_timer = Timer.new()
 	_autosave_timer.wait_time = 60.0
 	_autosave_timer.autostart = true
@@ -72,6 +79,29 @@ func _ready() -> void:
 		from_repo = true
 	set_chart(start_chart, demo_path, from_repo)
 	call_deferred("_set_initial_focus_notice")
+
+
+const SETTINGS_PATH := "user://settings.json"
+
+
+func _load_settings() -> void:
+	if not FileAccess.file_exists(SETTINGS_PATH):
+		return
+	var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(SETTINGS_PATH))
+	if not (parsed is Dictionary):
+		return
+	var data: Dictionary = parsed
+	note_skin = String(data.get("note_skin", note_skin))
+	hit_fx_style = String(data.get("hit_fx_style", hit_fx_style))
+	hit_sfx_style = String(data.get("hit_sfx_style", hit_sfx_style))
+
+
+func save_settings() -> void:
+	var data := {"note_skin": note_skin, "hit_fx_style": hit_fx_style, "hit_sfx_style": hit_sfx_style}
+	var file := FileAccess.open(SETTINGS_PATH, FileAccess.WRITE)
+	if file != null:
+		file.store_string(JSON.stringify(data, "\t"))
+		file.close()
 
 
 func _set_initial_focus_notice() -> void:
@@ -389,6 +419,83 @@ func select_note(note_id: int, additive: bool = false) -> void:
 		selected_notes.append(note_id)
 	selection_changed.emit()
 	status_changed.emit()
+
+
+func mirror_selected_notes() -> void:
+	var notes := get_selected_notes()
+	if notes.is_empty():
+		return
+	begin_edit()
+	for note in notes:
+		note.angle = fposmod(360.0 - note.angle, 360.0)
+		note.tail_angle = fposmod(360.0 - note.tail_angle, 360.0)
+		for point in note.visual_pts:
+			point["da"] = -float(point.get("da", 0.0))
+		if note.type == "bell":
+			note.center_u = fposmod(1.0 - note.center_u, 1.0)
+		if note.type == "trace" or note.trace_style == "slider":
+			for point in note.trace_pts:
+				point["x"] = -float(point.get("x", 0.0))
+		elif note.type == "path":
+			for point in note.trace_pts:
+				point["x"] = -float(point.get("x", 0.0))
+	finish_edit()
+	notice.emit("已镜像 %d 个音符" % notes.size(), "info")
+
+
+func rotate_selected_notes(degrees: float) -> void:
+	var notes := get_selected_notes()
+	if notes.is_empty():
+		return
+	begin_edit()
+	for note in notes:
+		note.angle = fposmod(note.angle + degrees, 360.0)
+		note.tail_angle = fposmod(note.tail_angle + degrees, 360.0)
+		for point in note.visual_pts:
+			point["da"] = float(point.get("da", 0.0)) + degrees
+		if note.type == "bell":
+			note.center_u = fposmod(note.center_u + degrees / 360.0, 1.0)
+		if note.type in ["trace", "path"] or note.trace_style == "slider":
+			var rad := deg_to_rad(degrees)
+			for point in note.trace_pts:
+				var x := float(point.get("x", 0.0))
+				var y := float(point.get("y", 0.0))
+				point["x"] = x * cos(rad) - y * sin(rad)
+				point["y"] = x * sin(rad) + y * cos(rad)
+	finish_edit()
+	notice.emit("已旋转 %d 个音符 %.0f°" % [notes.size(), degrees], "info")
+
+
+func copy_selected_notes() -> void:
+	clipboard_notes.clear()
+	var notes := get_selected_notes()
+	if notes.is_empty():
+		return
+	var base_beat := notes[0].beat
+	for note in notes:
+		var data := note.to_dict()
+		data["beat"] = note.beat - base_beat
+		data["end_beat"] = note.end_beat - base_beat
+		clipboard_notes.append(data)
+	notice.emit("已复制 %d 个音符" % notes.size(), "info")
+
+
+func paste_notes() -> void:
+	if chart == null or clipboard_notes.is_empty():
+		return
+	var base_beat := playhead_beat
+	var pasted: Array[int] = []
+	begin_edit()
+	for data in clipboard_notes:
+		var note := Note.from_dict(data)
+		note.id = chart.next_note_id()
+		note.beat = base_beat + float(data.get("beat", 0.0))
+		note.end_beat = base_beat + float(data.get("end_beat", 0.0))
+		chart.notes.append(note)
+		pasted.append(note.id)
+	finish_edit()
+	select_notes(pasted)
+	notice.emit("已粘贴 %d 个音符" % pasted.size(), "info")
 
 
 func select_notes(ids: Array[int]) -> void:

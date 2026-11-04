@@ -268,7 +268,7 @@ static func _parse_note(token: String, beat: float, bpm: float) -> Note:
 				mid_angle = _button_angle(turn)
 		note.trace_pts = _plane_slide_points(
 			start_angle, delta, note.wait_beat,
-			note.end_beat - note.beat, _slide_shape(token), mid_angle
+			note.end_beat - note.beat, _slide_shape(token), mid_angle, bpm
 		)
 		return note
 	if token.find("h") >= 0:
@@ -291,47 +291,60 @@ static func _slide_shape(token: String) -> String:
 	return "-"
 
 
-static func _plane_slide_points(head_angle: float, delta: float, wait: float, total: float, shape: String, mid_angle: float = NAN) -> Array[Dictionary]:
+static func _plane_slide_points(head_angle: float, delta: float, wait: float, total: float, shape: String, mid_angle: float = NAN, bpm: float = 120.0) -> Array[Dictionary]:
 	var head := Vector2(cos(deg_to_rad(head_angle)), sin(deg_to_rad(head_angle)))
-	var tail := Vector2(cos(deg_to_rad(head_angle + delta)), sin(deg_to_rad(head_angle + delta))) * 0.72
+	var tail := Vector2(cos(deg_to_rad(head_angle + delta)), sin(deg_to_rad(head_angle + delta)))
 	var samples: Array[Vector2] = []
 	match shape:
 		"-", "w":
 			samples = _straight_samples(head, tail, 32)
 		"v":
-			# v 型：从环上经屏幕中心附近再折回，两段直线。
-			var vertex := Vector2(cos(deg_to_rad(head_angle + delta * 0.5)), sin(deg_to_rad(head_angle + delta * 0.5))) * 0.06
-			samples = _polyline_samples([head, vertex, tail], 18)
+			# v 型：用二次曲线绕过中心，保留 V 形但不做硬折角。
+			samples = _bezier_samples(head, Vector2.ZERO, tail, 40)
 		"V":
 			if is_nan(mid_angle):
 				samples = _straight_samples(head, tail, 32)
 			else:
-				var middle := Vector2(cos(deg_to_rad(mid_angle)), sin(deg_to_rad(mid_angle))) * 0.94
-				samples = _polyline_samples([head, middle, tail], 18)
-		"p", "q":
-			var control_radius := 0.22 if shape == "p" else 0.45
-			var control := Vector2(cos(deg_to_rad(head_angle + delta * 0.5)), sin(deg_to_rad(head_angle + delta * 0.5))) * control_radius
-			samples = _bezier_samples(head, control, tail, 34)
-		"pp", "qq":
-			var control_radius := 0.62 if shape == "pp" else 0.78
-			var control := Vector2(cos(deg_to_rad(head_angle + delta * 0.5)), sin(deg_to_rad(head_angle + delta * 0.5))) * control_radius
+				var middle := Vector2(cos(deg_to_rad(mid_angle)), sin(deg_to_rad(mid_angle)))
+				samples = _chaikin(_polyline_samples([head, middle, tail], 18), 2)
+		"p", "q", "pp", "qq":
+			# p/q 绕屏幕中心向两侧弯；pp/qq 弯得更外，接近 Sentakki 的 U/Cup。
+			var chord := tail - head
+			var normal := Vector2(-chord.y, chord.x).normalized()
+			var side := 1.0 if shape in ["p", "pp"] else -1.0
+			var offset_scale := 0.55 if shape in ["p", "q"] else 0.78
+			var control := (head + tail) * 0.5 + normal * side * maxf(0.25, chord.length() * offset_scale)
 			samples = _bezier_samples(head, control, tail, 34)
 		"s", "z":
 			var chord := tail - head
 			var normal := Vector2(-chord.y, chord.x).normalized()
 			var side := 1.0 if shape == "s" else -1.0
-			var a := Vector2(cos(deg_to_rad(head_angle + delta * 0.33)), sin(deg_to_rad(head_angle + delta * 0.33))) * 0.82 + normal * 0.10 * side
-			var b := Vector2(cos(deg_to_rad(head_angle + delta * 0.66)), sin(deg_to_rad(head_angle + delta * 0.66))) * 0.82 - normal * 0.10 * side
-			samples = _polyline_samples([head, a, b, tail], 12)
+			var a := Vector2(cos(deg_to_rad(head_angle + delta * 0.33)), sin(deg_to_rad(head_angle + delta * 0.33))) * 0.82 + normal * 0.16 * side
+			var b := Vector2(cos(deg_to_rad(head_angle + delta * 0.66)), sin(deg_to_rad(head_angle + delta * 0.66))) * 0.82 - normal * 0.16 * side
+			samples = _chaikin(_polyline_samples([head, a, b, tail], 12), 2)
 		_:
 			# ^ < >：沿环内侧的弧线，最后收进 0.72R。
 			var count := 36
 			for i in count + 1:
 				var q := float(i) / float(count)
 				var angle := head_angle + delta * q
-				var radius := 1.0 - 0.07 * smoothstep(0.0, 0.12, q) - 0.21 * smoothstep(0.82, 1.0, q)
+				var radius := 1.0 - 0.06 * sin(PI * q)
 				samples.append(Vector2(cos(deg_to_rad(angle)), sin(deg_to_rad(angle))) * radius)
 	if samples.is_empty():
+		samples = _straight_samples(head, tail, 32)
+	# 任何形状都不能越出环内平面。
+	for i in samples.size():
+		if samples[i].length() > 1.0:
+			samples[i] = samples[i].normalized()
+	# osu 可读性保护：自交/打结的星星会让人猜不到轨迹，退化成直线。
+	if _polyline_self_intersects(samples):
+		samples = _straight_samples(head, tail, 32)
+	# osu 手感保护：极短时间内的超长星星会变成无法跟上的甩尾，直接退化为直线。
+	var raw_length := 0.0
+	for i in range(1, samples.size()):
+		raw_length += samples[i].distance_to(samples[i - 1])
+	var seconds := maxf(0.05, maxf(0.001, total - wait) * 60.0 / maxf(1.0, bpm))
+	if raw_length * 330.0 / seconds > 3400.0:
 		samples = _straight_samples(head, tail, 32)
 	# 按轨迹长度分配时间：滑动速度恒定，不因折线/弧线改变。
 	var distances: Array[float] = [0.0]
@@ -348,6 +361,33 @@ static func _plane_slide_points(head_angle: float, delta: float, wait: float, to
 			"y": samples[i].y,
 			"db": wait + move * distances[i] / length,
 		})
+	return result
+
+
+static func _polyline_self_intersects(points: Array[Vector2]) -> bool:
+	if points.size() < 4:
+		return false
+	for i in points.size() - 1:
+		var a := points[i]
+		var b := points[i + 1]
+		for j in range(i + 2, points.size() - 1):
+			var hit = Geometry2D.segment_intersects_segment(a, b, points[j], points[j + 1])
+			if hit != null:
+				return true
+	return false
+
+
+static func _chaikin(points: Array[Vector2], iterations: int) -> Array[Vector2]:
+	if points.size() < 3:
+		return points
+	var result := points
+	for _iteration in iterations:
+		var smoothed: Array[Vector2] = [result[0]]
+		for i in range(1, result.size() - 1):
+			smoothed.append(result[i - 1].lerp(result[i], 0.25))
+			smoothed.append(result[i - 1].lerp(result[i], 0.75))
+		smoothed.append(result[-1])
+		result = smoothed
 	return result
 
 
