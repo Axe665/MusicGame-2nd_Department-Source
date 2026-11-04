@@ -1,0 +1,1082 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tamaki₃ · Note & Hit Lab</title>
+<style>
+  :root {
+    --bg: #0B0C10;
+    --panel: #12141A;
+    --raised: #191C24;
+    --border: #2A2F3A;
+    --border-bright: #3D4453;
+    --ink: #F2F0EA;
+    --muted: #ADB3BF;
+    --faint: #6B7280;
+    --accent: #FFDE00;
+    --coral: #F2583E;
+    --cyan: #5FD8CF;
+    --gold: #F0C36A;
+    --mint: #6FE3A8;
+    --violet: #9C8CFF;
+    --red: #D94B3D;
+    --radius: 10px;
+  }
+  * { box-sizing: border-box; }
+  html { background: var(--bg); color: var(--ink); }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    font-family: "Noto Sans SC", "Source Han Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    letter-spacing: 0.01em;
+  }
+  .shell {
+    max-width: 1240px;
+    margin: 0 auto;
+    padding: 28px 32px 72px;
+  }
+  header.bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 24px;
+    padding-bottom: 22px;
+    border-bottom: 1px solid var(--border);
+  }
+  .mark {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
+  }
+  .glyph {
+    width: 38px;
+    height: 38px;
+    flex: 0 0 38px;
+    border: 2px solid var(--accent);
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    color: var(--accent);
+    font-weight: 800;
+    font-size: 16px;
+  }
+  .mark strong {
+    display: block;
+    font-size: 15px;
+    letter-spacing: 0.16em;
+    font-weight: 700;
+  }
+  .mark span {
+    display: block;
+    margin-top: 2px;
+    color: var(--muted);
+    font-size: 12px;
+  }
+  .bar-meta {
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    color: var(--muted);
+    font-size: 12px;
+    white-space: nowrap;
+  }
+  .bar-meta b { color: var(--ink); font-weight: 600; }
+  kbd {
+    display: inline-block;
+    min-width: 22px;
+    padding: 2px 6px;
+    border: 1px solid var(--border-bright);
+    border-radius: 5px;
+    color: var(--ink);
+    font-family: inherit;
+    font-size: 11px;
+    text-align: center;
+  }
+
+  .stage {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 264px;
+    gap: 28px;
+    margin-top: 34px;
+    align-items: stretch;
+  }
+  .stage-main {
+    position: relative;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    min-height: 440px;
+    display: flex;
+    flex-direction: column;
+  }
+  .stage-head {
+    padding: 26px 30px 6px;
+  }
+  h1 {
+    margin: 0;
+    font-size: clamp(30px, 4.2vw, 54px);
+    line-height: 1.02;
+    letter-spacing: -0.035em;
+    font-weight: 800;
+  }
+  .stage-head p {
+    margin: 14px 0 0;
+    max-width: 34em;
+    color: var(--muted);
+    font-size: 14px;
+    line-height: 1.6;
+  }
+  .stage-head p b { color: var(--ink); font-weight: 600; }
+  #hero {
+    display: block;
+    width: 100%;
+    flex: 1;
+    min-height: 250px;
+  }
+  .readout {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+  }
+  .readout h3 {
+    margin: 0;
+    font-size: 12px;
+    color: var(--muted);
+    font-weight: 600;
+  }
+  .readout .big {
+    font-size: 26px;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+    line-height: 1.1;
+  }
+  .readout .big small {
+    display: block;
+    margin-top: 6px;
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 400;
+    letter-spacing: 0;
+  }
+  .stat {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    font-size: 12px;
+    color: var(--muted);
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+  }
+  .stat b { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .stat .coral { color: var(--coral); }
+  .stat .cyan { color: var(--cyan); }
+  .stat .gold { color: var(--gold); }
+
+  .picker { margin-top: 54px; }
+  .section-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 16px;
+  }
+  .section-head h2 {
+    margin: 0;
+    font-size: 22px;
+    letter-spacing: -0.02em;
+  }
+  .section-head .hint {
+    color: var(--muted);
+    font-size: 12px;
+  }
+  .cards {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 14px;
+  }
+  .card {
+    appearance: none;
+    text-align: left;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0;
+    color: var(--ink);
+    font: inherit;
+    cursor: pointer;
+    overflow: hidden;
+    transition: border-color .16s ease, transform .16s ease, background .16s ease;
+  }
+  .card:hover {
+    border-color: var(--border-bright);
+    background: var(--raised);
+    transform: translateY(-2px);
+  }
+  .card:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  .card[aria-pressed="true"] {
+    border-color: var(--accent);
+  }
+  .card canvas {
+    display: block;
+    width: 100%;
+    height: 168px;
+    background: #0E1015;
+  }
+  .card-body { padding: 13px 14px 15px; }
+  .card-title {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 15px;
+    font-weight: 700;
+  }
+  .card-title em {
+    font-style: normal;
+    color: var(--faint);
+    font-size: 11px;
+    font-weight: 500;
+  }
+  .card[aria-pressed="true"] .card-title em { color: var(--accent); }
+  .card-desc {
+    margin: 5px 0 0;
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.5;
+  }
+
+  .apply {
+    margin-top: 54px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 24px;
+    align-items: end;
+    padding: 24px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+  }
+  .apply h2 { margin: 0 0 6px; font-size: 20px; letter-spacing: -0.02em; }
+  .apply p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.6; }
+  .apply-actions { display: flex; align-items: center; gap: 10px; }
+  code {
+    display: block;
+    padding: 12px 14px;
+    background: #090A0D;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    color: var(--cyan);
+    font-family: "Noto Sans Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+    line-height: 1.7;
+    white-space: pre;
+  }
+  .copy {
+    appearance: none;
+    border: 1px solid var(--border-bright);
+    border-radius: 7px;
+    background: transparent;
+    color: var(--ink);
+    font: inherit;
+    font-size: 13px;
+    padding: 11px 16px;
+    cursor: pointer;
+    transition: border-color .16s ease, color .16s ease;
+  }
+  .copy:hover { border-color: var(--accent); color: var(--accent); }
+  .copy:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .copy.done { border-color: var(--mint); color: var(--mint); }
+
+  footer {
+    margin-top: 44px;
+    padding-top: 18px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    gap: 18px;
+    color: var(--faint);
+    font-size: 12px;
+    line-height: 1.6;
+  }
+
+  .rise { opacity: 0; transform: translateY(16px); }
+  .rise.in {
+    opacity: 1;
+    transform: none;
+    transition: opacity .45s ease, transform .45s cubic-bezier(.2,.7,.2,1);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .rise, .rise.in { opacity: 1; transform: none; transition: none; }
+    .card, .copy { transition: none; }
+    .card:hover { transform: none; }
+  }
+
+  @media (max-width: 1000px) {
+    .stage { grid-template-columns: minmax(0, 1fr); }
+    .readout { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .readout h3:first-child { grid-column: 1 / -1; }
+    .readout .stat { border-top: 0; padding-top: 0; }
+  }
+  @media (max-width: 760px) {
+    .shell { padding: 20px 18px 48px; }
+    .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .apply { grid-template-columns: minmax(0, 1fr); align-items: start; }
+    .readout { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .bar-meta { display: none; }
+    .stage-head { padding: 20px 20px 2px; }
+    footer { flex-direction: column; }
+  }
+  @media (max-width: 480px) {
+    .cards { grid-template-columns: minmax(0, 1fr); }
+    .card canvas { height: 190px; }
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+  <header class="bar">
+    <div class="mark">
+      <div class="glyph">3</div>
+      <div>
+        <strong>TAMAKI₃ · NOTE LAB</strong>
+        <span>音符外观与打击特效对比台</span>
+      </div>
+    </div>
+    <div class="bar-meta">
+      <span>游戏内 <kbd>F6</kbd> 换外观</span>
+      <span><kbd>F7</kbd> 换特效</span>
+      <span><b>Godot 4.7</b> · 试玩预览</span>
+    </div>
+  </header>
+
+  <main>
+    <section class="stage rise">
+      <div class="stage-main">
+        <div class="stage-head">
+          <h1>选一套看得清、打得准的音符</h1>
+          <p>同一套判定参数下，只换外观和命中反馈。放大的是 <b>Hold / Path / Trace / Anchor / Bell</b>，Tap 保持原尺寸；判定窗口已放宽到 <b>100 / 170 / 260 ms</b>。</p>
+        </div>
+        <canvas id="hero" aria-label="所选音符外观与打击特效的实时预览"></canvas>
+      </div>
+      <aside class="readout">
+        <h3>当前组合</h3>
+        <div class="big" id="readout-skin">糖霜胶囊<small id="readout-fx">迸裂 · 舞萌式落点</small></div>
+        <div class="stat"><span>PERFECT</span><b class="gold">±100 ms</b></div>
+        <div class="stat"><span>GREAT</span><b class="cyan">±170 ms</b></div>
+        <div class="stat"><span>GOOD</span><b>±260 ms</b></div>
+        <div class="stat"><span>Path 头 / 尾</span><b class="coral">92 / 96 px</b></div>
+        <div class="stat"><span>Bell 收取</span><b class="coral">112 px</b></div>
+        <div class="stat"><span>Trace 接触</span><b class="coral">56 px</b></div>
+      </aside>
+    </section>
+
+    <section class="picker rise">
+      <div class="section-head">
+        <h2>打击特效</h2>
+        <span class="hint">F7 按顺序切换 · 当前为「迸裂」</span>
+      </div>
+      <div class="cards" id="fx-cards"></div>
+    </section>
+
+    <section class="picker rise">
+      <div class="section-head">
+        <h2>音符外观</h2>
+        <span class="hint">F6 按顺序切换 · 六种 Note 同屏对比</span>
+      </div>
+      <div class="cards" id="skin-cards"></div>
+    </section>
+
+    <section class="apply rise">
+      <div>
+        <h2>带回游戏</h2>
+        <p>试玩中按 <kbd>F6</kbd> / <kbd>F7</kbd> 就能实时切换并保留到本次会话。想把这里的选择设成默认值，改这两行即可。</p>
+      </div>
+      <div class="apply-actions">
+        <code id="config-code"></code>
+        <button class="copy" id="copy" type="button">复制配置</button>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <span>外观只改绘制参数，不影响判定；判定半径与时间窗在 charter/playtest.gd 中统一配置。</span>
+    <span>参考：舞萌的落点白闪与冲击环，osu 的 hit circle 与收束环。</span>
+  </footer>
+</div>
+
+<script>
+(() => {
+  "use strict";
+
+  const PALETTE = {
+    bg: "#0B0C10", panel: "#12141A", raised: "#191C24",
+    border: "#2A2F3A", ink: "#F2F0EA", muted: "#9AA0AC",
+    accent: "#FFDE00", coral: "#F2583E", cyan: "#5FD8CF",
+    gold: "#F0C36A", mint: "#6FE3A8", violet: "#9C8CFF", red: "#D94B3D"
+  };
+
+  const SKINS = {
+    candy: {
+      label: "糖霜胶囊", tag: "默认",
+      desc: "厚白边 + 糖面高光，远看最清楚，轨迹最粗。",
+      scale: 1.20, band: 1.14, outline: 1.0, glow: 1.3, gloss: 0.6, shadow: 0.8, fill: 0.95
+    },
+    neon: {
+      label: "霓虹线框", tag: "轻",
+      desc: "细描边 + 强发光 + 暗芯，读谱干净但需要暗场。",
+      scale: 1.10, band: 1.06, outline: 0.45, glow: 2.0, gloss: 0.15, shadow: 0.0, fill: 0.70
+    },
+    glass: {
+      label: "玻璃棱镜", tag: "透",
+      desc: "半透明填充 + 白色棱线，叠多条轨迹时层次更清楚。",
+      scale: 1.16, band: 1.10, outline: 0.8, glow: 0.9, gloss: 0.9, shadow: 0.35, fill: 0.42
+    },
+    sticker: {
+      label: "街机贴纸", tag: "粗",
+      desc: "超粗黑边 + 偏移投影，最像街机贴纸，小屏也醒目。",
+      scale: 1.28, band: 1.20, outline: 1.55, glow: 0.15, gloss: 0.0, shadow: 1.0, fill: 1.0
+    }
+  };
+
+  const FX = {
+    burst: {
+      label: "迸裂", tag: "舞萌式",
+      desc: "白闪打底，冲击环向外炸开，十六向碎片标出落点。"
+    },
+    ring: {
+      label: "圆环", tag: "osu 式",
+      desc: "实心 hit circle 收缩，外环慢半拍扩散，最不挡读谱。"
+    },
+    prism: {
+      label: "棱镜", tag: "三色",
+      desc: "珊瑚 / 青 / 金三色三角碎片旋出，适合高亮曲目。"
+    },
+    ink: {
+      label: "墨滴", tag: "安静",
+      desc: "低多边形飞溅与一道拖痕，冲击小但重量感强。"
+    }
+  };
+
+  const state = { skin: "candy", fx: "burst" };
+
+  function hexToRgb(hex) {
+    const h = hex.replace("#", "");
+    return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+  }
+  function rgba(hex, a) {
+    const [r, g, b] = hexToRgb(hex);
+    return `rgba(${r},${g},${b},${a})`;
+  }
+  function fit(canvas) {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const rect = canvas.getBoundingClientRect();
+    const w = Math.max(1, Math.floor(rect.width));
+    const h = Math.max(1, Math.floor(rect.height));
+    if (canvas.width !== w * dpr || canvas.height !== h * dpr) {
+      canvas.width = w * dpr;
+      canvas.height = h * dpr;
+    }
+    const ctx = canvas.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    return { ctx, w, h };
+  }
+  function ringPoint(cx, cy, rx, ry, deg) {
+    const a = (deg - 90) * Math.PI / 180;
+    return { x: cx + Math.cos(a) * rx, y: cy + Math.sin(a) * ry };
+  }
+  function ellipseArc(cx, cy, rx, ry, from, to, steps = 48) {
+    const pts = [];
+    for (let i = 0; i <= steps; i++) {
+      const deg = from + (to - from) * (i / steps);
+      pts.push(ringPoint(cx, cy, rx, ry, deg));
+    }
+    return pts;
+  }
+  function linear(cx, cy, fromR, toR, deg) {
+    const a = (deg - 90) * Math.PI / 180;
+    const dx = Math.cos(a), dy = Math.sin(a);
+    return [
+      { x: cx + dx * fromR, y: cy + dy * fromR * 0.82 },
+      { x: cx + dx * toR, y: cy + dy * toR * 0.82 }
+    ];
+  }
+  function poly(ctx, pts) {
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+  }
+
+  function strokeBand(ctx, pts, color, width, skin, alpha = 1, sizeScale = -1) {
+    if (pts.length < 2) return;
+    const k = sizeScale < 0 ? skin.scale : sizeScale;
+    const band = sizeScale < 0 ? skin.band : 1;
+    const w = width * k * band;
+    ctx.save();
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    if (skin.glow > 0.01) {
+      ctx.strokeStyle = rgba(color, 0.10 * skin.glow * alpha);
+      ctx.lineWidth = w + 18;
+      poly(ctx, pts); ctx.stroke();
+    }
+    if (skin.shadow > 0.01) {
+      const off = pts.map(p => ({ x: p.x + 5 * skin.shadow, y: p.y + 7 * skin.shadow }));
+      ctx.strokeStyle = `rgba(0,0,0,${0.38 * skin.shadow * alpha})`;
+      ctx.lineWidth = w + 10;
+      poly(ctx, off); ctx.stroke();
+    }
+    ctx.strokeStyle = `rgba(0,0,0,${0.62 * skin.outline * alpha})`;
+    ctx.lineWidth = w + 5 * skin.outline;
+    poly(ctx, pts); ctx.stroke();
+    ctx.strokeStyle = `rgba(255,255,255,${0.92 * alpha})`;
+    ctx.lineWidth = w;
+    poly(ctx, pts); ctx.stroke();
+    ctx.strokeStyle = rgba(color, (0.55 + 0.42 * skin.fill) * alpha);
+    ctx.lineWidth = Math.max(3, w * 0.62);
+    poly(ctx, pts); ctx.stroke();
+    if (skin === SKINS.glass) {
+      ctx.strokeStyle = `rgba(255,255,255,${0.5 * alpha})`;
+      ctx.lineWidth = Math.max(2, w * 0.30);
+      poly(ctx, pts); ctx.stroke();
+    }
+    if (skin.gloss > 0.01) {
+      ctx.strokeStyle = `rgba(255,255,235,${0.34 * skin.gloss * alpha})`;
+      ctx.lineWidth = Math.max(1.5, w * 0.16);
+      poly(ctx, pts); ctx.stroke();
+    }
+    if (skin === SKINS.neon) {
+      ctx.strokeStyle = `rgba(10,14,18,${0.85 * alpha})`;
+      ctx.lineWidth = Math.max(2, w * 0.20);
+      poly(ctx, pts); ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function star(ctx, x, y, r, color, skin, alpha = 1) {
+    const scale = skin.scale;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = `rgba(0,0,0,${0.30 * alpha})`;
+    ctx.beginPath(); ctx.arc(x, y, 24 * scale, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = `rgba(255,255,255,${0.34 * alpha})`;
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(x, y, 24 * scale, 0, Math.PI * 2); ctx.stroke();
+    for (let layer = 0; layer < 3; layer++) {
+      const lr = (18 + (layer === 0 ? 4.2 : layer === 1 ? 1.6 : 0)) * scale;
+      ctx.beginPath();
+      for (let i = 0; i < 10; i++) {
+        const a = -Math.PI / 2 + Math.PI * 2 * i / 10;
+        const rr = i % 2 === 0 ? lr : lr * 0.45;
+        const px = x + Math.cos(a) * rr, py = y + Math.sin(a) * rr;
+        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+      ctx.fillStyle = layer === 0 ? `rgba(0,0,0,${0.68 * alpha})` : layer === 1 ? `rgba(255,255,255,${0.96 * alpha})` : rgba(color, alpha);
+      ctx.fill();
+    }
+    ctx.fillStyle = `rgba(0,0,0,${0.82 * alpha})`;
+    ctx.beginPath(); ctx.arc(x, y, 18 * scale * 0.24, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
+
+  function tailRing(ctx, x, y, r, color, skin, alpha = 1) {
+    const scale = skin.scale;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = rgba(color, 0.10 * alpha);
+    ctx.beginPath(); ctx.arc(x, y, 19 * scale, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = `rgba(0,0,0,${0.52 * alpha})`;
+    ctx.beginPath(); ctx.arc(x, y, 15.5 * scale, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = rgba(color, 0.96 * alpha);
+    ctx.lineWidth = 3.4 * scale;
+    ctx.beginPath(); ctx.arc(x, y, 13 * scale, 0, Math.PI * 2); ctx.stroke();
+    ctx.fillStyle = rgba(color, 0.9 * alpha);
+    ctx.beginPath(); ctx.arc(x, y, 2.4 * scale, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
+
+  function diamond(ctx, x, y, r, color, alpha = 1) {
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.beginPath();
+    ctx.moveTo(x, y - r); ctx.lineTo(x + r, y); ctx.lineTo(x, y + r); ctx.lineTo(x - r, y); ctx.closePath();
+    ctx.strokeStyle = "rgba(0,0,0,0.66)"; ctx.lineWidth = Math.max(3, r * 0.5); ctx.stroke();
+    ctx.strokeStyle = "rgba(255,255,255,0.94)"; ctx.lineWidth = Math.max(2, r * 0.3); ctx.stroke();
+    ctx.fillStyle = rgba(color, 0.32); ctx.fill();
+    ctx.strokeStyle = rgba(color, 0.95); ctx.lineWidth = Math.max(1.4, r * 0.18); ctx.stroke();
+    ctx.restore();
+  }
+
+  function bell(ctx, x, y, r, skin, alpha = 1) {
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = "rgba(0,0,0,0.55)";
+    ctx.beginPath(); ctx.arc(x, y, r + 3, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = rgba(PALETTE.gold, 0.10);
+    ctx.beginPath(); ctx.arc(x, y, r + 24, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = rgba(PALETTE.gold, 0.20);
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = "rgba(255,255,255,0.92)"; ctx.lineWidth = 2.6;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke();
+    ctx.strokeStyle = rgba(PALETTE.gold, 0.95); ctx.lineWidth = 1.8;
+    ctx.beginPath(); ctx.arc(x, y, r * 0.82, 0, Math.PI * 2); ctx.stroke();
+    ctx.fillStyle = PALETTE.gold;
+    ctx.beginPath(); ctx.arc(x, y, r * 0.55, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = PALETTE.bg;
+    ctx.beginPath(); ctx.arc(x, y, r * 0.20, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
+
+  function hold(ctx, cx, cy, rx, ry, deg, skin, alpha = 1) {
+    const pts = linear(cx, cy, Math.min(rx, ry) * 0.38, rx, deg);
+    strokeBand(ctx, pts, PALETTE.gold, 22, skin, alpha);
+    const hs = skin.scale;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    for (const p of pts) {
+      ctx.fillStyle = rgba(PALETTE.gold, 0.9);
+      ctx.beginPath(); ctx.arc(p.x, p.y, 13 * hs, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = `rgba(255,255,255,${0.28 * alpha})`;
+      ctx.beginPath(); ctx.arc(p.x, p.y, 7 * hs, 0, Math.PI * 2); ctx.fill();
+    }
+    // end ring
+    const end = pts[pts.length - 1];
+    ctx.strokeStyle = rgba(PALETTE.gold, 0.95 * alpha);
+    ctx.lineWidth = 4 * hs;
+    ctx.beginPath(); ctx.arc(end.x, end.y, 20 * hs, 0, Math.PI * 2); ctx.stroke();
+    ctx.restore();
+  }
+
+  function tap(ctx, cx, cy, rx, ry, deg, skin, alpha = 1) {
+    const pts = ellipseArc(cx, cy, rx, ry, deg - 11, deg + 11, 20);
+    strokeBand(ctx, pts, PALETTE.coral, 22, skin, alpha, 1);
+    const center = ringPoint(cx, cy, rx, ry, deg);
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = "rgba(0,0,0,0.55)";
+    ctx.beginPath(); ctx.arc(center.x, center.y, 9, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "rgba(255,255,255,0.96)";
+    ctx.beginPath(); ctx.arc(center.x, center.y, 7, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = PALETTE.coral;
+    ctx.beginPath(); ctx.arc(center.x, center.y, 4.2, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
+
+  function pathNote(ctx, cx, cy, rx, ry, skin, alpha = 1) {
+    const head = ringPoint(cx, cy, rx, ry, 310);
+    const trail = ellipseArc(cx, cy, rx * 0.78, ry * 0.78, 310, 20, 34);
+    strokeBand(ctx, trail, "rgba(116,238,233,1)", 21, skin, alpha * 0.9);
+    ctx.save();
+    ctx.strokeStyle = rgba(PALETTE.cyan, 0.92 * alpha);
+    ctx.setLineDash([2.4, 7]);
+    ctx.lineWidth = 2.4;
+    poly(ctx, trail); ctx.stroke();
+    ctx.restore();
+    const tail = trail[trail.length - 1];
+    tailRing(ctx, tail.x, tail.y, 13, PALETTE.gold, skin, alpha);
+    star(ctx, head.x, head.y, 18, PALETTE.coral, skin, alpha);
+    ctx.save();
+    ctx.strokeStyle = rgba(PALETTE.ink, 0.9);
+    ctx.lineWidth = 2.4;
+    ctx.beginPath(); ctx.arc(head.x, head.y, 28 * skin.scale, 0, Math.PI * 2); ctx.stroke();
+    ctx.restore();
+  }
+
+  function traceNote(ctx, cx, cy, rx, ry, skin, alpha = 1) {
+    const pts = ellipseArc(cx, cy, rx * 0.84, ry * 0.84, 62, 118, 30);
+    strokeBand(ctx, pts, PALETTE.mint, 30, skin, alpha * 0.8);
+    const head = pts[0], tail = pts[pts.length - 1];
+    star(ctx, head.x, head.y, 18, PALETTE.cyan, skin, alpha);
+    tailRing(ctx, tail.x, tail.y, 13, PALETTE.cyan, skin, alpha);
+    ctx.save();
+    ctx.strokeStyle = rgba(PALETTE.mint, 0.9 * alpha);
+    ctx.fillStyle = rgba(PALETTE.mint, 0.92 * alpha);
+    ctx.beginPath(); ctx.arc((head.x + tail.x) / 2, (head.y + tail.y) / 2, 13, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = PALETTE.bg;
+    ctx.beginPath(); ctx.arc((head.x + tail.x) / 2, (head.y + tail.y) / 2, 5, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
+
+  function anchor(ctx, cx, cy, rx, ry, skin, alpha = 1) {
+    const p = ringPoint(cx, cy, rx, ry, 165);
+    ctx.save();
+    ctx.fillStyle = rgba(PALETTE.violet, 0.14 * alpha);
+    ctx.beginPath(); ctx.arc(p.x, p.y, 27, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+    diamond(ctx, p.x, p.y, 16 * skin.scale, PALETTE.violet, alpha);
+  }
+
+  function drawStage(ctx, w, h, skin, effectAge) {
+    const cx = w * 0.5, cy = h * 0.54;
+    const rx = Math.min(w * 0.38, 430), ry = rx * 0.46;
+    ctx.clearRect(0, 0, w, h);
+
+    // stage floor
+    ctx.save();
+    ctx.fillStyle = "rgba(255,255,255,0.018)";
+    ctx.beginPath(); ctx.ellipse(cx, cy, rx * 1.18, ry * 1.48, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+
+    // ring
+    ctx.save();
+    ctx.strokeStyle = "rgba(0,0,0,0.55)";
+    ctx.lineWidth = 34;
+    ctx.beginPath(); ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2); ctx.stroke();
+    ctx.strokeStyle = "rgba(95,216,207,0.13)";
+    ctx.lineWidth = 22;
+    ctx.beginPath(); ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2); ctx.stroke();
+    ctx.strokeStyle = "rgba(242,240,234,0.30)";
+    ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2); ctx.stroke();
+    // tick marks
+    for (let i = 0; i < 24; i++) {
+      const p1 = ringPoint(cx, cy, rx, ry, i * 15);
+      const p2 = ringPoint(cx, cy, rx, ry, i * 15 + 4);
+      ctx.strokeStyle = "rgba(242,240,234,0.10)";
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke();
+    }
+    ctx.restore();
+
+    tap(ctx, cx, cy, rx, ry, 215, skin, 1);
+    hold(ctx, cx, cy, rx, ry, 285, skin, 1);
+    pathNote(ctx, cx, cy, rx, ry, skin, 1);
+    traceNote(ctx, cx, cy, rx, ry, skin, 1);
+    anchor(ctx, cx, cy, rx, ry, skin, 1);
+    bell(ctx, cx, cy, rx * 0.055, skin, 1);
+
+    // hit pulse on the tap note
+    const hit = ringPoint(cx, cy, rx, ry, 215);
+    if (effectAge >= 0 && effectAge < 0.5) {
+      drawEffect(ctx, hit.x, hit.y, PALETTE.coral, effectAge, state.fx);
+    }
+    // judgement label
+    if (effectAge >= 0 && effectAge < 0.34) {
+      const a = Math.max(0, 1 - effectAge / 0.34);
+      ctx.save();
+      ctx.globalAlpha = a;
+      ctx.font = "800 22px 'Noto Sans SC', system-ui, sans-serif";
+      ctx.fillStyle = PALETTE.gold;
+      ctx.fillText("PERFECT", hit.x + 22, hit.y - 24 - effectAge * 46);
+      ctx.restore();
+    }
+  }
+
+  function drawEffect(ctx, x, y, color, age, style) {
+    if (style === "ring") return fxRing(ctx, x, y, color, age);
+    if (style === "prism") return fxPrism(ctx, x, y, color, age);
+    if (style === "ink") return fxInk(ctx, x, y, color, age);
+    return fxBurst(ctx, x, y, color, age);
+  }
+
+  function fxBurst(ctx, x, y, color, age) {
+    const t = Math.min(1, age / 0.40);
+    const fade = 1 - t;
+    const flash = Math.max(0, 1 - age / 0.16);
+    ctx.save();
+    if (flash > 0) {
+      ctx.fillStyle = rgba(color, 0.18 * flash);
+      ctx.beginPath(); ctx.arc(x, y, 48 * flash + 8, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = `rgba(255,255,255,${0.30 * flash})`;
+      ctx.beginPath(); ctx.arc(x, y, 26 * flash + 5, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = `rgba(255,255,255,${0.92 * flash})`;
+      ctx.beginPath(); ctx.arc(x, y, 13 * flash + 3, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.fillStyle = rgba(color, 0.12 * fade);
+    ctx.beginPath(); ctx.arc(x, y, 30 + 42 * t, 0, Math.PI * 2); ctx.fill();
+    const rr = 14 + 82 * (1 - Math.pow(1 - t, 3));
+    ctx.strokeStyle = rgba(color, 0.78 * fade);
+    ctx.lineWidth = 3 + 6 * fade;
+    ctx.beginPath(); ctx.arc(x, y, rr, 0, Math.PI * 2); ctx.stroke();
+    ctx.strokeStyle = rgba(color, 0.24 * fade);
+    ctx.lineWidth = 1.2 + 2 * fade;
+    ctx.beginPath(); ctx.arc(x, y, rr * 1.26, 0, Math.PI * 2); ctx.stroke();
+    for (let i = 0; i < 16; i++) {
+      const a = (i * 2.399 + 0.7) % (Math.PI * 2);
+      const len = 0.40 + 0.60 * Math.abs(Math.sin(i * 2.3));
+      const inner = 9 + 16 * t;
+      const outer = 24 + 88 * t * len;
+      const nx = -Math.sin(a), ny = Math.cos(a);
+      const half = 3.6 * (1 - t) + 1;
+      ctx.beginPath();
+      ctx.moveTo(x + Math.cos(a) * inner + nx * half, y + Math.sin(a) * inner + ny * half);
+      ctx.lineTo(x + Math.cos(a) * inner - nx * half, y + Math.sin(a) * inner - ny * half);
+      ctx.lineTo(x + Math.cos(a) * outer, y + Math.sin(a) * outer);
+      ctx.closePath();
+      ctx.fillStyle = rgba(color, 0.88 * fade);
+      ctx.fill();
+      ctx.strokeStyle = `rgba(255,255,255,${0.72 * fade})`;
+      ctx.lineWidth = 1.2;
+      ctx.stroke();
+      ctx.fillStyle = `rgba(255,255,255,${0.90 * fade})`;
+      ctx.beginPath(); ctx.arc(x + Math.cos(a) * outer, y + Math.sin(a) * outer, 3.4 * fade, 0, Math.PI * 2); ctx.fill();
+    }
+    for (let k = 0; k < 4; k++) {
+      const a = Math.PI * 0.25 + k * Math.PI * 0.5 + age * 0.6;
+      const nx = -Math.sin(a), ny = Math.cos(a);
+      const base = 10 + 16 * t;
+      const tip = 42 + 58 * t;
+      ctx.beginPath();
+      ctx.moveTo(x + Math.cos(a) * base + nx * 2.4, y + Math.sin(a) * base + ny * 2.4);
+      ctx.lineTo(x + Math.cos(a) * base - nx * 2.4, y + Math.sin(a) * base - ny * 2.4);
+      ctx.lineTo(x + Math.cos(a) * tip, y + Math.sin(a) * tip);
+      ctx.closePath();
+      ctx.fillStyle = `rgba(255,255,255,${0.34 * fade})`;
+      ctx.fill();
+    }
+    ctx.fillStyle = rgba(color, fade);
+    ctx.beginPath(); ctx.arc(x, y, 8 * fade, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
+
+  function fxRing(ctx, x, y, color, age) {
+    const t = Math.min(1, age / 0.40);
+    const fade = 1 - t;
+    const flash = Math.max(0, 1 - age / 0.12);
+    const core = 34 * (1 - 0.50 * t);
+    ctx.save();
+    if (flash > 0) {
+      ctx.fillStyle = `rgba(255,255,255,${0.22 * flash})`;
+      ctx.beginPath(); ctx.arc(x, y, core + 18 * flash, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.fillStyle = rgba(color, 0.26 * fade);
+    ctx.beginPath(); ctx.arc(x, y, core + 9, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = `rgba(255,255,255,${0.92 * fade})`;
+    ctx.beginPath(); ctx.arc(x, y, core, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = rgba(color, 0.95 * fade);
+    ctx.lineWidth = 4 * fade + 1;
+    ctx.beginPath(); ctx.arc(x, y, core + 2.5, 0, Math.PI * 2); ctx.stroke();
+    const rr = 20 + 74 * (1 - Math.pow(1 - t, 2));
+    ctx.strokeStyle = rgba(color, 0.80 * fade);
+    ctx.lineWidth = 2.6 + 2 * fade;
+    ctx.beginPath(); ctx.arc(x, y, rr, 0, Math.PI * 2); ctx.stroke();
+    ctx.strokeStyle = rgba(color, 0.28 * fade);
+    ctx.lineWidth = 1.2;
+    ctx.beginPath(); ctx.arc(x, y, rr + 11, 0, Math.PI * 2); ctx.stroke();
+    for (let k = 0; k < 4; k++) {
+      const a = Math.PI * 0.25 + k * Math.PI * 0.5;
+      diamond(ctx, x + Math.cos(a) * (30 + 48 * t), y + Math.sin(a) * (30 + 48 * t), 8.5 * fade, color, fade);
+    }
+    ctx.fillStyle = rgba(color, fade);
+    ctx.beginPath(); ctx.arc(x, y, 6 * fade, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
+
+  function fxPrism(ctx, x, y, color, age) {
+    const t = Math.min(1, age / 0.32);
+    const fade = 1 - t;
+    const flash = Math.max(0, 1 - age / 0.12);
+    const palette = [color, PALETTE.cyan, PALETTE.gold];
+    ctx.save();
+    ctx.fillStyle = `rgba(255,255,255,${0.55 * flash})`;
+    ctx.beginPath(); ctx.arc(x, y, 26 * flash + 4, 0, Math.PI * 2); ctx.fill();
+    for (let i = 0; i < 3; i++) {
+      const base = (i * 2.1 + 0.4);
+      const angle = base + t * 1.6;
+      const cxx = x + Math.cos(angle) * (12 + 72 * t);
+      const cyy = y + Math.sin(angle) * (12 + 72 * t);
+      const size = (13 + 7 * Math.sin(i)) * (1 - 0.5 * t);
+      const spin = angle + Math.PI * 0.5 + t * 2.4 * (i - 1);
+      ctx.beginPath();
+      for (let j = 0; j < 3; j++) {
+        const a = spin + Math.PI * 2 * j / 3;
+        const px = cxx + Math.cos(a) * size, py = cyy + Math.sin(a) * size;
+        if (j === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+      ctx.fillStyle = rgba(palette[i], 0.44 * fade);
+      ctx.fill();
+      ctx.strokeStyle = `rgba(255,255,255,${0.80 * fade})`;
+      ctx.lineWidth = 1.8;
+      ctx.stroke();
+    }
+    ctx.fillStyle = `rgba(255,255,255,${0.90 * fade})`;
+    ctx.beginPath(); ctx.arc(x, y, 8 * fade, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
+
+  function fxInk(ctx, x, y, color, age) {
+    const t = Math.min(1, age / 0.45);
+    const fade = 1 - t;
+    ctx.save();
+    ctx.fillStyle = rgba(color, 0.55 * fade);
+    ctx.beginPath(); ctx.arc(x, y, 18 * (1 - 0.6 * t), 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = rgba(color, 0.78 * fade);
+    ctx.beginPath(); ctx.arc(x, y, 10 * (1 - 0.5 * t), 0, Math.PI * 2); ctx.fill();
+    for (let i = 0; i < 10; i++) {
+      const a = (i * 2.399 + 0.7) % (Math.PI * 2);
+      const dist = (10 + 80 * t) * (0.35 + 0.65 * Math.abs(Math.sin(i * 1.7)));
+      const radius = (3 + 5 * Math.abs(Math.cos(i * 2.1))) * (1 - t);
+      ctx.fillStyle = rgba(color, 0.60 * fade);
+      ctx.beginPath();
+      ctx.arc(x + Math.cos(a) * dist, y + Math.sin(a) * dist, radius, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.strokeStyle = rgba(color, 0.50 * fade);
+    ctx.lineWidth = 3.5 * (1 - t) + 0.5;
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x + Math.cos(0.7) * (36 + 72 * t), y + Math.sin(0.7) * (36 + 72 * t));
+    ctx.stroke();
+    ctx.fillStyle = `rgba(255,255,255,${0.65 * fade})`;
+    ctx.beginPath(); ctx.arc(x, y, 3 * fade, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
+
+  function drawMiniNotes(ctx, w, h, skin) {
+    ctx.clearRect(0, 0, w, h);
+    const cx = w * 0.5, cy = h * 0.56;
+    const rx = Math.min(w * 0.36, 150), ry = rx * 0.5;
+    ctx.save();
+    ctx.strokeStyle = "rgba(255,255,255,0.10)";
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2); ctx.stroke();
+    ctx.restore();
+    tap(ctx, cx, cy, rx, ry, 215, skin, 1);
+    hold(ctx, cx, cy, rx, ry, 285, skin, 0.95);
+    pathNote(ctx, cx, cy, rx, ry, skin, 0.9);
+    traceNote(ctx, cx, cy, rx, ry, skin, 0.8);
+    anchor(ctx, cx, cy, rx, ry, skin, 0.95);
+    bell(ctx, cx, cy, Math.max(8, rx * 0.06), skin, 0.95);
+  }
+
+  // ---------- build cards ----------
+  const fxCards = document.getElementById("fx-cards");
+  const skinCards = document.getElementById("skin-cards");
+
+  Object.entries(FX).forEach(([key, item], index) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "card";
+    btn.dataset.fx = key;
+    btn.setAttribute("aria-pressed", String(key === state.fx));
+    btn.innerHTML = `<canvas></canvas><div class="card-body"><div class="card-title"><span>${item.label}</span><em>F7 · ${index + 1}</em></div><p class="card-desc">${item.desc}</p></div>`;
+    btn.addEventListener("click", () => selectFx(key));
+    fxCards.appendChild(btn);
+  });
+
+  Object.entries(SKINS).forEach(([key, item], index) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "card";
+    btn.dataset.skin = key;
+    btn.setAttribute("aria-pressed", String(key === state.skin));
+    btn.innerHTML = `<canvas></canvas><div class="card-body"><div class="card-title"><span>${item.label}</span><em>F6 · ${index + 1}</em></div><p class="card-desc">${item.desc}</p></div>`;
+    btn.addEventListener("click", () => selectSkin(key));
+    skinCards.appendChild(btn);
+  });
+
+  function selectFx(key) {
+    state.fx = key;
+    document.querySelectorAll("[data-fx]").forEach(el => el.setAttribute("aria-pressed", String(el.dataset.fx === key)));
+    document.getElementById("readout-fx").textContent = `${FX[key].label} · ${FX[key].tag}`;
+    document.querySelector(".section-head .hint").textContent = `F7 按顺序切换 · 当前为「${FX[key].label}」`;
+    updateConfig();
+  }
+  function selectSkin(key) {
+    state.skin = key;
+    document.querySelectorAll("[data-skin]").forEach(el => el.setAttribute("aria-pressed", String(el.dataset.skin === key)));
+    document.getElementById("readout-skin").firstChild.textContent = SKINS[key].label;
+    updateConfig();
+  }
+  function updateConfig() {
+    document.getElementById("config-code").textContent =
+      `note_skin = "${state.skin}"\nhit_fx_style = "${state.fx}"`;
+  }
+
+  const copyBtn = document.getElementById("copy");
+  copyBtn.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(`note_skin = "${state.skin}"\nhit_fx_style = "${state.fx}"`);
+      copyBtn.textContent = "已复制";
+      copyBtn.classList.add("done");
+      setTimeout(() => { copyBtn.textContent = "复制配置"; copyBtn.classList.remove("done"); }, 1600);
+    } catch {
+      copyBtn.textContent = "复制失败，请手动选择";
+    }
+  });
+
+  // ---------- animation ----------
+  const hero = document.getElementById("hero");
+  const start = performance.now();
+
+  function frame(now) {
+    const elapsed = (now - start) / 1000;
+    const loop = elapsed % 1.8;
+    const effectAge = loop > 1.15 ? loop - 1.15 : -1;
+
+    const heroFit = fit(hero);
+    drawStage(heroFit.ctx, heroFit.w, heroFit.h, SKINS[state.skin], effectAge);
+
+    document.querySelectorAll("[data-fx]").forEach(el => {
+      const canvas = el.querySelector("canvas");
+      const f = fit(canvas);
+      const cx = f.w * 0.5, cy = f.h * 0.54;
+      f.ctx.clearRect(0, 0, f.w, f.h);
+      f.ctx.save();
+      f.ctx.strokeStyle = "rgba(255,255,255,0.10)";
+      f.ctx.lineWidth = 2;
+      f.ctx.beginPath(); f.ctx.ellipse(cx, cy + 12, Math.min(f.w * 0.30, 74), Math.min(f.w * 0.30, 74) * 0.46, 0, 0, Math.PI * 2); f.ctx.stroke();
+      f.ctx.restore();
+      const pulse = (elapsed + (Object.keys(FX).indexOf(el.dataset.fx) * 0.22)) % 1.8;
+      const age = pulse > 1.15 ? pulse - 1.15 : -1;
+      f.ctx.save();
+      f.ctx.globalAlpha = 0.34;
+      drawEffect(f.ctx, cx, cy, PALETTE.coral, 0.06, el.dataset.fx);
+      f.ctx.restore();
+      if (age >= 0) {
+        drawEffect(f.ctx, cx, cy, PALETTE.coral, age, el.dataset.fx);
+      } else {
+        f.ctx.save();
+        f.ctx.fillStyle = "rgba(242,88,62,0.85)";
+        f.ctx.beginPath(); f.ctx.arc(cx, cy, 9, 0, Math.PI * 2); f.ctx.fill();
+        f.ctx.restore();
+      }
+    });
+
+    document.querySelectorAll("[data-skin]").forEach(el => {
+      const canvas = el.querySelector("canvas");
+      const f = fit(canvas);
+      drawMiniNotes(f.ctx, f.w, f.h, SKINS[el.dataset.skin]);
+    });
+
+    requestAnimationFrame(frame);
+  }
+
+  // entrance
+  const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (reduce || location.search.includes("static")) {
+    document.querySelectorAll(".rise").forEach(el => el.classList.add("in"));
+  } else {
+    const io = new IntersectionObserver(entries => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          entry.target.classList.add("in");
+          io.unobserve(entry.target);
+        }
+      });
+    }, { threshold: 0.08 });
+    document.querySelectorAll(".rise").forEach(el => io.observe(el));
+    // 兜底：即使观察器没触发，内容也会在 700ms 后出现。
+    setTimeout(() => document.querySelectorAll(".rise:not(.in)").forEach(el => el.classList.add("in")), 700);
+  }
+
+  updateConfig();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

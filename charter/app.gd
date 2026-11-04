@@ -19,6 +19,8 @@ var playtest_offset_ms: float = 0.0
 var flow_scale: float = 1.0
 var ffmpeg_path: String = "ffmpeg"
 var star_speed: float = 1.0
+var note_skin: String = "candy"
+var hit_fx_style: String = "burst"
 
 var selected_notes: Array[int] = []
 var selected_region_id: int = -1

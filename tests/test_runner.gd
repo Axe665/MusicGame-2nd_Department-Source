@@ -16,6 +16,7 @@ func _initialize() -> void:
 		"test_path_erase_overlap",
 		"test_path_erase_merge",
 		"test_path_run_split",
+		"test_style_presets",
 		"test_nearest_u",
 		"test_pre_read",
 		"test_shrink_example",
@@ -333,6 +334,23 @@ func test_path_run_split() -> bool:
 	])
 	var gap_flags: Array[bool] = [false, false, false, false, false]
 	eq(Preview3D.split_path_runs(gap, gap_flags).size(), 2, "invalid sample starts a new run")
+	return true
+
+
+func test_style_presets() -> bool:
+	var skins := Preview3D.skin_presets()
+	for key in ["candy", "neon", "glass", "sticker"]:
+		ok(skins.has(key), "skin preset %s exists" % key)
+		if skins.has(key):
+			ok(float(skins[key].get("scale", 0.0)) > 1.0, "skin %s enlarges notes" % key)
+	var effects := Preview3D.hit_fx_presets()
+	for key in ["burst", "ring", "prism", "ink"]:
+		ok(effects.has(key), "hit effect %s exists" % key)
+	ok(Playtest.PATH_HEAD_RADIUS >= 80.0, "path head judgement is forgiving")
+	ok(Playtest.PATH_TAIL_RADIUS >= 80.0, "path tail judgement is forgiving")
+	ok(Playtest.TRACE_CONTACT_PX >= 50.0, "trace contact is forgiving")
+	ok(Playtest.BELL_COLLECT_RADIUS >= 100.0, "bell collect is forgiving")
+	ok(Playtest.GOOD_MS >= 250.0, "good window is forgiving")
 	return true
 
 

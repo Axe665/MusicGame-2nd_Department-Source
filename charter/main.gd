@@ -602,6 +602,8 @@ func _sync_from_app() -> void:
 	_preview.show_debug = _app.debug_overlay
 	_preview.flow_scale = _app.flow_scale
 	_preview.star_speed = _app.star_speed
+	_preview.note_skin = _app.note_skin
+	_preview.hit_fx_style = _app.hit_fx_style
 	_canvas.px_per_beat = _app.zoom_px_per_beat
 	_ensure_audio()
 	_sync_tools()

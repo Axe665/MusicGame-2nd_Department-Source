@@ -1,6 +1,6 @@
 # Tamaki₃ 剩余工作清单
 
-> 基线：分支 `feat/tamaki3-charter`，测试 232 passed / 0 failed。
+> 基线：分支 `feat/tamaki3-charter`，测试 253 passed / 0 failed。
 > 最近提交：Path 平面化、Hold 弯条、osu/Simai 平面 Path、编辑器平面绘制。
 
 ## A. Path 平面化重构（最高优先）
@@ -58,6 +58,7 @@
 - [x] Hold：弯胶囊 + 端环。
 - [x] Path/Slide：V 形箭头列 + 星头 + 发光球拖尾。
 - [ ] Break：橙色强调环（当前只加宽）。
+- [x] 四套音符外观（糖霜/霓虹/玻璃/贴纸），F6 实时切换；`design/note_lab.html` 网页对比台。
 - [ ] BOTH：不做判定类型，保持单手。
 
 ## F. 在线谱面
@@ -66,13 +67,13 @@
 
 - [x] adxdls 目录、搜索、版本/曲风筛选、下载、难度选择、curl 超时。
 - [x] majdata 搜索、下载、难度选择、curl 绕过 Cloudflare。
-- [x] 下载 KB 进度。
+- [x] 实时下载进度：KB / 总大小 / 百分比 + 进度条。
 
 未完成：
 
 - [ ] majdata 分页（目前只 page 0）。
 - [ ] majdata 按等级/标签筛选。
-- [ ] 下载百分比进度（目前 KB 文本）。
+- [x] 下载百分比进度（HEAD Content-Length + 后台 curl 轮询）。
 - [ ] 失败重试 UI / 取消下载。
 
 ## G. 性能
@@ -88,7 +89,7 @@
 - [x] Path 运行缓存按缺口/形变失效；下层 Path 简化绘制；时间轴只画可视音符。
 - [ ] 每帧只算一次环中心与 `note_scale`。
 - [ ] Overlay 静态/动态拆层（评估后收益低，暂缓）。
-- [ ] 3D 环网格变形限频 30Hz。
+- [x] 3D 环网格变形限频 30Hz。
 
 ## H. Simai
 
@@ -108,17 +109,18 @@
 
 已完成：
 
-- [x] Tap 90 / 150 / 230ms，Great/Good 不断连。
+- [x] Tap 100 / 170 / 260ms，Great/Good 不断连（鼠标谱放宽）。
 - [x] Hold 绑定起手键、端环、游标。
-- [x] Bell 80px 吸附、250ms 窗口。
+- [x] Bell 112px 收取、300ms 窗口。
 - [x] 打击音整体 +4–6dB。
 - [x] FULL/FRAY/LOST 尾端文字。
-- [x] 逐类型打击特效形状；Bell 吸附收缩环 + 四向吸点；快速爆发 + 扩散环。
+- [x] 四套打击特效（迸裂/圆环/棱镜/墨滴），F7 实时切换；Bell 吸附收缩环 + 四向吸点。
 - [x] 八套音效按类型调电平。
 
 未完成：
 
 - [x] 平面 Path 中段改为“滑到即可”，不再逐点扣分。
+- [x] 非 Tap 判定半径放大：Path 头 92px / 尾 96px、Trace 接触 56px、Bell 112px。
 - [ ] 平面 Path 尾部容差仍需实机校准。
 - [ ] 打击音进一步分层重编（当前只是电平调整）。
 
