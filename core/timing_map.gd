@@ -1,6 +1,9 @@
 class_name TimingMap
 extends RefCounted
 
+const MAX_BEAT_SUBDIVISIONS := 64
+const MAX_VERTICAL_LINES := 64
+
 var points: Array[TimingPoint] = []
 var offset_ms: float = 0.0
 
@@ -88,6 +91,81 @@ func beat_to_audio_ms(beat: float) -> float:
 
 func audio_ms_to_beat(audio_ms: float) -> float:
 	return chart_ms_to_beat(audio_ms + offset_ms)
+
+
+static func parse_positive_int(text: String, max_value: int) -> int:
+	## Shared editor input rule: only positive integers within the drawable
+	## range are accepted; anything else returns 0.
+	var clean := text.strip_edges()
+	if clean.is_empty() or not clean.is_valid_int():
+		return 0
+	var value := int(clean)
+	if value < 1 or value > max_value:
+		return 0
+	return value
+
+
+static func parse_beat_subdivision(text: String) -> int:
+	return parse_positive_int(text, MAX_BEAT_SUBDIVISIONS)
+
+
+static func parse_vertical_lines(text: String) -> int:
+	return parse_positive_int(text, MAX_VERTICAL_LINES)
+
+
+static func normalize_bpm(value: float) -> float:
+	## Keep at most three decimals. A BPM whose rounded fraction has only one
+	## decimal digit is rounded to the nearest integer, as requested by the
+	## new-chart import flow.
+	var rounded := roundf(value * 1000.0) / 1000.0
+	var fraction := absf(rounded - roundf(rounded))
+	var thousandths := int(roundf(fraction * 1000.0))
+	if thousandths > 0 and thousandths % 100 == 0:
+		return roundf(rounded)
+	return rounded
+
+
+static func normalize_offset_ms(value: float) -> float:
+	var rounded := roundf(value * 1000.0) / 1000.0
+	return 0.0 if is_zero_approx(rounded) else rounded
+
+
+static func beat_subdivision_offsets(divisions: int) -> PackedFloat32Array:
+	## Offsets inside one beat, excluding the beat line itself. For example
+	## 4 returns [0.25, 0.5, 0.75], i.e. 4−1 thin lines split the beat in 4.
+	var offsets := PackedFloat32Array()
+	var count := clampi(divisions, 1, MAX_BEAT_SUBDIVISIONS)
+	if count <= 1:
+		return offsets
+	var step := 1.0 / float(count)
+	for index in range(1, count):
+		offsets.append(step * float(index))
+	return offsets
+
+
+static func vertical_line_offsets(count: int) -> PackedFloat32Array:
+	## N interior vertical lines, evenly spaced across u∈(0,1). They split
+	## the editing area into N+1 intervals; together with the two plot edges
+	## there are N+2 visible vertical boundaries.
+	var offsets := PackedFloat32Array()
+	var lines := mini(count, MAX_VERTICAL_LINES)
+	if lines <= 0:
+		return offsets
+	var step := 1.0 / float(lines + 1)
+	for index in range(1, lines + 1):
+		offsets.append(step * float(index))
+	return offsets
+
+
+static func nearest_vertical_line_u(u: float, count: int) -> float:
+	## Nearest interior vertical line in u space, clamped to the outermost
+	## interior lines so the plot edges are not silently used as snap targets.
+	var lines := mini(count, MAX_VERTICAL_LINES)
+	if lines <= 0:
+		return clampf(u, 0.0, 1.0)
+	var step := 1.0 / float(lines + 1)
+	var index := clampi(roundi(u / step), 1, lines)
+	return float(index) * step
 
 
 func format_beat(beat: float, divide: int = 4) -> String:
