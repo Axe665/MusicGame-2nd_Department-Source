@@ -8,6 +8,7 @@ var _version: OptionButton
 var _genre: OptionButton
 var _list: ItemList
 var _status: Label
+var _progress: ProgressBar
 var _entries: Array = []
 var _source: OptionButton
 var _maj_items: Array = []
@@ -74,6 +75,12 @@ func _build() -> void:
 	_list.custom_minimum_size = Vector2(0, 380)
 	_list.item_activated.connect(func(_i: int) -> void: _download_selected())
 	box.add_child(_list)
+	_progress = ProgressBar.new()
+	_progress.max_value = 100.0
+	_progress.show_percentage = false
+	_progress.custom_minimum_size = Vector2(0, 8)
+	_progress.visible = false
+	box.add_child(_progress)
 	_status = Label.new()
 	box.add_child(_status)
 	var versions := {}
@@ -153,16 +160,83 @@ func _download_selected() -> void:
 func _fetch_bytes(url: String, label: String = "") -> PackedByteArray:
 	# 统一用 curl：adxdls 和 majdata 都可能让 Godot HTTPRequest 卡住。
 	var tmp := "user://online_tmp.bin"
-	var output: Array = []
 	var referer := "https://majdata.net/" if url.contains("majdata.net") else "https://adxdls.saop.cc/"
-	var code := OS.execute("curl", ["-sL", "--max-time", "30", "-A", "Mozilla/5.0", "-e", referer, "-o", ProjectSettings.globalize_path(tmp), url], output, true, false)
-	if code != 0 or not FileAccess.file_exists(tmp):
+	var total := 0
+	if label.begins_with("下载"):
+		total = _content_length(url, referer)
+	_begin_progress(label, total)
+	var pid := OS.create_process("curl", ["-sL", "--max-time", "30", "-A", "Mozilla/5.0", "-e", referer, "-o", ProjectSettings.globalize_path(tmp), url], false)
+	if pid <= 0:
+		_end_progress()
 		return PackedByteArray()
-	var data := FileAccess.get_file_as_bytes(tmp)
-	DirAccess.remove_absolute(ProjectSettings.globalize_path(tmp))
-	if not label.is_empty():
-		_status.text = "%s  %.0f KB" % [label, float(data.size()) / 1024.0]
+	var started := Time.get_ticks_msec()
+	while OS.is_process_running(pid):
+		_update_progress(label, _file_size(tmp), total, started)
+		if Time.get_ticks_msec() - started > 45000:
+			OS.kill(pid)
+			break
+		await get_tree().create_timer(0.08).timeout
+	var data := PackedByteArray()
+	if FileAccess.file_exists(tmp):
+		data = FileAccess.get_file_as_bytes(tmp)
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(tmp))
+	_update_progress(label, data.size(), total, started, true)
+	_end_progress()
+	if data.is_empty() and not label.is_empty():
+		_status.text = "%s  下载失败" % label
 	return data
+
+
+func _content_length(url: String, referer: String) -> int:
+	var output: Array = []
+	var code := OS.execute("curl", ["-sIL", "--max-time", "4", "-A", "Mozilla/5.0", "-e", referer, url], output, true, false)
+	if code != 0 or output.is_empty():
+		return 0
+	var total := 0
+	for line in "\n".join(output).split("\n"):
+		var lower := line.strip_edges().to_lower()
+		if lower.begins_with("content-length:"):
+			total = maxi(total, int(lower.split(":", true, 1)[1].strip_edges()))
+	return total
+
+
+func _file_size(path: String) -> int:
+	var file := FileAccess.open(path, FileAccess.READ)
+	if file == null:
+		return 0
+	var size := file.get_length()
+	file.close()
+	return size
+
+
+func _begin_progress(label: String, total: int) -> void:
+	_progress.visible = true
+	_progress.value = 0.0
+	if label.is_empty():
+		return
+	if total > 0:
+		_status.text = "%s  0 KB / %.0f KB" % [label, float(total) / 1024.0]
+	else:
+		_status.text = "%s  0 KB" % label
+
+
+func _update_progress(label: String, size: int, total: int, started: int, done: bool = false) -> void:
+	if total > 0:
+		var percent := clampf(100.0 * float(size) / float(maxi(1, total)), 0.0, 100.0)
+		_progress.value = percent
+		if not label.is_empty():
+			_status.text = "%s  %.0f KB / %.0f KB (%.0f%%)" % [label, float(size) / 1024.0, float(total) / 1024.0, percent]
+	else:
+		_progress.value = fmod(float(Time.get_ticks_msec() - started) / 100.0, 100.0)
+		if not label.is_empty():
+			_status.text = "%s  %.0f KB" % [label, float(size) / 1024.0]
+	if done and not label.is_empty():
+		_status.text += "  完成"
+
+
+func _end_progress() -> void:
+	_progress.visible = false
+	_progress.value = 0.0
 
 
 func _refresh_majdata() -> void:
