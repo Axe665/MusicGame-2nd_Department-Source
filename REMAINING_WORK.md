@@ -1,6 +1,6 @@
 # Tamaki₃ 剩余工作清单
 
-> 基线：分支 `feat/tamaki3-charter`，测试 226 passed / 0 failed。
+> 基线：分支 `feat/tamaki3-charter`，测试 232 passed / 0 failed。
 > 最近提交：Path 平面化、Hold 弯条、osu/Simai 平面 Path、编辑器平面绘制。
 
 ## A. Path 平面化重构（最高优先）
@@ -22,7 +22,7 @@
 - [x] 平面 Path 渲染：头从环上飞入，身体/尾在平面。
 - [x] 中段 2D 距离判定 + FULL/FRAY/LOST。
 - [x] 尾部 2D 点判定。
-- [x] 按鼠标扫过线段检测重叠，找到最远位置后从头连续削到该点；不会留下碎片缺口。
+- [x] 按鼠标实际扫过区间擦除；相邻区间合并，远离头部的接触不会误删整条轨迹。
 - [x] 删除平面 Path 的环上尾提示弧。
 - [x] 删除环 Path 支持；旧环 Path 自动迁移成 1.0R→0.72R 的平面弧。
 

@@ -127,6 +127,7 @@ var _pulses: Array[Dictionary] = []
 var _arc_flashes: Array[Dictionary] = []
 var trace_cuts: Dictionary = {}
 var path_cuts: Dictionary = {}
+var path_cut_versions: Dictionary = {}
 var _drawing_path: bool = false
 var _path_points: Array[Vector2] = []
 var _path_head_angle: float = 0.0
@@ -778,6 +779,7 @@ func _on_chart_changed() -> void:
 	_trace_cache.clear()
 	trace_cuts.clear()
 	path_cuts.clear()
+	path_cut_versions.clear()
 	_path_runs_cache.clear()
 	_boundary_frame_cache = null
 	_path_local_cache.clear()
@@ -796,6 +798,7 @@ func _on_chart_live_changed() -> void:
 	_trace_cache.clear()
 	trace_cuts.clear()
 	path_cuts.clear()
+	path_cut_versions.clear()
 	_path_runs_cache.clear()
 	_boundary_frame_cache = null
 	_path_local_cache.clear()
@@ -1713,7 +1716,7 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 	var progress := 1.0 - pow(1.0 - q, maxf(0.05, note.path_speed))
 	var runs: Array[PackedVector2Array] = []
 	var mesh := "%s|%s|%.0f|%.0f" % [_mesh_key(chart, t), _last_view_key, size.x, size.y]
-	var cache_key := "%d|%.5f|%s" % [note.id, path_erased_extent(note), mesh]
+	var cache_key := "%d|%d|%s" % [note.id, int(path_cut_versions.get(note.id, 0)), mesh]
 	if _path_runs_cache.has(cache_key):
 		runs = _path_runs_cache[cache_key]
 	else:
@@ -1826,8 +1829,7 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 		canvas.draw_string(UITheme.bold_font(), head + Vector2(-12, -22), "PATH", HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(UITheme.CORAL.r, UITheme.CORAL.g, UITheme.CORAL.b, 0.85))
 	# 大号发光球 + 短拖尾：当前进度点始终比星头更亮，方向一目了然。
 	if t >= note.beat and t <= note.end_beat:
-		# 指示球贴着已完成轨迹的前沿，擦除后不会悬在缺口里。
-		var rel := maxf(progress, path_erased_extent(note)) * total
+		var rel := progress * total
 		for trail_index in range(4, 0, -1):
 			var trail_rel := rel - float(trail_index) * 0.035 * total
 			if trail_rel < 0.0 or path_erased(note, trail_rel):
@@ -1915,27 +1917,36 @@ func erase_path_overlap(note: Note, from: Vector2, to: Vector2, beat: float) -> 
 	if minf(_point_polyline_distance(points, from), _point_polyline_distance(points, to)) > guard:
 		return false
 	var ranges := path_erase_ranges(points, from, to, brush)
-	var furthest := 0.0
 	for span in ranges:
-		furthest = maxf(furthest, float(span.y))
-	if furthest > path_erased_extent(note) + 0.001:
-		set_path_erased_to(note, furthest)
+		_add_path_erase_range(note, span.x, span.y)
 	return not ranges.is_empty()
 
 
-func path_erased_extent(note: Note) -> float:
-	var result := 0.0
-	for gap in path_cuts.get(note.id, []):
-		result = maxf(result, float(gap.get("to", 0.0)))
-	return result
+static func merge_erase_ranges(ranges: Array, from_fraction: float, to_fraction: float) -> Array:
+	var a := clampf(minf(from_fraction, to_fraction), 0.0, 1.0)
+	var b := clampf(maxf(from_fraction, to_fraction), 0.0, 1.0)
+	if a < 0.08:
+		a = 0.0
+	if b - a <= 0.002:
+		return ranges
+	var all: Array = ranges.duplicate(true)
+	all.append({"from": a, "to": b})
+	all.sort_custom(func(x: Dictionary, y: Dictionary) -> bool: return float(x.get("from", 0.0)) < float(y.get("from", 0.0)))
+	var merged: Array = []
+	for item in all:
+		if merged.is_empty() or float(item.get("from", 0.0)) > float(merged[-1].get("to", 0.0)) + 0.035:
+			merged.append({"from": float(item.get("from", 0.0)), "to": float(item.get("to", 0.0))})
+		else:
+			merged[-1]["to"] = maxf(float(merged[-1].get("to", 0.0)), float(item.get("to", 0.0)))
+	return merged
 
 
-func set_path_erased_to(note: Note, fraction: float) -> void:
-	# 舞萌式擦除：已滑过的部分保持一个连续缺口，不留下碎片。
-	var target := maxf(path_erased_extent(note), clampf(fraction, 0.0, 1.0))
-	if target <= 0.004:
+func _add_path_erase_range(note: Note, from_fraction: float, to_fraction: float) -> void:
+	var merged := merge_erase_ranges(path_cuts.get(note.id, []), from_fraction, to_fraction)
+	if merged == path_cuts.get(note.id, []):
 		return
-	path_cuts[note.id] = [{"from": 0.0, "to": target}]
+	path_cuts[note.id] = merged
+	path_cut_versions[note.id] = int(path_cut_versions.get(note.id, 0)) + 1
 	if _overlay != null:
 		_overlay.queue_redraw()
 

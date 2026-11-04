@@ -14,6 +14,7 @@ func _initialize() -> void:
 		"test_self_intersection",
 		"test_plane_path",
 		"test_path_erase_overlap",
+		"test_path_erase_merge",
 		"test_nearest_u",
 		"test_pre_read",
 		"test_shrink_example",
@@ -290,6 +291,22 @@ func test_path_erase_overlap() -> bool:
 	eq(overlapping.size(), 2, "overlapping passes are erased separately, not as one huge span")
 	if overlapping.size() == 2:
 		ok(overlapping[0].x < 0.01 and overlapping[1].y > 0.99, "both overlapping passes are covered")
+	return true
+
+
+func test_path_erase_merge() -> bool:
+	var local := Preview3D.merge_erase_ranges([], 0.47, 0.53)
+	eq(local.size(), 1, "local touch creates one gap")
+	if not local.is_empty():
+		ok(float(local[0]["from"]) > 0.4, "local touch does not erase from the head")
+	var followed := Preview3D.merge_erase_ranges(local, 0.51, 0.60)
+	eq(followed.size(), 1, "following merges into one continuous gap")
+	var separate := Preview3D.merge_erase_ranges(followed, 0.85, 0.90)
+	eq(separate.size(), 2, "far touch stays a separate gap")
+	var head := Preview3D.merge_erase_ranges([], 0.02, 0.10)
+	eq(head.size(), 1, "head touch creates one gap")
+	if not head.is_empty():
+		near(float(head[0]["from"]), 0.0, 0.001, "head touch starts at the head")
 	return true
 
 
