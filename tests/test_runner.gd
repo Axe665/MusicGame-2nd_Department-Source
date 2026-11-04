@@ -45,6 +45,7 @@ func _initialize() -> void:
 		"test_simai_bend_shapes",
 		"test_simai_osu_friendly",
 		"test_note_length_system",
+		"test_path_start_delay",
 	]
 	for test_name in tests:
 		if call(test_name) != true:
@@ -1190,4 +1191,37 @@ func test_note_length_system() -> bool:
 	near(loaded.arc_width(), 45.0, 0.001, "sized tap roundtrips the length")
 	var plain := Note.new("tap", 2.0, 0.0, 60.0)
 	ok(not plain.to_dict().has("sized"), "plain tap writes no size fields")
+	return true
+
+
+func test_path_start_delay() -> bool:
+	# 轨迹启动时间：星头落线后等 t(ms)，轨迹与尾判整体推后。
+	var path := Note.new("path", 0.0, 0.0, 60.0)
+	path.end_beat = 2.0
+	path.trace_pts = [
+		{"x": 1.0, "y": 0.0, "db": 0.0},
+		{"x": 0.0, "y": -0.7, "db": 2.0},
+	]
+	path.start_delay_ms = 500.0
+	near(path.delay_beats(120.0), 1.0, 0.0001, "500ms at 120bpm is one beat")
+	near(path.delay_beats(60.0), 0.5, 0.0001, "500ms at 60bpm is half a beat")
+	near(path.slide_gate_beat(120.0), 1.0, 0.0001, "gate uses the delay when wait is shorter")
+	near(path.tail_offset_beat(120.0), 1.0, 0.0001, "tail shifts by the same delay")
+	var head := path.path_local_at(0.0, path.delay_beats(120.0))
+	near(head.distance_to(Vector2(1.0, 0.0)), 0.0, 0.0001, "head sits at the star position")
+	var waiting := path.path_local_at(0.5, path.delay_beats(120.0))
+	near(waiting.distance_to(Vector2(1.0, 0.0)), 0.0, 0.0001, "trail does not move before the delay ends")
+	var middle := path.path_local_at(2.0, path.delay_beats(120.0))
+	near(middle.distance_to(Vector2(0.5, -0.35)), 0.0, 0.0001, "slide keeps its speed after the delay")
+	var tail := path.path_local_at(3.0, path.delay_beats(120.0))
+	near(tail.distance_to(Vector2(0.0, -0.7)), 0.0, 0.0001, "tail arrives one delay later")
+	path.wait_beat = 2.0
+	near(path.slide_gate_beat(120.0), 2.0, 0.0001, "wait wins when it is longer")
+	near(path.tail_offset_beat(120.0), 0.0, 0.0001, "no extra tail shift when wait covers the delay")
+	var data := path.to_dict()
+	near(float(data.get("delay_ms", 0.0)), 500.0, 0.001, "delay is serialised")
+	var loaded := Note.from_dict(data)
+	near(loaded.start_delay_ms, 500.0, 0.001, "delay roundtrips")
+	path.start_delay_ms = 0.0
+	ok(not path.to_dict().has("delay_ms"), "zero delay writes no field")
 	return true

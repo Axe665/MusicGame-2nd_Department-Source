@@ -64,6 +64,8 @@ godot --path .
 - 接近表现：所有音符（Tap / Hold / Path / Trace / Anchor / Bell）都从圆心飞向判定环并随预读放大，轨迹和星尾一起长出，不再原地出现；Hold 完成后 0.24 拍渐隐
 - 长度体系：l = 旧版 Tap 与判定环重合时的条带长度（即 `note.width`）。新版普通 Tap 与 Hold 头都是 **0.5 l**，且"看到多长 = 能打多长"（绘制与判定共用 `Note.arc_width()`）；**大小 Tap**（第 8 张卡）可用检查器"长度 ×l" 调到 **0.00–1.50 l**（两位小数），0 长度仍保留一个点标记；Tap / Hold 在环心出现时只有 **1/6 l**，飞近判定环时长到 1 l
 - Path / Trace 视觉尺寸统一 ×2（`PATH_SIZE_SCALE` / `TRACE_SIZE_SCALE`）：笔画、V 形箭头、星头、尾环、进度球、Trace 端点与宽度全部放大，轨迹几何与判定不变
+- Hold 外观：头部与 Tap 用同一条"长度条"（`_draw_length_band`），只是主体色换成黄色，缩放节奏与 Tap 完全一致（环心 1/6 l → 判定环 1 l）；身体从**圆心**一直连到判定环（旧版从 0.28R 起），同样是飞入时长出来
+- 星星启动时间：Path 新增 **启动时间 ms**（`start_delay_ms`，0–2000，步进 10，默认 0）。星头落线后这段时间里只显示星头，**轨迹与尾判都不存在**；到点后轨迹出现、才允许划 Path、尾判也才开门。实际起滑时间取 `max(wait_beat, delay)`，尾判与整条轨迹按同样的量整体后移（滑动速度不变）
 - Path 擦除：检查器“跳区 / 擦除”可擦掉中段 0–80%；擦除段不渲染、不生成中段检查点，断裂处自动断开轨迹
 - Trace 表现：宽笔刷 + 流动高光 + 星头/尾环同色，去掉中心虚线；鼠标向前跳区时跳过的轨迹从画面削掉且不累计移动距离
 - 时间：beat↔毫秒分段积分、BPM 变化、offset、固定预读 D、拍号分子 1–16
@@ -118,7 +120,7 @@ godot --headless --path . --import
 godot --headless --path . --script res://tests/test_runner.gd
 ```
 
-当前结果：**310 passed, 0 failed**。测试覆盖：
+当前结果：**323 passed, 0 failed**。测试覆盖：
 
 - 120 BPM / 变速 / offset 的时间换算与反解
 - 新建谱面 BPM 三位小数/一位小数取整与 offset 三位小数规范化
@@ -126,6 +128,7 @@ godot --headless --path . --script res://tests/test_runner.gd
 - 竖线数量合法性、21 条竖线的等分位置与最近竖线吸附
 - 音符镜像的 Tap 角度、Bell center_u、Path 头尾/轨迹点/视觉偏移
 - 长度体系：普通 Tap / Hold 头 = 0.5 l、大小 Tap 的 0–1.5 l 范围与两位小数吸附、环心 1/6 l、Path 不受影响、JSON 只给大小 Tap 写 `sized`/`size`
+- 星星启动时间：ms→拍换算（120/60 BPM）、延迟期间星头不动、延迟后按原速滑动、尾判整体后移、`wait_beat` 更长时不额外推后、`delay_ms` 序列化与零值不写
 - FLAC 纳入可读取音频格式（经 ffmpeg 解码缓存）
 - 圆的 C(u)、最近点反解、五角星 Path 表现层
 - `.lbp` 导出头部/段落/Path 五角星/换行

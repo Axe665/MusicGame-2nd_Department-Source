@@ -451,6 +451,13 @@ func _build_note_page_for(page: VBoxContainer, note: Note) -> void:
 			_active_note.path_speed = value
 	)
 	_note_widgets["path_speed"] = speed
+	# 轨迹启动时间：星头落线后等这么久，轨迹与尾判才出现（0–2000ms）。
+	var delay := _spin(path_body, "启动时间 ms", note.start_delay_ms, 0.0, 2000.0, 10.0, func(value: float) -> void:
+		if _active_note != null:
+			_active_note.start_delay_ms = snappedf(value, 10.0)
+	)
+	_note_widgets["path_delay"] = delay
+	_label(path_body, "启动时间内只有星头；到点后轨迹与尾判才出现，尾判时间整体后移。", 11, UITheme.MUTED)
 	var path_counts := _label(path_body, "", 11, UITheme.MUTED)
 	_note_widgets["path_counts"] = path_counts
 	_buttons(path_body, [{"text": "重画 Path", "callback": func() -> void: _app.set_tool("path")}])
@@ -663,6 +670,7 @@ func _refresh_note_page() -> void:
 		_note_widgets["path_tol"].value = note.tolerance
 		_note_widgets["path_samples"].value = note.samples_per_beat
 		_note_widgets["path_speed"].value = note.path_speed
+		_note_widgets["path_delay"].value = note.start_delay_ms
 		_note_widgets["path_counts"].text = "中间判定点：%d 个；平面点：%d 个" % [note.path_sample_beats().size(), note.trace_pts.size()]
 		_fill_visual_list(_note_widgets["path_list"], note)
 		_note_widgets["path_erase"].value = _path_erase_width(note) * 100.0

@@ -675,23 +675,29 @@ func _draw_hold(note: Note) -> void:
 
 
 func _draw_path(note: Note) -> void:
+	var bpm := 120.0
+	if _app != null and _app.chart != null:
+		bpm = _app.chart.timing.bpm_at(note.beat)
+	var offset := note.tail_offset_beat(bpm)
+	var gate := note.slide_gate_beat(bpm)
+	var total := maxf(0.001, note.duration())
 	var y0 := _beat_to_y(note.beat)
-	var y1 := _beat_to_y(note.end_beat)
+	var y1 := _beat_to_y(note.beat + gate + total)
 	var x0 := _u_to_x(fposmod(note.angle, 360.0) / 360.0)
 	var x1 := _u_to_x(fposmod(note.tail_angle, 360.0) / 360.0)
 	var selected := _is_note_selected(note.id)
-	var total := maxf(0.001, note.duration())
 	var runs: Array[PackedVector2Array] = []
 	var run := PackedVector2Array()
 	for i in 41:
-		var rel := total * float(i) / 40.0
-		if note.erased_at(rel):
+		var local := total * float(i) / 40.0
+		var rel := local + offset
+		if note.erased_at(local):
 			if run.size() > 1:
 				runs.append(run)
 			run = PackedVector2Array()
 			continue
 		run.append(Vector2(
-			_u_to_x(fposmod(note.path_angle_at(rel), 360.0) / 360.0),
+			_u_to_x(fposmod(note.path_angle_at(local), 360.0) / 360.0),
 			_beat_to_y(note.beat + rel)
 		))
 	if run.size() > 1:
@@ -707,12 +713,12 @@ func _draw_path(note: Note) -> void:
 			var sample := _polyline_sample(piece, fraction)
 			_draw_arrowhead(sample["point"], sample["direction"], UITheme.CYAN)
 	for point in note.visual_pts:
-			var rel := float(point.get("db", 0.0))
-			if note.erased_at(rel):
+			var local := float(point.get("db", 0.0))
+			if note.erased_at(local):
 				continue
 			draw_circle(Vector2(
-				_u_to_x(fposmod(note.path_angle_at(rel), 360.0) / 360.0),
-				_beat_to_y(note.beat + rel)
+				_u_to_x(fposmod(note.path_angle_at(local), 360.0) / 360.0),
+				_beat_to_y(note.beat + local + offset)
 			), 2.5, UITheme.CYAN)
 	_draw_width_band(note.angle, note.width, y0, UITheme.CYAN)
 	_draw_width_band(note.tail_angle, note.tail_width, y1, UITheme.GOLD)

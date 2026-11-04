@@ -402,7 +402,10 @@ func _judge_hold(note: Note, ms: float, beat: float) -> void:
 func _judge_path(note: Note, ms: float, beat: float, cursor_u: float, valid: bool, mouse: Vector2) -> void:
 	var state: Dictionary = _states[note.id]
 	var head_ms := chart.timing.beat_to_chart_ms(note.beat)
-	var tail_ms := chart.timing.beat_to_chart_ms(note.end_beat)
+	# 启动延迟把整条滑动（含尾判）整体推后。
+	var path_bpm := chart.timing.bpm_at(note.beat)
+	var tail_rel := note.duration() + note.tail_offset_beat(path_bpm)
+	var tail_ms := chart.timing.beat_to_chart_ms(note.beat + tail_rel)
 	var head_point: Vector2 = _preview.path_point(note, 0.0, beat)
 	if not state["head_judged"]:
 		if ms >= head_ms - HIT_WINDOW_MS:
@@ -428,7 +431,7 @@ func _judge_path(note: Note, ms: float, beat: float, cursor_u: float, valid: boo
 				_add_log("PATH #%d HEAD MISS" % note.id)
 				state["head_judged"] = true
 	if not state["tail_judged"] and ms >= tail_ms - HIT_WINDOW_MS:
-		var tail_point: Vector2 = _preview.path_point(note, note.duration(), beat)
+		var tail_point: Vector2 = _preview.path_point(note, tail_rel, beat)
 		if mouse.is_finite() and tail_point.is_finite() and mouse.distance_to(tail_point) <= PATH_TAIL_RADIUS:
 			var tier := _tier_for(ms - tail_ms)
 			state["tail_hit"] = true
@@ -460,9 +463,8 @@ func _judge_path(note: Note, ms: float, beat: float, cursor_u: float, valid: boo
 		return
 	# 中段只看“滑到了没有”：不逐点扣分；轨迹按时间进度连续消失。
 	if bool(state.get("head_hit", false)):
-		var total := note.duration()
-		var wait := clampf(note.wait_beat, 0.0, maxf(0.0, total - 0.001))
-		var q := clampf((beat - note.beat - wait) / maxf(0.001, total - wait), 0.0, 1.0)
+		var wait := note.slide_gate_beat(path_bpm)
+		var q := clampf((beat - note.beat - wait) / maxf(0.001, tail_rel - wait), 0.0, 1.0)
 		var progress := 1.0 - pow(1.0 - q, maxf(0.05, note.path_speed))
 		var target := progress
 		if valid:
