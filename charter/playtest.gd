@@ -441,16 +441,21 @@ func _judge_path(note: Note, ms: float, beat: float, cursor_u: float, valid: boo
 		state["done"] = true
 	if ms < head_ms or ms > tail_ms:
 		return
-	# 中段只看“滑到了没有”：不逐点扣分；鼠标扫过的轨迹按重叠区域削掉。
+	# 中段只看“滑到了没有”：不逐点扣分；轨迹按时间进度连续消失。
 	if bool(state.get("head_hit", false)):
+		var total := note.duration()
+		var wait := clampf(note.wait_beat, 0.0, maxf(0.0, total - 0.001))
+		var q := clampf((beat - note.beat - wait) / maxf(0.001, total - wait), 0.0, 1.0)
+		var progress := 1.0 - pow(1.0 - q, maxf(0.05, note.path_speed))
+		var target := progress
 		if valid:
-			var last: Vector2 = state.get("path_last_mouse", Vector2(INF, INF))
-			if not last.is_finite():
-				last = mouse
-			_preview.erase_path_overlap(note, last, mouse, beat)
-			state["path_last_mouse"] = mouse
-		else:
-			state["path_last_mouse"] = Vector2(INF, INF)
+			var info: Dictionary = _preview.path_fraction(note, mouse, beat)
+			var fraction := float(info.get("fraction", 0.0))
+			# 鼠标只允许领先当前进度一小段；避免停在远处把整条轨迹提前削光。
+			if float(info.get("distance", INF)) <= 64.0 and fraction > progress and fraction <= progress + 0.20:
+				target = fraction
+		_preview.set_path_erased_to(note, target)
+		state["path_last_mouse"] = mouse
 
 
 func _judge_trace(note: Note, ms: float, beat: float, delta: float, mouse: Vector2) -> void:

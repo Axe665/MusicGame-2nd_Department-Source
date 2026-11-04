@@ -1941,6 +1941,47 @@ static func merge_erase_ranges(ranges: Array, from_fraction: float, to_fraction:
 	return merged
 
 
+func set_path_erased_to(note: Note, fraction: float) -> void:
+	# 试玩时只保留一个连续缺口：从头部到当前进度，轨迹始终是连续的一段。
+	var target := clampf(fraction, 0.0, 1.0)
+	if target <= 0.004:
+		return
+	var current: Array = path_cuts.get(note.id, [])
+	if current.size() == 1 and absf(float(current[0].get("to", -1.0)) - target) <= 0.001:
+		return
+	path_cuts[note.id] = [{"from": 0.0, "to": target}]
+	path_cut_versions[note.id] = int(path_cut_versions.get(note.id, 0)) + 1
+	if _overlay != null:
+		_overlay.queue_redraw()
+
+
+func path_fraction(note: Note, mouse: Vector2, beat: float) -> Dictionary:
+	var chart := get_chart()
+	if chart == null:
+		return {"fraction": 0.0, "distance": INF}
+	var points := PackedVector2Array()
+	var count := 48
+	for i in count + 1:
+		var p := _path_screen_point(chart, note, note.duration() * float(i) / float(count), beat, false)
+		if _valid_point(p):
+			points.append(p)
+	if points.size() < 2:
+		return {"fraction": 0.0, "distance": INF}
+	var best := INF
+	var best_fraction := 0.0
+	for i in points.size() - 1:
+		var a := points[i]
+		var b := points[i + 1]
+		var ab := b - a
+		var length_squared := ab.length_squared()
+		var q := 0.0 if length_squared <= 0.0001 else clampf((mouse - a).dot(ab) / length_squared, 0.0, 1.0)
+		var distance := mouse.distance_to(a + ab * q)
+		if distance < best:
+			best = distance
+			best_fraction = (float(i) + q) / float(points.size() - 1)
+	return {"fraction": best_fraction, "distance": best}
+
+
 func _add_path_erase_range(note: Note, from_fraction: float, to_fraction: float) -> void:
 	var merged := merge_erase_ranges(path_cuts.get(note.id, []), from_fraction, to_fraction)
 	if merged == path_cuts.get(note.id, []):
