@@ -1,6 +1,6 @@
 # Tamaki₃ 剩余工作清单
 
-> 基线：分支 `feat/tamaki3-charter`，测试 222 passed / 0 failed。
+> 基线：分支 `feat/tamaki3-charter`，测试 226 passed / 0 failed。
 > 最近提交：Path 平面化、Hold 弯条、osu/Simai 平面 Path、编辑器平面绘制。
 
 ## A. Path 平面化重构（最高优先）
@@ -29,7 +29,7 @@
 ## B. 导入改造
 
 - [x] osu 滑条 → 平面 Path（Sentakki：head tap + wait/shoot delay + B/L/C/P 采样），不再生成滑条 Trace。
-- [x] Simai Slide → 平面 Path：按 Sentakki 思路区分直线/弧线/v/p/q/s/z/V/w，按轨迹长度分配时间，尾落回按钮环位。
+- [x] Simai Slide → 平面 Path：按 Sentakki 思路区分形状，圆角平滑 + 自交回退 + 超速退化直线，尾落回按钮环位。
 - [x] 双押继续删一侧。
 - [x] 导入报告改为 Path 计数；不再生成滑条 Trace。
 - [x] `Trace` 仅保留给手绘擦带，不再由 osu 滑条生成。

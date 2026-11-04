@@ -39,6 +39,7 @@ func _initialize() -> void:
 		"test_osu_std_sentakki_rules",
 		"test_simai_directive_slot",
 		"test_simai_bend_shapes",
+		"test_simai_osu_friendly",
 	]
 	for test_name in tests:
 		if call(test_name) != true:
@@ -918,6 +919,36 @@ func test_simai_import() -> bool:
 		near(chart.notes[0].angle, 90.0, 0.001, "simai button 1 is top")
 		near(chart.notes[2].end_beat, 4.0, 0.001, "simai slide wait + duration")
 		near(chart.notes[2].tail_angle, 270.0, 0.001, "simai slide tail button 5")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	return true
+
+
+func test_simai_osu_friendly() -> bool:
+	var text := "&title=T\n&wholebpm=120\n&lv_1=1\n&inote_1=(120){4},1p5[16:1],,,,\nE\n"
+	var path := "user://test_simai_friendly.txt"
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	if file == null:
+		ok(false, "simai friendly fixture")
+		return true
+	file.store_string(text)
+	file.close()
+	var chart := SimaiIO.import_maidata(path, 1)
+	ok(chart != null, "simai friendly chart imports")
+	if chart != null and not chart.notes.is_empty():
+		var note: Note = chart.notes[0]
+		eq(note.type, "path", "short p slide still imports")
+		var head := Vector2(float(note.trace_pts[0]["x"]), float(note.trace_pts[0]["y"]))
+		var tail := Vector2(float(note.trace_pts[-1]["x"]), float(note.trace_pts[-1]["y"]))
+		var max_deviation := 0.0
+		for point in note.trace_pts:
+			var p := Vector2(float(point["x"]), float(point["y"]))
+			var q := clampf((p - head).dot(tail - head) / maxf(0.0001, (tail - head).length_squared()), 0.0, 1.0)
+			max_deviation = maxf(max_deviation, p.distance_to(head.lerp(tail, q)))
+		ok(max_deviation < 0.05, "over-fast star degrades to a straight osu-friendly path")
+	var loop: Array[Vector2] = [
+		Vector2(0, 0), Vector2(1, 1), Vector2(1, 0), Vector2(0, 1),
+	]
+	ok(SimaiIO._polyline_self_intersects(loop), "self-intersecting star is detected")
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
 	return true
 
