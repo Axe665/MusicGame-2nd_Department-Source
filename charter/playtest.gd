@@ -67,6 +67,7 @@ func _ready() -> void:
 	_sfx = HitSfx.new()
 	_sfx.name = "PlaytestHitSfx"
 	add_child(_sfx)
+	_sfx.set_style(String(_app.hit_sfx_style) if _app != null else "default")
 	_build_ui()
 
 

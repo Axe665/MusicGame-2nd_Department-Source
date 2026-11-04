@@ -75,6 +75,7 @@ func _ready() -> void:
 	_sfx = HitSfx.new()
 	_sfx.name = "EditorHitSfx"
 	add_child(_sfx)
+	_sfx.set_style(String(_app.hit_sfx_style) if _app != null else "default")
 	_build_dialogs()
 	if _app != null:
 		_app.chart_changed.connect(_on_chart_changed)
@@ -85,6 +86,11 @@ func _ready() -> void:
 		_app.status_changed.connect(_update_status)
 		_app.save_state_changed.connect(_update_status)
 		_app.notice.connect(_show_toast)
+		_app.appearance_changed.connect(_sync_appearance)
+		_app.preview_sfx.connect(func() -> void:
+			if _sfx != null:
+				_sfx.play("don")
+		)
 		_app.validation_changed.connect(_update_validation)
 		_app.chart_changed.emit()
 	_sync_from_app()
@@ -593,6 +599,16 @@ func _build_dialogs() -> void:
 	DirAccess.make_dir_recursive_absolute(charts_dir)
 
 
+func _sync_appearance() -> void:
+	if _app == null:
+		return
+	_preview.note_skin = _app.note_skin
+	_preview.hit_fx_style = _app.hit_fx_style
+	_preview.refresh_style()
+	if _sfx != null:
+		_sfx.set_style(_app.hit_sfx_style)
+
+
 func _sync_from_app() -> void:
 	if _app == null or _app.chart == null:
 		return
@@ -604,6 +620,7 @@ func _sync_from_app() -> void:
 	_preview.star_speed = _app.star_speed
 	_preview.note_skin = _app.note_skin
 	_preview.hit_fx_style = _app.hit_fx_style
+	_sfx.set_style(_app.hit_sfx_style)
 	_canvas.px_per_beat = _app.zoom_px_per_beat
 	_ensure_audio()
 	_sync_tools()

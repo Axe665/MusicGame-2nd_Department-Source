@@ -5,6 +5,8 @@ extends Node
 
 const VOLUME_DB := -3.0
 const KIND_DB := {"don": -3.0, "kat": -3.5, "hold": -4.0, "path": -3.5, "anchor": -2.0, "bell": -4.0, "trace": -5.0, "tail": -3.5}
+const STYLE_PITCH := {"default": 1.0, "crisp": 1.18, "deep": 0.84}
+const STYLE_DB := {"default": 0.0, "crisp": -1.0, "deep": 1.5}
 const PATHS := {
 	"don": "res://audio/sfx/tap_don.wav",
 	"hold": "res://audio/sfx/hold.wav",
@@ -19,6 +21,7 @@ const PATHS := {
 var _streams: Dictionary = {}
 var _players: Array[AudioStreamPlayer] = []
 var _index: int = 0
+var style: String = "default"
 
 
 func _ready() -> void:
@@ -39,15 +42,21 @@ func _ready() -> void:
 		_players.append(player)
 
 
+func set_style(value: String) -> void:
+	style = value
+
+
 func play(kind: String, pitch: float = 1.0) -> void:
+	if style == "mute":
+		return
 	var stream: AudioStream = _streams.get(kind)
 	if stream == null or _players.is_empty():
 		return
 	var player := _players[_index % _players.size()]
 	_index += 1
 	player.stream = stream
-	player.volume_db = float(KIND_DB.get(kind, VOLUME_DB))
-	player.pitch_scale = pitch
+	player.volume_db = float(KIND_DB.get(kind, VOLUME_DB)) + float(STYLE_DB.get(style, 0.0))
+	player.pitch_scale = pitch * float(STYLE_PITCH.get(style, 1.0))
 	player.play()
 
 

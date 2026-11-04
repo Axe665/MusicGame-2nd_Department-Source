@@ -9,6 +9,8 @@ signal status_changed
 signal save_state_changed
 signal validation_changed(issues: Array)
 signal notice(message: String, level: String)
+signal appearance_changed
+signal preview_sfx
 
 var chart: Chart = null
 var chart_path: String = ""
@@ -21,6 +23,7 @@ var ffmpeg_path: String = "ffmpeg"
 var star_speed: float = 1.0
 var note_skin: String = "candy"
 var hit_fx_style: String = "burst"
+var hit_sfx_style: String = "default"
 
 var selected_notes: Array[int] = []
 var selected_region_id: int = -1

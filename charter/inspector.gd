@@ -112,7 +112,7 @@ func refresh_tab_titles() -> void:
 	set_tab_title(1, "区域" if _app.selected_region_id < 0 else "区域 · %d" % _app.selected_region_id)
 	set_tab_title(2, "边界")
 	set_tab_title(3, "事件" if _app.selected_event_id.is_empty() else "事件 · %s" % _app.selected_event_id)
-	set_tab_title(4, "视图")
+	set_tab_title(4, "视图/设置")
 	set_tab_title(5, "时间")
 	set_tab_title(6, "谱面")
 
@@ -207,6 +207,19 @@ func _option(page: VBoxContainer, label_text: String, items: Array[String], sele
 	option.item_selected.connect(func(index: int) -> void:
 		if not _applying:
 			_apply(func() -> void: callback.call(index))
+	)
+	_row(page, label_text, option)
+	return option
+
+
+func _setting_option(page: VBoxContainer, label_text: String, items: Array[String], selected: int, callback: Callable) -> OptionButton:
+	var option := OptionButton.new()
+	for item in items:
+		option.add_item(item)
+	option.selected = clampi(selected, 0, maxi(0, items.size() - 1))
+	option.item_selected.connect(func(index: int) -> void:
+		if not _applying:
+			callback.call(index)
 	)
 	_row(page, label_text, option)
 	return option
@@ -534,6 +547,36 @@ func _build_event_page(page: VBoxContainer) -> void:
 
 
 func _build_view_page(page: VBoxContainer) -> void:
+	_section(page, "音符与音效")
+	var skin_presets := Preview3D.skin_presets()
+	var skin_keys: Array = skin_presets.keys()
+	var skin_labels: Array[String] = []
+	for key in skin_keys:
+		skin_labels.append(String(skin_presets[key].get("label", key)))
+	_setting_option(page, "音符皮肤", skin_labels, maxi(0, skin_keys.find(_app.note_skin)), func(index: int) -> void:
+		_app.note_skin = String(skin_keys[index])
+		_app.appearance_changed.emit()
+		_app.notice.emit("音符皮肤：%s" % skin_labels[index], "info")
+	)
+	var fx_presets := Preview3D.hit_fx_presets()
+	var fx_keys: Array = fx_presets.keys()
+	var fx_labels: Array[String] = []
+	for key in fx_keys:
+		fx_labels.append(String(fx_presets[key]))
+	_setting_option(page, "打击特效", fx_labels, maxi(0, fx_keys.find(_app.hit_fx_style)), func(index: int) -> void:
+		_app.hit_fx_style = String(fx_keys[index])
+		_app.appearance_changed.emit()
+		_app.notice.emit("打击特效：%s" % fx_labels[index], "info")
+	)
+	var sfx_keys: Array[String] = ["default", "crisp", "deep", "mute"]
+	var sfx_labels: Array[String] = ["原声", "清脆", "厚重", "静音"]
+	_setting_option(page, "打击音效", sfx_labels, maxi(0, sfx_keys.find(_app.hit_sfx_style)), func(index: int) -> void:
+		_app.hit_sfx_style = sfx_keys[index]
+		_app.appearance_changed.emit()
+		_app.preview_sfx.emit()
+		_app.notice.emit("打击音效：%s" % sfx_labels[index], "info")
+	)
+	_label(page, "试玩中 F6 换皮肤、F7 换特效；音效只改打击音色，不改判定。", 11, UITheme.MUTED)
 	_section(page, "显示")
 	_check(page, "正对镜头（忽略倾斜）", bool(_app.chart.metadata.get("face_camera", true)), func(value: bool) -> void:
 		_app.mutate(func() -> void: _app.chart.metadata["face_camera"] = value)

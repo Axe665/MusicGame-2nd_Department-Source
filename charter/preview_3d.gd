@@ -2081,6 +2081,11 @@ static func hit_fx_presets() -> Dictionary:
 	return {"burst": "迸裂", "ring": "圆环", "prism": "棱镜", "ink": "墨滴"}
 
 
+func refresh_style() -> void:
+	if _overlay != null:
+		_overlay.queue_redraw()
+
+
 func _skin() -> Dictionary:
 	if _skin_cache_key == note_skin and not _skin_cache.is_empty():
 		return _skin_cache
