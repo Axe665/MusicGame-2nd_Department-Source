@@ -293,28 +293,27 @@ static func _slide_shape(token: String) -> String:
 
 static func _plane_slide_points(head_angle: float, delta: float, wait: float, total: float, shape: String, mid_angle: float = NAN) -> Array[Dictionary]:
 	var head := Vector2(cos(deg_to_rad(head_angle)), sin(deg_to_rad(head_angle)))
-	var tail := Vector2(cos(deg_to_rad(head_angle + delta)), sin(deg_to_rad(head_angle + delta))) * 0.72
+	var tail := Vector2(cos(deg_to_rad(head_angle + delta)), sin(deg_to_rad(head_angle + delta)))
 	var samples: Array[Vector2] = []
 	match shape:
 		"-", "w":
 			samples = _straight_samples(head, tail, 32)
 		"v":
-			# v 型：从环上经屏幕中心附近再折回，两段直线。
-			var vertex := Vector2(cos(deg_to_rad(head_angle + delta * 0.5)), sin(deg_to_rad(head_angle + delta * 0.5))) * 0.06
-			samples = _polyline_samples([head, vertex, tail], 18)
+			# v 型：从环上经屏幕中心再折回，两段直线。
+			samples = _polyline_samples([head, Vector2.ZERO, tail], 18)
 		"V":
 			if is_nan(mid_angle):
 				samples = _straight_samples(head, tail, 32)
 			else:
-				var middle := Vector2(cos(deg_to_rad(mid_angle)), sin(deg_to_rad(mid_angle))) * 0.94
+				var middle := Vector2(cos(deg_to_rad(mid_angle)), sin(deg_to_rad(mid_angle)))
 				samples = _polyline_samples([head, middle, tail], 18)
-		"p", "q":
-			var control_radius := 0.22 if shape == "p" else 0.45
-			var control := Vector2(cos(deg_to_rad(head_angle + delta * 0.5)), sin(deg_to_rad(head_angle + delta * 0.5))) * control_radius
-			samples = _bezier_samples(head, control, tail, 34)
-		"pp", "qq":
-			var control_radius := 0.62 if shape == "pp" else 0.78
-			var control := Vector2(cos(deg_to_rad(head_angle + delta * 0.5)), sin(deg_to_rad(head_angle + delta * 0.5))) * control_radius
+		"p", "q", "pp", "qq":
+			# p/q 绕屏幕中心向两侧弯；pp/qq 弯得更外，接近 Sentakki 的 U/Cup。
+			var chord := tail - head
+			var normal := Vector2(-chord.y, chord.x).normalized()
+			var side := 1.0 if shape in ["p", "pp"] else -1.0
+			var offset_scale := 0.55 if shape in ["p", "q"] else 0.78
+			var control := (head + tail) * 0.5 + normal * side * maxf(0.25, chord.length() * offset_scale)
 			samples = _bezier_samples(head, control, tail, 34)
 		"s", "z":
 			var chord := tail - head
@@ -329,10 +328,14 @@ static func _plane_slide_points(head_angle: float, delta: float, wait: float, to
 			for i in count + 1:
 				var q := float(i) / float(count)
 				var angle := head_angle + delta * q
-				var radius := 1.0 - 0.07 * smoothstep(0.0, 0.12, q) - 0.21 * smoothstep(0.82, 1.0, q)
+				var radius := 1.0 - 0.06 * sin(PI * q)
 				samples.append(Vector2(cos(deg_to_rad(angle)), sin(deg_to_rad(angle))) * radius)
 	if samples.is_empty():
 		samples = _straight_samples(head, tail, 32)
+	# 任何形状都不能越出环内平面。
+	for i in samples.size():
+		if samples[i].length() > 1.0:
+			samples[i] = samples[i].normalized()
 	# 按轨迹长度分配时间：滑动速度恒定，不因折线/弧线改变。
 	var distances: Array[float] = [0.0]
 	for i in range(1, samples.size()):

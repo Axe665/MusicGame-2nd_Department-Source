@@ -971,7 +971,7 @@ func test_simai_directive_slot() -> bool:
 
 
 func test_simai_bend_shapes() -> bool:
-	var text := "&title=T\n&wholebpm=120\n&lv_1=1\n&inote_1=(120){4},1v5[4:1],1p3[4:1],\nE\n"
+	var text := "&title=T\n&wholebpm=120\n&lv_1=1\n&inote_1=(120){4},1v5[4:1],,,,,1p3[4:1],,,,,1q3[4:1],\nE\n"
 	var path := "user://test_simai_bend.txt"
 	var file := FileAccess.open(path, FileAccess.WRITE)
 	if file == null:
@@ -982,12 +982,25 @@ func test_simai_bend_shapes() -> bool:
 	var chart := SimaiIO.import_maidata(path, 1)
 	ok(chart != null, "simai bend chart imports")
 	if chart != null:
-		var bent := 0
+		var paths: Array[Note] = []
 		for note in chart.notes:
-			if note.type == "path" and note.trace_pts.size() >= 20:
+			if note.type == "path":
+				paths.append(note)
+		eq(paths.size(), 3, "v/p/q all import as paths")
+		if paths.size() == 3:
+			for note in paths:
 				var tail: Dictionary = note.trace_pts[-1]
-				if sqrt(pow(float(tail["x"]), 2) + pow(float(tail["y"]), 2)) < 0.75:
-					bent += 1
-		ok(bent >= 1, "v/p shapes become plane paths")
+				near(sqrt(pow(float(tail["x"]), 2) + pow(float(tail["y"]), 2)), 1.0, 0.01, "star tail lands on the ring")
+			var min_radius := 1.0
+			for point in paths[0].trace_pts:
+				min_radius = minf(min_radius, sqrt(pow(float(point["x"]), 2) + pow(float(point["y"]), 2)))
+			ok(min_radius < 0.15, "v shape passes through the center")
+			var mid_p: Dictionary = paths[1].trace_pts[paths[1].trace_pts.size() / 2]
+			var mid_q: Dictionary = paths[2].trace_pts[paths[2].trace_pts.size() / 2]
+			var head := Vector2(float(paths[1].trace_pts[0]["x"]), float(paths[1].trace_pts[0]["y"]))
+			var tail := Vector2(float(paths[1].trace_pts[-1]["x"]), float(paths[1].trace_pts[-1]["y"]))
+			var side_p := (Vector2(float(mid_p["x"]), float(mid_p["y"])) - head).cross(tail - head)
+			var side_q := (Vector2(float(mid_q["x"]), float(mid_q["y"])) - head).cross(tail - head)
+			ok(signf(side_p) != signf(side_q), "p and q curve to opposite sides")
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
 	return true
