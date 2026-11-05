@@ -14,6 +14,10 @@ signal validation_changed(issues: Array)
 signal notice(message: String, level: String)
 signal appearance_changed
 signal preview_sfx
+signal snap_changed(division: int)
+signal flow_changed(down: bool)
+signal audio_import_requested
+signal audio_detect_requested(path: String)
 
 var chart: Chart = null
 var chart_path: String = ""
@@ -24,8 +28,6 @@ var playtest_offset_ms: float = 0.0
 var flow_scale: float = 1.0
 var ffmpeg_path: String = "ffmpeg"
 var star_speed: float = 1.0
-## 星星轨迹提前显示的时间偏移（拍）：+1 更早、-1 更晚、0 = 默认预读。
-var star_lead_beats: float = 0.0
 ## 星星主色（舞萌蓝），所有 Path 共用；试玩设置里可改。
 var star_color: Color = Color(0.55, 0.75, 1.0)
 ## Trace 门框主色（默认银白）。
@@ -43,13 +45,12 @@ var selected_segment_index: int = -1
 var selected_view_index: int = -1
 
 var tool: String = "select"
-var snap_denominator: int = 4
+var snap_division: int = GridDivisions.DEFAULT_DIVISION
 var beat_subdivisions: int = 4
 var vertical_lines: int = 21
 var vertical_stretch: float = 0.0
-var snap_triplet: bool = false
-var snap_quint: bool = false
 var zoom_px_per_beat: float = 28.0
+var time_flows_down: bool = true
 var hud_visible: bool = true
 var use_3d_ring: bool = true
 var mouse_tilt: bool = true
@@ -93,19 +94,19 @@ const SETTINGS_PATH := "user://settings.json"
 
 
 func _load_settings() -> void:
-	if not FileAccess.file_exists(SETTINGS_PATH):
-		return
-	var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(SETTINGS_PATH))
-	if not (parsed is Dictionary):
-		return
-	var data: Dictionary = parsed
-	note_skin = String(data.get("note_skin", note_skin))
-	hit_fx_style = String(data.get("hit_fx_style", hit_fx_style))
-	hit_sfx_style = String(data.get("hit_sfx_style", hit_sfx_style))
+	if FileAccess.file_exists(SETTINGS_PATH):
+		var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(SETTINGS_PATH))
+		if parsed is Dictionary:
+			var data: Dictionary = parsed
+			note_skin = String(data.get("note_skin", note_skin))
+			hit_fx_style = String(data.get("hit_fx_style", hit_fx_style))
+			hit_sfx_style = String(data.get("hit_sfx_style", hit_sfx_style))
+			ffmpeg_path = String(data.get("ffmpeg", ffmpeg_path))
+	MediaIO.set_ffmpeg_exe(ffmpeg_path)
 
 
 func save_settings() -> void:
-	var data := {"note_skin": note_skin, "hit_fx_style": hit_fx_style, "hit_sfx_style": hit_sfx_style}
+	var data := {"note_skin": note_skin, "hit_fx_style": hit_fx_style, "hit_sfx_style": hit_sfx_style, "ffmpeg": ffmpeg_path}
 	var file := FileAccess.open(SETTINGS_PATH, FileAccess.WRITE)
 	if file != null:
 		file.store_string(JSON.stringify(data, "\t"))
@@ -114,6 +115,15 @@ func save_settings() -> void:
 
 func _set_initial_focus_notice() -> void:
 	notice.emit("已载入示例谱：按空格播放，F5 试玩，Ctrl+S 保存。", "info")
+
+
+func set_ffmpeg_path(path: String) -> void:
+	ffmpeg_path = path.strip_edges()
+	if ffmpeg_path.is_empty():
+		ffmpeg_path = "ffmpeg"
+	MediaIO.set_ffmpeg_exe(ffmpeg_path)
+	save_settings()
+	notice.emit("ffmpeg 路径：%s" % ffmpeg_path, "info")
 
 
 func set_chart(new_chart: Chart, path: String = "", mark_dirty: bool = false) -> void:
@@ -130,18 +140,17 @@ func set_chart(new_chart: Chart, path: String = "", mark_dirty: bool = false) ->
 	selected_shape_id = chart.default_shape_id if chart != null else "S0"
 	selected_segment_index = -1
 	selected_view_index = -1
+	if chart != null:
+		snap_division = GridDivisions.normalize(int(chart.editor.get("snap", snap_division)))
+		time_flows_down = bool(chart.editor.get("flow_down", time_flows_down))
 	chart_changed.emit()
+	snap_changed.emit(snap_division)
+	flow_changed.emit(time_flows_down)
 	selection_changed.emit()
 	playhead_changed.emit(playhead_beat)
 	save_state_changed.emit()
 	status_changed.emit()
 	_emit_validation()
-
-
-func set_ffmpeg_path(path: String) -> void:
-	var clean := path.strip_edges()
-	ffmpeg_path = clean if not clean.is_empty() else "ffmpeg"
-	MediaIO.set_ffmpeg_exe(ffmpeg_path)
 
 
 func apply_detected_timing(bpm: float, offset_ms: float, apply_offset: bool, audio_path: String) -> bool:
@@ -409,16 +418,42 @@ func seek(beat: float) -> void:
 
 
 func snap_beat(beat: float, bypass: bool = false) -> float:
-	if bypass or snap_denominator <= 0:
-		return beat
-	var step := 1.0 / float(snap_denominator)
-	if snap_triplet:
-		step *= 2.0 / 3.0
-	elif snap_quint:
-		step *= 4.0 / 5.0
-	return roundf(beat / step) * step
+	return GridDivisions.snap(beat, snap_division, bypass)
 
 
+func set_snap_division(division: int) -> void:
+	var normalized := GridDivisions.normalize(division)
+	if chart != null:
+		chart.editor["snap"] = normalized
+	if snap_division == normalized:
+		return
+	snap_division = normalized
+	snap_changed.emit(snap_division)
+	status_changed.emit()
+
+
+func set_time_flows_down(down: bool) -> void:
+	if chart != null:
+		chart.editor["flow_down"] = down
+	if time_flows_down == down:
+		return
+	time_flows_down = down
+	flow_changed.emit(down)
+	status_changed.emit()
+
+
+func request_audio_import() -> void:
+	audio_import_requested.emit()
+
+
+func request_audio_detect() -> void:
+	audio_detect_requested.emit(chart.audio_path if chart != null else "")
+
+
+## Writes an auto-detected tempo into the chart. The base BPM always lives on
+## the first timing point (the inspector labels it "基准 BPM"), and the offset is
+## mirrored into both Chart.offset_ms and TimingMap.offset_ms because the save
+## path treats the timing map as authoritative.
 func set_tool(new_tool: String) -> void:
 	tool = new_tool
 	boundary_mode = new_tool == "boundary"

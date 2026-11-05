@@ -27,9 +27,6 @@ var sized: bool = false
 var size_ratio: float = 1.0
 var end_beat: float = 0.0
 var wait_beat: float = 0.0
-## 星星的轨迹启动时间（ms）：星头落线后再等这么久，轨迹与尾判才出现。
-## 0 表示保持旧行为；实际起滑时间取 max(wait_beat, delay_beats)。
-var start_delay_ms: float = 0.0
 var tail_angle: float = 0.0
 var tail_width: float = 45.0
 var hold: bool = true
@@ -91,40 +88,20 @@ func set_size_ratio(value: float) -> void:
 	size_ratio = clampf(snappedf(value, 0.01), SIZED_TAP_MIN, SIZED_TAP_MAX)
 
 
-## 轨迹启动时间换算成拍（只对 Path 有意义）。
-func delay_beats(bpm: float) -> float:
-	if start_delay_ms <= 0.0 or bpm <= 0.0:
-		return 0.0
-	return start_delay_ms * bpm / 60000.0
-
-
-## 星头落线之后，真正开始滑动的时间（相对拍）。
-func slide_gate_beat(bpm: float) -> float:
-	return maxf(wait_beat, delay_beats(bpm))
-
-
-## 尾判相对拍被推后的量：启动延迟比原有 wait 长多少。
-func tail_offset_beat(bpm: float) -> float:
-	return maxf(0.0, delay_beats(bpm) - wait_beat)
-
-
 func is_point_target() -> bool:
 	return type in ["tap", "hold", "path", "anchor"]
 
 
-func path_local_at(relative_beat: float, delay: float = 0.0) -> Vector2:
+func path_local_at(relative_beat: float) -> Vector2:
 	var total := duration()
 	if total <= 0.000001:
 		return _unit_from_angle(angle)
-	# 启动延迟把整条轨迹（含尾判）整体推后：采样时间先减掉偏移。
-	var offset := maxf(0.0, delay - wait_beat)
-	var local_time := relative_beat - offset
-	var p := clampf(local_time / total, 0.0, 1.0)
+	var p := clampf(relative_beat / total, 0.0, 1.0)
 	# Path 只允许平面：有显式二维点时按点走，旧环 Path 则迁移成
 	# 半径 1.0 → 0.72 的平面弧，头仍在环上。
 	if not trace_pts.is_empty():
-		return trace_local_at(local_time)
-	var a := path_angle_at(local_time)
+		return trace_local_at(relative_beat)
+	var a := path_angle_at(relative_beat)
 	return _unit_from_angle(a) * lerpf(1.0, 0.72, p)
 
 
@@ -286,8 +263,6 @@ func to_dict() -> Dictionary:
 			data["end_beat"] = snappedf(end_beat, 0.001)
 			if wait_beat > 0.0:
 				data["wait"] = snappedf(wait_beat, 0.001)
-			if start_delay_ms > 0.0:
-				data["delay_ms"] = snappedf(start_delay_ms, 1.0)
 			data["tail_angle"] = snappedf(tail_angle, 0.001)
 			data["tail_width"] = snappedf(tail_width, 0.001)
 			data["tolerance"] = snappedf(tolerance, 0.001)
@@ -355,7 +330,6 @@ static func from_dict(raw: Dictionary) -> Note:
 	note.center_u = float(raw.get("center_u", 0.25))
 	note.sized = bool(raw.get("sized", false)) and note.type == "tap"
 	note.size_ratio = clampf(float(raw.get("size", 1.0)), SIZED_TAP_MIN, SIZED_TAP_MAX)
-	note.start_delay_ms = maxf(0.0, float(raw.get("delay_ms", 0.0)))
 	if raw.has("rgb"):
 		var rgb: Array = raw.get("rgb", [])
 		if rgb.size() >= 3:

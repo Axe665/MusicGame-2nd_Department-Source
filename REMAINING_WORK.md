@@ -110,7 +110,7 @@
 
 已完成：
 
-- [x] Tap 100 / 170 / 260ms，Great/Good 不断连（鼠标谱放宽）。
+- [x] Tap 65 / 115 / 170ms，Great/Good 不断连；Hold 最后 1/4 拍内松手算 PERFECT。
 - [x] Hold 绑定起手键、端环、游标。
 - [x] Bell 112px 收取、300ms 窗口。
 - [x] 打击音整体 +4–6dB。
@@ -121,7 +121,7 @@
 未完成：
 
 - [x] 平面 Path 中段改为“滑到即可”，不再逐点扣分。
-- [x] 非 Tap 判定半径放大：Path 头 92px / 尾 96px、Trace 接触 56px、Bell 112px。
+- [x] 非 Tap 判定半径放大：Path 头 138px / 尾 192px、中段容差 128px、Trace 接触 56px、Bell 112px（吸附后 151px）。
 - [ ] 平面 Path 尾部容差仍需实机校准。
 - [ ] 打击音进一步分层重编（当前只是电平调整）。
 
