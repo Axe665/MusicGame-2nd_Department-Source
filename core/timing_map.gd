@@ -157,6 +157,15 @@ static func vertical_line_offsets(count: int) -> PackedFloat32Array:
 	return offsets
 
 
+static func nearest_beat_subdivision(beat: float, divisions: int) -> float:
+	## Nearest horizontal 小节线 position: beat lines plus the N−1 fine lines
+	## configured by the 小节线 input. The whole grid is recalculated from the
+	## current N so changing the input immediately changes the snap targets.
+	var count := clampi(divisions, 1, MAX_BEAT_SUBDIVISIONS)
+	var step := 1.0 / float(count)
+	return roundf(beat / step) * step
+
+
 static func nearest_vertical_line_u(u: float, count: int) -> float:
 	## Nearest interior vertical line in u space, clamped to the outermost
 	## interior lines so the plot edges are not silently used as snap targets.

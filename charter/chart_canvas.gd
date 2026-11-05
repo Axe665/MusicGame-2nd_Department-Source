@@ -9,8 +9,8 @@ const TOP_MARGIN := 24.0
 const BOTTOM_MARGIN := 12.0
 const RIGHT_MARGIN := 58.0
 const WAVE_WIDTH := 24.0
-const NOTE_SNAP_PX := 6.0
 const NOTE_TOOLS := ["tap", "hold", "path", "trace", "anchor", "bell"]
+const PATH_HIT_RADIUS := 12.0
 const DIVISION_WIDTH := 42.0
 const DIVISION_ITEM_HEIGHT := 22.0
 const DIVISION_GAP := 3.0
@@ -39,6 +39,7 @@ var _drag_width_start: float = 0.0
 var _marquee: Rect2 = Rect2()
 var _right_hit: Dictionary = {}
 var _pending_path: Note = null
+var _pending_hold: Note = null
 var _trace_hint_shown: bool = false
 
 var _waveform_peaks: PackedFloat32Array = PackedFloat32Array()
@@ -95,6 +96,7 @@ func _ready() -> void:
 		_ghost_layer._app = _app
 		snap_division = _app.snap_division
 		flow_down = _app.time_flows_down
+		_ghost_layer.flow_down = flow_down
 	_overlay = load("res://charter/chart_overlay.gd").new()
 	_overlay.canvas = self
 	add_child(_overlay)
@@ -157,6 +159,7 @@ func _visible_beats() -> float:
 
 
 func _clear_clipboard_on_chart_replace() -> void:
+	_cancel_pending()
 	cancel_clipboard(false)
 
 
@@ -296,6 +299,7 @@ func _sync_ghost_layer() -> void:
 	_ghost_layer._app = _app
 	_ghost_layer.scroll_beat = scroll_beat
 	_ghost_layer.px_per_beat = px_per_beat
+	_ghost_layer.flow_down = flow_down
 	_ghost_layer.visible = _clipboard_active
 	_ghost_layer.queue_redraw()
 	_ghost_last_scroll = scroll_beat
@@ -337,7 +341,10 @@ func _on_selection_changed() -> void:
 
 
 func _on_tool_changed(_tool: String) -> void:
-	_pending_path = null
+	if _pending_hold != null or _pending_path != null:
+		_cancel_pending()
+	else:
+		_pending_path = null
 	queue_redraw()
 	if _overlay != null:
 		_overlay.queue_redraw()
@@ -352,6 +359,9 @@ func _on_flow_changed(down: bool) -> void:
 	flow_down = down
 	if _flow_button != null and _flow_button.button_pressed != down:
 		_flow_button.set_pressed_no_signal(down)
+	if _ghost_layer != null:
+		_ghost_layer.flow_down = down
+		_ghost_layer.queue_redraw()
 	queue_redraw()
 	if _overlay != null:
 		_overlay.queue_redraw()
@@ -454,13 +464,13 @@ func _draw() -> void:
 	var plot := _plot_rect()
 	draw_rect(Rect2(Vector2.ZERO, size), Color("#0E1015"))
 	draw_rect(plot, Color("#11141B"))
+	_division_rects.clear()
 	_draw_waveform(plot)
 	_draw_grid(plot)
 	_draw_regions(plot)
 	_draw_events(plot)
 	_draw_notes(plot)
 	_draw_legend(plot)
-	_draw_divisions(plot)
 
 
 func _draw_waveform(plot: Rect2) -> void:
@@ -511,6 +521,7 @@ func _draw_grid(plot: Rect2) -> void:
 	var chart: Chart = _app.chart if _app != null else null
 	if chart == null:
 		return
+	# Special-angle reference lines: every 30°, with the 90° lines emphasised.
 	for i in 13:
 		var x := _u_to_x(float(i) / 12.0)
 		var major := i % 3 == 0
@@ -522,17 +533,6 @@ func _draw_grid(plot: Rect2) -> void:
 		if major:
 			var label := "%d°" % (i * 30)
 			draw_string(font, Vector2(x - 12, plot.position.y - 7), label, HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(1, 1, 1, 0.52))
-	# Subdivision cells: one line per 1/division of a beat, skipped when the
-	# cells get shorter than 4 px so the grid stays readable at any zoom.
-	var step := GridDivisions.step_beats(snap_division)
-	if step * px_per_beat >= 4.0:
-		var cell := floorf(scroll_beat / step) * step
-		var limit := scroll_beat + _visible_beats() + step
-		while cell <= limit:
-			var cell_y := _beat_to_y(cell)
-			if cell_y >= plot.position.y - 1.0 and cell_y <= plot.end.y + 1.0 and absf(cell - roundf(cell)) > 0.0001:
-				draw_line(Vector2(plot.position.x, cell_y), Vector2(plot.end.x, cell_y), Color(1, 1, 1, 0.035), 1.0)
-			cell += step
 	# Beat / bar lines with continuous beat numbers. Bar lines stay thicker but
 	# are no longer labelled "bar N": the left column counts beats, like the
 	# Malody editor, so a note's row can be read as 1, 2, 3, 4, 5 ...
@@ -544,8 +544,8 @@ func _draw_grid(plot: Rect2) -> void:
 			continue
 		var bpb := chart.timing.beats_per_bar_at(float(beat))
 		var is_bar := beat % bpb == 0
-		var color := Color(1, 1, 1, 0.17 if is_bar else 0.075)
-		draw_line(Vector2(plot.position.x, y), Vector2(plot.end.x, y), color, 1.5 if is_bar else 1.0)
+		var beat_color := Color(1, 1, 1, 0.17 if is_bar else 0.075)
+		draw_line(Vector2(plot.position.x, y), Vector2(plot.end.x, y), beat_color, 1.5 if is_bar else 1.0)
 		draw_string(font, Vector2(1, y + 3.5), str(beat + 1), HORIZONTAL_ALIGNMENT_RIGHT, 22, 10, Color(1, 1, 1, 0.62 if is_bar else 0.38))
 	_draw_beat_subdivisions(plot)
 	_draw_vertical_lines(plot)
@@ -891,11 +891,13 @@ func _draw_trace(note: Note, _plot: Rect2) -> void:
 		if note.trace_style == "slider":
 			px = px * 0.5 + 0.5
 			py = py * 0.5 + 0.5
-		mini.append(Vector2(cx - 20 + px * 40.0, top + 4 + py * maxf(4, height - 8)))
+		var local_y := py if flow_down else 1.0 - py
+		mini.append(Vector2(cx - 20 + px * 40.0, top + 4 + local_y * maxf(4, height - 8)))
 	if mini.size() > 1:
 		draw_polyline(mini, UITheme.MINT, 2.0, true)
-	draw_line(Vector2(cx - 19, top + 3), Vector2(cx - 11, top + 11), UITheme.MINT, 1.5, true)
-	draw_line(Vector2(cx - 11, top + 3), Vector2(cx - 19, top + 11), UITheme.MINT, 1.5, true)
+	var marker_dir := 1.0 if flow_down else -1.0
+	draw_line(Vector2(cx - 19, y0 + 3.0 * marker_dir), Vector2(cx - 11, y0 + 11.0 * marker_dir), UITheme.MINT, 1.5, true)
+	draw_line(Vector2(cx - 11, y0 + 3.0 * marker_dir), Vector2(cx - 19, y0 + 11.0 * marker_dir), UITheme.MINT, 1.5, true)
 	if _show_type_label(note):
 		_draw_type_label("SLIDE" if note.trace_style == "slider" else "TRACE", Vector2(cx + 27.0, top + 10.0), UITheme.MINT)
 
@@ -1066,6 +1068,10 @@ func _gui_input(event: InputEvent) -> void:
 		if _clipboard_active:
 			_clipboard_mouse_beat = _hover_beat
 			_rebuild_ghost()
+		if _pending_hold != null:
+			var end_beat := _snap_beat_to_subdivision(_y_to_beat(event.position.y), event.alt_pressed)
+			_pending_hold.end_beat = maxf(_pending_hold.beat, end_beat)
+			_app.touch_chart()
 		if _drag_mode == "note":
 			_drag_notes_update(event.position, event)
 		elif _drag_mode == "width":
@@ -1084,7 +1090,7 @@ func _gui_input(event: InputEvent) -> void:
 				_drag_mode = ""
 				_right_hit = {}
 				_begin_marquee(_drag_start)
-		if _drag_mode != "" or _pending_path != null:
+		if _drag_mode != "" or _pending_path != null or _pending_hold != null:
 			queue_redraw()
 		if _overlay != null:
 			_overlay.queue_redraw()
@@ -1154,6 +1160,8 @@ func _gui_input(event: InputEvent) -> void:
 			accept_event()
 		elif event.keycode == KEY_ESCAPE:
 			_cancel_pending()
+			if _app != null:
+				_app.set_tool("select")
 			if has_clipboard():
 				cancel_clipboard()
 			accept_event()
@@ -1177,26 +1185,23 @@ func _handle_wheel(event: InputEventMouseButton) -> void:
 		_overlay.queue_redraw()
 
 
+func _snap_beat_to_subdivision(raw_beat: float, bypass: bool = false) -> float:
+	if bypass or _app == null:
+		return raw_beat
+	return TimingMap.nearest_beat_subdivision(raw_beat, int(_app.beat_subdivisions))
+
+
 func _snap_beat_u(raw_beat: float, raw_u: float, bypass: bool) -> Vector2:
-	## Notes near a coarse beat line or one of the vertical lines are pulled
-	## onto that line. When both are close, the result is their intersection;
-	## otherwise only the close axis moves.
+	## Always pull the note to the nearest intersection of a configured 小节线
+	## and a configured 竖线. Both axes move together, so changing either
+	## input immediately affects new placements and drag-release snapping.
 	if bypass or _app == null:
 		return Vector2(raw_beat, raw_u)
-	var beat: float = _app.snap_beat(raw_beat, false)
-	var u := raw_u
-	var beat_tolerance_px := minf(NOTE_SNAP_PX, _effective_px_per_beat() * 0.18)
-	var nearest_beat := roundf(raw_beat)
-	if absf(raw_beat - nearest_beat) * _effective_px_per_beat() <= beat_tolerance_px:
-		beat = nearest_beat
+	var beat := _snap_beat_to_subdivision(raw_beat, false)
 	var lines := mini(int(_app.vertical_lines), TimingMap.MAX_VERTICAL_LINES)
-	if lines > 0:
-		var plot := _plot_rect()
-		var nearest_u := TimingMap.nearest_vertical_line_u(raw_u, lines)
-		var step := 1.0 / float(lines + 1)
-		var u_tolerance_px := minf(NOTE_SNAP_PX, step * plot.size.x * 0.25)
-		if absf(raw_u - nearest_u) * plot.size.x <= u_tolerance_px:
-			u = nearest_u
+	if lines <= 0:
+		return Vector2(beat, raw_u)
+	var u := TimingMap.nearest_vertical_line_u(raw_u, lines)
 	return Vector2(beat, u)
 
 
@@ -1256,6 +1261,20 @@ func _on_left_press(event: InputEventMouseButton) -> void:
 			_drag_mode = "scrub"
 			_app.seek(beat)
 		return
+	# A pending hold consumes the next left click as its end time, before the
+	# overlap guard can select another note.
+	if _pending_hold != null:
+		var end_beat := _snap_beat_to_subdivision(_y_to_beat(event.position.y), event.alt_pressed)
+		_finish_pending_hold(end_beat)
+		return
+	# When a note tool is active, clicking an existing note selects it instead
+	# of stacking a new note on top. A pending Path is exempt because its
+	# second click is the tail-placement step.
+	if _pending_path == null and _app.tool in NOTE_TOOLS:
+		var hit := _hit_test(event.position)
+		if String(hit.get("kind", "")) == "note":
+			_app.select_note(int(hit["id"]), event.shift_pressed)
+			return
 	if _app.tool in NOTE_TOOLS:
 		var placement := _snap_note_placement(event.position, event.alt_pressed)
 		beat = placement.x
@@ -1352,7 +1371,12 @@ func _hit_test(pos: Vector2) -> Dictionary:
 			var note_y := _beat_to_y(note.beat)
 			if absf(pos.y - note_y) <= 7.0 and JudgeMath.in_arc(_x_to_u(pos.x) * 360.0, note.angle, note.arc_width()):
 				return {"kind": "note", "id": note.id, "part": "body"}
-		if note.type == "hold" or note.type == "path" or note.type == "trace":
+		if note.type == "path":
+			# The whole drawn Path is selectable, not just its head/tail or
+			# the column at the start angle.
+			if _path_body_hit(note, pos):
+				return {"kind": "note", "id": note.id, "part": "body"}
+		if note.type == "hold" or note.type == "trace":
 			var y0 := _beat_to_y(note.beat)
 			var y1 := _beat_to_y(note.end_beat)
 			if pos.y >= minf(y0, y1) - 4 and pos.y <= maxf(y0, y1) + 4:
@@ -1375,6 +1399,29 @@ func _hit_test(pos: Vector2) -> Dictionary:
 		if u >= event.target_u0 and u <= event.target_u1:
 			return {"kind": "event", "id": event.id}
 	return best
+
+
+func _path_body_hit(note: Note, pos: Vector2) -> bool:
+	var total := maxf(0.001, note.duration())
+	var run: Array[Vector2] = []
+	for i in 41:
+		var local := total * float(i) / 40.0
+		if note.erased_at(local):
+			if _path_run_hit(run, pos):
+				return true
+			run = []
+			continue
+		run.append(Vector2(
+			_u_to_x(fposmod(note.path_angle_at(local), 360.0) / 360.0),
+			_beat_to_y(note.beat + local)
+		))
+	return _path_run_hit(run, pos)
+
+
+func _path_run_hit(run: Array[Vector2], pos: Vector2) -> bool:
+	if run.is_empty():
+		return false
+	return JudgeMath.trace_distance(pos, run) <= PATH_HIT_RADIUS
 
 
 func _width_edge_hit(note: Note, pos: Vector2) -> Dictionary:
@@ -1437,15 +1484,15 @@ func _drag_notes_update(screen: Vector2, event: InputEventMouseMotion) -> void:
 		if note.lock:
 			continue
 		if note.type == "anchor":
-			note.beat = maxf(0.0, _app.snap_beat(float(item["beat"]) + delta_beat, event.alt_pressed))
+			note.beat = maxf(0.0, _snap_beat_to_subdivision(float(item["beat"]) + delta_beat, event.alt_pressed))
 			continue
 		if note.type == "trace":
-			var new_beat := maxf(0.0, _app.snap_beat(float(item["beat"]) + delta_beat, event.alt_pressed))
+			var new_beat := maxf(0.0, _snap_beat_to_subdivision(float(item["beat"]) + delta_beat, event.alt_pressed))
 			var offset := new_beat - note.beat
 			note.beat = new_beat
 			note.end_beat = maxf(note.beat + 0.25, float(item["end"]) + offset)
 			continue
-		var new_beat := maxf(0.0, _app.snap_beat(float(item["beat"]) + delta_beat, event.alt_pressed))
+		var new_beat := maxf(0.0, _snap_beat_to_subdivision(float(item["beat"]) + delta_beat, event.alt_pressed))
 		var new_angle := fposmod(float(item["angle"]) + delta_u * 360.0, 360.0)
 		var beat_delta := new_beat - note.beat
 		note.beat = new_beat
@@ -1463,7 +1510,7 @@ func _drag_hold_update(screen: Vector2, event: InputEventMouseMotion) -> void:
 	if _drag_notes.is_empty():
 		return
 	var note: Note = _drag_notes[0]["note"]
-	var beat: float = _app.snap_beat(_y_to_beat(screen.y), event.alt_pressed)
+	var beat: float = _snap_beat_to_subdivision(_y_to_beat(screen.y), event.alt_pressed)
 	note.end_beat = maxf(note.beat + 0.25, beat)
 	_app.touch_chart()
 
@@ -1536,10 +1583,29 @@ func _create_hold(beat: float, u: float) -> void:
 	_app.begin_edit()
 	chart.notes.append(note)
 	_app.select_note(note.id)
-	_drag_mode = "hold_end"
-	_drag_start_beat = beat
-	_drag_start_u = u
-	_drag_notes = [{"note": note}]
+	_pending_hold = note
+	notice.emit("Hold：移动鼠标到结束拍并再次左键单击；Esc 取消。", "info")
+
+
+func _finish_pending_hold(end_beat: float) -> void:
+	if _pending_hold == null:
+		return
+	var note := _pending_hold
+	var start := note.beat
+	var finish := maxf(0.0, end_beat)
+	if finish < start:
+		# The author dragged upward/backwards: the second click becomes the
+		# new start, the first click becomes the end.
+		note.beat = finish
+		note.end_beat = start
+	else:
+		note.end_beat = finish
+	if note.end_beat - note.beat < 0.25:
+		note.end_beat = note.beat + 0.25
+	_pending_hold = null
+	_app.finish_edit()
+	_app.select_note(note.id)
+	queue_redraw()
 
 
 func _place_path(beat: float, u: float) -> void:
@@ -1565,8 +1631,9 @@ func _place_path(beat: float, u: float) -> void:
 		_pending_path.end_beat = maxf(_pending_path.beat + 0.25, beat)
 		_pending_path.tail_angle = u * 360.0
 		_app.finish_edit()
+		# Keep the Path tool active so the note-selection block stays on Path
+		# after choosing the tail; Esc is the explicit way to deselect it.
 		_pending_path = null
-		_app.set_tool("select")
 
 
 func _create_trace_at(beat: float) -> void:
@@ -1715,6 +1782,13 @@ func _delete_selection() -> void:
 
 
 func _cancel_pending() -> void:
+	if _pending_hold != null:
+		if _app != null and _app.chart != null:
+			_app.begin_edit()
+			_app.chart.notes.erase(_pending_hold)
+			_app.finish_edit()
+			_app.clear_selection()
+		_pending_hold = null
 	if _pending_path != null:
 		if _app != null and _app.chart != null:
 			_app.begin_edit()
