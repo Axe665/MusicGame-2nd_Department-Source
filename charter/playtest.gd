@@ -4,15 +4,15 @@ extends Control
 signal exit_requested
 signal settings_requested
 
-const PERFECT_MS := 100.0
-const GREAT_MS := 170.0
-const GOOD_MS := 260.0
+const PERFECT_MS := 65.0
+const GREAT_MS := 115.0
+const GOOD_MS := 170.0
 const HIT_WINDOW_MS := GOOD_MS
 const BELL_WINDOW_MS := 300.0
 const RED_LIMIT_SEC := 0.2
 # 鼠标判定半径：非 Tap 音符统一放大，避免要求像素级瞄准。
-const PATH_HEAD_RADIUS := 92.0
-const PATH_TAIL_RADIUS := 96.0
+const PATH_HEAD_RADIUS := 138.0
+const PATH_TAIL_RADIUS := 192.0
 const TRACE_HEAD_RADIUS := 72.0
 const TRACE_CONTACT_PX := 56.0
 const BELL_COLLECT_RADIUS := 112.0
@@ -350,7 +350,8 @@ func _process(delta: float) -> void:
 		_update_hud()
 	if beat > chart.duration_beats() + 2.0:
 		_finish()
-	while not _key_presses.is_empty() and float(_key_presses[0].get("time", -INF)) < judge_ms - 300.0:
+	var keep_ms := _early_protect_ms() + 60.0
+	while not _key_presses.is_empty() and float(_key_presses[0].get("time", -INF)) < judge_ms - keep_ms:
 		_key_presses.pop_front()
 
 
@@ -375,6 +376,16 @@ func _chart_ms() -> float:
 		fallback = _last_chart_ms
 	_last_chart_ms = fallback
 	return fallback
+
+
+## 判定保护：音符离判定环还剩 25% 半径（= 预读时间的 25%）时，
+## 提前按下的键也会被缓存并按 GOOD 结算，而不是直接丢掉。
+func _early_protect_ms() -> float:
+	var pre := 1200.0
+	if chart != null:
+		pre = maxf(200.0, float(chart.pre_read_ms))
+	var flow := float(_app.flow_scale) if _app != null else 1.0
+	return clampf(pre / maxf(0.05, flow) * 0.25, 80.0, 600.0)
 
 
 func _judge_all(ms: float, beat: float, delta: float) -> void:
@@ -403,11 +414,13 @@ func _judge_all(ms: float, beat: float, delta: float) -> void:
 func _judge_tap(note: Note, ms: float, beat: float) -> void:
 	var state: Dictionary = _states[note.id]
 	var target := chart.timing.beat_to_chart_ms(note.beat)
-	if ms < target - HIT_WINDOW_MS:
+	var protect := _early_protect_ms()
+	if ms < target - protect:
 		return
-	var press := _take_key_for_arc(target - HIT_WINDOW_MS, target + HIT_WINDOW_MS, note.angle, note.arc_width())
+	var press := _take_key_for_arc(target - protect, target + HIT_WINDOW_MS, note.angle, note.arc_width())
 	if not press.is_empty():
-		var tier := _tier_for(float(press["time"]) - target)
+		var error := float(press["time"]) - target
+		var tier := "GOOD" if error < -GOOD_MS else _tier_for(error)
 		state["done"] = true
 		_hit_count += 1
 		_combo += 1
@@ -431,11 +444,13 @@ func _judge_hold(note: Note, ms: float, beat: float) -> void:
 	var target := chart.timing.beat_to_chart_ms(note.beat)
 	var end_ms := chart.timing.beat_to_chart_ms(note.end_beat)
 	if not state["started"]:
-		if ms < target - HIT_WINDOW_MS:
+		var head_protect := _early_protect_ms()
+		if ms < target - head_protect:
 			return
-		var press := _take_key_for_arc(target - HIT_WINDOW_MS, target + HIT_WINDOW_MS, note.angle, note.arc_width() + HOLD_ARC_PAD)
+		var press := _take_key_for_arc(target - head_protect, target + HIT_WINDOW_MS, note.angle, note.arc_width() + HOLD_ARC_PAD)
 		if not press.is_empty():
-			var head_tier := _tier_for(float(press["time"]) - target)
+			var head_error := float(press["time"]) - target
+			var head_tier := "GOOD" if head_error < -GOOD_MS else _tier_for(head_error)
 			state["started"] = true
 			state["head"] = true
 			state["key"] = int(press.get("key", 0))
@@ -455,6 +470,18 @@ func _judge_hold(note: Note, ms: float, beat: float) -> void:
 	# Hold 绑定起手键：松开起手键才算断，换成另一个键点 Tap 不会误续。
 	var hold_key := int(state.get("key", 0))
 	if hold_key != 0 and not _keys_held.has(hold_key):
+		# 最后 1/4 拍内松手算 Perfect；更早松手才断。
+		var release_window := 60000.0 / maxf(1.0, chart.timing.bpm_at(note.beat)) * 0.25
+		if ms >= end_ms - release_window:
+			state["done"] = true
+			_hit_count += 1
+			_combo += 1
+			_max_combo = maxi(_max_combo, _combo)
+			_add_judgement("PERFECT")
+			_pulse_at(note.angle, beat, _tier_color("PERFECT"), "PERFECT", note.arc_width(), "tap")
+			_sfx.play("hold", 1.08)
+			_add_log("HOLD #%d COMPLETE PERFECT (released in window)" % note.id)
+			return
 		state["done"] = true
 		_miss_count += 1
 		_add_judgement("MISS")
@@ -480,11 +507,13 @@ func _judge_path(note: Note, ms: float, beat: float, cursor_u: float, valid: boo
 	var tail_ms := chart.timing.beat_to_chart_ms(note.end_beat)
 	var head_point: Vector2 = _preview.path_point(note, 0.0, beat)
 	if not state["head_judged"]:
-		if ms >= head_ms - HIT_WINDOW_MS:
+		var head_protect := _early_protect_ms()
+		if ms >= head_ms - head_protect:
 			# 头部：鼠标到环上星头 + 按键，和 Tap 同一套宽松判定。
-			var press := _take_key_for_arc_point(head_ms - HIT_WINDOW_MS, head_ms + HIT_WINDOW_MS, head_point, PATH_HEAD_RADIUS, note.angle, note.arc_width())
+			var press := _take_key_for_arc_point(head_ms - head_protect, head_ms + HIT_WINDOW_MS, head_point, PATH_HEAD_RADIUS, note.angle, note.arc_width())
 			if not press.is_empty():
-				var tier := _tier_for(float(press["time"]) - head_ms)
+				var head_error := float(press["time"]) - head_ms
+				var tier := "GOOD" if head_error < -GOOD_MS else _tier_for(head_error)
 				state["head_hit"] = true
 				_hit_count += 1
 				_combo += 1
@@ -544,7 +573,7 @@ func _judge_path(note: Note, ms: float, beat: float, cursor_u: float, valid: boo
 			var info: Dictionary = _preview.path_fraction(note, mouse, beat)
 			var fraction := float(info.get("fraction", 0.0))
 			# 鼠标只允许领先当前进度一小段；避免停在远处把整条轨迹提前削光。
-			if float(info.get("distance", INF)) <= 64.0 and fraction > progress and fraction <= progress + 0.20:
+			if float(info.get("distance", INF)) <= 128.0 and fraction > progress and fraction <= progress + 0.20:
 				target = fraction
 		_preview.set_path_erased_to(note, target)
 		state["path_last_mouse"] = mouse
@@ -673,7 +702,8 @@ func _judge_bell(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 	if ms <= target + BELL_WINDOW_MS:
 		var bell: Dictionary = _preview.bell_screen(note, beat)
 		# 鼠标瞄准有误差：Bell 给一个至少 42px 的收取半径。
-		if not bell.is_empty() and mouse.distance_to(bell["center"]) <= maxf(BELL_COLLECT_RADIUS, float(bell["radius"])):
+		# 磁铁吸附：收取半径再放宽 35%，靠近 Bell 就算收到。
+		if not bell.is_empty() and mouse.distance_to(bell["center"]) <= maxf(BELL_COLLECT_RADIUS * 1.35, float(bell["radius"])):
 			state["done"] = true
 			_bell_hits += 1
 			_preview.add_hit_pulse(bell["center"], UITheme.GOLD, "BELL", "bell")
@@ -688,11 +718,13 @@ func _judge_bell(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 func _judge_anchor(note: Note, ms: float, beat: float) -> void:
 	var state: Dictionary = _states[note.id]
 	var target := chart.timing.beat_to_chart_ms(note.beat)
-	if ms < target - HIT_WINDOW_MS:
+	var anchor_protect := _early_protect_ms()
+	if ms < target - anchor_protect:
 		return
-	var press := _take_key_in_window(target - HIT_WINDOW_MS, target + HIT_WINDOW_MS)
+	var press := _take_key_in_window(target - anchor_protect, target + HIT_WINDOW_MS)
 	if not press.is_empty():
-		var tier := _tier_for(float(press["time"]) - target)
+		var anchor_error := float(press["time"]) - target
+		var tier := "GOOD" if anchor_error < -GOOD_MS else _tier_for(anchor_error)
 		state["done"] = true
 		_hit_count += 1
 		_combo += 1

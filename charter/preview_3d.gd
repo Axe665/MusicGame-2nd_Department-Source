@@ -10,6 +10,8 @@ const PREVIEW_MARGIN := 1.24
 const MOUSE_TILT_DEGREES := 11.0
 ## Path / Trace 的视觉尺寸：相对旧版 ×2。只放大笔画与头尾，不改轨迹几何与判定。
 const PATH_SIZE_SCALE := 2.0
+## Anchor / Bell 的磁铁吸附范围（屏幕像素）。
+const MAGNET_RANGE := 140.0
 ## 星头单独缩小（轨迹宽度不受影响）。
 const PATH_HEAD_SCALE := 0.62
 ## Bell 直径缩放（相对旧版）。
@@ -2769,6 +2771,30 @@ func _draw_cursor(canvas: Control, chart: Chart, t: float) -> void:
 			canvas.draw_string(UITheme.mono_font(), p + Vector2(12, 22), "u %.1f°" % (cursor_u * 360.0), HORIZONTAL_ALIGNMENT_LEFT, -1, 11, UITheme.MUTED)
 
 
+## 最近的 Anchor / Bell（屏幕坐标）与吸附强度，用于磁铁动画。
+func _magnet_target(chart: Chart, t: float) -> Dictionary:
+	if chart == null:
+		return {}
+	var best := {}
+	var best_distance := MAGNET_RANGE
+	for note in _notes_in_range(chart, t - 1.0, t + 1.0):
+		var pos := Vector2(INF, INF)
+		if note.type == "bell":
+			var bell := bell_screen(note, t)
+			if bell.is_empty():
+				continue
+			pos = bell["center"]
+		elif note.type == "anchor":
+			pos = project_u(fposmod(note.angle, 360.0) / 360.0, t)
+		if not _valid_point(pos):
+			continue
+		var distance := mouse_screen.distance_to(pos)
+		if distance <= best_distance:
+			best_distance = distance
+			best = {"pos": pos, "pull": clampf(1.0 - distance / MAGNET_RANGE, 0.0, 1.0), "type": note.type}
+	return best
+
+
 func _draw_player_cursor(canvas: Control) -> void:
 	var accent := UITheme.CYAN if cursor_valid or playtest_mode else UITheme.MUTED
 	# osu 风格拖尾：连续线段填补采样空隙，越靠近光标越大、越亮，停手后自然消失。
@@ -2793,6 +2819,17 @@ func _draw_player_cursor(canvas: Control) -> void:
 		canvas.draw_circle(point, radius, Color(accent.r, accent.g, accent.b, 0.26 * life))
 		canvas.draw_circle(point, radius * 0.45, Color(1, 1, 1, 0.16 * life))
 	var m := mouse_screen
+	var magnet := _magnet_target(get_chart(), get_time_beat())
+	if not magnet.is_empty():
+		var target: Vector2 = magnet["pos"]
+		var pull := float(magnet["pull"])
+		m = m.lerp(target, pull * 0.55)
+		var tint: Color = UITheme.GOLD if String(magnet.get("type", "")) == "bell" else UITheme.VIOLET
+		canvas.draw_line(mouse_screen, target, Color(tint.r, tint.g, tint.b, 0.16 + 0.30 * pull), 1.4, true)
+		canvas.draw_arc(target, 18.0 + 16.0 * pull, 0.0, TAU, 40, Color(tint.r, tint.g, tint.b, 0.25 + 0.45 * pull), 1.4, true)
+		for k in 3:
+			var dot := mouse_screen.lerp(target, float(k + 1) / 4.0)
+			canvas.draw_circle(dot, 1.6 + 1.2 * pull, Color(tint.r, tint.g, tint.b, 0.20 + 0.35 * pull))
 	var spin := Time.get_ticks_msec() / 1000.0 * 2.2
 	canvas.draw_circle(m, 27.0, Color(accent.r, accent.g, accent.b, 0.035))
 	canvas.draw_circle(m, 20.0, Color(accent.r, accent.g, accent.b, 0.06))

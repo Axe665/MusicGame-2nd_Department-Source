@@ -393,11 +393,13 @@ func test_style_presets() -> bool:
 	var effects := Preview3D.hit_fx_presets()
 	for key in ["burst", "ring", "prism", "ink"]:
 		ok(effects.has(key), "hit effect %s exists" % key)
-	ok(Playtest.PATH_HEAD_RADIUS >= 80.0, "path head judgement is forgiving")
-	ok(Playtest.PATH_TAIL_RADIUS >= 80.0, "path tail judgement is forgiving")
+	ok(Playtest.PATH_HEAD_RADIUS >= 130.0, "path head judgement is forgiving")
+	ok(Playtest.PATH_TAIL_RADIUS >= 180.0, "path tail judgement is forgiving")
 	ok(Playtest.TRACE_CONTACT_PX >= 50.0, "trace contact is forgiving")
 	ok(Playtest.BELL_COLLECT_RADIUS >= 100.0, "bell collect is forgiving")
-	ok(Playtest.GOOD_MS >= 250.0, "good window is forgiving")
+	eq(Playtest.PERFECT_MS, 65.0, "perfect window tightened")
+	eq(Playtest.GREAT_MS, 115.0, "great window tightened")
+	eq(Playtest.GOOD_MS, 170.0, "good window tightened")
 	return true
 
 
