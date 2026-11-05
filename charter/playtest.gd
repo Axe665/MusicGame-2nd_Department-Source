@@ -2,6 +2,7 @@ class_name Playtest
 extends Control
 
 signal exit_requested
+signal settings_requested
 
 const PERFECT_MS := 100.0
 const GREAT_MS := 170.0
@@ -58,6 +59,10 @@ var _style_label: Label
 var _results: PanelContainer
 var _results_text: RichTextLabel
 var _results_button: Button
+## 暂停菜单（ESC）。
+var _pause_overlay: Control = null
+var _paused: bool = false
+var _pause_usec: int = 0
 
 
 func _ready() -> void:
@@ -69,6 +74,7 @@ func _ready() -> void:
 	add_child(_sfx)
 	_sfx.set_style(String(_app.hit_sfx_style) if _app != null else "default")
 	_build_ui()
+	_build_pause_overlay()
 
 
 func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
@@ -91,12 +97,73 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	_preview.hit_fx_style = String(_app.hit_fx_style if _app != null else "burst")
 	# 鼠标移动不再按帧累积，瞄准反馈早一帧到达。
 	Input.set_use_accumulated_input(false)
+	_paused = false
+	if _pause_overlay != null:
+		_pause_overlay.visible = false
 	_preview.time_beat = start_beat
 	_preview.playing = true
 	_preview.visible = true
 	_start_audio()
 	_running = true
 	Input.set_mouse_mode(Input.MOUSE_MODE_HIDDEN)
+
+
+func _build_pause_overlay() -> void:
+	_pause_overlay = Control.new()
+	_pause_overlay.name = "PauseOverlay"
+	_pause_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_pause_overlay.visible = false
+	_pause_overlay.mouse_filter = Control.MOUSE_FILTER_STOP
+	add_child(_pause_overlay)
+	var dim := ColorRect.new()
+	dim.color = Color(0.02, 0.03, 0.05, 0.74)
+	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_pause_overlay.add_child(dim)
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 14)
+	box.set_anchors_preset(Control.PRESET_CENTER)
+	box.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	box.grow_vertical = Control.GROW_DIRECTION_BOTH
+	_pause_overlay.add_child(box)
+	var title := Label.new()
+	title.text = "暂停"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	UITheme.style_section(title)
+	box.add_child(title)
+	_add_pause_button(box, "继续游玩", func() -> void: _set_paused(false))
+	_add_pause_button(box, "重新开始", func() -> void:
+		_set_paused(false)
+		setup(chart, 0.0, chart_path)
+	)
+	_add_pause_button(box, "退出游玩", func() -> void: _exit())
+	_add_pause_button(box, "设置", func() -> void: settings_requested.emit())
+
+
+func _add_pause_button(parent: VBoxContainer, text: String, callback: Callable) -> void:
+	var button := Button.new()
+	button.text = text
+	button.custom_minimum_size = Vector2(280, 46)
+	button.focus_mode = Control.FOCUS_NONE
+	button.pressed.connect(callback)
+	parent.add_child(button)
+
+
+func _set_paused(value: bool) -> void:
+	if _finished:
+		return
+	_paused = value
+	if _pause_overlay != null:
+		_pause_overlay.visible = value
+	if _audio_available and _audio != null:
+		_audio.stream_paused = value
+	if value:
+		_pause_usec = Time.get_ticks_usec()
+		Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
+	else:
+		if _pause_usec > 0:
+			_start_usec += Time.get_ticks_usec() - _pause_usec
+			_pause_usec = 0
+		Input.set_mouse_mode(Input.MOUSE_MODE_HIDDEN)
 
 
 func _build_ui() -> void:
@@ -132,7 +199,7 @@ func _build_ui() -> void:
 	UITheme.style_mono(_top_time, 12, UITheme.MUTED)
 	row.add_child(_top_time)
 	var hint := Label.new()
-	hint.text = "Esc 结束试玩"
+	hint.text = "Esc 暂停"
 	hint.add_theme_font_size_override("font_size", 11)
 	hint.add_theme_color_override("font_color", UITheme.MUTED)
 	row.add_child(hint)
@@ -239,6 +306,12 @@ func _init_states() -> void:
 
 func _start_audio() -> void:
 	_last_chart_ms = -INF
+	# 重开/重进时先停掉旧播放器，避免音频叠加。
+	if _audio != null:
+		_audio.stop()
+		remove_child(_audio)
+		_audio.queue_free()
+		_audio = null
 	_audio = AudioStreamPlayer.new()
 	_audio.name = "PlaytestAudio"
 	_audio.bus = "Music"
@@ -262,7 +335,7 @@ func _start_audio() -> void:
 
 
 func _process(delta: float) -> void:
-	if not _running or chart == null:
+	if not _running or chart == null or _paused:
 		return
 	var chart_ms := _chart_ms()
 	var judge_ms := chart_ms + float(_app.playtest_offset_ms if _app != null else 0.0)
@@ -282,6 +355,8 @@ func _process(delta: float) -> void:
 
 
 func _chart_ms() -> float:
+	if _paused:
+		return _last_chart_ms
 	if _audio_available and _audio.playing:
 		var stream_ms := (_audio.get_playback_position() + AudioServer.get_time_since_last_mix() - AudioServer.get_output_latency()) * 1000.0
 		var candidate := stream_ms + chart.offset_ms
@@ -330,7 +405,7 @@ func _judge_tap(note: Note, ms: float, beat: float) -> void:
 	var target := chart.timing.beat_to_chart_ms(note.beat)
 	if ms < target - HIT_WINDOW_MS:
 		return
-	var press := _take_key_for_arc(target - HIT_WINDOW_MS, target + HIT_WINDOW_MS, note.angle, note.width)
+	var press := _take_key_for_arc(target - HIT_WINDOW_MS, target + HIT_WINDOW_MS, note.angle, note.arc_width())
 	if not press.is_empty():
 		var tier := _tier_for(float(press["time"]) - target)
 		state["done"] = true
@@ -338,7 +413,7 @@ func _judge_tap(note: Note, ms: float, beat: float) -> void:
 		_combo += 1
 		_max_combo = maxi(_max_combo, _combo)
 		_add_judgement(tier)
-		_pulse_at(note.angle, beat, _tier_color(tier), tier, note.width, "tap")
+		_pulse_at(note.angle, beat, _tier_color(tier), tier, note.arc_width(), "tap")
 		_sfx.play(HitSfx.kind_for_note(note), randf_range(0.98, 1.02))
 		_record_error(float(press["time"]) - target, "Tap #%d %s" % [note.id, tier])
 		return
@@ -347,7 +422,7 @@ func _judge_tap(note: Note, ms: float, beat: float) -> void:
 		_miss_count += 1
 		_add_judgement("MISS")
 		_combo = 0
-		_pulse_at(note.angle, beat, UITheme.RED, "MISS", note.width)
+		_pulse_at(note.angle, beat, UITheme.RED, "MISS", note.arc_width())
 		_add_log("MISS Tap #%d @ %.0fms" % [note.id, target])
 
 
@@ -358,14 +433,14 @@ func _judge_hold(note: Note, ms: float, beat: float) -> void:
 	if not state["started"]:
 		if ms < target - HIT_WINDOW_MS:
 			return
-		var press := _take_key_for_arc(target - HIT_WINDOW_MS, target + HIT_WINDOW_MS, note.angle, note.width + HOLD_ARC_PAD)
+		var press := _take_key_for_arc(target - HIT_WINDOW_MS, target + HIT_WINDOW_MS, note.angle, note.arc_width() + HOLD_ARC_PAD)
 		if not press.is_empty():
 			var head_tier := _tier_for(float(press["time"]) - target)
 			state["started"] = true
 			state["head"] = true
 			state["key"] = int(press.get("key", 0))
 			state["head_tier"] = head_tier
-			_pulse_at(note.angle, beat, _tier_color(head_tier), head_tier, note.width, "hold")
+			_pulse_at(note.angle, beat, _tier_color(head_tier), head_tier, note.arc_width(), "hold")
 			_sfx.play("hold", 0.92)
 			_add_log("HOLD #%d HEAD %s" % [note.id, head_tier])
 			return
@@ -374,7 +449,7 @@ func _judge_hold(note: Note, ms: float, beat: float) -> void:
 			_miss_count += 1
 			_add_judgement("MISS")
 			_combo = 0
-			_pulse_at(note.angle, beat, UITheme.RED, "MISS", note.width)
+			_pulse_at(note.angle, beat, UITheme.RED, "MISS", note.arc_width())
 			_add_log("MISS Hold #%d (head)" % note.id)
 		return
 	# Hold 绑定起手键：松开起手键才算断，换成另一个键点 Tap 不会误续。
@@ -384,7 +459,7 @@ func _judge_hold(note: Note, ms: float, beat: float) -> void:
 		_miss_count += 1
 		_add_judgement("MISS")
 		_combo = 0
-		_pulse_at(note.angle, beat, UITheme.RED, "MISS", note.width)
+		_pulse_at(note.angle, beat, UITheme.RED, "MISS", note.arc_width())
 		_add_log("MISS Hold #%d (key released)" % note.id)
 		return
 	if ms >= end_ms:
@@ -394,7 +469,7 @@ func _judge_hold(note: Note, ms: float, beat: float) -> void:
 		_combo += 1
 		_max_combo = maxi(_max_combo, _combo)
 		_add_judgement(tier)
-		_pulse_at(note.angle, beat, _tier_color(tier), tier, note.width, "tap")
+		_pulse_at(note.angle, beat, _tier_color(tier), tier, note.arc_width(), "tap")
 		_sfx.play("hold", 1.08)
 		_record_error(ms - end_ms, "HOLD #%d COMPLETE %s" % [note.id, tier])
 
@@ -402,12 +477,15 @@ func _judge_hold(note: Note, ms: float, beat: float) -> void:
 func _judge_path(note: Note, ms: float, beat: float, cursor_u: float, valid: bool, mouse: Vector2) -> void:
 	var state: Dictionary = _states[note.id]
 	var head_ms := chart.timing.beat_to_chart_ms(note.beat)
-	var tail_ms := chart.timing.beat_to_chart_ms(note.end_beat)
+	# 启动延迟把整条滑动（含尾判）整体推后。
+	var path_bpm := chart.timing.bpm_at(note.beat)
+	var tail_rel := note.duration() + note.tail_offset_beat(path_bpm)
+	var tail_ms := chart.timing.beat_to_chart_ms(note.beat + tail_rel)
 	var head_point: Vector2 = _preview.path_point(note, 0.0, beat)
 	if not state["head_judged"]:
 		if ms >= head_ms - HIT_WINDOW_MS:
 			# 头部：鼠标到环上星头 + 按键，和 Tap 同一套宽松判定。
-			var press := _take_key_for_point(head_ms - HIT_WINDOW_MS, head_ms + HIT_WINDOW_MS, head_point, PATH_HEAD_RADIUS)
+			var press := _take_key_for_arc_point(head_ms - HIT_WINDOW_MS, head_ms + HIT_WINDOW_MS, head_point, PATH_HEAD_RADIUS, note.angle, note.arc_width())
 			if not press.is_empty():
 				var tier := _tier_for(float(press["time"]) - head_ms)
 				state["head_hit"] = true
@@ -424,11 +502,11 @@ func _judge_path(note: Note, ms: float, beat: float, cursor_u: float, valid: boo
 				_miss_count += 1
 				_add_judgement("MISS")
 				_combo = 0
-				_pulse_at(note.angle, beat, UITheme.RED, "MISS", note.width)
+				_pulse_at(note.angle, beat, UITheme.RED, "MISS", note.arc_width())
 				_add_log("PATH #%d HEAD MISS" % note.id)
 				state["head_judged"] = true
 	if not state["tail_judged"] and ms >= tail_ms - HIT_WINDOW_MS:
-		var tail_point: Vector2 = _preview.path_point(note, note.duration(), beat)
+		var tail_point: Vector2 = _preview.path_point(note, tail_rel, beat)
 		if mouse.is_finite() and tail_point.is_finite() and mouse.distance_to(tail_point) <= PATH_TAIL_RADIUS:
 			var tier := _tier_for(ms - tail_ms)
 			state["tail_hit"] = true
@@ -460,9 +538,8 @@ func _judge_path(note: Note, ms: float, beat: float, cursor_u: float, valid: boo
 		return
 	# 中段只看“滑到了没有”：不逐点扣分；轨迹按时间进度连续消失。
 	if bool(state.get("head_hit", false)):
-		var total := note.duration()
-		var wait := clampf(note.wait_beat, 0.0, maxf(0.0, total - 0.001))
-		var q := clampf((beat - note.beat - wait) / maxf(0.001, total - wait), 0.0, 1.0)
+		var wait := note.slide_gate_beat(path_bpm)
+		var q := clampf((beat - note.beat - wait) / maxf(0.001, tail_rel - wait), 0.0, 1.0)
 		var progress := 1.0 - pow(1.0 - q, maxf(0.05, note.path_speed))
 		var target := progress
 		if valid:
@@ -623,7 +700,7 @@ func _judge_anchor(note: Note, ms: float, beat: float) -> void:
 		_combo += 1
 		_max_combo = maxi(_max_combo, _combo)
 		_add_judgement(tier)
-		_pulse_at(note.angle, beat, _tier_color(tier), tier, note.width, "tap")
+		_pulse_at(note.angle, beat, _tier_color(tier), tier, note.arc_width(), "tap")
 		_sfx.play("anchor", 1.0)
 		_record_error(float(press["time"]) - target, "ANCHOR #%d %s" % [note.id, tier])
 		return
@@ -676,6 +753,27 @@ func _take_key_for_point(lo: float, hi: float, point: Vector2, radius: float) ->
 			break
 		var press_mouse: Vector2 = press.get("mouse", Vector2.ZERO)
 		if press_mouse.distance_to(point) <= radius:
+			_key_presses.remove_at(i)
+			return press
+	return {}
+
+
+## Path 头：点半径 或 角度窗口 任一命中即可（让星头的空间判定接近 Tap / Hold）。
+func _take_key_for_arc_point(lo: float, hi: float, point: Vector2, radius: float, angle: float, width: float) -> Dictionary:
+	for i in _key_presses.size():
+		var press: Dictionary = _key_presses[i]
+		var stamp := float(press.get("time", -INF))
+		if stamp < lo:
+			continue
+		if stamp > hi:
+			break
+		var press_mouse: Vector2 = press.get("mouse", Vector2.ZERO)
+		var near := press_mouse.distance_to(point) <= radius
+		var in_arc := false
+		if bool(press.get("valid", false)):
+			var press_angle := float(press.get("u", 0.0)) * 360.0
+			in_arc = absf(JudgeMath.angle_delta(press_angle, angle)) <= maxf(4.0, width) * 0.5
+		if near or in_arc:
 			_key_presses.remove_at(i)
 			return press
 	return {}
@@ -813,8 +911,10 @@ func _input(event: InputEvent) -> void:
 		if event.keycode == KEY_ESCAPE and event.pressed:
 			if _finished:
 				_exit()
+			elif _paused:
+				_set_paused(false)
 			else:
-				_finish()
+				_set_paused(true)
 			get_viewport().set_input_as_handled()
 			return
 		if event.pressed and not event.echo:
@@ -907,6 +1007,8 @@ func _cycle_hit_fx(step: int) -> void:
 
 
 func _exit() -> void:
+	if _audio != null:
+		_audio.stop()
 	Input.set_use_accumulated_input(true)
 	Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
 	exit_requested.emit()

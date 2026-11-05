@@ -96,10 +96,10 @@ static func intervals_for_notes(notes: Array, beat: float) -> Array:
 		match note.type:
 			"tap":
 				if absf(note.beat - beat) <= 0.001:
-					lists.append(interval(note.angle, note.width))
+					lists.append(interval(note.angle, note.arc_width()))
 			"hold":
 				if absf(note.beat - beat) <= 0.001:
-					lists.append(interval(note.angle, note.width))
+					lists.append(interval(note.angle, note.arc_width()))
 			"path":
 				if absf(note.beat - beat) <= 0.001:
 					lists.append(interval(note.angle, note.width))

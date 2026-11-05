@@ -9,6 +9,10 @@ var _genre: OptionButton
 var _list: ItemList
 var _status: Label
 var _progress: ProgressBar
+## 下载时弹出的独立进度窗口（进度条 + 当前文件）。
+var _progress_window: AcceptDialog = null
+var _progress_label: Label = null
+var _progress_bar: ProgressBar = null
 var _entries: Array = []
 var _source: OptionButton
 var _maj_items: Array = []
@@ -18,6 +22,9 @@ var _pending_maidata: String = ""
 var _search_timer: Timer
 var _request_serial: int = 0
 var _specs: Dictionary = {}
+## adx_specs 的键是 "11213-arty-party" 这种 id，而搜索列表给的是数字 slug，
+## 这里建一张 "11213" → spec 的映射，避免新谱面查不到文件列表。
+var _spec_lookup: Dictionary = {}
 
 func _ready() -> void:
 	title = "在线舞萌谱面"
@@ -77,7 +84,7 @@ func _build() -> void:
 	box.add_child(_list)
 	_progress = ProgressBar.new()
 	_progress.max_value = 100.0
-	_progress.show_percentage = false
+	_progress.show_percentage = true
 	_progress.custom_minimum_size = Vector2(0, 8)
 	_progress.visible = false
 	box.add_child(_progress)
@@ -107,7 +114,7 @@ func _refresh() -> void:
 	var shown := 0
 	for e in _entries:
 		var slug := String(e.get("slug", ""))
-		var spec: Dictionary = _specs.get(slug, {})
+		var spec: Dictionary = _spec_for(slug)
 		if not vsel.is_empty() and String(spec.get("groupDir", "")) != vsel:
 			continue
 		if not gsel.is_empty() and String(spec.get("genreDir", "")) != gsel:
@@ -127,11 +134,18 @@ func _download_selected() -> void:
 	if sel.is_empty():
 		return
 	var slug := String(_list.get_item_metadata(sel[0]))
+	_show_download_progress()
 	if _source != null and _source.selected == 1:
 		_download_majdata(slug)
 		return
-	var spec: Dictionary = _specs.get(slug, {})
+	var spec: Dictionary = _spec_for(slug)
 	var files: Array = spec.get("files", [])
+	if files.is_empty():
+		# 没有文件清单时兜底：按 adxdls 的路径规则直接拼。
+		files = [
+			{"name": "maidata.txt", "url": "https://adxdls.saop.cc/adxcs/%s/maidata.txt" % slug},
+			{"name": "track.mp3", "url": "https://adxdls.saop.cc/adxcs/%s/track.mp3" % slug},
+		]
 	var folder := "user://imports/adx_%s/" % slug
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(folder))
 	var maidata := ""
@@ -154,8 +168,14 @@ func _download_selected() -> void:
 			maidata = target
 	if maidata.is_empty():
 		_status.text = "下载失败：没有 maidata.txt"
+		_hide_download_progress()
 		return
+	_progress.visible = true
+	_progress.value = 100.0
+	_status.text = "下载完成 100% · 开始导入…"
+	_hide_download_progress()
 	_choose_difficulty(maidata)
+	_status.text = "导入完成 100%"
 
 func _fetch_bytes(url: String, label: String = "") -> PackedByteArray:
 	# 统一用 curl：adxdls 和 majdata 都可能让 Godot HTTPRequest 卡住。
@@ -209,6 +229,52 @@ func _file_size(path: String) -> int:
 	return size
 
 
+## 用数字 slug 找到 adx_specs 里的条目（键可能是 "11213-arty-party"）。
+func _spec_for(slug: String) -> Dictionary:
+	if _specs.has(slug):
+		return _specs[slug]
+	if _spec_lookup.is_empty():
+		for key in _specs:
+			var key_text := String(key)
+			var cut := key_text.find("-")
+			var numeric := key_text.substr(0, cut) if cut > 0 else key_text
+			if not _spec_lookup.has(numeric):
+				_spec_lookup[numeric] = _specs[key]
+	return _spec_lookup.get(slug, {})
+
+
+func _show_download_progress() -> void:
+	# 下载时弹出一个独立的小窗口，里面是一条进度条，直到下载完成才关闭。
+	if _progress_window == null:
+		_progress_window = AcceptDialog.new()
+		_progress_window.title = "下载舞萌谱面"
+		_progress_window.min_size = Vector2i(460, 150)
+		var box := VBoxContainer.new()
+		box.add_theme_constant_override("separation", 12)
+		_progress_window.add_child(box)
+		_progress_label = Label.new()
+		_progress_label.text = "准备下载…"
+		box.add_child(_progress_label)
+		_progress_bar = ProgressBar.new()
+		_progress_bar.max_value = 100.0
+		_progress_bar.value = 0.0
+		_progress_bar.show_percentage = true
+		_progress_bar.custom_minimum_size = Vector2(420, 24)
+		box.add_child(_progress_bar)
+		add_child(_progress_window)
+		var ok := _progress_window.get_ok_button()
+		if ok != null:
+			ok.visible = false
+	_progress_bar.value = 0.0
+	_progress_label.text = "准备下载…"
+	_progress_window.popup_centered(Vector2i(500, 170))
+
+
+func _hide_download_progress() -> void:
+	if _progress_window != null:
+		_progress_window.hide()
+
+
 func _begin_progress(label: String, total: int) -> void:
 	_progress.visible = true
 	_progress.value = 0.0
@@ -221,8 +287,14 @@ func _begin_progress(label: String, total: int) -> void:
 
 
 func _update_progress(label: String, size: int, total: int, started: int, done: bool = false) -> void:
+	var percent := 0.0
 	if total > 0:
-		var percent := clampf(100.0 * float(size) / float(maxi(1, total)), 0.0, 100.0)
+		percent = clampf(100.0 * float(size) / float(maxi(1, total)), 0.0, 100.0)
+	if _progress_bar != null:
+		_progress_bar.value = percent
+		if _progress_label != null:
+			_progress_label.text = "%s\n%.0f KB / %.0f KB（%.0f%%）" % [label, float(size) / 1024.0, float(total) / 1024.0, percent]
+	if total > 0:
 		_progress.value = percent
 		if not label.is_empty():
 			_status.text = "%s  %.0f KB / %.0f KB (%.0f%%)" % [label, float(size) / 1024.0, float(total) / 1024.0, percent]
@@ -269,8 +341,14 @@ func _download_majdata(id: String) -> void:
 		await _save(base + "/image?fullImage=true", folder + "bg.jpg", "下载背景")
 	if not ok:
 		_status.text = "majdata 下载失败"
+		_hide_download_progress()
 		return
+	_progress.visible = true
+	_progress.value = 100.0
+	_status.text = "下载完成 100% · 开始导入…"
+	_hide_download_progress()
 	_choose_difficulty(maidata)
+	_status.text = "导入完成 100%"
 
 
 func _save(url: String, path: String, label: String = "") -> bool:

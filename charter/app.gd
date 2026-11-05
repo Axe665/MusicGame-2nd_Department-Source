@@ -5,6 +5,8 @@ signal chart_replaced
 signal chart_live_changed
 signal selection_changed
 signal playhead_changed(beat: float)
+## 用户主动跳转（点时间轴、拖进度条）。播放中收到它会重新对齐音频。
+signal seek_requested(beat: float)
 signal tool_changed(tool: String)
 signal status_changed
 signal save_state_changed
@@ -22,6 +24,12 @@ var playtest_offset_ms: float = 0.0
 var flow_scale: float = 1.0
 var ffmpeg_path: String = "ffmpeg"
 var star_speed: float = 1.0
+## 星星轨迹提前显示的时间偏移（拍）：+1 更早、-1 更晚、0 = 默认预读。
+var star_lead_beats: float = 0.0
+## 星星主色（舞萌蓝），所有 Path 共用；试玩设置里可改。
+var star_color: Color = Color(0.55, 0.75, 1.0)
+## Trace 门框主色（默认银白）。
+var trace_color: Color = Color(0.78, 0.86, 1.0)
 var note_skin: String = "candy"
 var hit_fx_style: String = "burst"
 var hit_sfx_style: String = "default"
@@ -388,6 +396,16 @@ func set_playhead(beat: float) -> void:
 		return
 	playhead_beat = clampf(beat, -4.0, chart.duration_beats() + 8.0)
 	playhead_changed.emit(playhead_beat)
+
+
+## 用户发起的跳转：点时间轴、拖进度条、按定位按钮都走这里。
+## 播放中光改 playhead_beat 会被下一帧的音频推进覆盖，所以要先发信号让播放器重新对齐。
+func seek(beat: float) -> void:
+	if chart == null:
+		return
+	var target := clampf(beat, -4.0, chart.duration_beats() + 8.0)
+	seek_requested.emit(target)
+	set_playhead(target)
 
 
 func snap_beat(beat: float, bypass: bool = false) -> float:

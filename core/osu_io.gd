@@ -380,41 +380,44 @@ static func _convert_std_continuous(objects_raw: Array, chart: Chart, timing_raw
 	play.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return float(a["beat"]) < float(b["beat"]))
 
 	var infos: Array[Dictionary] = []
+	var lane := 0
+	var stream_dir := 0
 	var prev_u := 0.0
 	var prev_end_beat := 0.0
+	var prev_end_pos := Vector2.ZERO
 	var first := true
 	for i in play.size():
 		var current: Dictionary = play[i]
 		var pos: Vector2 = current["pos"]
 		var beat := float(current["beat"])
 		var raw_start := _std_angle(pos)
-		var u := raw_start
+		var closest := _std_closest_lane(raw_start)
 		var is_jump := false
-		if not first:
+		# 落道与流向照 Sentakki 的 BeatmapConverter：道号 = 相对场地中心最接近的 45°，
+		# 流内逐道推进，大跳用两端道差，长间隔直接回绝对位置。
+		if first:
+			lane = closest
+			first = false
+		else:
 			var prev: Dictionary = play[i - 1]
-			var prev_prev: Dictionary = play[i - 2] if i >= 2 else {}
+			var before: Dictionary = play[i - 2] if i >= 2 else {}
 			var gap_beats := beat - prev_end_beat
 			if gap_beats > 1.0:
-				# 长间隔重新锚定到 osu 绝对角度，避免长句累积漂移。
-				u = raw_start
+				lane = closest
+				stream_dir = 0
+			elif prev_end_pos.distance_to(pos) >= STD_JUMP_DISTANCE:
+				stream_dir = 0
+				is_jump = true
+				lane += closest - _std_closest_lane(_std_angle(prev["end_pos"]))
 			else:
-				var midpoint := _std_midpoint(prev, prev_prev, current)
-				var prev_flow := _std_angle_between(midpoint, prev["end_pos"])
-				var curr_flow := _std_angle_between(midpoint, pos)
-				var raw_delta := _std_short_delta(prev_flow, curr_flow)
-				is_jump = (prev["end_pos"] as Vector2).distance_to(pos) >= STD_JUMP_DISTANCE
-				var delta := 0.0
-				if is_jump:
-					delta = raw_delta * STD_JUMP_COMPRESSION
-				elif absf(raw_delta) > 5.0 and absf(absf(raw_delta) - 180.0) > 5.0:
-					# 流内只沿方向走固定步长，避免中点角度来回摆成两堵墙。
-					delta = (1.0 if raw_delta > 0.0 else -1.0) * STD_STREAM_STEP
-				var bpm := maxf(1.0, chart.timing.bpm_at(beat))
-				var dt := maxf(0.0001, gap_beats * 60.0 / bpm)
-				var max_delta := STD_MAX_DEG_PER_SEC * dt
-				delta = clampf(delta, -max_delta, max_delta)
-				u = prev_u + delta
-		first = false
+				var after: Vector2 = play[i + 1]["pos"] if i + 1 < play.size() else pos
+				stream_dir = _std_stream_direction(prev_end_pos, before, pos, after, stream_dir)
+				lane += stream_dir
+				var overlap := prev_end_pos.distance_squared_to(pos) <= pow(circle_radius * 2.0, 2.0)
+				if not overlap:
+					lane += 1 if stream_dir == 0 else stream_dir
+		lane = posmod(lane, 8)
+		var u := float(lane) * 45.0
 
 		var note: Note
 		var tail_u := u
@@ -425,29 +428,32 @@ static func _convert_std_continuous(objects_raw: Array, chart: Chart, timing_raw
 			while slide_wait >= float(current["duration"]) - 0.05 and slide_wait > 0.5:
 				slide_wait /= 2.0
 		if bool(current["is_slider"]) and not bool(current["lazy"]) and int(current["repeats"]) <= 1 and float(current["duration"]) >= 0.5 and slide_wait >= 0.5:
-			var raw: Array[Vector2] = current["raw"]
-			var raw_end := _std_angle(current["end_pos"])
-			var net := _std_short_delta(raw_start, raw_end)
-			var turn := _std_curve_turn(raw)
-			var direction := 1.0
-			if absf(turn) > 0.1:
-				direction = 1.0 if turn > 0.0 else -1.0
-			elif absf(net) > 1.0:
-				direction = 1.0 if net > 0.0 else -1.0
-			var span := clampf(absf(net) * 0.45 + float(current["duration"]) * 16.0, 55.0, STD_PATH_MAX_SPAN)
-			tail_u = u + direction * span
-			end_beat = beat + float(current["duration"])
-			note = Note.new("path", beat, fposmod(u, 360.0), 60.0)
-			note.end_beat = end_beat
-			note.tail_angle = fposmod(tail_u, 360.0)
-			note.tail_width = 52.0
-			note.tolerance = 0.24
-			note.samples_per_beat = 4.0
-			note.trace_pts = _std_slide_trace(u, tail_u, float(current["duration"]), slide_wait)
-			note.wait_beat = slide_wait
-			counts["path"] += 1
-			is_path = true
-		elif bool(current["is_slider"]):
+			# Sentakki 的程序化滑条：不跟 osu 控制点，而是按剩余时长从段表里拼一条段链。
+			var duration_beats := float(current["duration"])
+			var velocity := maxf(0.5, slider_multiplier)
+			# Sentakki 的预算 = 总时长 - wait（ms），不是总时长。
+			var bpm_now := maxf(1.0, chart.timing.bpm_at(beat))
+			var total_ms := duration_beats * 60000.0 / bpm_now
+			var wait_ms := slide_wait * 60000.0 / bpm_now
+			var parts := _std_choose_slide_segments(maxf(0.0, total_ms - wait_ms), velocity)
+			if not parts.is_empty():
+				var lanes_total := 0
+				for part in parts:
+					lanes_total += int(part["lanes"]) * (-1 if bool(part["mirrored"]) else 1)
+				tail_u = u + float(lanes_total) * 45.0
+				end_beat = beat + duration_beats
+				note = Note.new("path", beat, fposmod(u, 360.0), 60.0)
+				note.end_beat = end_beat
+				note.tail_angle = fposmod(tail_u, 360.0)
+				note.tail_width = 52.0
+				note.tolerance = 0.24
+				note.samples_per_beat = 4.0
+				note.trace_pts = _std_slide_trace_from_parts(u, parts, duration_beats, slide_wait)
+				note.wait_beat = slide_wait
+				counts["path"] += 1
+				is_path = true
+		if not is_path and bool(current["is_slider"]):
+			# Sentakki 的滑条拼不出段（时长不够/被减半到 0.5 拍以下）时直接退回 Hold。
 			var hold_duration := maxf(0.25, float(current["duration"]))
 			end_beat = beat + hold_duration
 			if i + 1 < play.size() and end_beat > float(play[i + 1]["beat"]) - 0.0625:
@@ -463,7 +469,7 @@ static func _convert_std_continuous(objects_raw: Array, chart: Chart, timing_raw
 				note.end_beat = end_beat
 				note.hold_style = "straight"
 				counts["hold"] += 1
-		else:
+		if note == null:
 			note = Note.new("tap", beat, fposmod(u, 360.0), 60.0)
 			counts["tap"] += 1
 		note.id = chart.next_note_id()
@@ -474,36 +480,179 @@ static func _convert_std_continuous(objects_raw: Array, chart: Chart, timing_raw
 		})
 		prev_u = tail_u if is_path else u
 		prev_end_beat = end_beat
+		prev_end_pos = current["end_pos"]
 
+	# Sentakki 没有宽度概念：这里固定 60°，不再做自适应补偿。
 	for i in infos.size():
 		var info: Dictionary = infos[i]
 		var note: Note = info["note"]
-		var u := float(info["u"])
-		var prev_ref := u
-		var next_ref := u
-		var prev_time := 4.0
-		var next_time := 4.0
-		if i > 0:
-			var previous: Dictionary = infos[i - 1]
-			prev_ref = float(previous["tail_u"]) if bool(previous["is_path"]) else float(previous["u"])
-			prev_time = float(info["beat"]) - float(previous["beat"])
-		if i + 1 < infos.size():
-			next_ref = float(infos[i + 1]["u"])
-			next_time = float(infos[i + 1]["beat"]) - float(info["beat"])
-		var current_ref := float(info["tail_u"]) if bool(info["is_path"]) else u
-		var prev_gap := absf(_std_short_delta(prev_ref, u))
-		var next_gap := absf(_std_short_delta(current_ref, next_ref))
-		var dense := prev_time < 0.5 or next_time < 0.5
-		var width := 56.0
-		if dense:
-			width += 5.0
-		width += clampf(minf(prev_gap, next_gap) * 0.12, 0.0, 10.0)
-		if bool(info["is_jump"]):
-			width -= 3.0
-		width = clampf(width, 55.0, 68.0)
 		if note.type in ["tap", "hold"]:
-			note.width = width
+			note.width = 60.0
 	return counts
+
+
+## Sentakki 的转换段表：形状 × 终点道偏移（45°） × 镜像，过滤掉转换不用的组合。
+const STD_SLIDE_SHAPES := ["straight", "circle", "v", "u", "cup", "thunder", "fan"]
+
+static var _std_rng: RandomNumberGenerator = null
+
+
+static func _std_rng_instance() -> RandomNumberGenerator:
+	if _std_rng == null:
+		_std_rng = RandomNumberGenerator.new()
+		_std_rng.seed = 20240517
+	return _std_rng
+
+
+static func _std_slide_min_ms(shape: String, lanes: int) -> float:
+	# 和 Sentakki 的 CalculatedDistance / 5 同量级（约 60–240ms / 段）。
+	var base := {"straight": 90.0, "circle": 110.0, "v": 130.0, "u": 150.0, "cup": 150.0, "thunder": 180.0, "fan": 210.0}
+	return float(base.get(shape, 120.0)) * (0.5 + 0.35 * float(mini(lanes, 4)))
+
+
+static func _std_slide_segment_valid(shape: String, lanes: int, mirrored: bool) -> bool:
+	var normalized := posmod(lanes, 8)
+	match shape:
+		"straight":
+			return normalized != 0 and not mirrored and normalized != 1 and normalized != 7
+		"circle":
+			return normalized != 1 and normalized != 7
+		"v":
+			return not mirrored and normalized != 0
+		"fan":
+			return not mirrored and normalized == 4
+		"thunder":
+			return normalized != 0
+		"u", "cup":
+			return true
+	return false
+
+
+## 按剩余时长不断挑下一段，直到塞不下为止（Sentakki chooseSlidePartFor 的写法）。
+static func _std_choose_slide_segments(duration_ms: float, velocity: float) -> Array:
+	var rng := _std_rng_instance()
+	var velocity_factor := 1.0 + 1.0 / maxf(0.25, velocity)
+	var remaining := duration_ms
+	var parts: Array = []
+	var guard := 0
+	while guard < 12:
+		guard += 1
+		var pool: Array = []
+		for shape in STD_SLIDE_SHAPES:
+			for lanes in range(1, 8):
+				for mirrored in [false, true]:
+					if not _std_slide_segment_valid(String(shape), lanes, bool(mirrored)):
+						continue
+					if _std_slide_min_ms(String(shape), lanes) * velocity_factor < remaining:
+						pool.append({"shape": String(shape), "lanes": lanes, "mirrored": bool(mirrored)})
+		if pool.is_empty():
+			break
+		var pick: Dictionary = pool[rng.randi_range(0, pool.size() - 1)]
+		if String(pick["shape"]) == "circle" and not parts.is_empty():
+			var last: Dictionary = parts[-1]
+			if String(last["shape"]) == "circle" and bool(last["mirrored"]) == bool(pick["mirrored"]) and posmod(int(last["lanes"]), 8) != 0:
+				continue
+		remaining -= _std_slide_min_ms(String(pick["shape"]), int(pick["lanes"])) * velocity_factor
+		parts.append(pick)
+	return parts
+
+
+## 单段的平面轨迹（单位圆坐标）：直 / 弧 / V / U / Cup / Thunder / Fan。
+static func _std_shape_points(shape: String, from_deg: float, to_deg: float, lanes: int) -> Array[Vector2]:
+	var ra := deg_to_rad(from_deg)
+	var rb := deg_to_rad(to_deg)
+	var p0 := Vector2(cos(ra), sin(ra))
+	var p1 := Vector2(cos(rb), sin(rb))
+	var out: Array[Vector2] = [p0]
+	match shape:
+		"straight":
+			out.append(p0.lerp(p1, 0.5))
+		"circle":
+			for step in range(1, 5):
+				var t := float(step) / 5.0
+				var angle := ra + (rb - ra) * t
+				out.append(Vector2(cos(angle), sin(angle)))
+		"v":
+			out.append(p0 * 0.55)
+			out.append((p0 + p1).normalized() * 0.20)
+			out.append(p1 * 0.55)
+		"u":
+			out.append(p0 * 0.42)
+			out.append(p1 * 0.42)
+		"cup":
+			out.append(p0 * 0.55)
+			out.append(p0.lerp(p1, 0.5) * 0.32)
+			out.append(p1 * 0.55)
+		"thunder":
+			var mid := (ra + rb) * 0.5
+			out.append(Vector2(cos(lerpf(ra, rb, 0.25)), sin(lerpf(ra, rb, 0.25))) * 0.45)
+			out.append(Vector2(cos(mid), sin(mid)) * 0.92)
+			out.append(Vector2(cos(lerpf(ra, rb, 0.75)), sin(lerpf(ra, rb, 0.75))) * 0.45)
+		"fan":
+			for step in range(1, 4):
+				var t := float(step) / 4.0
+				var angle := ra + (rb - ra) * t
+				out.append(Vector2(cos(angle), sin(angle)) * lerpf(0.5, 0.85, sin(t * PI)))
+	out.append(p1)
+	return out
+
+
+## 按弧长把折线重采样成 count 个点，保证滑条轨迹有足够采样。
+static func _std_densify(points: Array[Vector2], count: int) -> Array[Vector2]:
+	if points.size() >= count or points.size() < 2:
+		return points
+	var total := 0.0
+	for i in range(1, points.size()):
+		total += points[i - 1].distance_to(points[i])
+	if total <= 0.0001:
+		var same: Array[Vector2] = []
+		for i in count:
+			same.append(points[0])
+		return same
+	var step := total / float(count - 1)
+	var result: Array[Vector2] = [points[0]]
+	var index := 1
+	var carried := 0.0
+	for i in range(1, count):
+		var target := step * float(i)
+		while index < points.size():
+			var seg := points[index - 1].distance_to(points[index])
+			if carried + seg >= target:
+				break
+			carried += seg
+			index += 1
+		if index >= points.size():
+			result.append(points[-1])
+			continue
+		var seg_len := maxf(0.0001, points[index - 1].distance_to(points[index]))
+		result.append(points[index - 1].lerp(points[index], clampf((target - carried) / seg_len, 0.0, 1.0)))
+	return result
+
+
+## 把段链转成 Chart 的 trace_pts（x/y 在单位圆内，db 是相对拍）。
+static func _std_slide_trace_from_parts(start_u: float, parts: Array, duration_beats: float, wait_beats: float) -> Array[Dictionary]:
+	var result: Array[Dictionary] = []
+	var move := maxf(0.05, duration_beats - wait_beats)
+	var total_lanes := 0
+	for part in parts:
+		total_lanes += int(part["lanes"])
+	total_lanes = maxi(1, total_lanes)
+	var angle := start_u
+	var elapsed := 0.0
+	var start_rad := deg_to_rad(angle)
+	result.append({"x": cos(start_rad), "y": sin(start_rad), "db": 0.0})
+	for part in parts:
+		var lanes := int(part["lanes"])
+		var sign := -1.0 if bool(part["mirrored"]) else 1.0
+		var target := angle + float(lanes) * 45.0 * sign
+		var share := move * float(lanes) / float(total_lanes)
+		var points := _std_densify(_std_shape_points(String(part["shape"]), angle, target, lanes), 10)
+		for index in range(1, points.size()):
+			var fraction := float(index) / float(maxi(1, points.size() - 1))
+			result.append({"x": points[index].x, "y": points[index].y, "db": elapsed + share * fraction})
+		elapsed += share
+		angle = target
+	return result
 
 
 static func _std_slide_trace(head_u: float, tail_u: float, duration: float, wait: float = 0.0) -> Array[Dictionary]:
@@ -537,6 +686,32 @@ static func _std_angle_between(from: Vector2, to: Vector2) -> float:
 
 static func _std_short_delta(from_angle: float, to_angle: float) -> float:
 	return JudgeMath.angle_delta(from_angle, to_angle)
+
+
+## 位置角 → 最接近的道号（0–7，每道 45°）。
+static func _std_closest_lane(angle: float) -> int:
+	return posmod(int(round(fposmod(angle, 360.0) / 45.0)), 8)
+
+
+## Sentakki 的流向判定：取「上一点终点 + 当前终点 + 下一点」的中点，
+## 比较中点指向当前终点与下一点的角度差，符号决定顺/逆时针。
+static func _std_stream_direction(current_end: Vector2, previous: Dictionary, current_pos: Vector2, next_pos: Vector2, fallback: int) -> int:
+	var sum: Vector2 = current_end + next_pos
+	var count := 2
+	if not previous.is_empty():
+		sum += previous.get("end_pos", current_pos)
+		count += 1
+	if current_pos.distance_to(current_end) > 0.01:
+		sum += current_pos
+		count += 1
+	var midpoint := Vector2(256.0, 192.0) if count <= 2 else sum / float(count)
+	var delta := _std_short_delta(_std_angle_between(midpoint, current_end), _std_angle_between(midpoint, next_pos))
+	var magnitude := absf(delta)
+	if magnitude <= 5.0:
+		return fallback
+	if absf(magnitude - 180.0) <= 5.0:
+		return 0
+	return 1 if delta > 0.0 else -1
 
 
 static func _std_midpoint(current: Dictionary, previous: Dictionary, next: Dictionary) -> Vector2:

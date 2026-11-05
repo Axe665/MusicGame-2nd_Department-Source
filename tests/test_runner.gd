@@ -44,6 +44,12 @@ func _initialize() -> void:
 		"test_simai_directive_slot",
 		"test_simai_bend_shapes",
 		"test_simai_osu_friendly",
+		"test_simai_dense_relax",
+		"test_simai_relax_keeps_slow",
+		"test_note_length_system",
+		"test_path_start_delay",
+		"test_osu_std_lanes",
+		"test_path_custom_color",
 	]
 	for test_name in tests:
 		if call(test_name) != true:
@@ -464,8 +470,11 @@ func test_playability_validator() -> bool:
 	var chart := Chart.new()
 	var a := Note.new("tap", 0.0, 0.0, 120.0)
 	a.id = 1
+	# 普通 Tap 现在只有 0.5 l；这里用 1.0 l 的大小 Tap 保持 120° 的命中弧。
+	a.set_size_ratio(1.0)
 	var b := Note.new("tap", 0.0, 90.0, 120.0)
 	b.id = 2
+	b.set_size_ratio(1.0)
 	chart.notes = [a, b]
 	var issues := Validator.validate(chart)
 	if Validator.errors(issues).is_empty():
@@ -563,25 +572,14 @@ SliderMultiplier: 1.4
 	eq(tap.type, "tap", "osu circle -> tap")
 	eq(tap.space, "ring", "osu circle stays on the ring")
 	near(tap.beat, 2.0, 0.001, "osu circle beat")
-	ok(tap.width >= 45.0 and tap.width <= 75.0, "osu tap has variable width")
+	ok(absf(tap.width - 60.0) < 0.001, "osu tap uses a fixed 60° width")
 	var slide: Note = chart.notes[1]
-	eq(slide.type, "path", "osu slider -> planar path")
-	eq(slide.space, "plane", "osu slider dives into the plane")
+	eq(slide.type, "hold", "short osu slider falls back to Hold (Sentakki rule)")
+	eq(slide.space, "ring", "hold stays on the ring")
 	near(slide.beat, 4.0, 0.001, "osu slider beat")
 	near(slide.end_beat, 4.7142857, 0.001, "osu slider duration")
-	ok(slide.trace_pts.size() > 8, "osu slider has a 2D slide path")
-	var first: Dictionary = slide.trace_pts[0]
-	var last: Dictionary = slide.trace_pts[-1]
-	near(sqrt(pow(float(first["x"]), 2) + pow(float(first["y"]), 2)), 1.0, 0.02, "slide head on the ring")
-	near(sqrt(pow(float(last["x"]), 2) + pow(float(last["y"]), 2)), 0.70, 0.02, "slide tail lands on the 0.70R circle")
-	var inside := true
-	for point in slide.trace_pts:
-		if sqrt(pow(float(point["x"]), 2) + pow(float(point["y"]), 2)) > 1.02:
-			inside = false
-	ok(inside, "slide path stays inside the ring disk")
 	var restored := Note.from_dict(slide.to_dict())
-	eq(restored.type, "path", "slide path survives json")
-	eq(restored.space, "plane", "slide plane survives json")
+	eq(restored.type, "hold", "hold survives json")
 	return true
 
 
@@ -1073,6 +1071,61 @@ func test_simai_osu_friendly() -> bool:
 	return true
 
 
+func test_simai_dense_relax() -> bool:
+	# 高 BPM + 高密度 + 大跳：导入后相邻 Tap 的角位移必须被压到 45° 以内。
+	var text := "&title=Dense\n&artist=T\n&wholebpm=200\n&lv_1=12\n&inote_1=\n(200){16}1,5,2,6,3,7,4,8,\n"
+	var path := "user://test_simai_dense.txt"
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	if file == null:
+		ok(false, "dense fixture")
+		return true
+	file.store_string(text)
+	file.close()
+	var chart := SimaiIO.import_maidata(path, 0)
+	ok(chart != null, "dense chart imports")
+	if chart == null:
+		return true
+	var taps: Array[Note] = []
+	for note in chart.notes:
+		if note.type == "tap":
+			taps.append(note)
+	eq(taps.size(), 8, "dense run imports eight taps")
+	var largest := 0.0
+	for i in range(1, taps.size()):
+		largest = maxf(largest, absf(JudgeMath.angle_delta(taps[i].angle, taps[i - 1].angle)))
+	ok(largest <= 45.01, "dense run never jumps more than 45 degrees (got %.1f)" % largest)
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	return true
+
+
+func test_simai_relax_keeps_slow() -> bool:
+	# 低 BPM / 慢速段落：鼠标跟得上，导入后角度必须原样保留。
+	var text := "&title=Slow\n&artist=T\n&wholebpm=120\n&lv_1=8\n&inote_1=\n(120){4}1,2,3,4,\n"
+	var path := "user://test_simai_slow.txt"
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	if file == null:
+		ok(false, "slow fixture")
+		return true
+	file.store_string(text)
+	file.close()
+	var chart := SimaiIO.import_maidata(path, 0)
+	ok(chart != null, "slow chart imports")
+	if chart == null:
+		return true
+	var taps: Array[Note] = []
+	for note in chart.notes:
+		if note.type == "tap":
+			taps.append(note)
+	eq(taps.size(), 4, "slow run imports four taps")
+	if taps.size() >= 4:
+		for i in range(1, taps.size()):
+			near(absf(JudgeMath.angle_delta(taps[i].angle, taps[i - 1].angle)), 45.0, 0.01, "slow run keeps its 45° steps")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	return true
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	return true
+
+
 func test_osu_std_sentakki_rules() -> bool:
 	eq(OsuIO.STD_STREAM_STEP, 45.0, "osu std stream step is 8-lane 45deg")
 	var text := """osu file format v14
@@ -1154,4 +1207,131 @@ func test_simai_bend_shapes() -> bool:
 			var side_q := (Vector2(float(mid_q["x"]), float(mid_q["y"])) - head).cross(tail - head)
 			ok(signf(side_p) != signf(side_q), "p and q curve to opposite sides")
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	return true
+
+
+func test_note_length_system() -> bool:
+	# 长度体系：l = note.width；普通 Tap / Hold 头 = 0.5 l，大小 Tap = ratio × l。
+	var tap := Note.new("tap", 0.0, 0.0, 60.0)
+	near(tap.arc_width(), 30.0, 0.0001, "normal tap is 0.5 l")
+	near(tap.length_ratio(), 0.5, 0.0001, "normal tap ratio is 0.5")
+	tap.set_size_ratio(0.0)
+	near(tap.arc_width(), 0.0, 0.0001, "sized tap can be 0 l")
+	tap.set_size_ratio(1.5)
+	near(tap.arc_width(), 90.0, 0.0001, "sized tap can reach 1.5 l")
+	tap.set_size_ratio(0.735)
+	near(tap.size_ratio, 0.74, 0.0001, "sized tap snaps to two decimals")
+	near(tap.arc_width(), 44.4, 0.001, "sized tap length follows the ratio")
+	var hold := Note.new("hold", 0.0, 0.0, 60.0)
+	near(hold.arc_width(), 30.0, 0.0001, "hold head is 0.5 l")
+	near(hold.length_ratio(), 0.5, 0.0001, "hold ignores the sized flag")
+	var path := Note.new("path", 0.0, 0.0, 60.0)
+	near(path.arc_width(), 60.0, 0.0001, "path keeps its head width")
+	near(Note.SPAWN_LENGTH_RATIO, 1.0 / 6.0, 0.000001, "spawn length is 1/6 l")
+	# 序列化：只有大小 Tap 写 sized/size，普通 Tap 不写。
+	var sized := Note.new("tap", 1.0, 45.0, 60.0)
+	sized.set_size_ratio(0.75)
+	var data := sized.to_dict()
+	ok(bool(data.get("sized", false)), "sized tap persists the flag")
+	near(float(data.get("size", 0.0)), 0.75, 0.001, "sized tap persists the ratio")
+	var loaded := Note.from_dict(data)
+	ok(loaded.sized, "sized tap roundtrips the flag")
+	near(loaded.arc_width(), 45.0, 0.001, "sized tap roundtrips the length")
+	var plain := Note.new("tap", 2.0, 0.0, 60.0)
+	ok(not plain.to_dict().has("sized"), "plain tap writes no size fields")
+	return true
+
+
+func test_path_start_delay() -> bool:
+	# 轨迹启动时间：星头落线后等 t(ms)，轨迹与尾判整体推后。
+	var path := Note.new("path", 0.0, 0.0, 60.0)
+	path.end_beat = 2.0
+	path.trace_pts = [
+		{"x": 1.0, "y": 0.0, "db": 0.0},
+		{"x": 0.0, "y": -0.7, "db": 2.0},
+	]
+	path.start_delay_ms = 500.0
+	near(path.delay_beats(120.0), 1.0, 0.0001, "500ms at 120bpm is one beat")
+	near(path.delay_beats(60.0), 0.5, 0.0001, "500ms at 60bpm is half a beat")
+	near(path.slide_gate_beat(120.0), 1.0, 0.0001, "gate uses the delay when wait is shorter")
+	near(path.tail_offset_beat(120.0), 1.0, 0.0001, "tail shifts by the same delay")
+	var head := path.path_local_at(0.0, path.delay_beats(120.0))
+	near(head.distance_to(Vector2(1.0, 0.0)), 0.0, 0.0001, "head sits at the star position")
+	var waiting := path.path_local_at(0.5, path.delay_beats(120.0))
+	near(waiting.distance_to(Vector2(1.0, 0.0)), 0.0, 0.0001, "trail does not move before the delay ends")
+	var middle := path.path_local_at(2.0, path.delay_beats(120.0))
+	near(middle.distance_to(Vector2(0.5, -0.35)), 0.0, 0.0001, "slide keeps its speed after the delay")
+	var tail := path.path_local_at(3.0, path.delay_beats(120.0))
+	near(tail.distance_to(Vector2(0.0, -0.7)), 0.0, 0.0001, "tail arrives one delay later")
+	path.wait_beat = 2.0
+	near(path.slide_gate_beat(120.0), 2.0, 0.0001, "wait wins when it is longer")
+	near(path.tail_offset_beat(120.0), 0.0, 0.0001, "no extra tail shift when wait covers the delay")
+	var data := path.to_dict()
+	near(float(data.get("delay_ms", 0.0)), 500.0, 0.001, "delay is serialised")
+	var loaded := Note.from_dict(data)
+	near(loaded.start_delay_ms, 500.0, 0.001, "delay roundtrips")
+	path.start_delay_ms = 0.0
+	ok(not path.to_dict().has("delay_ms"), "zero delay writes no field")
+	return true
+
+
+func test_osu_std_lanes() -> bool:
+	# 落道照 Sentakki：角度只能落在 8 个 45° 道上。
+	var text := """osu file format v14
+
+[General]
+AudioFilename: a.mp3
+Mode: 0
+
+[Metadata]
+Title: Lane
+Version: Test
+
+[Difficulty]
+CircleSize: 4
+ApproachRate: 5
+SliderMultiplier: 1.4
+
+[TimingPoints]
+0,500,4,2,0,100,1,0
+
+[HitObjects]
+128,192,1000,1,0,0:0:0:0:
+256,192,1500,1,0,0:0:0:0:
+384,192,2000,1,0,0:0:0:0:
+256,64,2500,1,0,0:0:0:0:
+64,64,3000,1,0,0:0:0:0:
+"""
+	var result := OsuIO.parse_osu(text, "lane.osu")
+	ok(result.get("chart") != null, "lane chart imports")
+	var chart: Chart = result.get("chart")
+	if chart == null:
+		return true
+	var lanes: Array[int] = []
+	for note in chart.notes:
+		var lane := posmod(int(round(fposmod(note.angle, 360.0) / 45.0)), 8)
+		near(note.angle, float(lane) * 45.0, 0.001, "std angle snaps to a 45° lane")
+		lanes.append(lane)
+	eq(lanes.size(), 5, "five circles import")
+	if lanes.size() == 5:
+		eq(lanes[0], 4, "left circle lands on lane 4")
+		eq(lanes[2], 0, "right circle lands on lane 0")
+		eq(lanes[3], 6, "top circle lands on lane 6")
+		eq(lanes[4], 5, "top-left circle lands on lane 5")
+	return true
+
+
+func test_path_custom_color() -> bool:
+	var path := Note.new("path", 1.0, 0.0, 60.0)
+	ok(not path.to_dict().has("rgb"), "default path writes no rgb")
+	path.has_custom_color = true
+	path.custom_color = Color(1.0, 0.5, 0.0)
+	var data := path.to_dict()
+	ok(data.has("rgb"), "custom color is serialised")
+	eq(int(data["rgb"][0]), 255, "red channel written")
+	eq(int(data["rgb"][1]), 128, "green channel written")
+	var loaded := Note.from_dict(data)
+	ok(loaded.has_custom_color, "custom color roundtrips")
+	near(loaded.custom_color.r, 1.0, 0.01, "red survives")
+	near(loaded.custom_color.g, 128.0 / 255.0, 0.01, "green survives")
 	return true

@@ -15,7 +15,7 @@ var _palette: NotePalette
 var _validation_label: Label
 var _play_button: Button
 var _time_label: Label
-var _progress: ProgressBar
+var _progress: SeekBar
 var _beat_label: Label
 var _bpm_label: Label
 var _save_label: Label
@@ -69,6 +69,19 @@ var _song_dialog: SongImportDialog
 var _chart_browser: ChartBrowser
 var _new_dialog: NewChartDialog
 var _playtest: Playtest
+## 试玩前的设置窗口：倍速 / 流速 / 星速 / 星显。
+var _playtest_dialog: AcceptDialog = null
+var _playtest_rate: SpinBox = null
+var _playtest_flow: SpinBox = null
+var _playtest_star: SpinBox = null
+var _playtest_lead: SpinBox = null
+var _playtest_star_color: ColorPickerButton = null
+var _playtest_trace_color: ColorPickerButton = null
+var _playtest_from_start: bool = false
+## 制谱界面保留的流速输入框（试玩设置改流速后要同步回来）。
+var _editor_flow_spin: SpinBox = null
+## 制谱界面保留的「星显」输入框，和试玩设置共用同一个值。
+var _editor_lead_spin: SpinBox = null
 var _cursor_u: float = 0.0
 var _issues: Array = []
 
@@ -89,6 +102,7 @@ func _ready() -> void:
 		_app.chart_changed.connect(_on_chart_changed)
 		_app.chart_live_changed.connect(_on_chart_live_changed)
 		_app.playhead_changed.connect(_on_playhead_changed)
+		_app.seek_requested.connect(_on_seek_requested)
 		_app.selection_changed.connect(_update_status)
 		_app.tool_changed.connect(_on_tool_changed)
 		_app.status_changed.connect(_update_status)
@@ -168,7 +182,7 @@ func _build_ui() -> void:
 	playtest_button.add_theme_stylebox_override("normal", UITheme._box(UITheme.ACCENT, UITheme.ACCENT, 3, 12, 5))
 	playtest_button.add_theme_stylebox_override("hover", UITheme._box(UITheme.ACCENT, Color.WHITE, 3, 12, 5))
 	playtest_button.add_theme_stylebox_override("pressed", UITheme._box(UITheme.ACCENT_DARK, UITheme.ACCENT_DARK, 3, 12, 5))
-	playtest_button.pressed.connect(func() -> void: _start_playtest(false))
+	playtest_button.pressed.connect(func() -> void: _open_playtest_setup(false))
 	brand_row.add_child(playtest_button)
 
 	var tool_row := HBoxContainer.new()
@@ -413,16 +427,15 @@ func _build_ui() -> void:
 	var stop_button := Button.new()
 	stop_button.text = "■"
 	stop_button.custom_minimum_size = Vector2(38, 30)
-	stop_button.pressed.connect(_stop_play)
+	stop_button.tooltip_text = "停止并回到 0:00"
+	stop_button.pressed.connect(_reset_playhead)
 	transport_row.add_child(stop_button)
 	_time_label = Label.new()
 	UITheme.style_mono(_time_label, 12, UITheme.INK)
 	_time_label.custom_minimum_size = Vector2(150, 0)
 	transport_row.add_child(_time_label)
-	_progress = ProgressBar.new()
-	_progress.show_percentage = false
-	_progress.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_progress.custom_minimum_size = Vector2(120, 8)
+	_progress = SeekBar.new()
+	_progress.seek_to.connect(_on_seek_fraction)
 	transport_row.add_child(_progress)
 	_beat_label = Label.new()
 	UITheme.style_mono(_beat_label, 12, UITheme.GOLD)
@@ -431,48 +444,50 @@ func _build_ui() -> void:
 	_bpm_label = Label.new()
 	UITheme.style_mono(_bpm_label, 12, UITheme.MUTED)
 	transport_row.add_child(_bpm_label)
-	var rate_option := OptionButton.new()
-	for item in ["0.5×", "0.75×", "1.0×", "1.25×", "1.5×"]:
-		rate_option.add_item(item)
-	rate_option.selected = 2
-	rate_option.item_selected.connect(func(index: int) -> void:
-		_rate = [0.5, 0.75, 1.0, 1.25, 1.5][index]
-		if _playing:
-			var beat: float = _app.playhead_beat
-			_stop_play()
-			_start_play(beat)
-	)
-	transport_row.add_child(rate_option)
+	# 制谱界面单独保留「流速」，只影响编辑预览的预读速度；试玩里另有同名设置。
 	var flow_label := Label.new()
 	UITheme.style_mono(flow_label, 11, UITheme.MUTED)
 	flow_label.text = "流速"
 	transport_row.add_child(flow_label)
-	var flow_option := OptionButton.new()
-	for item in ["0.25×", "0.5×", "0.75×", "1.0×", "1.25×", "1.5×", "1.75×", "2.0×", "2.5×", "3.0×"]:
-		flow_option.add_item(item)
-	flow_option.selected = 3
-	flow_option.item_selected.connect(func(index: int) -> void:
-		_app.flow_scale = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0][index]
+	var flow_spin := SpinBox.new()
+	flow_spin.min_value = 0.05
+	flow_spin.max_value = 3.0
+	flow_spin.step = 0.05
+	flow_spin.value = _app.flow_scale
+	flow_spin.suffix = "×"
+	flow_spin.custom_minimum_size = Vector2(92, 0)
+	flow_spin.tooltip_text = "编辑预览的预读速度（0.05–3.0，步进 0.05）；试玩流速在「试玩设置」里单独设"
+	flow_spin.focus_mode = Control.FOCUS_NONE
+	flow_spin.get_line_edit().focus_mode = Control.FOCUS_NONE
+	flow_spin.value_changed.connect(func(value: float) -> void:
+		_app.flow_scale = clampf(value, 0.05, 3.0)
 		_preview.flow_scale = _app.flow_scale
 		_preview.request_redraw()
-		_show_toast("流速 %.2f×（只改预读速度，不改判定）" % _app.flow_scale, "info")
 	)
-	transport_row.add_child(flow_option)
-	var star_label := Label.new()
-	UITheme.style_mono(star_label, 11, UITheme.MUTED)
-	star_label.text = "星速"
-	transport_row.add_child(star_label)
-	var star_option := OptionButton.new()
-	for item in ["0.5×", "0.65×", "0.8×", "0.9×", "1.0×", "1.1×", "1.25×", "1.4×", "1.6×", "2.0×"]:
-		star_option.add_item(item)
-	star_option.selected = 4
-	star_option.item_selected.connect(func(index: int) -> void:
-		_app.star_speed = [0.5, 0.65, 0.8, 0.9, 1.0, 1.1, 1.25, 1.4, 1.6, 2.0][index]
-		_preview.star_speed = _app.star_speed
+	transport_row.add_child(flow_spin)
+	_editor_flow_spin = flow_spin
+	# 星星轨迹出现时机（与试玩设置里的「星显」是同一个值）。
+	var lead_label := Label.new()
+	UITheme.style_mono(lead_label, 11, UITheme.MUTED)
+	lead_label.text = "星显"
+	transport_row.add_child(lead_label)
+	var lead_box := SpinBox.new()
+	lead_box.min_value = -1.0
+	lead_box.max_value = 1.0
+	lead_box.step = 0.1
+	lead_box.value = _app.star_lead_beats
+	lead_box.suffix = "拍"
+	lead_box.custom_minimum_size = Vector2(86, 0)
+	lead_box.tooltip_text = "星星轨迹出现时机：+1 更早、-1 更晚，0 = 默认（和试玩设置里的星显是同一个值）"
+	lead_box.focus_mode = Control.FOCUS_NONE
+	lead_box.get_line_edit().focus_mode = Control.FOCUS_NONE
+	lead_box.value_changed.connect(func(value: float) -> void:
+		_app.star_lead_beats = value
+		_preview.star_lead_beats = value
 		_preview.request_redraw()
-		_show_toast("星速 %.2f×（滑条引导星与跟随距离一起缩放）" % _app.star_speed, "info")
 	)
-	transport_row.add_child(star_option)
+	transport_row.add_child(lead_box)
+	_editor_lead_spin = lead_box
 	var loop_check := CheckBox.new()
 	loop_check.text = "循环"
 	loop_check.toggled.connect(func(pressed: bool) -> void: _loop = pressed)
@@ -916,6 +931,9 @@ func _sync_from_app() -> void:
 	_preview.show_debug = _app.debug_overlay
 	_preview.flow_scale = _app.flow_scale
 	_preview.star_speed = _app.star_speed
+	_preview.star_lead_beats = _app.star_lead_beats
+	_preview.star_color = _app.star_color
+	_preview.trace_color = _app.trace_color
 	_preview.note_skin = _app.note_skin
 	_preview.hit_fx_style = _app.hit_fx_style
 	_sfx.set_style(_app.hit_sfx_style)
@@ -1024,20 +1042,50 @@ func _start_play(beat: float) -> void:
 	if _app == null or _app.chart == null:
 		return
 	_ensure_audio()
-	_play_start_chart_ms = _app.chart.timing.beat_to_chart_ms(beat)
-	_play_start_usec = Time.get_ticks_usec()
 	_last_beat_int = -1
 	_build_sfx_events()
+	_playing = true
+	_preview.playing = true
+	_play_button.text = "❚❚"
+	_rebase_playback(beat)
+
+
+## 把播放时钟重新对到 beat：播放中拖动进度条 / 点时间轴都走这里。
+## 不重建音效表，所以可以跟着鼠标连续调用。
+func _rebase_playback(beat: float) -> void:
+	if _app == null or _app.chart == null:
+		return
+	_play_start_chart_ms = _app.chart.timing.beat_to_chart_ms(beat)
+	_play_start_usec = Time.get_ticks_usec()
 	_sfx_event_index = _first_sfx_event(beat)
 	_sfx_last_beat = beat - 0.001
 	if _audio.stream != null:
 		_audio.pitch_scale = _rate
 		var from_sec := maxf(0.0, (_play_start_chart_ms - _app.chart.offset_ms) / 1000.0)
-		_audio.play(from_sec)
-	_playing = true
-	_preview.playing = true
-	_play_button.text = "❚❚"
+		# 音频比谱面短（或跳到了音频末尾之后）就别播了，交给墙钟继续推，
+		# 否则 play() 立刻 finished，播放会被误停。
+		if from_sec < _audio.stream.get_length():
+			_audio.play(from_sec)
+		else:
+			_audio.stop()
 	_app.set_playhead(beat)
+
+
+func _on_seek_requested(beat: float) -> void:
+	if _app == null or _app.chart == null:
+		return
+	if _playing:
+		_rebase_playback(beat)
+	_update_transport(true)
+	_preview.request_redraw()
+
+
+## 进度条拖动 → 拍号。进度条和时间轴共用谱面本身的长度，避免两边刻度不一致。
+func _on_seek_fraction(fraction: float) -> void:
+	if _app == null or _app.chart == null:
+		return
+	_app.seek(clampf(fraction, 0.0, 1.0) * _timeline_total_beats())
+	_update_transport(true)
 
 
 func _stop_play() -> void:
@@ -1050,12 +1098,26 @@ func _stop_play() -> void:
 		_play_button.text = "▶"
 
 
+## 停止并重置播放进度：黄线回到 0:00。
+func _reset_playhead() -> void:
+	_stop_play()
+	if _app != null:
+		_app.set_playhead(0.0)
+	_sync_from_app()
+
+
 func _on_audio_finished() -> void:
 	if not _playing:
 		return
 	if _loop:
 		_start_play(0.0)
-	else:
+		return
+	# 音频可能比谱面短（示例谱、纯节拍音轨）。播完别急停播放：
+	# _process 里的墙钟会接着推进，到达谱面末尾后自己会停。
+	if _app == null or _app.chart == null:
+		_stop_play()
+		return
+	if _app.playhead_beat >= _app.chart.duration_beats():
 		_stop_play()
 
 
@@ -1142,6 +1204,13 @@ func _playback_total_ms() -> float:
 	return total_ms
 
 
+## 进度条、时间标签、时间轴共用同一条时间线：谱面本身的长度。
+func _timeline_total_beats() -> float:
+	if _app == null or _app.chart == null:
+		return 1.0
+	return maxf(1.0, _app.chart.duration_beats())
+
+
 func _update_transport(force: bool = false) -> void:
 	if _app == null or _app.chart == null or _time_label == null:
 		return
@@ -1149,11 +1218,11 @@ func _update_transport(force: bool = false) -> void:
 	if not force and now - _last_transport_msec < 50:
 		return
 	_last_transport_msec = now
-	var total_ms := _playback_total_ms()
-	var total_beats: float = maxf(1.0, _app.chart.timing.chart_ms_to_beat(total_ms))
-	var current_ms: float = _app.chart.timing.beat_to_chart_ms(_app.playhead_beat)
+	var total_beats := _timeline_total_beats()
+	var total_ms: float = _app.chart.timing.beat_to_chart_ms(total_beats)
+	var current_ms: float = _app.chart.timing.beat_to_chart_ms(clampf(_app.playhead_beat, 0.0, total_beats))
 	_time_label.text = "%s / %s" % [_format_ms(current_ms), _format_ms(total_ms)]
-	_progress.value = 100.0 * _app.playhead_beat / total_beats
+	_progress.set_progress(_app.playhead_beat / total_beats)
 	_beat_label.text = _app.chart.timing.format_beat(_app.playhead_beat)
 	_bpm_label.text = "%.1f BPM" % _app.chart.timing.bpm_at(_app.playhead_beat)
 	_save_label.text = ("● 未保存" if _app.dirty else "已保存") + ("  %s" % _app.chart_path.get_file() if not _app.chart_path.is_empty() else "")
@@ -1336,9 +1405,9 @@ func _on_menu(id: int) -> void:
 		41:
 			_set_tool("red")
 		50:
-			_start_playtest(false)
+			_open_playtest_setup(false)
 		51:
-			_start_playtest(true)
+			_open_playtest_setup(true)
 	_update_status()
 
 
@@ -1348,6 +1417,119 @@ func _save() -> void:
 	else:
 		_app.save_chart()
 		_sync_from_app()
+
+
+func _open_playtest_setup(from_start: bool) -> void:
+	if _app == null or _app.chart == null:
+		return
+	_playtest_from_start = from_start
+	if _playtest_dialog == null:
+		_build_playtest_dialog()
+	# 试玩中从暂停菜单打开时，确认键是"完成"而不是"开始"。
+	_playtest_dialog.ok_button_text = "完成" if _playtest != null else "开始"
+	_playtest_rate.value = _rate
+	_playtest_flow.value = _app.flow_scale
+	_playtest_star.value = _app.star_speed
+	_playtest_lead.value = _app.star_lead_beats
+	if _playtest_star_color != null:
+		_playtest_star_color.color = _app.star_color
+	if _playtest_trace_color != null:
+		_playtest_trace_color.color = _app.trace_color
+	_playtest_dialog.popup_centered(Vector2i(380, 240))
+
+
+func _build_playtest_dialog() -> void:
+	_playtest_dialog = AcceptDialog.new()
+	_playtest_dialog.title = "试玩设置"
+	_playtest_dialog.ok_button_text = "开始"
+	_playtest_dialog.min_size = Vector2i(360, 220)
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 10)
+	_playtest_dialog.add_child(box)
+	_playtest_rate = _playtest_spin_row(box, "倍速", 0.5, 2.0, 0.05, 1.0, "×")
+	_playtest_flow = _playtest_spin_row(box, "流速", 0.05, 3.0, 0.05, 1.0, "×")
+	_playtest_star = _playtest_spin_row(box, "星速", 0.5, 2.0, 0.05, 1.0, "×")
+	_playtest_lead = _playtest_spin_row(box, "星显", -1.0, 1.0, 0.1, 0.0, "拍")
+	# 星星主色（全局单色系）。
+	var color_row := HBoxContainer.new()
+	box.add_child(color_row)
+	var color_label := Label.new()
+	color_label.text = "星星颜色"
+	color_label.custom_minimum_size = Vector2(64, 0)
+	UITheme.style_mono(color_label, 12, UITheme.MUTED)
+	color_row.add_child(color_label)
+	_playtest_trace_color = ColorPickerButton.new()
+	_playtest_star_color = ColorPickerButton.new()
+	_playtest_star_color.edit_alpha = false
+	_playtest_star_color.custom_minimum_size = Vector2(0, 26)
+	_playtest_star_color.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	color_row.add_child(_playtest_star_color)
+	var trace_row := HBoxContainer.new()
+	box.add_child(trace_row)
+	var trace_label := Label.new()
+	trace_label.text = "轨迹颜色"
+	trace_label.custom_minimum_size = Vector2(64, 0)
+	UITheme.style_mono(trace_label, 12, UITheme.MUTED)
+	trace_row.add_child(trace_label)
+	_playtest_trace_color = ColorPickerButton.new()
+	_playtest_trace_color.edit_alpha = false
+	_playtest_trace_color.custom_minimum_size = Vector2(0, 26)
+	_playtest_trace_color.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	trace_row.add_child(_playtest_trace_color)
+	add_child(_playtest_dialog)
+	_playtest_dialog.confirmed.connect(_begin_playtest_with_settings)
+
+
+func _playtest_spin_row(parent: VBoxContainer, label_text: String, lo: float, hi: float, step: float, value: float, suffix: String) -> SpinBox:
+	var row := HBoxContainer.new()
+	parent.add_child(row)
+	var label := Label.new()
+	label.text = label_text
+	label.custom_minimum_size = Vector2(64, 0)
+	UITheme.style_mono(label, 12, UITheme.MUTED)
+	row.add_child(label)
+	var spin := SpinBox.new()
+	spin.min_value = lo
+	spin.max_value = hi
+	spin.step = step
+	spin.value = value
+	spin.suffix = suffix
+	spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_child(spin)
+	return spin
+
+
+func _begin_playtest_with_settings() -> void:
+	_rate = _playtest_rate.value
+	_app.flow_scale = _playtest_flow.value
+	_app.star_speed = _playtest_star.value
+	_app.star_lead_beats = _playtest_lead.value
+	if _playtest_star_color != null:
+		_app.star_color = _playtest_star_color.color
+	if _playtest_trace_color != null:
+		_app.trace_color = _playtest_trace_color.color
+	_preview.flow_scale = _app.flow_scale
+	_preview.star_speed = _app.star_speed
+	_preview.star_lead_beats = _app.star_lead_beats
+	_preview.star_color = _app.star_color
+	_preview.trace_color = _app.trace_color
+	_preview.star_lead_beats = _app.star_lead_beats
+	_preview.star_color = _app.star_color
+	_preview.trace_color = _app.trace_color
+	_preview.request_redraw()
+	# 试玩中从暂停菜单改设置：直接应用到正在跑的预览。
+	if _playtest != null:
+		_playtest._preview.flow_scale = _app.flow_scale
+		_playtest._preview.star_speed = _app.star_speed
+		_playtest._preview.star_lead_beats = _app.star_lead_beats
+		_playtest._preview.star_color = _app.star_color
+		_playtest._preview.trace_color = _app.trace_color
+		_playtest._preview.request_redraw()
+	if _editor_flow_spin != null:
+		_editor_flow_spin.value = _app.flow_scale
+	if _editor_lead_spin != null:
+		_editor_lead_spin.value = _app.star_lead_beats
+	_start_playtest(_playtest_from_start)
 
 
 func _start_playtest(from_start: bool) -> void:
@@ -1369,6 +1551,7 @@ func _start_playtest(from_start: bool) -> void:
 	_playtest.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_playtest.setup(_app.chart, 0.0 if from_start else _app.playhead_beat, _app.chart_path)
 	_playtest.exit_requested.connect(_end_playtest)
+	_playtest.settings_requested.connect(func() -> void: _open_playtest_setup(false))
 
 
 func _end_playtest() -> void:
@@ -1383,14 +1566,17 @@ func _end_playtest() -> void:
 	_sync_from_app()
 
 
-func _unhandled_input(event: InputEvent) -> void:
+func _input(event: InputEvent) -> void:
 	if _playtest != null:
 		return
 	if event is InputEventKey and event.pressed and not event.echo:
 		var focus := get_viewport().gui_get_focus_owner()
-		if focus is LineEdit or focus is SpinBox or focus is TextEdit:
-			if event.keycode != KEY_F5 and event.keycode != KEY_F6:
-				return
+		# 数值框（SpinBox）内部的 LineEdit 不当作"正在打字"，否则它会吃掉空格等全局快捷键。
+		var typing := focus is TextEdit
+		if focus is LineEdit and not (focus.get_parent() is SpinBox):
+			typing = true
+		if typing and event.keycode != KEY_F5 and event.keycode != KEY_F6:
+			return
 		match event.keycode:
 			KEY_SPACE:
 				if event.ctrl_pressed:
@@ -1427,7 +1613,7 @@ func _unhandled_input(event: InputEvent) -> void:
 					_sync_from_app()
 					accept_event()
 			KEY_F5:
-				_start_playtest(event.shift_pressed)
+				_open_playtest_setup(event.shift_pressed)
 				accept_event()
 			KEY_F6:
 				_inspector.current_tab = 5
