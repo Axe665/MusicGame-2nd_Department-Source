@@ -1419,9 +1419,9 @@ func _update_cursor() -> void:
 				counted += 1
 		_avg_radius_cache = total / float(maxi(1, counted)) if counted > 0 else 100.0
 	var average := _avg_radius_cache
-	# 判定环吸附范围：环内整片 + 环外仍留一段缓冲，避免边缘稍偏就失效。
-	var threshold := maxf(36.0, average * 0.45)
-	var inside_circle := mouse_screen.distance_to(center) <= average * 1.08
+	# 判定环吸附范围：环内整片 + 环外再留一大段缓冲，边缘稍偏也不会失效。
+	var threshold := maxf(64.0, average * 0.75)
+	var inside_circle := mouse_screen.distance_to(center) <= average * 1.15
 	var near_center := mouse_screen.distance_to(center) < average * 0.05
 	var valid := (inside_circle or distance <= threshold) and not near_center
 	if playtest_mode:
