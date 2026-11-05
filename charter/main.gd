@@ -457,11 +457,11 @@ func _build_ui() -> void:
 	var flow_spin := SpinBox.new()
 	flow_spin.min_value = 0.05
 	flow_spin.max_value = 3.0
-	flow_spin.step = 0.05
+	flow_spin.step = 0.01
 	flow_spin.value = _app.flow_scale
 	flow_spin.suffix = "×"
 	flow_spin.custom_minimum_size = Vector2(92, 0)
-	flow_spin.tooltip_text = "编辑预览的预读速度（0.05–3.0，步进 0.05）；试玩流速在「试玩设置」里单独设"
+	flow_spin.tooltip_text = "编辑预览的预读速度（0.05–3.0，步进 0.01）；试玩流速在「试玩设置」里单独设"
 	flow_spin.focus_mode = Control.FOCUS_NONE
 	flow_spin.get_line_edit().focus_mode = Control.FOCUS_NONE
 	flow_spin.value_changed.connect(func(value: float) -> void:
@@ -1455,7 +1455,7 @@ func _build_playtest_dialog() -> void:
 	box.add_theme_constant_override("separation", 10)
 	_playtest_dialog.add_child(box)
 	_playtest_rate = _playtest_spin_row(box, "倍速", 0.5, 2.0, 0.05, 1.0, "×")
-	_playtest_flow = _playtest_spin_row(box, "流速", 0.05, 3.0, 0.05, 1.0, "×")
+	_playtest_flow = _playtest_spin_row(box, "流速", 0.05, 3.0, 0.01, 1.0, "×")
 	_playtest_star = _playtest_spin_row(box, "星速", 0.5, 2.0, 0.05, 1.0, "×")
 	# 星星主色（全局单色系）。
 	var color_row := HBoxContainer.new()
