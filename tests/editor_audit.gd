@@ -265,7 +265,7 @@ func _audit_source() -> void:
 	_check("X 擦除快捷键", main_text.contains("KEY_X"))
 	_check("Ctrl+Shift+V 视频属性", main_text.contains("KEY_V") and main_text.contains("ctrl_pressed") and main_text.contains("shift_pressed"))
 	_check("Anchor 双锚点创建", inspector_text.contains("_add_anchor_pair"))
-	_check("多语言切换", main_text.contains("tr(") or FileAccess.file_exists("res://assets/translations"))
+	_check("多语言切换", main_text.contains("TranslationServer") or FileAccess.file_exists("res://assets/translations"))
 	_check("色盲/减少动效设置", main_text.contains("colorblind") or main_text.contains("reduce_motion"))
 	if not (main_text.contains("KEY_C") and main_text.contains("KEY_V")):
 		_part("编辑快捷键", "复制/粘贴只有检查器按钮，无 Ctrl+C/V 剪贴板")

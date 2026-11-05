@@ -57,6 +57,7 @@ var _last_beat_int: int = -1
 var _open_dialog: FileDialog
 var _save_dialog: FileDialog
 var _import_dialog: FileDialog
+var _snap_option: OptionButton
 var _lbp_dialog: FileDialog
 var _report_dialog: AcceptDialog
 var _difficulty_dialog: ConfirmationDialog
@@ -74,14 +75,12 @@ var _playtest_dialog: AcceptDialog = null
 var _playtest_rate: SpinBox = null
 var _playtest_flow: SpinBox = null
 var _playtest_star: SpinBox = null
-var _playtest_lead: SpinBox = null
 var _playtest_star_color: ColorPickerButton = null
 var _playtest_trace_color: ColorPickerButton = null
 var _playtest_from_start: bool = false
 ## 制谱界面保留的流速输入框（试玩设置改流速后要同步回来）。
 var _editor_flow_spin: SpinBox = null
 ## 制谱界面保留的「星显」输入框，和试玩设置共用同一个值。
-var _editor_lead_spin: SpinBox = null
 var _cursor_u: float = 0.0
 var _issues: Array = []
 
@@ -114,6 +113,9 @@ func _ready() -> void:
 				_sfx.play("don")
 		)
 		_app.validation_changed.connect(_update_validation)
+		_app.snap_changed.connect(_on_snap_changed)
+		_app.audio_import_requested.connect(_on_audio_import_requested)
+		_app.audio_detect_requested.connect(_on_audio_detect_requested)
 		_app.chart_changed.emit()
 	_sync_from_app()
 	for intro_control in [_canvas, _inspector, _palette, _preview]:
@@ -163,7 +165,7 @@ func _build_ui() -> void:
 		["撤销", 10], ["重做", 11], ["-", 0], ["删除", 12], ["取消选择", 13], ["全选可见", 14],
 	]))
 	brand_row.add_child(_menu("视图", [
-		["显示/隐藏 HUD", 20], ["调试叠层", 21], ["波形", 22], ["-", 0], ["边界状态轨", 23], ["时间 / BPM (F6)", 24],
+		["显示/隐藏 HUD", 20], ["调试叠层", 21], ["波形", 22], ["从上往下写入", 25], ["-", 0], ["边界状态轨", 23], ["时间 / BPM (F6)", 24],
 	]))
 	brand_row.add_child(_menu("插入", [
 		["Tap", 30], ["Hold", 31], ["Path", 32], ["Trace", 33], ["Anchor", 34], ["Bell", 35], ["Red", 36], ["-", 0], ["BoundaryEvent", 37], ["RingState 关键帧", 38],
@@ -303,14 +305,17 @@ func _build_ui() -> void:
 	snap_text.add_theme_color_override("font_color", UITheme.MUTED)
 	tool_row.add_child(snap_text)
 	var snap_option := OptionButton.new()
-	for item in ["1/1", "1/2", "1/4", "1/8", "1/16", "1/32"]:
+	for item in GridDivisions.LABELS:
 		snap_option.add_item(item)
-	snap_option.selected = 2
+	var initial_division: int = _app.snap_division if _app != null else GridDivisions.DEFAULT_DIVISION
+	snap_option.selected = GridDivisions.index_of(initial_division)
 	snap_option.item_selected.connect(func(index: int) -> void:
-		_app.snap_denominator = [1, 2, 4, 8, 16, 32][index]
+		if _app != null:
+			_app.set_snap_division(GridDivisions.ITEMS[index])
 		_update_status()
 	)
 	tool_row.add_child(snap_option)
+	_snap_option = snap_option
 
 	var main_row := HBoxContainer.new()
 	main_row.name = "MainRow"
@@ -466,28 +471,6 @@ func _build_ui() -> void:
 	)
 	transport_row.add_child(flow_spin)
 	_editor_flow_spin = flow_spin
-	# 星星轨迹出现时机（与试玩设置里的「星显」是同一个值）。
-	var lead_label := Label.new()
-	UITheme.style_mono(lead_label, 11, UITheme.MUTED)
-	lead_label.text = "星显"
-	transport_row.add_child(lead_label)
-	var lead_box := SpinBox.new()
-	lead_box.min_value = -1.0
-	lead_box.max_value = 1.0
-	lead_box.step = 0.1
-	lead_box.value = _app.star_lead_beats
-	lead_box.suffix = "拍"
-	lead_box.custom_minimum_size = Vector2(86, 0)
-	lead_box.tooltip_text = "星星轨迹出现时机：+1 更早、-1 更晚，0 = 默认（和试玩设置里的星显是同一个值）"
-	lead_box.focus_mode = Control.FOCUS_NONE
-	lead_box.get_line_edit().focus_mode = Control.FOCUS_NONE
-	lead_box.value_changed.connect(func(value: float) -> void:
-		_app.star_lead_beats = value
-		_preview.star_lead_beats = value
-		_preview.request_redraw()
-	)
-	transport_row.add_child(lead_box)
-	_editor_lead_spin = lead_box
 	var loop_check := CheckBox.new()
 	loop_check.text = "循环"
 	loop_check.toggled.connect(func(pressed: bool) -> void: _loop = pressed)
@@ -931,7 +914,6 @@ func _sync_from_app() -> void:
 	_preview.show_debug = _app.debug_overlay
 	_preview.flow_scale = _app.flow_scale
 	_preview.star_speed = _app.star_speed
-	_preview.star_lead_beats = _app.star_lead_beats
 	_preview.star_color = _app.star_color
 	_preview.trace_color = _app.trace_color
 	_preview.note_skin = _app.note_skin
@@ -1236,12 +1218,7 @@ func _update_status() -> void:
 	if _status_u != null:
 		_status_u.text = "u %.1f°" % (_cursor_u * 360.0)
 		_status_beat.text = "bar " + _app.chart.timing.format_beat(_app.playhead_beat)
-		var snap := "1/%d" % _app.snap_denominator
-		if _app.snap_triplet:
-			snap += "T"
-		if _app.snap_quint:
-			snap += "Q"
-		_status_snap.text = "吸附 " + snap
+		_status_snap.text = "吸附 " + GridDivisions.label(_app.snap_division) + ("" if _app.time_flows_down else " · 反向")
 		_status_sel.text = "选中 %d" % _app.selected_notes.size()
 		_status_shape.text = "边界 " + _app.chart.default_shape_id
 		var errors: Array = Validator.errors(_issues)
@@ -1274,6 +1251,34 @@ func _update_validation(issues: Array) -> void:
 		_validation_label.text = "● 校验通过"
 		_validation_label.add_theme_color_override("font_color", UITheme.GREEN)
 	_update_status()
+
+
+func _on_snap_changed(division: int) -> void:
+	if _snap_option == null:
+		return
+	var index := GridDivisions.index_of(division)
+	if _snap_option.selected != index:
+		_snap_option.select(index)
+
+
+func _on_audio_import_requested() -> void:
+	_audio_dialog.popup_centered_ratio(0.8)
+
+
+func _on_audio_detect_requested(path: String) -> void:
+	if path.strip_edges().is_empty():
+		_audio_dialog.popup_centered_ratio(0.8)
+		return
+	_song_dialog.open_for(path)
+
+
+func _on_audio_selected(path: String) -> void:
+	_song_dialog.open_for(path)
+
+
+func _on_song_timing_applied() -> void:
+	_sync_from_app()
+	_show_toast("已写入识别结果；可在“时间”页继续微调 BPM / offset。", "info")
 
 
 func _on_import_osz_selected(path: String) -> void:
@@ -1368,6 +1373,8 @@ func _on_menu(id: int) -> void:
 			_chart_browser.popup_centered_ratio(0.8)
 		7:
 			_lbp_dialog.popup_centered_ratio(0.75)
+		8:
+			_audio_dialog.popup_centered_ratio(0.8)
 		5:
 			get_tree().quit()
 		10:
@@ -1390,6 +1397,8 @@ func _on_menu(id: int) -> void:
 			_preview.show_debug = _app.debug_overlay
 		22:
 			_app.waveform_visible = not _app.waveform_visible
+		25:
+			_app.set_time_flows_down(not _app.time_flows_down)
 		23:
 			_show_toast("边界状态轨：RingState 关键帧在视图页编辑。", "info")
 		24:
@@ -1430,7 +1439,6 @@ func _open_playtest_setup(from_start: bool) -> void:
 	_playtest_rate.value = _rate
 	_playtest_flow.value = _app.flow_scale
 	_playtest_star.value = _app.star_speed
-	_playtest_lead.value = _app.star_lead_beats
 	if _playtest_star_color != null:
 		_playtest_star_color.color = _app.star_color
 	if _playtest_trace_color != null:
@@ -1449,7 +1457,6 @@ func _build_playtest_dialog() -> void:
 	_playtest_rate = _playtest_spin_row(box, "倍速", 0.5, 2.0, 0.05, 1.0, "×")
 	_playtest_flow = _playtest_spin_row(box, "流速", 0.05, 3.0, 0.05, 1.0, "×")
 	_playtest_star = _playtest_spin_row(box, "星速", 0.5, 2.0, 0.05, 1.0, "×")
-	_playtest_lead = _playtest_spin_row(box, "星显", -1.0, 1.0, 0.1, 0.0, "拍")
 	# 星星主色（全局单色系）。
 	var color_row := HBoxContainer.new()
 	box.add_child(color_row)
@@ -1503,17 +1510,14 @@ func _begin_playtest_with_settings() -> void:
 	_rate = _playtest_rate.value
 	_app.flow_scale = _playtest_flow.value
 	_app.star_speed = _playtest_star.value
-	_app.star_lead_beats = _playtest_lead.value
 	if _playtest_star_color != null:
 		_app.star_color = _playtest_star_color.color
 	if _playtest_trace_color != null:
 		_app.trace_color = _playtest_trace_color.color
 	_preview.flow_scale = _app.flow_scale
 	_preview.star_speed = _app.star_speed
-	_preview.star_lead_beats = _app.star_lead_beats
 	_preview.star_color = _app.star_color
 	_preview.trace_color = _app.trace_color
-	_preview.star_lead_beats = _app.star_lead_beats
 	_preview.star_color = _app.star_color
 	_preview.trace_color = _app.trace_color
 	_preview.request_redraw()
@@ -1521,14 +1525,11 @@ func _begin_playtest_with_settings() -> void:
 	if _playtest != null:
 		_playtest._preview.flow_scale = _app.flow_scale
 		_playtest._preview.star_speed = _app.star_speed
-		_playtest._preview.star_lead_beats = _app.star_lead_beats
 		_playtest._preview.star_color = _app.star_color
 		_playtest._preview.trace_color = _app.trace_color
 		_playtest._preview.request_redraw()
 	if _editor_flow_spin != null:
 		_editor_flow_spin.value = _app.flow_scale
-	if _editor_lead_spin != null:
-		_editor_lead_spin.value = _app.star_lead_beats
 	_start_playtest(_playtest_from_start)
 
 

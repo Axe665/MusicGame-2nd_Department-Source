@@ -9,10 +9,13 @@ const NATIVE_AUDIO := ["wav", "ogg", "mp3"]
 const SUPPORTED_AUDIO := ["wav", "ogg", "mp3", "flac"]
 const NATIVE_VIDEO := ["ogv"]
 
+## Executable used for every conversion. The editor keeps this in sync with its
+## own setting so a bundled or non-PATH ffmpeg also works for audio analysis.
+static var ffmpeg_exe: String = "ffmpeg"
+
 static var _ffmpeg_checked := false
 static var _ffmpeg_available := false
 static var last_error: String = ""
-static var ffmpeg_exe: String = "ffmpeg"
 
 
 static func set_ffmpeg_exe(path: String) -> void:

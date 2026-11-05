@@ -490,13 +490,6 @@ func _build_note_page_for(page: VBoxContainer, note: Note) -> void:
 			_active_note.path_speed = value
 	)
 	_note_widgets["path_speed"] = speed
-	# 轨迹启动时间：星头落线后等这么久，轨迹与尾判才出现（0–2000ms）。
-	var delay := _spin(path_body, "启动时间 ms", note.start_delay_ms, 0.0, 2000.0, 10.0, func(value: float) -> void:
-		if _active_note != null:
-			_active_note.start_delay_ms = snappedf(value, 10.0)
-	)
-	_note_widgets["path_delay"] = delay
-	_label(path_body, "启动时间内只有星头；到点后轨迹与尾判才出现，尾判时间整体后移。", 11, UITheme.MUTED)
 	var path_counts := _label(path_body, "", 11, UITheme.MUTED)
 	_note_widgets["path_counts"] = path_counts
 	_buttons(path_body, [{"text": "重画 Path", "callback": func() -> void: _app.set_tool("path")}])
@@ -708,7 +701,6 @@ func _refresh_note_page() -> void:
 		_note_widgets["path_tol"].value = note.tolerance
 		_note_widgets["path_samples"].value = note.samples_per_beat
 		_note_widgets["path_speed"].value = note.path_speed
-		_note_widgets["path_delay"].value = note.start_delay_ms
 		_note_widgets["path_counts"].text = "中间判定点：%d 个；平面点：%d 个" % [note.path_sample_beats().size(), note.trace_pts.size()]
 		_fill_visual_list(_note_widgets["path_list"], note)
 		_note_widgets["path_erase"].value = _path_erase_width(note) * 100.0
@@ -992,11 +984,12 @@ func _build_view_page(page: VBoxContainer) -> void:
 		_app.status_changed.emit()
 	)
 	_section(page, "吸附")
-	_option(page, "网格", ["1/1", "1/2", "1/4", "1/8", "1/16", "1/32"], [1, 2, 4, 8, 16, 32].find(_app.snap_denominator), func(index: int) -> void:
-		_app.snap_denominator = [1, 2, 4, 8, 16, 32][index]
+	_option(page, "分音", GridDivisions.LABELS, GridDivisions.index_of(_app.snap_division), func(index: int) -> void:
+		_app.set_snap_division(GridDivisions.ITEMS[index])
 	)
-	_check(page, "三连", _app.snap_triplet, func(value: bool) -> void: _app.snap_triplet = value)
-	_check(page, "五连", _app.snap_quint, func(value: bool) -> void: _app.snap_quint = value)
+	_check(page, "从上往下写入", _app.time_flows_down, func(value: bool) -> void:
+		_app.set_time_flows_down(value)
+	)
 	_section(page, "视频")
 	var video_path := LineEdit.new()
 	video_path.text = _app.chart.video_path
@@ -1050,6 +1043,10 @@ func _build_chart_page(page: VBoxContainer) -> void:
 	_text(page, "音频路径", chart.audio_path, func(value: String) -> void: chart.audio_path = value)
 	_text(page, "视频路径", chart.video_path, func(value: String) -> void: chart.video_path = value)
 	_label(page, "时间/BPM/offset 已统一移到“时间”页。", 11, UITheme.MUTED)
+	_buttons(page, [
+		{"text": "选择音频并识别 BPM", "callback": func() -> void: _app.request_audio_import()},
+		{"text": "重新识别当前音频", "callback": func() -> void: _app.request_audio_detect()},
+	])
 	_buttons(page, [
 		{"text": "保存谱面", "callback": func() -> void: _app.save_chart()},
 	])
