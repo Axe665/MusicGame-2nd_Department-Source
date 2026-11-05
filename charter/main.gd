@@ -238,7 +238,7 @@ func _build_ui() -> void:
 	vertical_label.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	tool_row.add_child(vertical_label)
 	_vertical_lines_edit = LineEdit.new()
-	_vertical_lines_edit.text = str(_app.vertical_lines if _app != null else 21)
+	_vertical_lines_edit.text = str(_app.vertical_lines if _app != null else 11)
 	_vertical_lines_edit.custom_minimum_size = Vector2(48, 26)
 	_vertical_lines_edit.max_length = 3
 	_vertical_lines_edit.alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -303,6 +303,7 @@ func _build_ui() -> void:
 	snap_text.add_theme_font_override("font", UITheme.mono_font())
 	snap_text.add_theme_font_size_override("font_size", 9)
 	snap_text.add_theme_color_override("font_color", UITheme.MUTED)
+	snap_text.visible = false
 	tool_row.add_child(snap_text)
 	var snap_option := OptionButton.new()
 	for item in GridDivisions.LABELS:
@@ -314,6 +315,7 @@ func _build_ui() -> void:
 			_app.set_snap_division(GridDivisions.ITEMS[index])
 		_update_status()
 	)
+	snap_option.visible = false
 	tool_row.add_child(snap_option)
 	_snap_option = snap_option
 
@@ -505,6 +507,7 @@ func _build_ui() -> void:
 	_status_u = _status_label("u 0.0°")
 	_status_beat = _status_label("bar 0:0:4")
 	_status_snap = _status_label("吸附 1/4")
+	_status_snap.visible = false
 	_status_sel = _status_label("选中 0")
 	_status_shape = _status_label("边界 S0")
 	_status_error = _status_label("校验 —")
@@ -1674,6 +1677,8 @@ func _input(event: InputEvent) -> void:
 				_canvas._delete_selection()
 				accept_event()
 			KEY_ESCAPE:
+				_canvas._cancel_pending()
+				_app.set_tool("select")
 				if _playing:
 					_stop_play()
 				elif _canvas.has_clipboard():

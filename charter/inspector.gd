@@ -310,6 +310,7 @@ func _build_note_page(page: VBoxContainer) -> void:
 		for item in _app.get_selected_notes():
 			types[item.type] = true
 		_label(page, "类型：%s" % ",".join(types.keys()), 12, UITheme.MUTED)
+		_label(page, "快捷键：批量复制 Ctrl+C ｜ 批量粘贴 Ctrl+V ｜ 批量镜像粘贴 Ctrl+A", 11, UITheme.CYAN)
 		_buttons(page, [
 			{"text": "删除选中", "callback": _delete_selected},
 			{"text": "解锁", "callback": _unlock_selected},
@@ -983,10 +984,7 @@ func _build_view_page(page: VBoxContainer) -> void:
 		_app.mouse_tilt = value
 		_app.status_changed.emit()
 	)
-	_section(page, "吸附")
-	_option(page, "分音", GridDivisions.LABELS, GridDivisions.index_of(_app.snap_division), func(index: int) -> void:
-		_app.set_snap_division(GridDivisions.ITEMS[index])
-	)
+	_section(page, "编辑")
 	_check(page, "从上往下写入", _app.time_flows_down, func(value: bool) -> void:
 		_app.set_time_flows_down(value)
 	)
