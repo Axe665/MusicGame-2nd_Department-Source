@@ -10,6 +10,8 @@ const TYPES := ["tap", "hold", "path", "trace", "anchor", "bell"]
 ## 数值同时用于绘制与判定，看到的长度就是能打到的长度。
 const TAP_LENGTH_SCALE := 0.5
 const HOLD_HEAD_LENGTH_SCALE := 0.5
+## 舞萌星星的默认深蓝色。
+const DEFAULT_PATH_COLOR := Color(0.55, 0.75, 1.0)
 const SIZED_TAP_MIN := 0.0
 const SIZED_TAP_MAX := 1.5
 ## 出现时（环心）的长度 = 1/6 l，飞向判定环的过程中长到 1 l。
@@ -49,6 +51,9 @@ var trace_pts: Array[Dictionary] = []
 var anchor_pair: int = -1
 var pair_id: String = ""
 var color: int = 0
+## 谱师自定义的星星颜色（只对 Path 生效）；默认 false 表示用统一绿色。
+var has_custom_color: bool = false
+var custom_color: Color = DEFAULT_PATH_COLOR
 var lock: bool = false
 var center_u: float = 0.25
 
@@ -58,7 +63,7 @@ func _init(p_type: String = "tap", p_beat: float = 0.0, p_angle: float = 0.0, p_
 	beat = p_beat
 	angle = p_angle
 	width = p_width
-	if type == "path":
+	if type == "path" or type == "trace":
 		space = "plane"
 
 
@@ -118,12 +123,16 @@ func path_local_at(relative_beat: float, delay: float = 0.0) -> Vector2:
 	# Path 只允许平面：有显式二维点时按点走，旧环 Path 则迁移成
 	# 半径 1.0 → 0.72 的平面弧，头仍在环上。
 	if not trace_pts.is_empty():
-		return _path_plane_at(local_time)
+		return trace_local_at(local_time)
 	var a := path_angle_at(local_time)
 	return _unit_from_angle(a) * lerpf(1.0, 0.72, p)
 
 
-func _path_plane_at(relative_beat: float) -> Vector2:
+## trace_pts 在相对拍处的位置。点的 x/y 是“环半径 = 1.0”的设计坐标：
+## 长度 1.0 就是环外缘，因此环上与平面上的 trace 用的是同一份数据。
+func trace_local_at(relative_beat: float) -> Vector2:
+	if trace_pts.is_empty():
+		return Vector2.ZERO
 	var target := clampf(relative_beat, 0.0, duration())
 	var previous: Dictionary = trace_pts[0]
 	if target <= float(previous.get("db", 0.0)):
@@ -233,7 +242,11 @@ func mirror_u() -> void:
 	center_u = 1.0 - center_u
 	plane_x = 1.0 - plane_x
 	for point in trace_pts:
-		point["x"] = 1.0 - float(point.get("x", 0.0))
+		if type == "trace":
+			# Trace 的 x/y 是“环半径 = 1.0”的设计坐标：左右镜像即 x 取反。
+			point["x"] = -float(point.get("x", 0.0))
+		else:
+			point["x"] = 1.0 - float(point.get("x", 0.0))
 	for point in visual_pts:
 		point["da"] = -float(point.get("da", 0.0))
 
@@ -248,7 +261,7 @@ func to_dict() -> Dictionary:
 		"color": color,
 		"lock": lock,
 	}
-	if space != "ring" and type != "path":
+	if space != "ring" and type != "path" and type != "trace":
 		data["space"] = space
 		data["plane_x"] = snappedf(plane_x, 0.0001)
 		data["plane_y"] = snappedf(plane_y, 0.0001)
@@ -266,6 +279,9 @@ func to_dict() -> Dictionary:
 			if not visual_pts.is_empty():
 				data["visual"] = _points_to_dict(visual_pts)
 		"path":
+			# 谱师自定义的星星颜色（RGB 0–255）；不写就用默认绿。
+			if has_custom_color:
+				data["rgb"] = [int(round(custom_color.r * 255.0)), int(round(custom_color.g * 255.0)), int(round(custom_color.b * 255.0))]
 			data["space"] = "plane"
 			data["end_beat"] = snappedf(end_beat, 0.001)
 			if wait_beat > 0.0:
@@ -292,6 +308,8 @@ func to_dict() -> Dictionary:
 				data["wait"] = snappedf(wait_beat, 0.001)
 			data["move"] = snappedf(move_px, 0.001)
 			data["trace"] = _points_to_dict(trace_pts)
+			# 默认平面；贴环的 trace 必须显式写出来，老谱面才会被当成平面迁移。
+			data["space"] = space if space in ["ring", "plane"] else "plane"
 			if trace_style != "wipe":
 				data["trace_style"] = trace_style
 		"anchor":
@@ -328,7 +346,7 @@ static func from_dict(raw: Dictionary) -> Note:
 	note.path_speed = float(raw.get("speed", 1.0))
 	note.path_style = String(raw.get("path_style", "arc"))
 	note.trace_style = String(raw.get("trace_style", "wipe"))
-	note.space = String(raw.get("space", "plane" if note.type == "path" else "ring"))
+	note.space = String(raw.get("space", "plane" if note.type in ["path", "trace"] else "ring"))
 	note.plane_x = float(raw.get("plane_x", 0.5))
 	note.plane_y = float(raw.get("plane_y", 0.5))
 	note.plane_radius = float(raw.get("plane_radius", 0.10))
@@ -338,13 +356,28 @@ static func from_dict(raw: Dictionary) -> Note:
 	note.sized = bool(raw.get("sized", false)) and note.type == "tap"
 	note.size_ratio = clampf(float(raw.get("size", 1.0)), SIZED_TAP_MIN, SIZED_TAP_MAX)
 	note.start_delay_ms = maxf(0.0, float(raw.get("delay_ms", 0.0)))
+	if raw.has("rgb"):
+		var rgb: Array = raw.get("rgb", [])
+		if rgb.size() >= 3:
+			note.custom_color = Color(float(rgb[0]) / 255.0, float(rgb[1]) / 255.0, float(rgb[2]) / 255.0)
+			note.has_custom_color = true
 	if raw.has("visual"):
 		note.visual_pts = _points_from_array(raw.get("visual", []))
 	if raw.has("path_gaps"):
 		note.path_gaps = _ranges_from_array(raw.get("path_gaps", []))
 	if raw.has("trace"):
 		note.trace_pts = _points_from_array(raw.get("trace", []))
+		if note.type == "trace" and not raw.has("space") and note.trace_style != "slider":
+			note._migrate_legacy_trace_points()
 	return note
+
+
+## 旧版 Trace 的 x/y 是 0..1 的屏幕比例（老预览窗直接按像素铺开）。
+## 这里换算成“环半径 = 1.0”的设计坐标，并按 16:9 的舞台铺满环内。
+func _migrate_legacy_trace_points() -> void:
+	for point in trace_pts:
+		point["x"] = (float(point.get("x", 0.5)) - 0.5) * 3.2
+		point["y"] = (float(point.get("y", 0.5)) - 0.5) * 1.8
 
 
 static func _ranges_to_array(ranges: Array[Dictionary]) -> Array[Dictionary]:

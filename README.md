@@ -23,7 +23,7 @@ godot --path .
 - 试玩中 `[` / `]`：判定偏移 -5 / +5 ms（±200ms），顶部显示当前 OFF
 - Ctrl+S：保存；Ctrl+Shift+S：另存为；Ctrl+O：打开；Ctrl+N：新建
 - Ctrl+Z / Ctrl+Y：撤销 / 重做（200 步）
-- 1–8：Tap / Hold / Path / Trace / Anchor / Bell / Red / 大小 Tap
+- 1–7：Tap / Hold / Path / Trace / Anchor / Bell / Red（Tap 与"大小 Tap"已合并成一张卡，长度在检查器里调）
 - B：边界编辑；E：事件；H：HUD；Delete：删除选中
 - 右键单击音符 / 红区 / 事件：直接删除；右键按住拖动仍是框选
 - 右键拖拽：框选音符；随后左键松开结束选择（结束动作不会放置音符）
@@ -62,10 +62,12 @@ godot --path .
 - 音量：运输条“音乐”“音效”两个滑杆，分别控制 `Music` / `SFX` 总线；编辑器播放、试玩、打击音共用总线设置
 - 游玩范围：所有 note 以**八角舞台安全矩形**为准；手绘 Trace 在落点时夹到安全区，环上 note 保持在环内
 - 接近表现：所有音符（Tap / Hold / Path / Trace / Anchor / Bell）都从圆心飞向判定环并随预读放大，轨迹和星尾一起长出，不再原地出现；Hold 完成后 0.24 拍渐隐
-- 长度体系：l = 旧版 Tap 与判定环重合时的条带长度（即 `note.width`）。新版普通 Tap 与 Hold 头都是 **0.5 l**，且"看到多长 = 能打多长"（绘制与判定共用 `Note.arc_width()`）；**大小 Tap**（第 8 张卡）可用检查器"长度 ×l" 调到 **0.00–1.50 l**（两位小数），0 长度仍保留一个点标记；Tap / Hold 在环心出现时只有 **1/6 l**，飞近判定环时长到 1 l
+- 长度体系：l = 旧版 Tap 与判定环重合时的条带长度（即 `note.width`）。新版普通 Tap 与 Hold 头都是 **0.5 l**，且"看到多长 = 能打多长"（绘制与判定共用 `Note.arc_width()`）；**Tap 的长度**直接在检查器"长度 ×l" 调到 **0.00–1.50 l**（两位小数），改了就自动变成"大小 Tap"，"恢复 0.5 l" 按钮可还原，0 长度仍保留一个点标记；Tap / Hold 在环心出现时只有 **1/6 l**，飞近判定环时长到 1 l
 - Path / Trace 视觉尺寸统一 ×2（`PATH_SIZE_SCALE` / `TRACE_SIZE_SCALE`）：笔画、V 形箭头、星头、尾环、进度球、Trace 端点与宽度全部放大，轨迹几何与判定不变
 - Hold 外观：头部与 Tap 用同一条"长度条"（`_draw_length_band`），只是主体色换成黄色，缩放节奏与 Tap 完全一致（环心 1/6 l → 判定环 1 l）；身体从**圆心**画到 **1.44R**（旧版 0.28R→1R 的 0.72R 的 2 倍，外端越过判定环 0.44R），飞入时同样跟着 `grow` 长出来
-- osu!std 落道：circle 的角度改成 Sentakki 式 **8 道 45°** 对齐（`_std_closest_lane`），流向用它的中点法（`_std_stream_direction`：同向保持、共线归零、否则取角差符号），大跳按两端道差（`jumpLaneOffset`），间隔超过 1 拍重新回绝对位置；slider / hold 的映射不变
+- osu!std 落道：circle 的角度改成 Sentakki 式 **8 道 45°** 对齐（`_std_closest_lane`），流向用它的中点法（`_std_stream_direction`：同向保持、共线归零、否则取角差符号），大跳按两端道差（`jumpLaneOffset`），间隔超过 1 拍重新回绝对位置
+- 星星颜色：默认统一薄荷绿；一旦有任意两条 Path 在**时间 + 盘面轨迹**上重叠，所有星的配色改为互不相同（调色板 7 色）。谱师可在检查器「星星颜色」用取色器自定义 RGB（存 JSON 的 `"rgb": [r,g,b]`），自定义色优先且不会被自动分配覆盖，「默认绿」按钮可还原
+- osu!std 滑条：照 Sentakki 的**程序化段链**（`_std_choose_slide_segments`）——不跟随 osu 控制点，而是从 `Straight / Circle / V / U / Cup / Thunder / Fan` × 1–7 道 × 镜像的候选表里，按剩余时长反复挑段（`min_ms × (1 + 1/velocity) < 剩余`），连续同向圆弧不合法；wait 从 1 拍开始减半，低于 0.5 拍退回 Hold；轨迹用 `_std_slide_trace_from_parts` 按段生成并重采样到每段 10 点
 - 试玩设置「星显」：运输条新增 **星显**（-1.0–1.0，步进 0.1，单位拍），只影响星星轨迹的出现时间（`pre + 星显`），Tap / Hold 的预读不受影响
 - 星星启动时间：Path 新增 **启动时间 ms**（`start_delay_ms`，0–2000，步进 10，默认 0）。星头落线后这段时间里只显示星头，**轨迹与尾判都不存在**；到点后轨迹出现、才允许划 Path、尾判也才开门。实际起滑时间取 `max(wait_beat, delay)`，尾判与整条轨迹按同样的量整体后移（滑动速度不变）
 - Path 擦除：检查器“跳区 / 擦除”可擦掉中段 0–80%；擦除段不渲染、不生成中段检查点，断裂处自动断开轨迹

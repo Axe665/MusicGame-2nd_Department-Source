@@ -102,7 +102,7 @@ func _gui_input(event: InputEvent) -> void:
 			_dragging = false
 		accept_event()
 	elif event is InputEventMouseMotion and _dragging:
-		_app.set_playhead(_app.snap_beat(_x_to_beat(event.position.x), event.alt_pressed))
+		_app.seek(_app.snap_beat(_x_to_beat(event.position.x), event.alt_pressed))
 		accept_event()
 
 
@@ -120,4 +120,4 @@ func _press(pos: Vector2, event: InputEventMouseButton) -> void:
 			_app.select_region(region.id)
 			return
 	var beat: float = _app.snap_beat(_x_to_beat(pos.x), event.alt_pressed)
-	_app.set_playhead(beat)
+	_app.seek(beat)

@@ -67,6 +67,7 @@ static func import_maidata(path: String, difficulty_index: int = 0) -> Chart:
 	_clamp_holds(chart, counts)
 	_resolve_path_overlaps(chart, counts)
 	_resolve_conflicts(chart, counts)
+	_simplify_dense_segments(chart, counts)
 	chart.notes.sort_custom(func(a: Note, b: Note) -> bool: return a.beat < b.beat)
 	_extract_assets(path, chart)
 	var audio_note := "音频：未找到 track.*" if chart.audio_path.is_empty() else "音频：%s" % chart.audio_path.get_file()
@@ -575,6 +576,56 @@ static func _resolve_path_overlaps(chart: Chart, counts: Dictionary) -> void:
 		chart.notes.erase(note)
 		counts["dropped"] += 1
 
+
+## 高 BPM 双手交互的降难：鼠标跟不上的地方改成小位移交互（±45° 摆动/扫圈），
+## 跟得上的地方保持原谱。只有极密（< 40ms）才叠键。
+const RELAX_SPEED_LIMIT := 6.0
+const RELAX_STACK_GAP := 0.04
+
+static func _simplify_dense_segments(chart: Chart, counts: Dictionary) -> void:
+	var candidates: Array[Note] = []
+	for note in chart.notes:
+		if note.type == "tap" or note.type == "hold":
+			candidates.append(note)
+	if candidates.size() < 2:
+		return
+	candidates.sort_custom(func(a: Note, b: Note) -> bool: return a.beat < b.beat)
+	var changed := 0
+	for k in range(1, candidates.size()):
+		var previous: Note = candidates[k - 1]
+		var current: Note = candidates[k]
+		var bpm := maxf(1.0, chart.timing.bpm_at(current.beat))
+		var gap_s := maxf(0.001, (current.beat - previous.beat) * 60.0 / bpm)
+		var delta := JudgeMath.angle_delta(current.angle, previous.angle)
+		var chord := 2.0 * sin(deg_to_rad(absf(delta)) * 0.5)
+		if chord / gap_s <= RELAX_SPEED_LIMIT:
+			continue
+		var target := previous.angle
+		if gap_s >= RELAX_STACK_GAP:
+			# 小位移交互：保留原方向，但每步只走 45°（连续同向就是扫圈）。
+			var direction := 1.0 if delta >= 0.0 else -1.0
+			target = previous.angle + 45.0 * direction
+		if _angle_taken(chart, current, target):
+			target = previous.angle
+		if absf(JudgeMath.angle_delta(current.angle, target)) > 0.01:
+			current.angle = fposmod(target, 360.0)
+			changed += 1
+	if changed > 0:
+		counts["relaxed"] = int(counts.get("relaxed", 0)) + changed
+
+
+## 同拍是否已经有别的音符占着这个角度（避免叠到别人身上）。
+static func _angle_taken(chart: Chart, note: Note, angle: float) -> bool:
+	for other in chart.notes:
+		if other == note:
+			continue
+		if other.type != "tap" and other.type != "hold":
+			continue
+		if absf(other.beat - note.beat) > 0.001:
+			continue
+		if absf(JudgeMath.angle_delta(other.angle, angle)) < 20.0:
+			return true
+	return false
 
 static func _resolve_conflicts(chart: Chart, counts: Dictionary) -> void:
 	# 同刻目标角度不重合时只保留最宽的一侧，保证单手可打。

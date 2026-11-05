@@ -44,9 +44,12 @@ func _initialize() -> void:
 		"test_simai_directive_slot",
 		"test_simai_bend_shapes",
 		"test_simai_osu_friendly",
+		"test_simai_dense_relax",
+		"test_simai_relax_keeps_slow",
 		"test_note_length_system",
 		"test_path_start_delay",
 		"test_osu_std_lanes",
+		"test_path_custom_color",
 	]
 	for test_name in tests:
 		if call(test_name) != true:
@@ -569,25 +572,14 @@ SliderMultiplier: 1.4
 	eq(tap.type, "tap", "osu circle -> tap")
 	eq(tap.space, "ring", "osu circle stays on the ring")
 	near(tap.beat, 2.0, 0.001, "osu circle beat")
-	ok(tap.width >= 45.0 and tap.width <= 75.0, "osu tap has variable width")
+	ok(absf(tap.width - 60.0) < 0.001, "osu tap uses a fixed 60° width")
 	var slide: Note = chart.notes[1]
-	eq(slide.type, "path", "osu slider -> planar path")
-	eq(slide.space, "plane", "osu slider dives into the plane")
+	eq(slide.type, "hold", "short osu slider falls back to Hold (Sentakki rule)")
+	eq(slide.space, "ring", "hold stays on the ring")
 	near(slide.beat, 4.0, 0.001, "osu slider beat")
 	near(slide.end_beat, 4.7142857, 0.001, "osu slider duration")
-	ok(slide.trace_pts.size() > 8, "osu slider has a 2D slide path")
-	var first: Dictionary = slide.trace_pts[0]
-	var last: Dictionary = slide.trace_pts[-1]
-	near(sqrt(pow(float(first["x"]), 2) + pow(float(first["y"]), 2)), 1.0, 0.02, "slide head on the ring")
-	near(sqrt(pow(float(last["x"]), 2) + pow(float(last["y"]), 2)), 0.70, 0.02, "slide tail lands on the 0.70R circle")
-	var inside := true
-	for point in slide.trace_pts:
-		if sqrt(pow(float(point["x"]), 2) + pow(float(point["y"]), 2)) > 1.02:
-			inside = false
-	ok(inside, "slide path stays inside the ring disk")
 	var restored := Note.from_dict(slide.to_dict())
-	eq(restored.type, "path", "slide path survives json")
-	eq(restored.space, "plane", "slide plane survives json")
+	eq(restored.type, "hold", "hold survives json")
 	return true
 
 
@@ -1079,6 +1071,61 @@ func test_simai_osu_friendly() -> bool:
 	return true
 
 
+func test_simai_dense_relax() -> bool:
+	# 高 BPM + 高密度 + 大跳：导入后相邻 Tap 的角位移必须被压到 45° 以内。
+	var text := "&title=Dense\n&artist=T\n&wholebpm=200\n&lv_1=12\n&inote_1=\n(200){16}1,5,2,6,3,7,4,8,\n"
+	var path := "user://test_simai_dense.txt"
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	if file == null:
+		ok(false, "dense fixture")
+		return true
+	file.store_string(text)
+	file.close()
+	var chart := SimaiIO.import_maidata(path, 0)
+	ok(chart != null, "dense chart imports")
+	if chart == null:
+		return true
+	var taps: Array[Note] = []
+	for note in chart.notes:
+		if note.type == "tap":
+			taps.append(note)
+	eq(taps.size(), 8, "dense run imports eight taps")
+	var largest := 0.0
+	for i in range(1, taps.size()):
+		largest = maxf(largest, absf(JudgeMath.angle_delta(taps[i].angle, taps[i - 1].angle)))
+	ok(largest <= 45.01, "dense run never jumps more than 45 degrees (got %.1f)" % largest)
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	return true
+
+
+func test_simai_relax_keeps_slow() -> bool:
+	# 低 BPM / 慢速段落：鼠标跟得上，导入后角度必须原样保留。
+	var text := "&title=Slow\n&artist=T\n&wholebpm=120\n&lv_1=8\n&inote_1=\n(120){4}1,2,3,4,\n"
+	var path := "user://test_simai_slow.txt"
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	if file == null:
+		ok(false, "slow fixture")
+		return true
+	file.store_string(text)
+	file.close()
+	var chart := SimaiIO.import_maidata(path, 0)
+	ok(chart != null, "slow chart imports")
+	if chart == null:
+		return true
+	var taps: Array[Note] = []
+	for note in chart.notes:
+		if note.type == "tap":
+			taps.append(note)
+	eq(taps.size(), 4, "slow run imports four taps")
+	if taps.size() >= 4:
+		for i in range(1, taps.size()):
+			near(absf(JudgeMath.angle_delta(taps[i].angle, taps[i - 1].angle)), 45.0, 0.01, "slow run keeps its 45° steps")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	return true
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	return true
+
+
 func test_osu_std_sentakki_rules() -> bool:
 	eq(OsuIO.STD_STREAM_STEP, 45.0, "osu std stream step is 8-lane 45deg")
 	var text := """osu file format v14
@@ -1271,4 +1318,20 @@ SliderMultiplier: 1.4
 		eq(lanes[2], 0, "right circle lands on lane 0")
 		eq(lanes[3], 6, "top circle lands on lane 6")
 		eq(lanes[4], 5, "top-left circle lands on lane 5")
+	return true
+
+
+func test_path_custom_color() -> bool:
+	var path := Note.new("path", 1.0, 0.0, 60.0)
+	ok(not path.to_dict().has("rgb"), "default path writes no rgb")
+	path.has_custom_color = true
+	path.custom_color = Color(1.0, 0.5, 0.0)
+	var data := path.to_dict()
+	ok(data.has("rgb"), "custom color is serialised")
+	eq(int(data["rgb"][0]), 255, "red channel written")
+	eq(int(data["rgb"][1]), 128, "green channel written")
+	var loaded := Note.from_dict(data)
+	ok(loaded.has_custom_color, "custom color roundtrips")
+	near(loaded.custom_color.r, 1.0, 0.01, "red survives")
+	near(loaded.custom_color.g, 128.0 / 255.0, 0.01, "green survives")
 	return true

@@ -380,7 +380,16 @@ func _build_note_page_for(page: VBoxContainer, note: Note) -> void:
 	_note_widgets["length"] = length_spin
 	_remember_row("length", length_spin)
 	var tap_group := _note_group(page, "tapsize", "长度")
-	_label(tap_group, "普通 Tap 与 Hold 头都固定 0.50 l；大小 Tap 可调 0.00–1.50 l（两位小数）；环心出现时是 1/6 l。", 11, UITheme.MUTED)
+	_label(tap_group, "Tap 与 Hold 头默认 0.50 l；把“长度 ×l”改掉就变成可调长度的 Tap（0.00–1.50 l，两位小数）；环心出现时是 1/6 l。", 11, UITheme.MUTED)
+	_buttons(tap_group, [
+		{"text": "恢复 0.5 l", "callback": func() -> void:
+			if _active_note != null and _active_note.type == "tap":
+				_apply(func() -> void:
+					_active_note.sized = false
+					_active_note.size_ratio = 0.5
+				)
+				_refresh_note_page()},
+	])
 
 	var plane := _note_group(page, "plane", "平面音符")
 	var px := _spin(plane, "平面 x", note.plane_x, 0.0, 1.0, 0.001, func(value: float) -> void:
@@ -413,6 +422,36 @@ func _build_note_page_for(page: VBoxContainer, note: Note) -> void:
 	_note_widgets["bell_r"] = br
 
 	var path_body := _note_group(page, "path", "Path")
+	# 星星颜色：不设时用统一绿色；有重叠时预览会自动分配互不相同的颜色。
+	var color_row := HBoxContainer.new()
+	path_body.add_child(color_row)
+	var color_label := Label.new()
+	color_label.text = "星星颜色"
+	UITheme.style_mono(color_label, 11, UITheme.MUTED)
+	color_row.add_child(color_label)
+	var picker := ColorPickerButton.new()
+	picker.custom_minimum_size = Vector2(96, 22)
+	picker.edit_alpha = false
+	picker.color = note.custom_color if note.has_custom_color else Note.DEFAULT_PATH_COLOR
+	picker.color_changed.connect(func(chosen: Color) -> void:
+		if _active_note == null:
+			return
+		_apply(func() -> void:
+			_active_note.has_custom_color = true
+			_active_note.custom_color = chosen
+		)
+		_refresh_note_page()
+	)
+	color_row.add_child(picker)
+	var color_reset := Button.new()
+	color_reset.text = "默认绿"
+	color_reset.pressed.connect(func() -> void:
+		if _active_note == null:
+			return
+		_apply(func() -> void: _active_note.has_custom_color = false)
+		_refresh_note_page()
+	)
+	color_row.add_child(color_reset)
 	var tail_local := note.path_tail_local()
 	var tail_radius := tail_local.length()
 	var tail_degrees := rad_to_deg(atan2(tail_local.y, tail_local.x))
@@ -505,14 +544,8 @@ func _build_note_page_for(page: VBoxContainer, note: Note) -> void:
 	var hold_body := _note_group(page, "hold", "Hold")
 	var hold_style_label := _label(hold_body, "", 11, UITheme.MUTED)
 	_note_widgets["hold_style_label"] = hold_style_label
-	_buttons(hold_body, [
-		{"text": "直 Hold", "callback": func() -> void:
-			if _active_note != null:
-				_set_hold_style(_active_note, "straight")},
-		{"text": "弯 Hold", "callback": func() -> void:
-			if _active_note != null:
-				_set_hold_style(_active_note, "curved")},
-	])
+	# 弯长条先删掉：它的功能和星星（Path）重合，目前只保留直 Hold。
+	_label(hold_body, "直 Hold：从圆心张开成扇形，尾部收到判定线时变窄消失。", 11, UITheme.MUTED)
 	var hold_list := ItemList.new()
 	hold_list.custom_minimum_size = Vector2(0, 88)
 	hold_list.item_selected.connect(func(index: int) -> void:
@@ -549,7 +582,12 @@ func _build_note_page_for(page: VBoxContainer, note: Note) -> void:
 	_note_widgets["trace_move"] = move
 	var trace_label := _label(trace_body, "", 11, UITheme.MUTED)
 	_note_widgets["trace_label"] = trace_label
-	_buttons(trace_body, [{"text": "重画 Trace", "callback": func() -> void: _app.set_tool("trace")}])
+	_buttons(trace_body, [
+		{"text": "重画 Trace", "callback": func() -> void: _app.set_tool("trace")},
+		{"text": "贴到环上", "callback": func() -> void: _set_trace_space("ring")},
+		{"text": "改成平面", "callback": func() -> void: _set_trace_space("plane")},
+	])
+	_label(trace_body, "贴环 = 轨迹压到外缘半径 1.0；平面 = 保留点自己的半径。两者共用同一套绘制。", 11, UITheme.MUTED)
 
 	var anchor_body := _note_group(page, "anchor", "Anchor")
 	var pair := _spin(anchor_body, "配对角度", note.anchor_pair, -1.0, 90.0, 90.0, func(value: float) -> void:
@@ -675,11 +713,12 @@ func _refresh_note_page() -> void:
 		_fill_visual_list(_note_widgets["path_list"], note)
 		_note_widgets["path_erase"].value = _path_erase_width(note) * 100.0
 	if note.type == "hold":
-		_note_widgets["hold_style_label"].text = "直 Hold：从内圈笔直连到环上。" if note.hold_style != "curved" else "弯 Hold：本体沿环弯曲。"
+		_note_widgets["hold_style_label"].text = "直 Hold：扇形张开，尾部收到判定线时消失。"
 		_fill_visual_list(_note_widgets["hold_list"], note)
 	if note.type == "trace":
 		_note_widgets["trace_move"].value = note.move_px
-		_note_widgets["trace_label"].text = "二维点：%d 个；在预览窗用 Trace 工具拖拽重画。" % note.trace_pts.size()
+		var where := "贴环（外缘）" if note.space != "plane" else "平面"
+		_note_widgets["trace_label"].text = "%s；二维点：%d 个。在预览窗用 Trace 工具拖拽可重画。" % [where, note.trace_pts.size()]
 	if note.type == "anchor":
 		_note_widgets["anchor_pair"].value = note.anchor_pair
 		_note_widgets["anchor_pair_id"].text = note.pair_id
@@ -732,6 +771,27 @@ func _set_path_erase_width(note: Note, width: float) -> void:
 func _set_hold_style(note: Note, style: String) -> void:
 	_apply(func() -> void:
 		note.hold_style = style
+	)
+	_rebuild()
+
+
+## Trace 的空间切换：贴环就把每个点压到外缘半径 1.0（方向不变），
+## 平面则保留点自己的半径。两种空间共用同一套绘制，只是映射不同。
+func _set_trace_space(space: String) -> void:
+	var note := _active_note
+	if note == null or note.type != "trace":
+		return
+	_apply(func() -> void:
+		note.space = space
+		if space == "plane":
+			return
+		for point in note.trace_pts:
+			var local := Vector2(float(point.get("x", 0.0)), float(point.get("y", 0.0)))
+			if local.length() <= 0.0001:
+				continue
+			local = local.normalized()
+			point["x"] = local.x
+			point["y"] = local.y
 	)
 	_rebuild()
 

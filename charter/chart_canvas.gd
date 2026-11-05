@@ -10,7 +10,7 @@ const BOTTOM_MARGIN := 12.0
 const RIGHT_MARGIN := 12.0
 const WAVE_WIDTH := 24.0
 const NOTE_SNAP_PX := 6.0
-const NOTE_TOOLS := ["tap", "tap_sized", "hold", "path", "trace", "anchor", "bell"]
+const NOTE_TOOLS := ["tap", "hold", "path", "trace", "anchor", "bell"]
 
 var _app: Node = null
 var px_per_beat: float = 28.0
@@ -655,21 +655,39 @@ func _draw_hold(note: Note) -> void:
 	var x := _u_to_x(fposmod(note.angle, 360.0) / 360.0)
 	var selected := _is_note_selected(note.id)
 	var color := UITheme.AMBER
-	var body := PackedVector2Array([Vector2(x, y0)])
-	for point in note.visual_pts:
-		body.append(Vector2(
-			_u_to_x(fposmod(note.angle + float(point.get("da", 0.0)), 360.0) / 360.0),
-			_beat_to_y(note.beat + float(point.get("db", 0.0)))
-		))
-	body.append(Vector2(x, y1))
-	if body.size() > 1:
-		draw_polyline(body, Color(color.r, color.g, color.b, 0.28), 12.0, true)
-		draw_polyline(body, color, 2.0, true)
-	for i in range(1, body.size() - 1):
-		draw_circle(body[i], 3.0, UITheme.MINT)
+	# 弯长条已移除：没有体节点就按直 Hold 画实心矩形。
+	var straight := note.visual_pts.is_empty()
+	if straight:
+		# 制谱器里直长条画成实心矩形：宽 = 判定弧宽，长 = 拍长。
+		var plot := _plot_rect()
+		var half := note.arc_width() * 0.5
+		var x0 := _u_to_x(fposmod(note.angle - half, 360.0) / 360.0)
+		var x1 := _u_to_x(fposmod(note.angle + half, 360.0) / 360.0)
+		if x1 < x0:
+			x1 = plot.end.x
+			x0 = plot.position.x
+		var rect := Rect2(
+			Vector2(x0, minf(y0, y1)),
+			Vector2(maxf(2.0, x1 - x0), maxf(2.0, absf(y1 - y0)))
+		)
+		draw_rect(rect, Color(color.r, color.g, color.b, 0.32))
+		draw_rect(rect, Color(color.r, color.g, color.b, 0.95), false, 1.5)
+	else:
+		var body := PackedVector2Array([Vector2(x, y0)])
+		for point in note.visual_pts:
+			body.append(Vector2(
+				_u_to_x(fposmod(note.angle + float(point.get("da", 0.0)), 360.0) / 360.0),
+				_beat_to_y(note.beat + float(point.get("db", 0.0)))
+			))
+		body.append(Vector2(x, y1))
+		if body.size() > 1:
+			draw_polyline(body, Color(color.r, color.g, color.b, 0.28), 12.0, true)
+			draw_polyline(body, color, 2.0, true)
+		for i in range(1, body.size() - 1):
+			draw_circle(body[i], 3.0, UITheme.MINT)
+		_draw_width_band(note.angle, note.arc_width(), y0, color)
 	_draw_hexagon(Vector2(x, y0), 9.0 if selected else 8.0, color)
 	_draw_ring(Vector2(x, y1), 6.0, color)
-	_draw_width_band(note.angle, note.arc_width(), y0, color)
 	if _show_type_label(note):
 		_draw_type_label("HOLD", Vector2(x + 11.0, y0 + 12.0), color)
 
@@ -944,6 +962,8 @@ func _gui_input(event: InputEvent) -> void:
 			_drag_hold_update(event.position, event)
 		elif _drag_mode == "marquee":
 			_marquee = Rect2(_drag_start, event.position - _drag_start).abs()
+		elif _drag_mode == "scrub":
+			_app.seek(_app.snap_beat(_y_to_beat(event.position.y), event.alt_pressed))
 		elif _drag_mode == "right_delete":
 			# 动过就当成框选，避免右键拖选时误删。
 			if event.position.distance_to(_drag_start) > 5.0:
@@ -1096,8 +1116,11 @@ func _on_left_press(event: InputEventMouseButton) -> void:
 		return
 	var plot := _plot_rect()
 	var beat: float = _app.snap_beat(_y_to_beat(event.position.y), event.alt_pressed)
+	# 顶部标尺那一行没有对应的拍，按到它就算了视口最上面那一拍，免得跳到奇怪的位置。
+	beat = maxf(beat, scroll_beat)
 	var u := _x_to_u(event.position.x)
-	if event.position.x < plot.position.x - 4.0:
+	if event.position.x < plot.position.x - 4.0 or event.position.y < plot.position.y:
+		# 左侧刻度栏和顶部标尺：按下去就跳转，并继续跟着拖动走 scrub。
 		if event.shift_pressed and not _app.selected_notes.is_empty():
 			_app.begin_edit()
 			for note in _app.get_selected_notes():
@@ -1106,7 +1129,8 @@ func _on_left_press(event: InputEventMouseButton) -> void:
 					note.end_beat = maxf(note.end_beat, note.beat + 0.25)
 			_app.finish_edit()
 		else:
-			_app.set_playhead(beat)
+			_drag_mode = "scrub"
+			_app.seek(beat)
 		return
 	if _app.tool in NOTE_TOOLS:
 		var placement := _snap_note_placement(event.position, event.alt_pressed)
@@ -1117,8 +1141,6 @@ func _on_left_press(event: InputEventMouseButton) -> void:
 			_select_press(event)
 		"tap", "anchor", "bell":
 			_create_simple(_app.tool, beat, u)
-		"tap_sized":
-			_create_sized_tap(beat, u)
 		"hold":
 			_create_hold(beat, u)
 		"path":
@@ -1168,7 +1190,7 @@ func _select_press(event: InputEventMouseButton) -> void:
 	var hit := _hit_test(event.position)
 	if hit.is_empty():
 		if event.double_click:
-			_app.set_playhead(_app.snap_beat(_y_to_beat(event.position.y)))
+			_app.seek(_app.snap_beat(_y_to_beat(event.position.y)))
 			return
 		_app.clear_selection()
 		return
@@ -1431,11 +1453,13 @@ func _create_trace_at(beat: float) -> void:
 	note.id = chart.next_note_id()
 	note.end_beat = beat + 2.0
 	note.move_px = 120.0
+	note.space = "plane"
+	# x/y 是“环半径 = 1.0”的设计坐标：从环内左下扫到右中。
 	note.trace_pts = [
-		{"x": 0.28, "y": 0.68, "db": 0.0},
-		{"x": 0.45, "y": 0.52, "db": 0.67},
-		{"x": 0.62, "y": 0.45, "db": 1.34},
-		{"x": 0.74, "y": 0.34, "db": 2.0},
+		{"x": -0.72, "y": 0.36, "db": 0.0},
+		{"x": -0.20, "y": 0.04, "db": 0.67},
+		{"x": 0.24, "y": -0.12, "db": 1.34},
+		{"x": 0.70, "y": -0.32, "db": 2.0},
 	]
 	_app.begin_edit()
 	chart.notes.append(note)

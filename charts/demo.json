@@ -355,13 +355,13 @@
       "end_beat": 28.0,
       "id": 25,
       "lock": false,
+      "path_style": "star",
       "samples": 4.0,
       "tail_angle": 180.0,
       "tail_width": 120.0,
       "tolerance": 0.24,
       "type": "path",
-      "width": 120.0,
-      "path_style": "star"
+      "width": 120.0
     },
     {
       "angle": 270.0,
@@ -439,6 +439,147 @@
       "pair_id": "A1",
       "type": "anchor",
       "width": 0.0
+    },
+    {
+      "angle": 0.0,
+      "beat": 32.5,
+      "color": 0,
+      "end_beat": 35.5,
+      "id": 33,
+      "lock": false,
+      "samples": 4.0,
+      "space": "plane",
+      "tail_angle": 180.0,
+      "tail_width": 52.0,
+      "tolerance": 0.24,
+      "trace": [
+        {
+          "db": 0.0,
+          "x": 1.0,
+          "y": 0.0
+        },
+        {
+          "db": 0.667,
+          "x": 0.866,
+          "y": 0.5
+        },
+        {
+          "db": 1.333,
+          "x": 0.5,
+          "y": 0.866
+        },
+        {
+          "db": 2.0,
+          "x": 0.0,
+          "y": 1.0
+        },
+        {
+          "db": 2.667,
+          "x": -0.5,
+          "y": 0.866
+        },
+        {
+          "db": 3.333,
+          "x": -0.866,
+          "y": 0.5
+        },
+        {
+          "db": 4.0,
+          "x": -1.0,
+          "y": 0.0
+        }
+      ],
+      "type": "path",
+      "width": 60.0
+    },
+    {
+      "angle": 90.0,
+      "beat": 32.625,
+      "color": 0,
+      "end_beat": 35.625,
+      "id": 34,
+      "lock": false,
+      "samples": 4.0,
+      "space": "plane",
+      "tail_angle": 270.0,
+      "tail_width": 52.0,
+      "tolerance": 0.24,
+      "trace": [
+        {
+          "db": 0.0,
+          "x": 0.0,
+          "y": 1.0
+        },
+        {
+          "db": 0.7,
+          "x": -0.3889,
+          "y": 0.3889
+        },
+        {
+          "db": 1.4,
+          "x": 0.0,
+          "y": 0.0
+        },
+        {
+          "db": 2.3,
+          "x": -0.3889,
+          "y": -0.3889
+        },
+        {
+          "db": 3.4,
+          "x": -0.0,
+          "y": -1.0
+        },
+        {
+          "db": 4.0,
+          "x": -0.0,
+          "y": -1.0
+        }
+      ],
+      "type": "path",
+      "width": 60.0
+    },
+    {
+      "angle": 180.0,
+      "beat": 32.75,
+      "color": 0,
+      "end_beat": 35.75,
+      "id": 35,
+      "lock": false,
+      "samples": 4.0,
+      "space": "plane",
+      "tail_angle": 0.0,
+      "tail_width": 52.0,
+      "tolerance": 0.24,
+      "trace": [
+        {
+          "db": 0.0,
+          "x": -1.0,
+          "y": 0.0
+        },
+        {
+          "db": 1.0,
+          "x": -0.35,
+          "y": -0.85
+        },
+        {
+          "db": 2.0,
+          "x": 0.45,
+          "y": -0.55
+        },
+        {
+          "db": 3.0,
+          "x": 0.2,
+          "y": 0.7
+        },
+        {
+          "db": 4.0,
+          "x": 1.0,
+          "y": 0.0
+        }
+      ],
+      "type": "path",
+      "width": 60.0
     }
   ],
   "regions": [
