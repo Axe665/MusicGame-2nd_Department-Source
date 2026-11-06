@@ -26,6 +26,8 @@ var dirty: bool = false
 var playhead_beat: float = 0.0
 var last_import_report: String = ""
 var playtest_offset_ms: float = 0.0
+## 严格位置判定（PR 原设计）：开＝按键时鼠标要贴近音符图形；关＝普通段按键即判定。
+var strict_position_judge: bool = true
 var flow_scale: float = 1.0
 var ffmpeg_path: String = "ffmpeg"
 var star_speed: float = 1.0
@@ -111,6 +113,7 @@ func _load_settings() -> void:
 			ffmpeg_path = String(data.get("ffmpeg", ffmpeg_path))
 			frame_cap = String(data.get("frame_cap", frame_cap))
 			playtest_offset_ms = float(data.get("playtest_offset_ms", playtest_offset_ms))
+			strict_position_judge = bool(data.get("strict_position_judge", strict_position_judge))
 			dynamic_offset = bool(data.get("dynamic_offset", dynamic_offset))
 			last_bias_ms = float(data.get("last_bias_ms", last_bias_ms))
 	MediaIO.set_ffmpeg_exe(ffmpeg_path)
@@ -135,7 +138,7 @@ func apply_frame_cap() -> void:
 
 
 func save_settings() -> void:
-	var data := {"note_skin": note_skin, "hit_fx_style": hit_fx_style, "hit_sfx_style": hit_sfx_style, "ffmpeg": ffmpeg_path, "frame_cap": frame_cap, "playtest_offset_ms": playtest_offset_ms, "dynamic_offset": dynamic_offset, "last_bias_ms": last_bias_ms}
+	var data := {"note_skin": note_skin, "hit_fx_style": hit_fx_style, "hit_sfx_style": hit_sfx_style, "ffmpeg": ffmpeg_path, "frame_cap": frame_cap, "playtest_offset_ms": playtest_offset_ms, "strict_position_judge": strict_position_judge, "dynamic_offset": dynamic_offset, "last_bias_ms": last_bias_ms}
 	var file := FileAccess.open(SETTINGS_PATH, FileAccess.WRITE)
 	if file != null:
 		file.store_string(JSON.stringify(data, "\t"))

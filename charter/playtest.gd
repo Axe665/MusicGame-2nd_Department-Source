@@ -991,26 +991,40 @@ func _take_key_for_sector(lo: float, hi: float, angle: float, width: float, targ
 	return result
 
 
-## 一组候选图形的取键：密集段先用位置区分，再退回角度扇区；普通段直接按时间。
+func _strict_position() -> bool:
+	return bool(_app.strict_position_judge) if _app != null else true
+
+
+## 一组候选图形的取键（Path 头 / Anchor / Trace 头）。
+## 严格模式（PR 原设计）：密集段走角度扇区，普通段走像素位置。
+## 宽松模式：普通段按键即判定；密集段位置 → 扇区 → 时间窗。
 func _take_press_for_shape(lo: float, hi: float, target: float, note: Note, points: PackedVector2Array, tolerance: float, pad: float = 0.0) -> Dictionary:
 	if _key_presses.is_empty():
 		return {}
+	var strict := _strict_position()
 	if _dense_ids.has(note.id):
-		var press := _take_key_near(lo, hi, points, tolerance, target)
-		if not press.is_empty():
-			return press
+		var press: Dictionary = {}
+		if not strict:
+			press = _take_key_near(lo, hi, points, tolerance, target)
+			if not press.is_empty():
+				return press
 		press = _take_key_for_sector(lo, hi, note.angle, note.arc_width() + pad, target)
 		if not press.is_empty():
 			return press
-	return _take_press_in_window(lo, hi, target)
+		return {} if strict else _take_press_in_window(lo, hi, target)
+	if not strict:
+		return _take_press_in_window(lo, hi, target)
+	return _take_key_near(lo, hi, points, tolerance, target)
 
 
-## Tap / Hold 头：普通段按键即判定，密集段才用音符实时位置/角度区分同刻目标。
+## Tap / Hold 头：严格模式按 PR 原设计（普通段位置、密集段扇区），
+## 宽松模式普通段按键即判定、密集段三级兜底。
 func _take_press_for_note(lo: float, hi: float, note: Note, beat: float, pad: float = 0.0, extra_px: float = 0.0) -> Dictionary:
 	if _key_presses.is_empty():
 		return {}
 	var target := float(_states[note.id]["target_ms"]) if _states.has(note.id) else (lo + hi) * 0.5
-	if not _dense_ids.has(note.id):
+	# 宽松模式下普通段不需要算图形，直接按时间窗取键。
+	if not _strict_position() and not _dense_ids.has(note.id):
 		return _take_press_in_window(lo, hi, target)
 	var points := _preview.note_live_band(note, beat, pad)
 	var tolerance := POSITION_TOLERANCE_PX + extra_px + float(_preview.note_graphic_radius(note.type))

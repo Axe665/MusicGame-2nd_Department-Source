@@ -79,6 +79,7 @@ var _playtest_star_color: ColorPickerButton = null
 var _playtest_trace_color: ColorPickerButton = null
 var _playtest_offset: SpinBox = null
 var _playtest_dynamic: CheckBox = null
+var _playtest_strict: CheckBox = null
 var _playtest_bias: Label = null
 var _playtest_from_start: bool = false
 ## 制谱界面保留的流速输入框（试玩设置改流速后要同步回来）。
@@ -1533,6 +1534,8 @@ func _open_playtest_setup(from_start: bool) -> void:
 		_playtest_offset.value = float(_app.playtest_offset_ms)
 	if _playtest_dynamic != null:
 		_playtest_dynamic.button_pressed = bool(_app.dynamic_offset)
+	if _playtest_strict != null:
+		_playtest_strict.button_pressed = bool(_app.strict_position_judge)
 	if _playtest_bias != null:
 		_playtest_bias.text = "上次平均偏差 %+.1fms" % float(_app.last_bias_ms)
 	_playtest_dialog.popup_centered(Vector2i(400, 320))
@@ -1554,6 +1557,10 @@ func _build_playtest_dialog() -> void:
 	_playtest_dynamic.text = "动态 offset（局内自动校准，≤±50ms）"
 	_playtest_dynamic.tooltip_text = "至少 8 次命中后，每次命中按偏差的 5% 自动微调判定偏移"
 	box.add_child(_playtest_dynamic)
+	_playtest_strict = CheckBox.new()
+	_playtest_strict.text = "严格位置判定（瞄准）"
+	_playtest_strict.tooltip_text = "开：按键时鼠标要贴近音符图形才算命中（Estella 原设计）；关：普通段按键即判定"
+	box.add_child(_playtest_strict)
 	_playtest_bias = Label.new()
 	_playtest_bias.text = "上次平均偏差 +0.0ms"
 	_playtest_bias.add_theme_font_size_override("font_size", 11)
@@ -1616,6 +1623,8 @@ func _begin_playtest_with_settings() -> void:
 		_app.playtest_offset_ms = _playtest_offset.value
 	if _playtest_dynamic != null:
 		_app.dynamic_offset = _playtest_dynamic.button_pressed
+	if _playtest_strict != null:
+		_app.strict_position_judge = _playtest_strict.button_pressed
 	_app.save_settings()
 	if _playtest_star_color != null:
 		_app.star_color = _playtest_star_color.color
