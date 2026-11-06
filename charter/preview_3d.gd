@@ -1827,10 +1827,32 @@ func _pick_visual_node(screen_position: Vector2) -> int:
 
 
 func _draw_paths(canvas: Control, chart: Chart, t: float, pre: float) -> void:
+	# A part chain is drawn as one synthetic Path: one head star at part0, one
+	# progress ball travelling the whole chain, and one final tail ring.
+	var by_id := {}
+	for item in chart.notes:
+		by_id[item.id] = item
 	var visible: Array = []
-	for note in _notes_in_range(chart, t - pre - 128.0, t + pre + 0.5):
-		if note.type == "path" and t >= note.beat - pre and t <= note.end_beat + 0.5:
-			visible.append(note)
+	for root in chart.notes:
+		if root.type != "path":
+			continue
+		if root.path_prev_id >= 0 and by_id.has(root.path_prev_id):
+			continue
+		var chain: Array[Note] = [root]
+		var cursor: Note = root
+		var guard := 0
+		while cursor.path_next_id >= 0 and by_id.has(cursor.path_next_id) and guard < 64:
+			cursor = by_id[cursor.path_next_id]
+			chain.append(cursor)
+			guard += 1
+		var on_screen := false
+		for part in chain:
+			if t >= part.beat - pre and t <= part.end_beat + 0.5:
+				on_screen = true
+				break
+		if not on_screen:
+			continue
+		visible.append(_build_path_chain_note(root, chain) if chain.size() > 1 else root)
 	# 旧 Path 先画、新的最后画：多星星重叠时，新星和它的擦除缺口始终在最上层。
 	visible.sort_custom(func(a: Note, b: Note) -> bool: return a.beat < b.beat)
 	# 舞萌式同色系：所有星共用一个主色，重叠时只压明明度，不换色相。
@@ -1896,6 +1918,34 @@ func _draw_paths(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 ## 两条星的时间窗重叠（1 拍错位链、叠拍）就算“同时在场”，与轨迹位置无关。
 static func _paths_time_overlap(a: Note, b: Note) -> bool:
 	return not (a.end_beat < b.beat - 0.25 or b.end_beat < a.beat - 0.25)
+
+
+func _build_path_chain_note(root: Note, chain: Array[Note]) -> Note:
+	var result := Note.new("path", root.beat, root.angle, root.width)
+	result.id = root.id
+	result.end_beat = chain[-1].end_beat
+	result.tail_angle = chain[-1].tail_angle
+	result.tail_width = chain[-1].tail_width
+	result.path_speed = root.path_speed
+	result.wait_beat = root.wait_beat
+	result.samples_per_beat = root.samples_per_beat
+	result.has_custom_color = root.has_custom_color
+	result.custom_color = root.custom_color
+	result.path_chain = true
+	result.path_next_id = root.path_next_id
+	result.trace_pts = []
+	for part in chain:
+		var total := maxf(0.001, part.duration())
+		var count := maxi(6, int(total * 18.0))
+		for i in count + 1:
+			var rel := total * float(i) / float(count)
+			var local := part.path_local_at(rel)
+			result.trace_pts.append({
+				"x": local.x,
+				"y": local.y,
+				"db": (part.beat - root.beat) + rel,
+			})
+	return result
 
 
 ## 两条星在时间上重叠、且轨迹在盘面内靠得足够近，就算“有重叠”。
@@ -2065,11 +2115,12 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 				canvas.draw_arc(tail, ring_radius + 3.5, 0.0, TAU, 40, Color(1, 1, 1, 0.30 * ring_alpha), 1.2, false)
 	# 试玩时星星头在滑动开始后交给进度球，不再留在起点造成“断开的星头”。
 	var head_visible := not playtest_mode or t < note.beat + wait + 0.02
+	var ring_mul := 0.5 if note.path_chain else 1.0
 	if head_visible:
-		_draw_path_head(canvas, head, top, grow * ns * PATH_SIZE_SCALE * PATH_HEAD_SCALE, accent, dim)
+		_draw_path_head(canvas, head, top, grow * ns * PATH_SIZE_SCALE * PATH_HEAD_SCALE, accent, dim, ring_mul)
 		if _valid_point(head):
 			# 重叠 Path 用不同明度的外环区分星头。
-			canvas.draw_arc(head, 28.0 * ns * PATH_SIZE_SCALE * PATH_HEAD_SCALE, 0.0, TAU, 30, Color(accent.r, accent.g, accent.b, 0.95 * dim), 2.4, false)
+			canvas.draw_arc(head, 28.0 * ns * PATH_SIZE_SCALE * PATH_HEAD_SCALE * ring_mul, 0.0, TAU, 30, Color(accent.r, accent.g, accent.b, 0.95 * dim), 2.4, false)
 			canvas.draw_string(UITheme.mono_font(), head + Vector2(14, -13), "#%d" % note.id, HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(accent.r, accent.g, accent.b, 0.9 * dim))
 		if _valid_point(head):
 			# 头部的白色箭头指向轨迹内侧，进一步区分头和尾。
@@ -2341,14 +2392,14 @@ func _stroke_band(canvas: Control, points: PackedVector2Array, color: Color, wid
 		canvas.draw_polyline(points, Color(0.04, 0.06, 0.08, 0.85 * alpha), maxf(2.0, w * 0.20), false)
 
 
-func _draw_path_head(canvas: Control, point: Vector2, top: bool, scale: float = 1.0, color: Color = UITheme.CORAL, dim: float = 1.0) -> void:
+func _draw_path_head(canvas: Control, point: Vector2, top: bool, scale: float = 1.0, color: Color = UITheme.CORAL, dim: float = 1.0, ring_mul: float = 1.0) -> void:
 	if not _valid_point(point):
 		return
 	var alpha := (1.0 if top else 0.45) * dim
 	var s := clampf(scale, 0.2, 2.0) * float(_skin()["scale"]) * PATH_SIZE_SCALE * PATH_HEAD_SCALE
-	canvas.draw_circle(point, 31.0 * s, Color(color.r, color.g, color.b, 0.16 * alpha))
-	canvas.draw_circle(point, 24.0 * s, Color(0, 0, 0, 0.30 * alpha))
-	canvas.draw_arc(point, 24.0 * s, 0.0, TAU, 30, Color(1, 1, 1, 0.30 * alpha), 2.0, false)
+	canvas.draw_circle(point, 31.0 * s * ring_mul, Color(color.r, color.g, color.b, 0.16 * alpha))
+	canvas.draw_circle(point, 24.0 * s * ring_mul, Color(0, 0, 0, 0.30 * alpha))
+	canvas.draw_arc(point, 24.0 * s * ring_mul, 0.0, TAU, 30, Color(1, 1, 1, 0.30 * alpha), 2.0, false)
 	_draw_star_filled(canvas, point, 18.0 * s, Color(color.r, color.g, color.b, alpha))
 
 

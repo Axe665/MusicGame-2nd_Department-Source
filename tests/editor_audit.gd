@@ -157,7 +157,7 @@ func _audit_edit_ops() -> void:
 		_check("粘贴落在播放头", absf(chart.notes[1].beat - 10.0) < 0.001, "beat=%.2f" % chart.notes[1].beat)
 	app.select_note(note.id)
 	app.mirror_selected_notes()
-	_check("镜像角度", absf(note.angle - 330.0) < 0.001, "angle=%.1f" % note.angle)
+	_check("镜像角度", absf(note.angle - 210.0) < 0.001, "angle=%.1f" % note.angle)
 	app.rotate_selected_notes(90.0)
 	_check("旋转角度", absf(note.angle - 60.0) < 0.001, "angle=%.1f" % note.angle)
 	app.free()

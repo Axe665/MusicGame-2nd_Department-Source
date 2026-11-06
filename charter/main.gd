@@ -117,6 +117,7 @@ func _ready() -> void:
 		)
 		_app.validation_changed.connect(_update_validation)
 		_app.snap_changed.connect(_on_snap_changed)
+		_app.stretch_changed.connect(_on_stretch_value_changed)
 		_app.audio_import_requested.connect(_on_audio_import_requested)
 		_app.audio_detect_requested.connect(_on_audio_detect_requested)
 		_app.chart_changed.emit()
@@ -215,7 +216,7 @@ func _build_ui() -> void:
 	brand.add_theme_color_override("font_color", UITheme.INK)
 	brand_row.add_child(brand)
 	var subtitle := Label.new()
-	subtitle.text = "制谱器 / CHARTER"
+	subtitle.text = "制谱器 / CHART EDITOR"
 	subtitle.add_theme_font_override("font", UITheme.mono_font())
 	subtitle.add_theme_font_size_override("font_size", 10)
 	subtitle.add_theme_color_override("font_color", UITheme.MUTED)
@@ -760,6 +761,18 @@ func _commit_stretch(text: String) -> void:
 	_stretch_syncing = false
 	_set_stretch_error(false)
 	_apply_stretch(value)
+
+
+func _on_stretch_value_changed(value: float) -> void:
+	_stretch_syncing = true
+	if _stretch_edit != null:
+		_stretch_edit.text = _format_stretch(value)
+	if _stretch_slider != null:
+		_stretch_slider.set_value_no_signal(value)
+	_stretch_syncing = false
+	_set_stretch_error(false)
+	if _canvas != null:
+		_canvas.queue_redraw()
 
 
 func _on_stretch_slider_changed(value: float) -> void:
@@ -1667,6 +1680,12 @@ func _input(event: InputEvent) -> void:
 		if focus is LineEdit and not (focus.get_parent() is SpinBox):
 			typing = true
 		if typing and event.keycode != KEY_F5 and event.keycode != KEY_F6:
+			return
+		# While a numeric editor (SpinBox or its inner LineEdit) has focus, let
+		# 1–7 reach the field instead of switching the note tool. Returning
+		# without accept_event is important: GUI input still receives the digit.
+		var spin_focus := focus is SpinBox or (focus is LineEdit and focus.get_parent() is SpinBox)
+		if spin_focus and event.keycode in [KEY_1, KEY_2, KEY_3, KEY_4, KEY_5, KEY_6, KEY_7]:
 			return
 		match event.keycode:
 			KEY_SPACE:

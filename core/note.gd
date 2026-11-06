@@ -39,6 +39,19 @@ var path_speed: float = 1.0
 var path_style: String = "arc"
 var path_gaps: Array[Dictionary] = []
 var visual_pts: Array[Dictionary] = []
+## New Path editor controls. `path_controls_set` keeps legacy charts' explicit
+## trace points untouched until the author edits one of these values.
+var path_centrifuge: float = 0.72
+var path_axis: float = 0.0
+var path_controls_set: bool = false
+var path_head_local: Vector2 = Vector2.INF
+var path_part: int = 0
+var path_prev_id: int = -1
+var path_next_id: int = -1
+## Transient preview flag: one synthetic note represents a whole part chain.
+var path_chain: bool = false
+## Transient: true when loaded from legacy Path JSON; ChartIO normalizes it.
+var path_legacy: bool = false
 var trace_style: String = "wipe"
 var space: String = "ring"
 var plane_x: float = 0.5
@@ -133,6 +146,101 @@ func path_tail_local() -> Vector2:
 	return path_local_at(duration())
 
 
+func path_head_point() -> Vector2:
+	if path_part > 0 and path_head_local.is_finite():
+		return path_head_local
+	return _unit_from_angle(angle)
+
+
+## Fills the new editor values from the current trace for legacy charts. It does
+## not rewrite the trace, so opening an old chart keeps its original shape.
+func derive_path_controls() -> void:
+	if path_controls_set:
+		return
+	var tail := path_tail_local()
+	path_centrifuge = clampf(tail.length(), 0.0, 1.0)
+	var chord := tail - path_head_point()
+	var length := chord.length()
+	if length > 0.0001:
+		var normal := Vector2(-chord.y, chord.x) / length
+		var middle := path_local_at(duration() * 0.5)
+		path_axis = clampf((middle - (path_head_point() + tail) * 0.5).dot(normal) / length, -2.0, 2.0)
+	else:
+		path_axis = 0.0
+
+
+func set_path_centrifuge(value: float) -> void:
+	path_centrifuge = clampf(snappedf(value, 0.01), 0.0, 1.0)
+	generate_path_shape()
+
+
+func set_path_axis(value: float) -> void:
+	path_axis = clampf(snappedf(value, 0.01), -2.0, 2.0)
+	generate_path_shape()
+
+
+## Rebuilds the Path as a quadratic trajectory from the head to the tail.
+## `path_axis` is the signed normal offset of the trajectory midpoint, measured
+## in units of the head-tail chord. A zero axis is a straight line; a negative
+## axis mirrors the curve across that chord.
+func generate_path_shape() -> void:
+	path_controls_set = true
+	visual_pts.clear()
+	var head := path_head_point()
+	var tail := _unit_from_angle(tail_angle) * clampf(path_centrifuge, 0.0, 1.0)
+	var total := duration()
+	var chord := tail - head
+	var length := chord.length()
+	if length <= 0.0001:
+		trace_pts = [
+			{"x": head.x, "y": head.y, "db": 0.0},
+			{"x": head.x, "y": head.y, "db": total},
+		]
+		path_axis = 0.0
+		return
+	var normal := Vector2(-chord.y, chord.x) / length
+	var middle := (head + tail) * 0.5
+	var axis := clampf(path_axis, -2.0, 2.0)
+	if (middle + normal * (axis * length)).length() > 1.000001:
+		axis = _path_axis_limit(middle, normal, length, axis)
+		path_axis = axis
+	var control := middle + normal * (2.0 * axis * length)
+	trace_pts = []
+	var samples := 24
+	for i in samples + 1:
+		var t := float(i) / float(samples)
+		var p := head * ((1.0 - t) * (1.0 - t)) + control * (2.0 * (1.0 - t) * t) + tail * (t * t)
+		trace_pts.append({
+			"x": snappedf(p.x, 0.000001),
+			"y": snappedf(p.y, 0.000001),
+			"db": snappedf(total * t, 0.000001),
+		})
+
+
+## Nearest same-side axis where the trajectory midpoint lands on radius 1.
+func _path_axis_limit(middle: Vector2, normal: Vector2, length: float, desired: float) -> float:
+	var a := length * length
+	var b := 2.0 * length * middle.dot(normal)
+	var c := middle.length_squared() - 1.0
+	var disc := b * b - 4.0 * a * c
+	if disc < 0.0:
+		return 0.0
+	var root := sqrt(disc)
+	var best := 0.0
+	var found := false
+	for candidate in [(-b + root) / (2.0 * a), (-b - root) / (2.0 * a)]:
+		if desired >= 0.0 and candidate < 0.0:
+			continue
+		if desired < 0.0 and candidate > 0.0:
+			continue
+		if absf(candidate) > absf(desired) + 0.0001:
+			continue
+		if not found or absf(candidate) < absf(best):
+			best = candidate
+			found = true
+	return best if found else 0.0
+
+
 func path_angle_at(relative_beat: float) -> float:
 	var total := duration()
 	if total <= 0.000001:
@@ -212,20 +320,20 @@ func _short_delta(from_angle: float, to_angle: float) -> float:
 
 
 func mirror_u() -> void:
-	## Mirror across the horizontal centre of the u×time editor: u -> 1-u.
-	## Time, widths and judging radii are unchanged.
-	angle = fposmod(-angle, 360.0)
-	tail_angle = fposmod(-tail_angle, 360.0)
-	center_u = 1.0 - center_u
+	## Mirror by rotating the note 180° around the ring centre: angle + 180,
+	## wrapped back into 0–360. Time, widths and judging radii are unchanged.
+	angle = fposmod(angle + 180.0, 360.0)
+	tail_angle = fposmod(tail_angle + 180.0, 360.0)
+	center_u = fposmod(center_u + 0.5, 1.0)
 	plane_x = 1.0 - plane_x
+	plane_y = 1.0 - plane_y
 	for point in trace_pts:
-		if type == "trace":
-			# Trace 的 x/y 是“环半径 = 1.0”的设计坐标：左右镜像即 x 取反。
-			point["x"] = -float(point.get("x", 0.0))
-		else:
-			point["x"] = 1.0 - float(point.get("x", 0.0))
-	for point in visual_pts:
-		point["da"] = -float(point.get("da", 0.0))
+		# Plane/trace coordinates are centred on the ring: a 180° rotation
+		# negates both axes.
+		point["x"] = -float(point.get("x", 0.0))
+		point["y"] = -float(point.get("y", 0.0))
+	if path_part > 0 and path_head_local.is_finite():
+		path_head_local = -path_head_local
 
 
 func to_dict() -> Dictionary:
@@ -277,6 +385,16 @@ func to_dict() -> Dictionary:
 				data["visual"] = _points_to_dict(visual_pts)
 			if not trace_pts.is_empty():
 				data["trace"] = _points_to_dict(trace_pts)
+			if path_controls_set:
+				data["centrifuge"] = snappedf(path_centrifuge, 0.01)
+				data["axis"] = snappedf(path_axis, 0.01)
+			if path_part != 0 or path_prev_id >= 0 or path_next_id >= 0:
+				data["part"] = path_part
+				data["prev_part"] = path_prev_id
+				data["next_part"] = path_next_id
+			if path_part > 0 and path_head_local.is_finite():
+				data["head_x"] = snappedf(path_head_local.x, 0.0001)
+				data["head_y"] = snappedf(path_head_local.y, 0.0001)
 		"trace":
 			data["end_beat"] = snappedf(end_beat, 0.001)
 			if wait_beat > 0.0:
@@ -343,6 +461,31 @@ static func from_dict(raw: Dictionary) -> Note:
 		note.trace_pts = _points_from_array(raw.get("trace", []))
 		if note.type == "trace" and not raw.has("space") and note.trace_style != "slider":
 			note._migrate_legacy_trace_points()
+	if note.type == "path":
+		if raw.has("centrifuge"):
+			note.path_centrifuge = clampf(float(raw.get("centrifuge", 0.72)), 0.0, 1.0)
+			note.path_controls_set = true
+		if raw.has("axis"):
+			note.path_axis = clampf(float(raw.get("axis", 0.0)), -2.0, 2.0)
+			note.path_controls_set = true
+		note.path_part = int(raw.get("part", 0))
+		note.path_prev_id = int(raw.get("prev_part", -1))
+		note.path_next_id = int(raw.get("next_part", -1))
+		if raw.has("head_x") and raw.has("head_y"):
+			note.path_head_local = Vector2(float(raw.get("head_x", 0.0)), float(raw.get("head_y", 0.0)))
+		if note.path_controls_set and note.trace_pts.is_empty():
+			note.generate_path_shape()
+		elif not note.path_controls_set:
+			note.derive_path_controls()
+			note.path_controls_set = true
+			note.path_legacy = true
+			note.visual_pts.clear()
+			note.path_style = "arc"
+			if note.trace_pts.is_empty():
+				# Legacy angle-only Path: migrate it immediately to the new
+				# axis/centrifuge representation. Explicit legacy traces keep
+				# their points while gaining the new editor values.
+				note.generate_path_shape()
 	return note
 
 

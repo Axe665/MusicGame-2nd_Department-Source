@@ -193,6 +193,48 @@ func _spin(page: VBoxContainer, label_text: String, value: float, min_value: flo
 	return spin
 
 
+func _spin_slider(page: VBoxContainer, label_text: String, value: float, min_value: float, max_value: float, step: float, callback: Callable, refresh_after: bool = false) -> Dictionary:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 6)
+	var label := Label.new()
+	label.text = label_text
+	label.custom_minimum_size = Vector2(96, 0)
+	label.add_theme_font_size_override("font_size", 12)
+	label.add_theme_color_override("font_color", UITheme.MUTED)
+	row.add_child(label)
+	var spin := SpinBox.new()
+	spin.min_value = min_value
+	spin.max_value = max_value
+	spin.step = step
+	spin.value = value
+	spin.allow_greater = false
+	spin.allow_lesser = false
+	spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	spin.size_flags_stretch_ratio = 3.0
+	row.add_child(spin)
+	var slider := HSlider.new()
+	slider.min_value = min_value
+	slider.max_value = max_value
+	slider.step = step
+	slider.value = value
+	slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	slider.size_flags_stretch_ratio = 2.0
+	slider.custom_minimum_size = Vector2(72, 18)
+	row.add_child(slider)
+	page.add_child(row)
+	var commit := func(new_value: float) -> void:
+		if _applying:
+			return
+		_apply(func() -> void: callback.call(new_value))
+		spin.set_value_no_signal(new_value)
+		slider.set_value_no_signal(new_value)
+		if refresh_after:
+			_refresh_note_page()
+	spin.value_changed.connect(commit)
+	slider.value_changed.connect(commit)
+	return {"spin": spin, "slider": slider}
+
+
 func _int(page: VBoxContainer, label_text: String, value: int, min_value: int, max_value: int, callback: Callable) -> SpinBox:
 	return _spin(page, label_text, float(value), float(min_value), float(max_value), 1.0, func(new_value: float) -> void: callback.call(int(new_value)))
 
@@ -422,6 +464,8 @@ func _build_note_page_for(page: VBoxContainer, note: Note) -> void:
 	)
 	_note_widgets["bell_r"] = br
 
+	if note.type == "path":
+		note.derive_path_controls()
 	var path_body := _note_group(page, "path", "Path")
 	# 星星颜色：不设时用统一绿色；有重叠时预览会自动分配互不相同的颜色。
 	var color_row := HBoxContainer.new()
@@ -453,22 +497,21 @@ func _build_note_page_for(page: VBoxContainer, note: Note) -> void:
 		_refresh_note_page()
 	)
 	color_row.add_child(color_reset)
-	var tail_local := note.path_tail_local()
-	var tail_radius := tail_local.length()
-	var tail_degrees := rad_to_deg(atan2(tail_local.y, tail_local.x))
-	var tr := _spin(path_body, "尾半径 R", tail_radius, 0.05, 1.0, 0.01, func(value: float) -> void:
+	var tail_display := _path_tail_display(note)
+	var tail_radius := tail_display.x
+	var tail_degrees := tail_display.y
+	var tr := _spin(path_body, "尾半径 R", tail_radius, -1.0, 1.0, 0.01, func(value: float) -> void:
 		var n := _active_note
 		if n == null:
 			return
-		var local := n.path_tail_local()
-		_set_path_tail(n, value, rad_to_deg(atan2(local.y, local.x)))
+		_set_path_tail(n, value, _path_tail_display(n).y)
 	)
 	_note_widgets["path_tail_r"] = tr
 	var ta := _spin(path_body, "尾角度", tail_degrees, 0.0, 360.0, 0.5, func(value: float) -> void:
 		var n := _active_note
 		if n == null:
 			return
-		_set_path_tail(n, n.path_tail_local().length(), value)
+		_set_path_tail(n, _path_tail_display(n).x, value)
 	)
 	_note_widgets["path_tail_a"] = ta
 	var tw := _spin(path_body, "尾宽度", note.tail_width, 0.0, 360.0, 1.0, func(value: float) -> void:
@@ -534,6 +577,62 @@ func _build_note_page_for(page: VBoxContainer, note: Note) -> void:
 			_refresh_note_page()
 	}])
 	_label(path_body, "擦除段不渲染、不生成中段检查点；头尾仍各自判定。", 11, UITheme.MUTED)
+
+	# New, minimal Path editor. The legacy controls above stay built for data
+	# compatibility but are hidden; authors now edit centrifuge + axis + parts.
+	var path_edit := _note_group(page, "path_edit", "Path")
+	var centrifuge := _spin_slider(path_edit, "尾部离心 centrifuge", note.path_centrifuge, 0.0, 1.0, 0.01, func(value: float) -> void:
+		var n := _active_note
+		if n != null:
+			n.set_path_centrifuge(value)
+			_sync_path_chain(n)
+	, true)
+	_note_widgets["path_centrifuge"] = centrifuge["spin"]
+	_note_widgets["path_centrifuge_slider"] = centrifuge["slider"]
+	var axis := _spin_slider(path_edit, "轨迹轴长 axis", note.path_axis, -2.0, 2.0, 0.01, func(value: float) -> void:
+		var n := _active_note
+		if n != null:
+			n.set_path_axis(value)
+			_sync_path_chain(n)
+	, true)
+	_note_widgets["path_axis"] = axis["spin"]
+	_note_widgets["path_axis_slider"] = axis["slider"]
+	var axis_bar := Control.new()
+	axis_bar.custom_minimum_size = Vector2(0, 36)
+	axis_bar.mouse_filter = Control.MOUSE_FILTER_STOP
+	axis_bar.draw.connect(func() -> void:
+		var font := UITheme.mono_font()
+		var line_y := 24.0
+		axis_bar.draw_line(Vector2(0, line_y), Vector2(axis_bar.size.x, line_y), Color(1, 1, 1, 0.22), 1.0, true)
+		for pair in [{"value": -1.0, "text": "-R"}, {"value": 0.0, "text": "L"}, {"value": 1.0, "text": "R"}]:
+			var x: float = axis_bar.size.x * (float(pair["value"]) + 2.0) / 4.0
+			var hot: bool = absf(float(_active_note.path_axis) - float(pair["value"])) < 0.06 if _active_note != null else false
+			axis_bar.draw_line(Vector2(x, 17), Vector2(x, 31), UITheme.CYAN if hot else Color(1, 1, 1, 0.42), 2.0 if hot else 1.0, true)
+			var text := String(pair["text"])
+			var width := font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, 9).x
+			axis_bar.draw_string(font, Vector2(x - width * 0.5, 10), text, HORIZONTAL_ALIGNMENT_LEFT, -1, 9, UITheme.MUTED)
+	)
+	axis_bar.gui_input.connect(func(event: InputEvent) -> void:
+		if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
+			if axis_bar.size.x <= 1.0:
+				return
+			for anchor in [-1.0, 0.0, 1.0]:
+				var x: float = axis_bar.size.x * (anchor + 2.0) / 4.0
+				if absf(event.position.x - x) <= 10.0:
+					var n := _active_note
+					if n != null and not _applying:
+						_apply(func() -> void:
+							n.set_path_axis(anchor)
+							_sync_path_chain(n)
+						)
+						_refresh_note_page()
+					break
+	)
+	path_edit.add_child(axis_bar)
+	_note_widgets["path_axis_bar"] = axis_bar
+	var part_label := _label(path_edit, "", 11, UITheme.MUTED)
+	_note_widgets["path_part_label"] = part_label
+	_label(path_edit, "右键单击 Path 尾部可在该处新建 part；各 part 可分别编辑，预览中整条链共用 part0 的星星。", 10, UITheme.MUTED)
 
 	var hold_body := _note_group(page, "hold", "Hold")
 	var hold_style_label := _label(hold_body, "", 11, UITheme.MUTED)
@@ -675,8 +774,8 @@ func _refresh_note_page() -> void:
 	var is_plane := note.space == "plane" and note.type not in ["path", "trace"]
 	var is_bell := note.type == "bell"
 	_note_rows["end"].visible = note.type in ["hold", "path", "trace"]
-	_note_rows["angle"].visible = not is_bell and not is_plane
-	_note_rows["width"].visible = not is_bell and not is_plane
+	_note_rows["angle"].visible = not is_bell and not is_plane and note.type != "path"
+	_note_rows["width"].visible = not is_bell and not is_plane and note.type != "path"
 	_note_rows["length"].visible = note.type == "tap"
 	if note.type == "tap":
 		_note_widgets["length"].tooltip_text = "到判定环的长度 %.1f°（= %.2f l，普通 Tap 固定 0.50 l）" % [note.arc_width(), note.length_ratio()]
@@ -685,7 +784,8 @@ func _refresh_note_page() -> void:
 	_note_groups["tapsize"].visible = note.type == "tap"
 	_note_groups["plane"].visible = is_plane
 	_note_groups["bell"].visible = is_bell
-	_note_groups["path"].visible = note.type == "path"
+	_note_groups["path"].visible = false
+	_note_groups["path_edit"].visible = note.type == "path"
 	_note_groups["hold"].visible = note.type == "hold"
 	_note_groups["trace"].visible = note.type == "trace"
 	_note_groups["anchor"].visible = note.type == "anchor"
@@ -695,9 +795,10 @@ func _refresh_note_page() -> void:
 	_note_widgets["bell_u"].value = note.center_u
 	_note_widgets["bell_r"].value = note.radius
 	if note.type == "path":
-		var local := note.path_tail_local()
-		_note_widgets["path_tail_r"].value = local.length()
-		_note_widgets["path_tail_a"].value = rad_to_deg(atan2(local.y, local.x))
+		note.derive_path_controls()
+		var tail_display := _path_tail_display(note)
+		_note_widgets["path_tail_r"].value = tail_display.x
+		_note_widgets["path_tail_a"].value = tail_display.y
 		_note_widgets["path_tail_w"].value = note.tail_width
 		_note_widgets["path_tol"].value = note.tolerance
 		_note_widgets["path_samples"].value = note.samples_per_beat
@@ -705,6 +806,17 @@ func _refresh_note_page() -> void:
 		_note_widgets["path_counts"].text = "中间判定点：%d 个；平面点：%d 个" % [note.path_sample_beats().size(), note.trace_pts.size()]
 		_fill_visual_list(_note_widgets["path_list"], note)
 		_note_widgets["path_erase"].value = _path_erase_width(note) * 100.0
+		_note_widgets["path_centrifuge"].value = note.path_centrifuge
+		_note_widgets["path_centrifuge_slider"].value = note.path_centrifuge
+		_note_widgets["path_axis"].value = note.path_axis
+		_note_widgets["path_axis_slider"].value = note.path_axis
+		_note_widgets["path_axis_bar"].queue_redraw()
+		var relation := ""
+		if note.path_prev_id >= 0:
+			relation += " ｜ 上一段 #%d" % note.path_prev_id
+		if note.path_next_id >= 0:
+			relation += " ｜ 下一段 #%d" % note.path_next_id
+		_note_widgets["path_part_label"].text = "段落 part%d%s" % [note.path_part, relation]
 	if note.type == "hold":
 		_note_widgets["hold_style_label"].text = "直 Hold：扇形张开，尾部收到判定线时消失。"
 		_fill_visual_list(_note_widgets["hold_list"], note)
@@ -787,6 +899,44 @@ func _set_trace_space(space: String) -> void:
 			point["y"] = local.y
 	)
 	_rebuild()
+
+
+func _path_tail_display(note: Note) -> Vector2:
+	## The tail is stored as a point. Keep a negative R meaningful by comparing
+	## the point direction with the author-facing tail angle: an opposite point
+	## means R is negative (the tail crossed the ring centre).
+	var local := note.path_tail_local()
+	var radius := local.length()
+	if radius <= 0.0001:
+		return Vector2(0.0, fposmod(note.tail_angle, 360.0))
+	var actual := rad_to_deg(atan2(local.y, local.x))
+	var delta := absf(fposmod(actual - note.tail_angle + 180.0, 360.0) - 180.0)
+	if delta >= 179.0:
+		return Vector2(-radius, fposmod(note.tail_angle, 360.0))
+	return Vector2(radius, actual)
+
+
+func _sync_path_chain(parent: Note) -> void:
+	if _app == null or _app.chart == null or parent == null:
+		return
+	var next_id := parent.path_next_id
+	var guard := 0
+	while next_id >= 0 and guard < 64:
+		var child: Note = null
+		for item in _app.chart.notes:
+			if item.id == next_id:
+				child = item
+				break
+		if child == null or child.type != "path":
+			break
+		var head := parent.path_tail_local()
+		child.path_head_local = head
+		child.path_prev_id = parent.id
+		child.angle = rad_to_deg(atan2(head.y, head.x))
+		child.generate_path_shape()
+		parent = child
+		next_id = child.path_next_id
+		guard += 1
 
 
 func _set_path_tail(note: Note, radius: float, degrees: float) -> void:

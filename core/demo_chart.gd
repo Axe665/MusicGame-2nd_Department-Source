@@ -145,12 +145,9 @@ static func _add_path(
 	note.tail_width = tail_width
 	note.tolerance = 0.24
 	note.samples_per_beat = 4.0
-	var total := end_beat - beat
-	var delta := JudgeMath.angle_delta(head_angle, tail_angle)
-	note.visual_pts = [
-		{"db": total * 0.33, "da": delta * 0.33 + 35.0},
-		{"db": total * 0.66, "da": delta * 0.66 - 20.0},
-	]
+	note.path_centrifuge = 0.72
+	note.path_axis = 0.5
+	note.generate_path_shape()
 	chart.notes.append(note)
 
 
