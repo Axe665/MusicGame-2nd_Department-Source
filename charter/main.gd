@@ -77,6 +77,9 @@ var _playtest_flow: SpinBox = null
 var _playtest_star: SpinBox = null
 var _playtest_star_color: ColorPickerButton = null
 var _playtest_trace_color: ColorPickerButton = null
+var _playtest_offset: SpinBox = null
+var _playtest_dynamic: CheckBox = null
+var _playtest_bias: Label = null
 var _playtest_from_start: bool = false
 ## 制谱界面保留的流速输入框（试玩设置改流速后要同步回来）。
 var _editor_flow_spin: SpinBox = null
@@ -124,6 +127,68 @@ func _ready() -> void:
 		var tw := create_tween()
 		tw.tween_property(intro_control, "modulate:a", 1.0, 0.45).set_delay(0.05)
 	set_process(true)
+	if "--bench" in OS.get_cmdline_user_args():
+		call_deferred("_run_bench")
+
+
+## 无人值守性能基准：载入 Apollo 谱，从扫圈段自动打 25 秒后退出。
+## --bench-osz=路径 可改用导入的 .osz 复现问题，--bench-from=拍 指定起始拍。
+func _run_bench() -> void:
+	var start_beat := 0.0 if "--bench-start0" in OS.get_cmdline_user_args() else 312.0
+	var osz := ""
+	for arg in OS.get_cmdline_user_args():
+		if arg.begins_with("--bench-osz="):
+			osz = arg.get_slice("=", 1)
+		elif arg.begins_with("--bench-from="):
+			start_beat = float(arg.get_slice("=", 1))
+	if osz.is_empty():
+		var chart: Chart = ChartIO.load_chart("user://autosave.json")
+		if chart != null:
+			_app.set_chart(chart, "user://autosave.json", false)
+	else:
+		var imported := OsuIO.import_osz(osz, 0)
+		if imported.is_empty():
+			print("[bench] osz import failed: ", OsuIO.last_error)
+			get_tree().quit()
+			return
+		_app.set_chart(imported["chart"], "", false)
+	_app.playhead_beat = start_beat
+	_start_playtest(false)
+	if _playtest == null:
+		print("[bench] playtest failed to start")
+		get_tree().quit()
+		return
+	if "--bench-unlimited" in OS.get_cmdline_user_args():
+		# 基准量的是真实开销，不被垂直同步的 120/240Hz 挡住。
+		Engine.max_fps = 0
+		DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
+	var first: Note = _playtest._ordered_notes[0]
+	print("[bench] start playhead=%.1f playtest_beat=%.1f first_id=%d first_beat=%.1f" % [_app.playhead_beat, _playtest.start_beat, first.id, first.beat])
+	if "--bench-shot" in OS.get_cmdline_user_args():
+		# --bench-shot-at=秒 按墙钟截图；--bench-shot-beat=拍 等谱面播放到该拍再截（更准）。
+		var shot_at := 3.0
+		var shot_beat := NAN
+		for arg in OS.get_cmdline_user_args():
+			if arg.begins_with("--bench-shot-at="):
+				shot_at = float(arg.get_slice("=", 1))
+			elif arg.begins_with("--bench-shot-beat="):
+				shot_beat = float(arg.get_slice("=", 1))
+		if is_nan(shot_beat):
+			await get_tree().create_timer(shot_at).timeout
+		else:
+			var target_ms := _playtest.chart.beat_to_ms(shot_beat)
+			while is_instance_valid(_playtest) and _playtest._chart_ms() < target_ms:
+				await get_tree().process_frame
+			print("[bench] shot beat=%.2f" % _playtest._chart_ms())
+		var shot := get_viewport().get_texture().get_image()
+		if shot != null:
+			shot.save_png("/tmp/bench_shot.png")
+			print("[bench] screenshot saved")
+		await get_tree().create_timer(17.0).timeout
+	else:
+		await get_tree().create_timer(95.0 if "--bench-start0" in OS.get_cmdline_user_args() else 20.0).timeout
+	print("[bench] stop")
+	get_tree().quit()
 
 
 func _build_ui() -> void:
@@ -1459,7 +1524,13 @@ func _open_playtest_setup(from_start: bool) -> void:
 		_playtest_star_color.color = _app.star_color
 	if _playtest_trace_color != null:
 		_playtest_trace_color.color = _app.trace_color
-	_playtest_dialog.popup_centered(Vector2i(380, 240))
+	if _playtest_offset != null:
+		_playtest_offset.value = float(_app.playtest_offset_ms)
+	if _playtest_dynamic != null:
+		_playtest_dynamic.button_pressed = bool(_app.dynamic_offset)
+	if _playtest_bias != null:
+		_playtest_bias.text = "上次平均偏差 %+.1fms" % float(_app.last_bias_ms)
+	_playtest_dialog.popup_centered(Vector2i(400, 320))
 
 
 func _build_playtest_dialog() -> void:
@@ -1473,6 +1544,16 @@ func _build_playtest_dialog() -> void:
 	_playtest_rate = _playtest_spin_row(box, "倍速", 0.5, 2.0, 0.05, 1.0, "×")
 	_playtest_flow = _playtest_spin_row(box, "流速", 0.05, 3.0, 0.01, 1.0, "×")
 	_playtest_star = _playtest_spin_row(box, "星速", 0.5, 2.0, 0.05, 1.0, "×")
+	_playtest_offset = _playtest_spin_row(box, "判定偏移", -200.0, 200.0, 1.0, 0.0, "ms")
+	_playtest_dynamic = CheckBox.new()
+	_playtest_dynamic.text = "动态 offset（局内自动校准，≤±50ms）"
+	_playtest_dynamic.tooltip_text = "至少 8 次命中后，每次命中按偏差的 5% 自动微调判定偏移"
+	box.add_child(_playtest_dynamic)
+	_playtest_bias = Label.new()
+	_playtest_bias.text = "上次平均偏差 +0.0ms"
+	_playtest_bias.add_theme_font_size_override("font_size", 11)
+	_playtest_bias.add_theme_color_override("font_color", UITheme.MUTED)
+	box.add_child(_playtest_bias)
 	# 星星主色（全局单色系）。
 	var color_row := HBoxContainer.new()
 	box.add_child(color_row)
@@ -1526,6 +1607,11 @@ func _begin_playtest_with_settings() -> void:
 	_rate = _playtest_rate.value
 	_app.flow_scale = _playtest_flow.value
 	_app.star_speed = _playtest_star.value
+	if _playtest_offset != null:
+		_app.playtest_offset_ms = _playtest_offset.value
+	if _playtest_dynamic != null:
+		_app.dynamic_offset = _playtest_dynamic.button_pressed
+	_app.save_settings()
 	if _playtest_star_color != null:
 		_app.star_color = _playtest_star_color.color
 	if _playtest_trace_color != null:
@@ -1564,6 +1650,7 @@ func _start_playtest(from_start: bool) -> void:
 	editor_root.process_mode = Node.PROCESS_MODE_DISABLED
 	_preview.set_suspended(true)
 	_playtest = Playtest.new()
+	_playtest.bench_mode = "--bench" in OS.get_cmdline_user_args()
 	add_child(_playtest)
 	_playtest.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_playtest.setup(_app.chart, 0.0 if from_start else _app.playhead_beat, _app.chart_path)

@@ -5,6 +5,8 @@ extends Control
 
 
 var preview: Control
+## true 时只画光标层（鼠标移动时不必重绘整个场景）。
+var cursor_only: bool = false
 
 
 func _ready() -> void:
@@ -13,5 +15,10 @@ func _ready() -> void:
 
 
 func _draw() -> void:
-	if preview != null and preview.has_method("draw_overlay"):
+	if preview == null:
+		return
+	if cursor_only:
+		if preview.has_method("draw_cursor_overlay"):
+			preview.draw_cursor_overlay(self)
+	elif preview.has_method("draw_overlay"):
 		preview.draw_overlay(self)

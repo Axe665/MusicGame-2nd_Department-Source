@@ -1119,6 +1119,14 @@ func _build_view_page(page: VBoxContainer) -> void:
 	)
 	_label(page, "试玩中 F6 换皮肤、F7 换特效；音效只改打击音色，不改判定。", 11, UITheme.MUTED)
 	_section(page, "显示")
+	var cap_keys: Array[String] = ["60", "120", "vsync", "unlimited"]
+	var cap_labels: Array[String] = ["60 FPS", "120 FPS", "跟随显示器（vsync）", "无限制"]
+	_setting_option(page, "帧率上限", cap_labels, maxi(0, cap_keys.find(_app.frame_cap)), func(index: int) -> void:
+		_app.frame_cap = cap_keys[index]
+		_app.apply_frame_cap()
+		_app.save_settings()
+		_app.notice.emit("帧率上限：%s" % cap_labels[index], "info")
+	)
 	_check(page, "正对镜头（忽略倾斜）", bool(_app.chart.metadata.get("face_camera", true)), func(value: bool) -> void:
 		_app.mutate(func() -> void: _app.chart.metadata["face_camera"] = value)
 	)

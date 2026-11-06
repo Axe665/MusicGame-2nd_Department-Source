@@ -7,7 +7,9 @@ signal settings_requested
 const PERFECT_MS := 65.0
 const GREAT_MS := 115.0
 const GOOD_MS := 170.0
-const HIT_WINDOW_MS := GOOD_MS
+## Estella 式 BAD 档：超出 GOOD 但在这一档内算 BAD（不断连、不计命中）。
+const BAD_MS := 250.0
+const HIT_WINDOW_MS := BAD_MS
 const BELL_WINDOW_MS := 300.0
 const RED_LIMIT_SEC := 0.2
 # 鼠标判定半径：非 Tap 音符统一放大，避免要求像素级瞄准。
@@ -16,7 +18,20 @@ const PATH_TAIL_RADIUS := 192.0
 const TRACE_HEAD_RADIUS := 72.0
 const TRACE_CONTACT_PX := 56.0
 const BELL_COLLECT_RADIUS := 112.0
+## 位置判定：鼠标到音符图形边缘外还有这么多像素也算命中。
+const POSITION_TOLERANCE_PX := 90.0
+## Hold 头比 Tap 窄，额外再放宽一点，避免擦边。
+const HOLD_HEAD_EXTRA_PX := 40.0
 const HOLD_ARC_PAD := 10.0
+## 动态 offset：至少这么多次命中才开始自动校准。
+const DYNAMIC_SAMPLE_MIN := 8
+## 每次命中把偏移往消除偏差的方向挪这么多。
+const DYNAMIC_STEP := 0.05
+## 自动校准最多把偏移推离开局值多少毫秒。
+const DYNAMIC_LIMIT_MS := 50.0
+## 判定循环的时间窗：只需看未来 1.5 秒内、过去 6 秒内的音符。
+const JUDGE_LOOKAHEAD_MS := 1500.0
+const JUDGE_LOOKBEHIND_MS := 6000.0
 
 var _app: Node = null
 var chart: Chart = null
@@ -43,11 +58,29 @@ var _hit_count: int = 0
 var _miss_count: int = 0
 var _accuracy_sum: float = 0.0
 var _judged_total: int = 0
-var _tier_counts: Dictionary = {"PERFECT": 0, "GREAT": 0, "GOOD": 0, "MISS": 0}
+var _tier_counts: Dictionary = {"PERFECT": 0, "GREAT": 0, "GOOD": 0, "BAD": 0, "MISS": 0}
 var _bell_total: int = 0
 var _bell_hits: int = 0
 var _red_breaks: int = 0
 var _errors: Array[float] = []
+var _error_sum: float = 0.0
+var _auto_origin_ms: float = 0.0
+var _offset_dirty: bool = false
+## 自动基准模式：不进音频、按谱面自动出判定，用于无人值守测帧率。
+var bench_mode: bool = false
+var _judge_from: int = 0
+## 帧时间采样（基准模式诊断卡顿）：每帧间隔 + 2 秒统计。
+var _frame_last_usec: int = 0
+var _frame_samples: Array[int] = []
+var _frame_since_usec: int = 0
+var _smooth_ms: float = 0.0
+var _clock_update_usec: int = 0
+var _frame_last_beat: float = -1.0
+var _beat_stalls: int = 0
+var _dense_ids: Dictionary = {}
+var _near_miss_logs: int = 0
+var _near_miss_stamp: float = 0.0
+var _near_miss_logged_stamp: float = -INF
 var _log: Array[String] = []
 var _combo: int = 0
 var _max_combo: int = 0
@@ -59,6 +92,8 @@ var _style_label: Label
 var _results: PanelContainer
 var _results_text: RichTextLabel
 var _results_button: Button
+var _timing_chart: TimingChart
+var _bias_label: Label
 ## 暂停菜单（ESC）。
 var _pause_overlay: Control = null
 var _paused: bool = false
@@ -223,25 +258,35 @@ func _build_ui() -> void:
 
 	_results = PanelContainer.new()
 	_results.visible = false
-	_results.custom_minimum_size = Vector2(520, 320)
+	_results.custom_minimum_size = Vector2(640, 500)
 	add_child(_results)
 	_results.set_anchors_preset(Control.PRESET_CENTER)
-	_results.offset_left = -260
-	_results.offset_top = -160
-	_results.offset_right = 260
-	_results.offset_bottom = 160
+	_results.offset_left = -320
+	_results.offset_top = -250
+	_results.offset_right = 320
+	_results.offset_bottom = 250
 	var box := VBoxContainer.new()
-	box.add_theme_constant_override("separation", 10)
+	box.add_theme_constant_override("separation", 8)
 	_results.add_child(box)
 	var title := Label.new()
 	title.text = "试玩结束"
 	UITheme.style_section(title)
 	box.add_child(title)
+	var chart_title := Label.new()
+	chart_title.text = "Timing Distribution（判定偏差分布）"
+	UITheme.style_mono(chart_title, 12, UITheme.MUTED)
+	box.add_child(chart_title)
+	_timing_chart = TimingChart.new()
+	_timing_chart.custom_minimum_size = Vector2(600, 180)
+	box.add_child(_timing_chart)
+	_bias_label = Label.new()
+	UITheme.style_mono(_bias_label, 12, UITheme.CYAN)
+	box.add_child(_bias_label)
 	_results_text = RichTextLabel.new()
 	_results_text.bbcode_enabled = false
 	_results_text.fit_content = false
 	_results_text.scroll_active = true
-	_results_text.custom_minimum_size = Vector2(480, 230)
+	_results_text.custom_minimum_size = Vector2(600, 150)
 	_results_text.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	box.add_child(_results_text)
 	_results_button = Button.new()
@@ -271,17 +316,32 @@ func _init_states() -> void:
 	_miss_count = 0
 	_accuracy_sum = 0.0
 	_judged_total = 0
-	_tier_counts = {"PERFECT": 0, "GREAT": 0, "GOOD": 0, "MISS": 0}
+	_tier_counts = {"PERFECT": 0, "GREAT": 0, "GOOD": 0, "BAD": 0, "MISS": 0}
 	_bell_total = 0
 	_bell_hits = 0
 	_red_breaks = 0
 	_errors.clear()
+	_error_sum = 0.0
+	_near_miss_logs = 0
+	_near_miss_logged_stamp = -INF
+	_auto_origin_ms = float(_app.playtest_offset_ms if _app != null else 0.0)
 	_log.clear()
 	_combo = 0
 	_max_combo = 0
 	_ordered_notes = chart.sorted_notes()
+	_dense_ids.clear()
+	for i in _ordered_notes.size():
+		var note := _ordered_notes[i]
+		for j in [i - 1, i + 1]:
+			if j < 0 or j >= _ordered_notes.size():
+				continue
+			if absf(_ordered_notes[j].beat - note.beat) <= 0.25:
+				_dense_ids[note.id] = true
+				break
 	for note in _ordered_notes:
 		_states[note.id] = {
+			"target_ms": chart.timing.beat_to_chart_ms(note.beat),
+			"end_ms": chart.timing.beat_to_chart_ms(note.end_beat),
 			"done": false,
 			"head": false,
 			"started": false,
@@ -300,12 +360,21 @@ func _init_states() -> void:
 		}
 		if note.type == "bell":
 			_bell_total += 1
+	_judge_from = 0
 	for region in chart.regions:
 		_red_states[region.id] = {"time": 0.0, "broken": false}
 
 
 func _start_audio() -> void:
 	_last_chart_ms = -INF
+	_smooth_ms = 0.0
+	_clock_update_usec = 0
+	var bench_audio := bench_mode and "--bench-audio" in OS.get_cmdline_user_args()
+	if bench_mode and not bench_audio:
+		_audio_available = false
+		_start_chart_ms = chart.timing.beat_to_chart_ms(start_beat)
+		_start_usec = Time.get_ticks_usec()
+		return
 	# 重开/重进时先停掉旧播放器，避免音频叠加。
 	if _audio != null:
 		_audio.stop()
@@ -328,6 +397,11 @@ func _start_audio() -> void:
 		return
 	_audio_available = true
 	_audio.stream = stream
+	if bench_audio:
+		# 基准模式带音频时可以静音，只测解码开销。
+		var music_bus := AudioServer.get_bus_index("Music")
+		if music_bus >= 0:
+			AudioServer.set_bus_volume_db(music_bus, -60.0)
 	print("[audio] playtest ", path, " -> ", stream, " bus=", _audio.bus)
 	_audio.finished.connect(_finish)
 	var from_sec := maxf(0.0, (_start_chart_ms - chart.offset_ms) / 1000.0)
@@ -343,6 +417,17 @@ func _process(delta: float) -> void:
 	_preview.time_beat = beat
 	_preview.playing = true
 	_judge_all(judge_ms, beat, delta)
+	if bench_mode:
+		_bench_tick(judge_ms, beat)
+		_bench_mouse(beat)
+		if "--bench-tilt" in OS.get_cmdline_user_args():
+			# 模拟鼠标持续移动带来的镜头视差（get_local_mouse_position 无法在基准里伪造）。
+			_preview._tilt_target = Vector2(sin(beat * 3.0), cos(beat * 2.3)) * 7.0
+	_probe_frame_time()
+	if _frame_last_beat >= 0.0:
+		if absf(beat - _frame_last_beat) < 0.000001:
+			_beat_stalls += 1
+	_frame_last_beat = beat
 	_ui_accum += delta
 	if _ui_accum >= 0.05:
 		_ui_accum = 0.0
@@ -358,24 +443,34 @@ func _process(delta: float) -> void:
 func _chart_ms() -> float:
 	if _paused:
 		return _last_chart_ms
-	if _audio_available and _audio.playing:
+	var now_usec := Time.get_ticks_usec()
+	var dt := 0.0
+	if _clock_update_usec != 0:
+		dt = float(now_usec - _clock_update_usec) / 1000.0
+	_clock_update_usec = now_usec
+	var candidate := _last_chart_ms
+	if _audio_available and _audio != null and _audio.playing:
 		var stream_ms := (_audio.get_playback_position() + AudioServer.get_time_since_last_mix() - AudioServer.get_output_latency()) * 1000.0
-		var candidate := stream_ms + chart.offset_ms
-		if not is_finite(candidate) or candidate > 1.0e9:
-			candidate = _last_chart_ms
-		elif _last_chart_ms > -INF:
-			if candidate < _last_chart_ms - 250.0:
-				_last_chart_ms = candidate
-			elif candidate < _last_chart_ms:
-				candidate = _last_chart_ms
-		_last_chart_ms = maxf(_last_chart_ms, candidate)
-		return _last_chart_ms
-	var elapsed := float(Time.get_ticks_usec() - _start_usec) / 1000.0
-	var fallback := _start_chart_ms + elapsed
-	if _last_chart_ms > -INF and fallback < _last_chart_ms:
-		fallback = _last_chart_ms
-	_last_chart_ms = fallback
-	return fallback
+		candidate = stream_ms + chart.offset_ms
+		# 音频时钟只做小步校正。设备重连、VBR MP3 的播放位置估算跳变都可能一次偏几秒，
+		# 直接接受会把整段音符甩到身后（表现就是“这段完全没判定/没输入响应”）。
+		if _last_chart_ms > -INF and absf(candidate - _last_chart_ms) > 250.0:
+			candidate = _last_chart_ms + dt
+	elif _last_chart_ms > -INF:
+		# 音频不可用时沿用当前时钟按墙钟推进，绝不能跳回起点。
+		candidate = _last_chart_ms + dt
+	else:
+		candidate = _start_chart_ms + float(now_usec - _start_usec) / 1000.0
+	if not is_finite(candidate) or candidate > 1.0e9:
+		candidate = _last_chart_ms if _last_chart_ms > -INF else _start_chart_ms
+	if _last_chart_ms <= -INF:
+		_smooth_ms = candidate
+	else:
+		# 音频仍是主时钟，两帧之间用墙钟补间，最多领先 30ms；绝不后退。
+		_smooth_ms = maxf(_smooth_ms + dt, candidate)
+		_smooth_ms = minf(_smooth_ms, candidate + 30.0)
+	_last_chart_ms = maxf(_last_chart_ms, _smooth_ms)
+	return _last_chart_ms
 
 
 ## 判定保护：音符离判定环还剩 25% 半径（= 预读时间的 25%）时，
@@ -389,11 +484,29 @@ func _early_protect_ms() -> float:
 
 
 func _judge_all(ms: float, beat: float, delta: float) -> void:
-	var cursor_u: float = _preview.cursor_u
-	var valid: bool = _preview.cursor_valid
 	var mouse: Vector2 = _preview.mouse_screen
-	for note in _ordered_notes:
-		if _states[note.id]["done"]:
+	for i in range(_judge_from, _ordered_notes.size()):
+		var note := _ordered_notes[i]
+		var note_state: Dictionary = _states[note.id]
+		if note_state["done"]:
+			if i == _judge_from:
+				_judge_from += 1
+			continue
+		# 只看离当前时间足够近的音符，跳过整段已经过去/还没到的谱面。
+		if float(note_state["target_ms"]) > ms + JUDGE_LOOKAHEAD_MS:
+			break
+		# end_ms 绝不能小于 target_ms：单点音符的结束时间就是它自己。
+		# 老数据里 tap 的 end_beat 可能是 0，这里兜底，避免整段音符被判成“过期”跳过。
+		var live_end_ms := maxf(float(note_state["end_ms"]), float(note_state["target_ms"]))
+		if live_end_ms < ms - JUDGE_LOOKBEHIND_MS:
+			# 主线程停顿/时钟跳变会把整段音符甩到身后。这里绝不能静默跳过，
+			# 否则玩家看到的就是“这段 Tap 完全没反应”。
+			_miss_count += 1
+			_add_judgement("MISS")
+			_combo = 0
+			note_state["done"] = true
+			if i == _judge_from:
+				_judge_from += 1
 			continue
 		match note.type:
 			"tap":
@@ -401,32 +514,29 @@ func _judge_all(ms: float, beat: float, delta: float) -> void:
 			"hold":
 				_judge_hold(note, ms, beat)
 			"path":
-				_judge_path(note, ms, beat, cursor_u, valid, mouse)
+				_judge_path(note, ms, beat, mouse)
 			"trace":
 				_judge_trace(note, ms, beat, delta, mouse)
 			"anchor":
 				_judge_anchor(note, ms, beat)
 			"bell":
 				_judge_bell(note, ms, beat, mouse)
-	_judge_red(ms, beat, delta, cursor_u, valid)
+	_judge_red(ms, beat, delta, mouse)
 
 
 func _judge_tap(note: Note, ms: float, beat: float) -> void:
 	var state: Dictionary = _states[note.id]
-	var target := chart.timing.beat_to_chart_ms(note.beat)
+	var target := float(state["target_ms"])
 	var protect := _early_protect_ms()
 	if ms < target - protect:
 		return
-	var press := _take_key_for_arc(target - protect, target + HIT_WINDOW_MS, note.angle, note.arc_width())
+	var press := _take_press_for_note(target - protect, target + HIT_WINDOW_MS, note, beat, 0.0)
 	if not press.is_empty():
 		var error := float(press["time"]) - target
 		var tier := "GOOD" if error < -GOOD_MS else _tier_for(error)
 		state["done"] = true
-		_hit_count += 1
-		_combo += 1
-		_max_combo = maxi(_max_combo, _combo)
-		_add_judgement(tier)
-		_pulse_at(note.angle, beat, _tier_color(tier), tier, note.arc_width(), "tap")
+		_register_hit(tier)
+		_pulse_at(note.angle, beat, _tier_color(tier), tier, note.arc_width(), "tap", _timing_detail(error, tier))
 		_sfx.play(HitSfx.kind_for_note(note), randf_range(0.98, 1.02))
 		_record_error(float(press["time"]) - target, "Tap #%d %s" % [note.id, tier])
 		return
@@ -441,13 +551,13 @@ func _judge_tap(note: Note, ms: float, beat: float) -> void:
 
 func _judge_hold(note: Note, ms: float, beat: float) -> void:
 	var state: Dictionary = _states[note.id]
-	var target := chart.timing.beat_to_chart_ms(note.beat)
-	var end_ms := chart.timing.beat_to_chart_ms(note.end_beat)
+	var target := float(state["target_ms"])
+	var end_ms := float(state["end_ms"])
 	if not state["started"]:
 		var head_protect := _early_protect_ms()
 		if ms < target - head_protect:
 			return
-		var press := _take_key_for_arc(target - head_protect, target + HIT_WINDOW_MS, note.angle, note.arc_width() + HOLD_ARC_PAD)
+		var press := _take_press_for_note(target - head_protect, target + HIT_WINDOW_MS, note, beat, HOLD_ARC_PAD, HOLD_HEAD_EXTRA_PX)
 		if not press.is_empty():
 			var head_error := float(press["time"]) - target
 			var head_tier := "GOOD" if head_error < -GOOD_MS else _tier_for(head_error)
@@ -455,7 +565,7 @@ func _judge_hold(note: Note, ms: float, beat: float) -> void:
 			state["head"] = true
 			state["key"] = int(press.get("key", 0))
 			state["head_tier"] = head_tier
-			_pulse_at(note.angle, beat, _tier_color(head_tier), head_tier, note.arc_width(), "hold")
+			_pulse_at(note.angle, beat, _tier_color(head_tier), head_tier, note.arc_width(), "hold", _timing_detail(head_error, head_tier))
 			_sfx.play("hold", 0.92)
 			_add_log("HOLD #%d HEAD %s" % [note.id, head_tier])
 			return
@@ -470,56 +580,49 @@ func _judge_hold(note: Note, ms: float, beat: float) -> void:
 	# Hold 绑定起手键：松开起手键才算断，换成另一个键点 Tap 不会误续。
 	var hold_key := int(state.get("key", 0))
 	if hold_key != 0 and not _keys_held.has(hold_key):
-		# 最后 1/4 拍内松手算 Perfect；更早松手才断。
-		var release_window := 60000.0 / maxf(1.0, chart.timing.bpm_at(note.beat)) * 0.25
-		if ms >= end_ms - release_window:
-			state["done"] = true
-			_hit_count += 1
-			_combo += 1
-			_max_combo = maxi(_max_combo, _combo)
-			_add_judgement("PERFECT")
-			_pulse_at(note.angle, beat, _tier_color("PERFECT"), "PERFECT", note.arc_width(), "tap")
-			_sfx.play("hold", 1.08)
-			_add_log("HOLD #%d COMPLETE PERFECT (released in window)" % note.id)
-			return
+		# 最后 1/2 拍内松手算 PERFECT；更早松手按已按住的比例降级，不断连。
+		var release_window := 60000.0 / maxf(1.0, chart.timing.bpm_at(note.beat)) * 0.5
+		var held_tier := "PERFECT"
+		if ms < end_ms - release_window:
+			var head_ms := float(state["target_ms"])
+			var held := clampf((ms - head_ms) / maxf(1.0, end_ms - head_ms), 0.0, 1.0)
+			held_tier = "GREAT" if held >= 0.5 else "GOOD"
 		state["done"] = true
-		_miss_count += 1
-		_add_judgement("MISS")
-		_combo = 0
-		_pulse_at(note.angle, beat, UITheme.RED, "MISS", note.arc_width())
-		_add_log("MISS Hold #%d (key released)" % note.id)
+		_register_hit(held_tier)
+		_pulse_at(note.angle, beat, _tier_color(held_tier), held_tier, note.arc_width(), "tap")
+		_sfx.play("hold", 1.08)
+		# 提前松手不算时机样本，避免污染平均偏差和动态 offset。
+		if held_tier == "PERFECT":
+			_record_error(ms - end_ms, "HOLD #%d COMPLETE PERFECT" % note.id)
+		else:
+			_add_log("HOLD #%d EARLY RELEASE %s" % [note.id, held_tier])
 		return
 	if ms >= end_ms:
 		var tier := String(state.get("head_tier", "PERFECT"))
 		state["done"] = true
-		_hit_count += 1
-		_combo += 1
-		_max_combo = maxi(_max_combo, _combo)
-		_add_judgement(tier)
+		_register_hit(tier)
 		_pulse_at(note.angle, beat, _tier_color(tier), tier, note.arc_width(), "tap")
 		_sfx.play("hold", 1.08)
 		_record_error(ms - end_ms, "HOLD #%d COMPLETE %s" % [note.id, tier])
 
 
-func _judge_path(note: Note, ms: float, beat: float, cursor_u: float, valid: bool, mouse: Vector2) -> void:
+func _judge_path(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 	var state: Dictionary = _states[note.id]
-	var head_ms := chart.timing.beat_to_chart_ms(note.beat)
-	var tail_ms := chart.timing.beat_to_chart_ms(note.end_beat)
-	var head_point: Vector2 = _preview.path_point(note, 0.0, beat)
+	var head_ms := float(state["target_ms"])
+	var tail_ms := float(state["end_ms"])
+	var head_point: Vector2 = _preview.note_head_screen(note, beat)
 	if not state["head_judged"]:
 		var head_protect := _early_protect_ms()
 		if ms >= head_ms - head_protect:
-			# 头部：鼠标到环上星头 + 按键，和 Tap 同一套宽松判定。
-			var press := _take_key_for_arc_point(head_ms - head_protect, head_ms + HIT_WINDOW_MS, head_point, PATH_HEAD_RADIUS, note.angle, note.arc_width())
+			# 头部：鼠标实际位置贴近判定时刻的星头（不再用角度条带兜底）。
+			var press := _take_press_for_shape(head_ms - head_protect, head_ms + HIT_WINDOW_MS, head_ms, note,
+				PackedVector2Array([head_point]), PATH_HEAD_RADIUS)
 			if not press.is_empty():
 				var head_error := float(press["time"]) - head_ms
 				var tier := "GOOD" if head_error < -GOOD_MS else _tier_for(head_error)
 				state["head_hit"] = true
-				_hit_count += 1
-				_combo += 1
-				_max_combo = maxi(_max_combo, _combo)
-				_add_judgement(tier)
-				_pulse_at(note.angle, beat, _tier_color(tier), tier)
+				_register_hit(tier)
+				_pulse_at(note.angle, beat, _tier_color(tier), tier, note.arc_width(), "path", _timing_detail(head_error, tier))
 				_sfx.play("path", randf_range(0.98, 1.02))
 				_add_log("PATH #%d HEAD %s" % [note.id, tier])
 				state["head_judged"] = true
@@ -536,11 +639,8 @@ func _judge_path(note: Note, ms: float, beat: float, cursor_u: float, valid: boo
 		if mouse.is_finite() and tail_point.is_finite() and mouse.distance_to(tail_point) <= PATH_TAIL_RADIUS:
 			var tier := _tier_for(ms - tail_ms)
 			state["tail_hit"] = true
-			_hit_count += 1
-			_combo += 1
-			_max_combo = maxi(_max_combo, _combo)
-			_add_judgement(tier)
-			_pulse_at(note.tail_angle, beat, _tier_color(tier), tier, note.tail_width, "path")
+			_register_hit(tier)
+			_pulse_at(note.tail_angle, beat, _tier_color(tier), tier, note.tail_width, "path", _timing_detail(ms - tail_ms, tier))
 			_sfx.play("tail", randf_range(0.98, 1.02))
 			_add_log("PATH #%d TAIL %s" % [note.id, tier])
 			state["tail_judged"] = true
@@ -569,20 +669,19 @@ func _judge_path(note: Note, ms: float, beat: float, cursor_u: float, valid: boo
 		var q := clampf((beat - note.beat - wait) / maxf(0.001, total - wait), 0.0, 1.0)
 		var progress := 1.0 - pow(1.0 - q, maxf(0.05, note.path_speed))
 		var target := progress
-		if valid:
-			var info: Dictionary = _preview.path_fraction(note, mouse, beat)
-			var fraction := float(info.get("fraction", 0.0))
-			# 鼠标只允许领先当前进度一小段；避免停在远处把整条轨迹提前削光。
-			if float(info.get("distance", INF)) <= 128.0 and fraction > progress and fraction <= progress + 0.20:
-				target = fraction
+		var info: Dictionary = _preview.path_fraction(note, mouse, beat)
+		var fraction := float(info.get("fraction", 0.0))
+		# 鼠标只允许领先当前进度一小段；避免停在远处把整条轨迹提前削光。
+		if float(info.get("distance", INF)) <= 128.0 and fraction > progress and fraction <= progress + 0.20:
+			target = fraction
 		_preview.set_path_erased_to(note, target)
 		state["path_last_mouse"] = mouse
 
 
 func _judge_trace(note: Note, ms: float, beat: float, delta: float, mouse: Vector2) -> void:
 	var state: Dictionary = _states[note.id]
-	var start_ms := chart.timing.beat_to_chart_ms(note.beat)
-	var end_ms := chart.timing.beat_to_chart_ms(note.end_beat)
+	var start_ms := float(_states[note.id]["target_ms"])
+	var end_ms := float(_states[note.id]["end_ms"])
 	var contact := _trace_contact(note, mouse, beat)
 	if not state["trace_started"]:
 		if ms < start_ms - HIT_WINDOW_MS:
@@ -591,7 +690,7 @@ func _judge_trace(note: Note, ms: float, beat: float, delta: float, mouse: Vecto
 		if note.trace_style == "slider":
 			var points := _preview.trace_screen_points(note, beat)
 			var head: Vector2 = points[0] if not points.is_empty() else mouse
-			var press := _take_key_for_point(start_ms - HIT_WINDOW_MS, start_ms + HIT_WINDOW_MS, head, TRACE_HEAD_RADIUS)
+			var press := _take_key_for_point(start_ms - HIT_WINDOW_MS, start_ms + HIT_WINDOW_MS, head, TRACE_HEAD_RADIUS, start_ms)
 			if not press.is_empty():
 				started = true
 				_sfx.play("path", 0.94)
@@ -696,7 +795,7 @@ func _trace_contact(note: Note, mouse: Vector2, beat: float) -> bool:
 
 func _judge_bell(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 	var state: Dictionary = _states[note.id]
-	var target := chart.timing.beat_to_chart_ms(note.beat)
+	var target := float(state["target_ms"])
 	if ms < target - BELL_WINDOW_MS:
 		return
 	if ms <= target + BELL_WINDOW_MS:
@@ -717,20 +816,20 @@ func _judge_bell(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 
 func _judge_anchor(note: Note, ms: float, beat: float) -> void:
 	var state: Dictionary = _states[note.id]
-	var target := chart.timing.beat_to_chart_ms(note.beat)
+	var target := float(state["target_ms"])
 	var anchor_protect := _early_protect_ms()
 	if ms < target - anchor_protect:
 		return
-	var press := _take_key_in_window(target - anchor_protect, target + HIT_WINDOW_MS)
+	var anchor_point := _preview.note_head_screen(note, beat)
+	var anchor_tolerance := POSITION_TOLERANCE_PX + float(_preview.note_graphic_radius(note.type))
+	var press := _take_press_for_shape(target - anchor_protect, target + HIT_WINDOW_MS, target, note,
+		PackedVector2Array([anchor_point]), anchor_tolerance)
 	if not press.is_empty():
 		var anchor_error := float(press["time"]) - target
 		var tier := "GOOD" if anchor_error < -GOOD_MS else _tier_for(anchor_error)
 		state["done"] = true
-		_hit_count += 1
-		_combo += 1
-		_max_combo = maxi(_max_combo, _combo)
-		_add_judgement(tier)
-		_pulse_at(note.angle, beat, _tier_color(tier), tier, note.arc_width(), "tap")
+		_register_hit(tier)
+		_pulse_at(note.angle, beat, _tier_color(tier), tier, note.arc_width(), "tap", _timing_detail(anchor_error, tier))
 		_sfx.play("anchor", 1.0)
 		_record_error(float(press["time"]) - target, "ANCHOR #%d %s" % [note.id, tier])
 		return
@@ -743,14 +842,16 @@ func _judge_anchor(note: Note, ms: float, beat: float) -> void:
 		_add_log("MISS Anchor #%d" % note.id)
 
 
-func _judge_red(ms: float, beat: float, delta: float, cursor_u: float, valid: bool) -> void:
+func _judge_red(ms: float, beat: float, delta: float, mouse: Vector2) -> void:
 	for region in chart.regions:
 		var state: Dictionary = _red_states[region.id]
 		if not region.active_at(beat):
 			state["time"] = 0.0
 			state["broken"] = false
 			continue
-		var inside := valid and JudgeMath.in_arc(cursor_u * 360.0, region.angle, region.width)
+		# 红区按可见多边形判定：鼠标实际落在红区里才算。
+		var polygon := _preview.red_region_polygon(region, beat)
+		var inside := polygon.size() >= 3 and Geometry2D.is_point_in_polygon(mouse, polygon)
 		if inside:
 			state["time"] = float(state["time"]) + delta
 			if float(state["time"]) >= RED_LIMIT_SEC and not bool(state["broken"]):
@@ -764,16 +865,19 @@ func _judge_red(ms: float, beat: float, delta: float, cursor_u: float, valid: bo
 			state["broken"] = false
 
 
-func _pulse_at(angle_degrees: float, beat: float, color: Color, label: String, width: float = 60.0, kind: String = "tap") -> void:
+func _pulse_at(angle_degrees: float, beat: float, color: Color, label: String, width: float = 60.0, kind: String = "tap", detail: String = "") -> void:
 	if _preview == null:
 		return
 	var p: Vector2 = _preview.project_u(fposmod(angle_degrees, 360.0) / 360.0, beat)
 	if p.is_finite() and p.x < 1.0e9:
-		_preview.add_hit_pulse(p, color, label, kind)
+		_preview.add_hit_pulse(p, color, label, kind, detail)
 		_preview.add_arc_flash(angle_degrees, width, beat, color)
 
 
-func _take_key_for_point(lo: float, hi: float, point: Vector2, radius: float) -> Dictionary:
+## 光标贴近某个点（Path/Trace 头）。命中里挑离 target 最近的。
+func _take_key_for_point(lo: float, hi: float, point: Vector2, radius: float, target: float = NAN) -> Dictionary:
+	var best_index := -1
+	var best_distance := INF
 	for i in _key_presses.size():
 		var press: Dictionary = _key_presses[i]
 		var stamp := float(press.get("time", -INF))
@@ -782,14 +886,74 @@ func _take_key_for_point(lo: float, hi: float, point: Vector2, radius: float) ->
 		if stamp > hi:
 			break
 		var press_mouse: Vector2 = press.get("mouse", Vector2.ZERO)
-		if press_mouse.distance_to(point) <= radius:
-			_key_presses.remove_at(i)
-			return press
-	return {}
+		if press_mouse.distance_to(point) > radius:
+			continue
+		var distance := absf(stamp - target) if is_finite(target) else 0.0
+		if distance < best_distance:
+			best_distance = distance
+			best_index = i
+	if best_index < 0:
+		return {}
+	var result: Dictionary = _key_presses[best_index]
+	_key_presses.remove_at(best_index)
+	return result
 
 
-## Path 头：点半径 或 角度窗口 任一命中即可（让星头的空间判定接近 Tap / Hold）。
-func _take_key_for_arc_point(lo: float, hi: float, point: Vector2, radius: float, angle: float, width: float) -> Dictionary:
+## 密集流（相邻音符 ≤ 0.25 拍）用角度扇区区分：鼠标角度落在条带内即可。
+func _take_key_for_sector(lo: float, hi: float, angle: float, width: float, target: float = NAN) -> Dictionary:
+	var half := maxf(24.0, width * 0.5)
+	var best_index := -1
+	var best_distance := INF
+	for i in _key_presses.size():
+		var press: Dictionary = _key_presses[i]
+		var stamp := float(press.get("time", -INF))
+		if stamp < lo:
+			continue
+		if stamp > hi:
+			break
+		var press_angle := float(press.get("angle", NAN))
+		if is_nan(press_angle):
+			continue
+		if absf(JudgeMath.angle_delta(press_angle, angle)) > half:
+			continue
+		var distance := absf(stamp - target) if is_finite(target) else 0.0
+		if distance < best_distance:
+			best_distance = distance
+			best_index = i
+	if best_index < 0:
+		return {}
+	var result: Dictionary = _key_presses[best_index]
+	_key_presses.remove_at(best_index)
+	return result
+
+
+## 一组候选图形的取键（Path 头 / Anchor / Trace 头）。
+## 密集流（相邻 ≤0.25 拍）按环平面角度扇区；其余按鼠标实际位置（90px + 图形半宽）。
+func _take_press_for_shape(lo: float, hi: float, target: float, note: Note, points: PackedVector2Array, tolerance: float, pad: float = 0.0) -> Dictionary:
+	if _key_presses.is_empty():
+		return {}
+	if _dense_ids.has(note.id):
+		return _take_key_for_sector(lo, hi, note.angle, note.arc_width() + pad, target)
+	return _take_key_near(lo, hi, points, tolerance, target)
+
+
+## Tap / Hold 头：密集流走角度扇区，其余按鼠标实际位置。
+func _take_press_for_note(lo: float, hi: float, note: Note, beat: float, pad: float = 0.0, extra_px: float = 0.0) -> Dictionary:
+	if _key_presses.is_empty():
+		return {}
+	var target := float(_states[note.id]["target_ms"]) if _states.has(note.id) else (lo + hi) * 0.5
+	var points := _preview.note_live_band(note, beat, pad)
+	var tolerance := POSITION_TOLERANCE_PX + extra_px + float(_preview.note_graphic_radius(note.type))
+	return _take_press_for_shape(lo, hi, target, note, points, tolerance, pad)
+
+
+func _take_key_near(lo: float, hi: float, points: PackedVector2Array, tolerance: float, target: float = NAN) -> Dictionary:
+	if points.is_empty():
+		return {}
+	var best := INF
+	var best_mouse := Vector2.ZERO
+	var best_index := -1
+	var best_time_distance := INF
 	for i in _key_presses.size():
 		var press: Dictionary = _key_presses[i]
 		var stamp := float(press.get("time", -INF))
@@ -798,52 +962,76 @@ func _take_key_for_arc_point(lo: float, hi: float, point: Vector2, radius: float
 		if stamp > hi:
 			break
 		var press_mouse: Vector2 = press.get("mouse", Vector2.ZERO)
-		var near := press_mouse.distance_to(point) <= radius
-		var in_arc := false
-		if bool(press.get("valid", false)):
-			var press_angle := float(press.get("u", 0.0)) * 360.0
-			in_arc = absf(JudgeMath.angle_delta(press_angle, angle)) <= maxf(4.0, width) * 0.5
-		if near or in_arc:
-			_key_presses.remove_at(i)
-			return press
-	return {}
-
-
-func _take_key_in_window(lo: float, hi: float) -> Dictionary:
-	# 早按可以跨帧保留：只取落在窗口内的一枚，过旧的不阻塞后面的按键。
-	for i in _key_presses.size():
-		var press: Dictionary = _key_presses[i]
-		var stamp := float(press.get("time", -INF))
-		if stamp < lo:
+		var distance := _distance_to_polyline(press_mouse, points)
+		if distance <= tolerance:
+			var time_distance := absf(stamp - target) if is_finite(target) else 0.0
+			if time_distance < best_time_distance:
+				best_time_distance = time_distance
+				best_index = i
 			continue
-		if stamp > hi:
-			break
-		_key_presses.remove_at(i)
-		return press
+		if distance < best:
+			best = distance
+			best_mouse = press_mouse
+			_near_miss_stamp = stamp
+	if best_index >= 0:
+		var picked: Dictionary = _key_presses[best_index]
+		_key_presses.remove_at(best_index)
+		return picked
+	if best < INF and _near_miss_logs < 40 and _near_miss_stamp != _near_miss_logged_stamp:
+		_near_miss_logs += 1
+		_near_miss_logged_stamp = _near_miss_stamp
+		var mid: Vector2 = points[points.size() / 2]
+		print("[judge] 位置未命中 d=%.0f toll=%.0f mouse=(%.0f,%.0f) note=(%.0f,%.0f)" % [best, tolerance, best_mouse.x, best_mouse.y, mid.x, mid.y])
 	return {}
 
 
-func _take_key_for_arc(lo: float, hi: float, angle: float, width: float) -> Dictionary:
-	for i in _key_presses.size():
-		var press: Dictionary = _key_presses[i]
-		var stamp := float(press.get("time", -INF))
-		if stamp < lo:
-			continue
-		if stamp > hi:
-			break
-		var press_u := float(press.get("u", 0.0)) * 360.0
-		if bool(press.get("valid", false)) and JudgeMath.in_arc(press_u, angle, width):
-			_key_presses.remove_at(i)
-			return press
-	return {}
+func _distance_to_polyline(point: Vector2, points: PackedVector2Array) -> float:
+	if points.is_empty():
+		return INF
+	if points.size() == 1:
+		return point.distance_to(points[0])
+	var best := INF
+	for i in points.size() - 1:
+		var closest := Geometry2D.get_closest_point_to_segment(point, points[i], points[i + 1])
+		best = minf(best, point.distance_to(closest))
+	return best
 
 
 
 func _record_error(error_ms: float, label: String) -> void:
 	_errors.append(error_ms)
-	if _errors.size() > 20:
-		_errors.pop_front()
+	_error_sum += error_ms
 	_add_log("%s  %+.0fms" % [label, error_ms])
+	if _app == null or not bool(_app.dynamic_offset) or _errors.size() < DYNAMIC_SAMPLE_MIN:
+		return
+	# 动态 offset：每次命中往消除当前偏差的方向挪 5%，自动部分最多 ±50ms。
+	var next := float(_app.playtest_offset_ms) - error_ms * DYNAMIC_STEP
+	_app.playtest_offset_ms = clampf(next, _auto_origin_ms - DYNAMIC_LIMIT_MS, _auto_origin_ms + DYNAMIC_LIMIT_MS)
+	_offset_dirty = true
+
+
+func _mean_error() -> float:
+	return _error_sum / float(_errors.size()) if not _errors.is_empty() else 0.0
+
+
+## 不稳定率：误差标准差的 10 倍（osu 口径）。
+func _unstable_rate() -> float:
+	if _errors.size() < 2:
+		return 0.0
+	var mean := _mean_error()
+	var variance := 0.0
+	for error in _errors:
+		variance += (error - mean) * (error - mean)
+	return sqrt(variance / float(_errors.size() - 1)) * 10.0
+
+
+## 退出/结算时把自动调过的偏移写回设置。
+func _flush_offset() -> void:
+	if _app == null:
+		return
+	_app.last_bias_ms = _mean_error()
+	_app.save_settings()
+	_offset_dirty = false
 
 
 func _add_log(line: String) -> void:
@@ -862,7 +1050,7 @@ func _update_top_bar(ms: float, beat: float) -> void:
 	var fx_label := String(Preview3D.hit_fx_presets().get(_preview.hit_fx_style, _preview.hit_fx_style))
 	if _style_label != null:
 		_style_label.text = "%s · %s" % [skin_label, fx_label]
-	_top_stats.text = "HIT %d  MISS %d  ACC %s  COMBO %d  |  BELL %d/%d  RED %d  |  OFF %+.0fms" % [
+	_top_stats.text = "HIT %d  MISS %d  ACC %s  COMBO %d  |  BELL %d/%d  RED %d  |  BIA %+.1fms  OFF %+.0fms" % [
 		_hit_count,
 		_miss_count,
 		"—" if accuracy < 0.0 else "%.1f%%" % accuracy,
@@ -870,6 +1058,7 @@ func _update_top_bar(ms: float, beat: float) -> void:
 		_bell_hits,
 		_bell_total,
 		_red_breaks,
+		_mean_error(),
 		offset,
 	]
 
@@ -878,13 +1067,79 @@ func _update_hud() -> void:
 	var accuracy := _accuracy()
 	_preview.hud_accuracy = accuracy
 	_preview.hud_rating = _rating(accuracy)
-	_preview.hud_errors = _errors.duplicate()
+	_preview.hud_errors = _errors.slice(maxi(0, _errors.size() - 64))
 
 
 func _accuracy() -> float:
 	if _judged_total <= 0:
 		return -1.0
 	return 100.0 * _accuracy_sum / float(_judged_total)
+
+
+## 基准模式：给每颗接近判定时间的 Tap 塞一个“完美”按键，制造真实特效负载。
+func _bench_tick(ms: float, beat: float) -> void:
+	for note in _ordered_notes:
+		var st: Dictionary = _states[note.id]
+		var target := float(st["target_ms"])
+		if target > ms + 50.0:
+			break
+		if note.type != "tap" or st["done"]:
+			continue
+		if ms < target - 10.0 or ms > target + 20.0:
+			continue
+		_key_presses.append({
+			"time": ms,
+			"mouse": _preview.note_head_screen(note, beat),
+			"angle": note.angle,
+			"u": note.angle / 360.0,
+			"valid": true,
+			"key": 65,
+		})
+
+
+## 基准模式：模拟真实鼠标（每帧注入多枚移动事件），复现高回报率鼠标的输入压力。
+func _bench_mouse(beat: float) -> void:
+	if not "--bench-mouse" in OS.get_cmdline_user_args():
+		return
+	var center := Vector2(800, 450)
+	for k in 6:
+		var a := beat * 4.0 + float(k) * 0.02
+		var ev := InputEventMouseMotion.new()
+		ev.position = center + Vector2(cos(a), sin(a)) * 260.0
+		ev.relative = Vector2(-sin(a), cos(a)) * 6.0
+		Input.parse_input_event(ev)
+
+
+## 基准模式：统计帧间隔的 p50/p95/最大值，找出平均帧率看不出的卡顿尖峰。
+func _probe_frame_time() -> void:
+	var now := Time.get_ticks_usec()
+	if _frame_last_usec > 0:
+		_frame_samples.append(now - _frame_last_usec)
+	_frame_last_usec = now
+	if _frame_since_usec == 0:
+		_frame_since_usec = now
+		return
+	if now - _frame_since_usec < 2000000 or _frame_samples.size() < 10:
+		return
+	var sorted := _frame_samples.duplicate()
+	sorted.sort()
+	var n := sorted.size()
+	var median := float(sorted[n / 2]) / 1000.0
+	var p95 := float(sorted[int(n * 0.95)]) / 1000.0
+	var worst := float(sorted[n - 1]) / 1000.0
+	var spikes := 0
+	for value in sorted:
+		if float(value) > float(sorted[n / 2]) * 2.0:
+			spikes += 1
+	# 只在出现明显卡顿时打印，正常游玩不会刷屏。
+	if worst > 8.0 or spikes > 20:
+		print("[frame] t=%.1fs n=%d med=%.1fms p95=%.1fms max=%.1fms spikes=%d notes=%d" % [
+			_chart_ms() / 1000.0, n, median, p95, worst, spikes, _ordered_notes.size(),
+		])
+		print("[frame] beat_stalls=%d / %d frames" % [_beat_stalls, n])
+		_beat_stalls = 0
+	_frame_samples.clear()
+	_frame_since_usec = now
 
 
 func _tier_for(error_ms: float) -> String:
@@ -895,7 +1150,27 @@ func _tier_for(error_ms: float) -> String:
 		return "GREAT"
 	if error <= GOOD_MS:
 		return "GOOD"
+	if error <= BAD_MS:
+		return "BAD"
 	return "MISS"
+
+
+## 命中登记：BAD 只扣准确率，不计命中也不断连。
+## 判定字下面那行：早了还是晚了、差多少毫秒。
+func _timing_detail(error_ms: float, tier: String) -> String:
+	if tier == "PERFECT":
+		return ""
+	return ("早 %.0fms" if error_ms < 0.0 else "晚 %.0fms") % absf(error_ms)
+
+
+func _register_hit(tier: String) -> void:
+	if tier == "BAD":
+		_add_judgement("BAD")
+		return
+	_hit_count += 1
+	_combo += 1
+	_max_combo = maxi(_max_combo, _combo)
+	_add_judgement(tier)
 
 
 func _tier_color(tier: String) -> Color:
@@ -903,6 +1178,7 @@ func _tier_color(tier: String) -> Color:
 		"PERFECT": return UITheme.GOLD
 		"GREAT": return UITheme.CYAN
 		"GOOD": return UITheme.MUTED
+		"BAD": return Color(0.52, 0.58, 0.68)
 		"MISS": return UITheme.RED
 	return UITheme.INK
 
@@ -937,6 +1213,10 @@ func _format_ms(ms: float) -> String:
 
 
 func _input(event: InputEvent) -> void:
+	if not (event is InputEventKey):
+		return
+	if event.pressed and event.echo:
+		return
 	if event is InputEventKey:
 		if event.keycode == KEY_ESCAPE and event.pressed:
 			if _finished:
@@ -969,6 +1249,7 @@ func _input(event: InputEvent) -> void:
 			_key_presses.append({
 				"time": stamp,
 				"mouse": _preview.mouse_screen,
+				"angle": _preview.screen_angle_deg(_preview.mouse_screen),
 				"u": _preview.cursor_u,
 				"valid": _preview.cursor_valid,
 				"key": key,
@@ -995,18 +1276,24 @@ func _finish() -> void:
 	lines.append("调试准确率：%s" % ("—" if _accuracy() < 0.0 else "%.2f%%" % _accuracy()))
 	lines.append("评级：%s（预览/非正式）" % _rating(_accuracy()))
 	lines.append("最大连击：%d" % _max_combo)
-	lines.append("判定：PERFECT %d / GREAT %d / GOOD %d / MISS %d" % [
+	lines.append("判定：PERFECT %d / GREAT %d / GOOD %d / BAD %d / MISS %d" % [
 		int(_tier_counts.get("PERFECT", 0)), int(_tier_counts.get("GREAT", 0)),
-		int(_tier_counts.get("GOOD", 0)), int(_tier_counts.get("MISS", 0)),
+		int(_tier_counts.get("GOOD", 0)), int(_tier_counts.get("BAD", 0)),
+		int(_tier_counts.get("MISS", 0)),
 	])
 	lines.append("Bell 收集：%d / %d" % [_bell_hits, _bell_total])
 	lines.append("Red 断连：%d 次" % _red_breaks)
-	var average_error := 0.0
-	for error in _errors:
-		average_error += error
-	if not _errors.is_empty():
-		average_error /= float(_errors.size())
-	lines.append("平均误差：%+.1fms（[ / ] 可继续微调判定偏移）" % average_error)
+	var average_error := _mean_error()
+	_flush_offset()
+	if _timing_chart != null:
+		_timing_chart.set_errors(_errors)
+	if _bias_label != null:
+		_bias_label.text = "平均判定偏差 %+.2f 毫秒   ·   不稳定率 (UR) %.2f   ·   样本 %d   ·   当前 offset %+.0fms" % [
+			average_error,
+			_unstable_rate(),
+			_errors.size(),
+			float(_app.playtest_offset_ms if _app != null else 0.0),
+		]
 	lines.append("")
 	lines.append("事件日志（最近 24 条）：")
 	for i in range(maxi(0, _log.size() - 24), _log.size()):
@@ -1039,6 +1326,7 @@ func _cycle_hit_fx(step: int) -> void:
 func _exit() -> void:
 	if _audio != null:
 		_audio.stop()
+	_flush_offset()
 	Input.set_use_accumulated_input(true)
 	Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
 	exit_requested.emit()

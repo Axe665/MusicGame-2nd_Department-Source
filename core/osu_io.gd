@@ -383,6 +383,7 @@ static func _convert_std_continuous(objects_raw: Array, chart: Chart, timing_raw
 	var lane := 0
 	var stream_dir := 0
 	var prev_u := 0.0
+	var prev_is_path := false
 	var prev_end_beat := 0.0
 	var prev_end_pos := Vector2.ZERO
 	var first := true
@@ -418,6 +419,10 @@ static func _convert_std_continuous(objects_raw: Array, chart: Chart, timing_raw
 					lane += 1 if stream_dir == 0 else stream_dir
 		lane = posmod(lane, 8)
 		var u := float(lane) * 45.0
+		# 连续链：上一条 Path 的尾判定点与本条同拍时，星头要落在同一个角度，
+		# 否则这一拍会出现两个互不相交的目标（校验报“没有公共角度”）。
+		if prev_is_path and absf(prev_end_beat - beat) <= 0.02:
+			u = prev_u
 
 		var note: Note
 		var tail_u := u
@@ -479,6 +484,7 @@ static func _convert_std_continuous(objects_raw: Array, chart: Chart, timing_raw
 			"is_path": is_path, "tail_u": tail_u, "end_beat": end_beat,
 		})
 		prev_u = tail_u if is_path else u
+		prev_is_path = is_path
 		prev_end_beat = end_beat
 		prev_end_pos = current["end_pos"]
 

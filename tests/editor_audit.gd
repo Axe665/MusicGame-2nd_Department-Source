@@ -159,7 +159,7 @@ func _audit_edit_ops() -> void:
 	app.mirror_selected_notes()
 	_check("镜像角度", absf(note.angle - 210.0) < 0.001, "angle=%.1f" % note.angle)
 	app.rotate_selected_notes(90.0)
-	_check("旋转角度", absf(note.angle - 60.0) < 0.001, "angle=%.1f" % note.angle)
+	_check("旋转角度", absf(note.angle - 300.0) < 0.001, "angle=%.1f" % note.angle)
 	app.free()
 
 
@@ -203,7 +203,7 @@ func _audit_note_inspector(app: Node) -> void:
 	_check("Inspector 切到 Hold", inspector._note_groups["hold"].visible and not inspector._note_groups["path"].visible)
 	app.select_note(path.id)
 	await get_tree().process_frame
-	_check("Inspector 切到 Path", inspector._note_groups["path"].visible and not inspector._note_groups["hold"].visible)
+	_check("Inspector 切到 Path", inspector._note_groups["path_edit"].visible and not inspector._note_groups["hold"].visible)
 	app.select_note(bell.id)
 	await get_tree().process_frame
 	_check("Inspector 切到 Bell", inspector._note_groups["bell"].visible and not inspector._note_groups["path"].visible)

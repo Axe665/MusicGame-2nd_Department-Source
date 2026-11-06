@@ -29,6 +29,8 @@ window/stretch/aspect="expand"
 
 [rendering]
 
+anti_aliasing/quality/msaa_2d=2
+driver/threads/thread_model=2
 renderer/rendering_method="forward_plus"
 renderer/rendering_method.mobile="mobile"
 environment/defaults/default_clear_color=Color(0.043137, 0.047059, 0.062745, 1)

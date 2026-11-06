@@ -20,6 +20,8 @@ func _initialize() -> void:
 		"test_path_erase_merge",
 		"test_path_run_split",
 		"test_style_presets",
+		"test_position_judgement",
+		"test_timing_stats",
 		"test_nearest_u",
 		"test_pre_read",
 		"test_shrink_example",
@@ -32,6 +34,9 @@ func _initialize() -> void:
 		"test_osu_std_slider_kinds",
 		"test_osu_std_negative_shift",
 		"test_osu_std_readability",
+		"test_osu_std_chain_no_conflict",
+		"test_note_span_defaults",
+		"test_judgement_text_font",
 		"test_osu_taiko_import",
 		"test_osu_taiko_flow",
 		"test_osu_bpm_change",
@@ -485,6 +490,36 @@ func test_style_presets() -> bool:
 	eq(Playtest.PERFECT_MS, 65.0, "perfect window tightened")
 	eq(Playtest.GREAT_MS, 115.0, "great window tightened")
 	eq(Playtest.GOOD_MS, 170.0, "good window tightened")
+	eq(Playtest.POSITION_TOLERANCE_PX, 90.0, "position tolerance is 90px")
+	eq(Playtest.HOLD_HEAD_EXTRA_PX, 40.0, "hold head gets extra tolerance")
+	eq(Playtest.BAD_MS, 250.0, "bad tier extends to 250ms")
+	return true
+
+
+func test_timing_stats() -> bool:
+	var run := Playtest.new()
+	for error in [-10.0, -10.0, 10.0, 10.0]:
+		run._record_error(error, "test")
+	eq(run._mean_error(), 0.0, "mean timing error")
+	ok(absf(run._unstable_rate() - 115.47) < 0.1, "unstable rate is stddev x10")
+	run.free()
+	var tiers := Playtest.new()
+	eq(tiers._tier_for(150.0), "GOOD", "good tier stays at 170ms")
+	eq(tiers._tier_for(200.0), "BAD", "200ms late lands in the bad tier")
+	eq(tiers._tier_for(260.0), "MISS", "beyond 250ms is a miss")
+	tiers.free()
+	eq(Playtest.DYNAMIC_SAMPLE_MIN, 8, "dynamic offset waits for 8 hits")
+	eq(Playtest.DYNAMIC_LIMIT_MS, 50.0, "dynamic offset is capped at 50ms")
+	return true
+
+
+func test_position_judgement() -> bool:
+	var run := Playtest.new()
+	var line := PackedVector2Array([Vector2(0, 0), Vector2(100, 0)])
+	eq(run._distance_to_polyline(Vector2(50, 30), line), 30.0, "distance to a band segment")
+	eq(run._distance_to_polyline(Vector2(130, 0), line), 30.0, "distance past the band end")
+	eq(run._distance_to_polyline(Vector2(10, 20), PackedVector2Array([Vector2(10, 0)])), 20.0, "distance to a point note")
+	run.free()
 	return true
 
 
@@ -924,6 +959,70 @@ SliderMultiplier: 1.4
 	for note in chart.notes:
 		eq(note.space, "ring", "std readability stays on the ring")
 		ok(note.width >= 45.0 and note.width <= 75.0, "std width is playable")
+	return true
+
+
+func test_osu_std_chain_no_conflict() -> bool:
+	# 四条首尾相接的滑条（2 拍一条，后一条正好落在前一条的尾判定拍上）。
+	# 之前的转换器会让下一条星头和上一条尾判定点落在不相交的角度上，
+	# 校验报“同刻目标没有公共角度”，试玩直接被拦住。
+	var text := """osu file format v14
+
+[General]
+Mode: 0
+
+[Metadata]
+Title: Chain
+Artist: A
+Creator: C
+Version: H
+
+[Difficulty]
+SliderMultiplier: 1.4
+CircleSize: 4
+
+[TimingPoints]
+0,200,4,2,0,100,1,0
+
+[HitObjects]
+160,96,0,2,0,P|96:192|160:288,1,280
+352,96,400,2,0,P|416:192|352:288,1,280
+160,352,800,2,0,P|224:192|160:288,1,280
+352,352,1200,2,0,P|288:192|352:288,1,280
+256,192,1600,1,0,0:0:0:0:
+"""
+	var result := OsuIO.parse_osu(text, "chain.osu")
+	ok(not result.is_empty(), "osu std chain parsed")
+	if result.is_empty():
+		return false
+	var chart: Chart = result["chart"]
+	var errors := Validator.errors(Validator.validate(chart))
+	eq(errors.size(), 0, "osu std chain has no validation errors")
+	for issue in errors:
+		print("  chain issue: ", issue.get("message"))
+	return true
+
+
+func test_note_span_defaults() -> bool:
+	# 单点音符的 end_beat 必须等于自身 beat；默认 0 会让判定把它当成“0ms 就结束”，
+	# 谱面播到 6 秒后所有 Tap 都被当作过期跳过（历史上“突然没判定”的根因）。
+	var tap := Note.new("tap", 7.5, 90.0, 60.0)
+	near(tap.end_beat, 7.5, 0.001, "tap end_beat defaults to its own beat")
+	near(tap.duration(), 0.0, 0.001, "tap has zero duration")
+	var hold := Note.new("hold", 2.0, 0.0, 60.0)
+	near(hold.end_beat, 2.0, 0.001, "hold end_beat starts at its beat")
+	hold.end_beat = 4.5
+	near(hold.duration(), 2.5, 0.001, "hold duration uses explicit end_beat")
+	return true
+
+
+func test_judgement_text_font() -> bool:
+	# 判定提示里的“早/晚”必须用含中文的字体：等宽字体缺中文字形，
+	# 每个不同的提示串都会触发一次系统字体回退（单次 ~18ms），判定密集时卡顿。
+	var regular := UITheme.FONT_REGULAR
+	var mono := UITheme.FONT_MONO
+	ok(regular.has_char("早".unicode_at(0)), "judgement detail font has CJK glyphs")
+	ok(not mono.has_char("早".unicode_at(0)), "mono font still lacks CJK (do not use it for judgement text)")
 	return true
 
 

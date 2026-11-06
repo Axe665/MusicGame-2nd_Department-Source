@@ -36,8 +36,9 @@ static func _check_timing(chart: Chart, issues: Array[Dictionary]) -> void:
 	if first.beat > 0.0001:
 		_add(issues, "error", "第一个 BPM 点必须不晚于第 0 小节", "timing")
 	for point in chart.timing.points:
-		if point.bpm < 20.0 or point.bpm > 600.0:
-			_add(issues, "error", "BPM %.1f 越界（20–600）" % point.bpm, "timing")
+		# 上限放宽到 4000：舞萌谱面常用 1000+ 的 BPM 段做演出（例如 ANU 的 2020 BPM）。
+		if point.bpm < 20.0 or point.bpm > 4000.0:
+			_add(issues, "error", "BPM %.1f 越界（20–4000）" % point.bpm, "timing")
 		if point.beats_per_bar < 1 or point.beats_per_bar > 16:
 			_add(issues, "error", "拍号分子 %d 越界（1–16）" % point.beats_per_bar, "timing")
 
