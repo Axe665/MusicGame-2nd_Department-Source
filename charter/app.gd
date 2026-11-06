@@ -403,6 +403,10 @@ func export_lbp(path: String) -> bool:
 
 
 func autosave() -> void:
+	# 基准与无头测试（单元测试、编辑器审计）会临时换掉当前谱面，
+	# 自动保存会把用户正在编辑的 autosave.json 覆盖成测试谱面。
+	if DisplayServer.get_name() == "headless" or "--bench" in OS.get_cmdline_user_args():
+		return
 	if chart == null or not dirty:
 		return
 	var data := ChartIO.to_json(chart)
@@ -426,9 +430,6 @@ func load_autosave() -> bool:
 
 
 func _on_autosave_timer() -> void:
-	# 基准/导入测试会换掉当前谱面，自动保存会把用户正在编辑的谱面覆盖掉。
-	if "--bench" in OS.get_cmdline_user_args():
-		return
 	autosave()
 
 

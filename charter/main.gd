@@ -152,6 +152,11 @@ func _run_bench() -> void:
 			get_tree().quit()
 			return
 		_app.set_chart(imported["chart"], "", false)
+	for arg in OS.get_cmdline_user_args():
+		if arg.begins_with("--bench-file="):
+			var loaded: Chart = ChartIO.load_chart(arg.get_slice("=", 1))
+			if loaded != null:
+				_app.set_chart(loaded, arg.get_slice("=", 1), false)
 	_app.playhead_beat = start_beat
 	_start_playtest(false)
 	if _playtest == null:
