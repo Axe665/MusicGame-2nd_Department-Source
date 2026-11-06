@@ -481,40 +481,36 @@ func _process(delta: float) -> void:
 func _chart_ms() -> float:
 	if _paused:
 		return _last_chart_ms
-	if _audio_available and _audio.playing:
+	var now_usec := Time.get_ticks_usec()
+	var dt := 0.0
+	if _clock_update_usec != 0:
+		dt = float(now_usec - _clock_update_usec) / 1000.0
+	_clock_update_usec = now_usec
+	var candidate := _last_chart_ms
+	if _audio_available and _audio != null and _audio.playing:
 		var stream_ms := (_audio.get_playback_position() + AudioServer.get_time_since_last_mix() - AudioServer.get_output_latency()) * 1000.0
-		var candidate := stream_ms + chart.offset_ms
-		if _last_chart_ms > -INF and absf(candidate - _last_chart_ms) > 200.0:
-			print("[clock] jump %.0fms -> %.0fms" % [_last_chart_ms, candidate])
-		if not is_finite(candidate) or candidate > 1.0e9:
-			candidate = _last_chart_ms
-		elif _last_chart_ms > -INF:
-			if candidate < _last_chart_ms - 250.0:
-				_last_chart_ms = candidate
-			elif candidate < _last_chart_ms:
-				candidate = _last_chart_ms
-		# 音频时钟本身是跳变的（混音周期 4–20ms），直接用会让音符停几帧再跳。
-		# 这里用系统时钟按帧推进，音频只做向前校正，画面因此是连续位移。
-		var now_usec := Time.get_ticks_usec()
-		if _clock_update_usec == 0:
-			_clock_update_usec = now_usec
-			_smooth_ms = candidate
-		else:
-			var dt := float(now_usec - _clock_update_usec) / 1000.0
-			_clock_update_usec = now_usec
-			_smooth_ms += dt
-			if _smooth_ms < candidate:
-				_smooth_ms = candidate
-			elif _smooth_ms > candidate + 30.0:
-				_smooth_ms = candidate + 30.0
-		_last_chart_ms = maxf(_last_chart_ms, _smooth_ms)
-		return _last_chart_ms
-	var elapsed := float(Time.get_ticks_usec() - _start_usec) / 1000.0
-	var fallback := _start_chart_ms + elapsed
-	if _last_chart_ms > -INF and fallback < _last_chart_ms:
-		fallback = _last_chart_ms
-	_last_chart_ms = fallback
-	return fallback
+		candidate = stream_ms + chart.offset_ms
+		# 音频时钟只做小步校正。设备重连、VBR MP3 的播放位置估算跳变都可能一次偏几秒，
+		# 直接接受会把整段音符甩到身后（表现就是“这段完全没判定/没输入响应”）。
+		if _last_chart_ms > -INF and absf(candidate - _last_chart_ms) > 250.0:
+			print("[clock] glitch %.0fms -> %.0fms (ignored, %+.0fms)" % [
+				_last_chart_ms, candidate, candidate - _last_chart_ms])
+			candidate = _last_chart_ms + dt
+	elif _last_chart_ms > -INF:
+		# 音频不可用时沿用当前时钟按墙钟推进，绝不能跳回起点。
+		candidate = _last_chart_ms + dt
+	else:
+		candidate = _start_chart_ms + float(now_usec - _start_usec) / 1000.0
+	if not is_finite(candidate) or candidate > 1.0e9:
+		candidate = _last_chart_ms if _last_chart_ms > -INF else _start_chart_ms
+	if _last_chart_ms <= -INF:
+		_smooth_ms = candidate
+	else:
+		# 音频仍是主时钟，两帧之间用墙钟补间，最多领先 30ms；绝不后退。
+		_smooth_ms = maxf(_smooth_ms + dt, candidate)
+		_smooth_ms = minf(_smooth_ms, candidate + 30.0)
+	_last_chart_ms = maxf(_last_chart_ms, _smooth_ms)
+	return _last_chart_ms
 
 
 ## 判定保护：音符离判定环还剩 25% 半径（= 预读时间的 25%）时，
