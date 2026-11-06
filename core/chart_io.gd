@@ -141,6 +141,12 @@ static func chart_from_dict(data: Dictionary) -> Chart:
 	for raw in data.get("notes", []):
 		if raw is Dictionary:
 			chart.notes.append(Note.from_dict(raw))
+	# Normalize legacy Path JSON to the new centrifuge/axis representation on
+	# every chart load, not just for the bundled demo.
+	for note in chart.notes:
+		if note.type == "path" and note.path_legacy:
+			note.generate_path_shape()
+			note.path_legacy = false
 	chart.editor = data.get("editor", {}).duplicate(true)
 	chart.refresh_ids()
 	return chart
