@@ -64,17 +64,21 @@ static func import_maidata(path: String, difficulty_index: int = 0) -> Chart:
 	var counts := {"tap": 0, "hold": 0, "path": 0, "bell": 0, "dropped": 0}
 	_parse_notes(inote, chart, counts)
 	_remove_chords(chart, counts)
-	_clamp_holds(chart, counts)
 	_resolve_path_overlaps(chart, counts)
-	_resolve_conflicts(chart, counts)
-	_simplify_dense_segments(chart, counts)
+	var base_dropped := int(counts["dropped"])
+	var stats := ConvertOptimizer.optimize_maimai(chart, counts)
 	chart.notes.sort_custom(func(a: Note, b: Note) -> bool: return a.beat < b.beat)
 	_extract_assets(path, chart)
+	var final := {"tap": 0, "hold": 0, "path": 0, "bell": 0}
+	for note in chart.notes:
+		final[note.type] = int(final.get(note.type, 0)) + 1
 	var audio_note := "音频：未找到 track.*" if chart.audio_path.is_empty() else "音频：%s" % chart.audio_path.get_file()
-	last_report = "Simai 导入 Lv.%s：Tap %d，Hold %d，Slide→Path %d，Touch→Bell %d，跳过 %d。\nBPM %.1f，offset %.0fms，%s。" % [
+	last_report = "Simai 导入 Lv.%s：Tap %d，Hold %d，Slide→Path %d，Touch→Bell %d，跳过 %d（结构 %d + 优化 %d）。\nBPM %.1f，offset %.0fms，%s。\n优化：调整 %d，重建星星 %d，降级 %d。" % [
 		String(meta.get("lv_%d" % difficulty_index, "?")),
-		counts["tap"], counts["hold"], counts["path"], counts["bell"], counts["dropped"],
+		final["tap"], final["hold"], final["path"], final["bell"], counts["dropped"],
+		base_dropped, stats["dropped"],
 		base_bpm, chart.offset_ms, audio_note,
+		stats["relaxed"], stats["rebuilt"], stats["degraded"],
 	]
 	return chart
 
@@ -251,8 +255,9 @@ static func _parse_note(token: String, beat: float, bpm: float) -> Note:
 		elif token.find("<") > 0:
 			delta = absf(delta)
 		var note := Note.new("path", beat, fposmod(start_angle, 360.0), 62.0)
-		note.end_beat = beat + 1.0 + maxf(0.25, duration)
-		note.wait_beat = 1.0
+		# maidata 的 [a:b] 就是滑条从头部当拍到尾部的时间，没有额外 1 拍等待。
+		note.end_beat = beat + maxf(0.25, duration)
+		note.wait_beat = 0.0
 		note.tail_angle = fposmod(start_angle + delta, 360.0)
 		note.tail_width = 52.0
 		note.tolerance = 0.24
@@ -474,28 +479,6 @@ static func _remove_chords(chart: Chart, counts: Dictionary) -> void:
 			counts["dropped"] += 1
 
 
-static func _clamp_holds(chart: Chart, counts: Dictionary) -> void:
-	var ordered := chart.sorted_notes()
-	for i in ordered.size():
-		var note := ordered[i]
-		if note.type != "hold":
-			continue
-		var next_beat := INF
-		for j in range(i + 1, ordered.size()):
-			if ordered[j].beat > note.beat + 0.0001:
-				next_beat = ordered[j].beat
-				break
-		var limit := next_beat - 0.0625
-		if limit < note.end_beat:
-			note.end_beat = limit
-		if note.end_beat - note.beat < 0.5:
-			# 无法安全长按的短 Hold 降级为 Tap，避免 Hold+Tap 必须双手。
-			note.type = "tap"
-			note.end_beat = note.beat
-			counts["hold"] -= 1
-			counts["tap"] += 1
-
-
 static func _extract_assets(path: String, chart: Chart) -> void:
 	var folder := ""
 	if path.to_lower().ends_with(".zip"):
@@ -575,91 +558,3 @@ static func _resolve_path_overlaps(chart: Chart, counts: Dictionary) -> void:
 	for note in remove:
 		chart.notes.erase(note)
 		counts["dropped"] += 1
-
-
-## 高 BPM 双手交互的降难：鼠标跟不上的地方改成小位移交互（±45° 摆动/扫圈），
-## 跟得上的地方保持原谱。只有极密（< 40ms）才叠键。
-const RELAX_SPEED_LIMIT := 6.0
-const RELAX_STACK_GAP := 0.04
-
-static func _simplify_dense_segments(chart: Chart, counts: Dictionary) -> void:
-	var candidates: Array[Note] = []
-	for note in chart.notes:
-		if note.type == "tap" or note.type == "hold":
-			candidates.append(note)
-	if candidates.size() < 2:
-		return
-	candidates.sort_custom(func(a: Note, b: Note) -> bool: return a.beat < b.beat)
-	var changed := 0
-	for k in range(1, candidates.size()):
-		var previous: Note = candidates[k - 1]
-		var current: Note = candidates[k]
-		var bpm := maxf(1.0, chart.timing.bpm_at(current.beat))
-		var gap_s := maxf(0.001, (current.beat - previous.beat) * 60.0 / bpm)
-		var delta := JudgeMath.angle_delta(current.angle, previous.angle)
-		var chord := 2.0 * sin(deg_to_rad(absf(delta)) * 0.5)
-		if chord / gap_s <= RELAX_SPEED_LIMIT:
-			continue
-		var target := previous.angle
-		if gap_s >= RELAX_STACK_GAP:
-			# 小位移交互：保留原方向，但每步只走 45°（连续同向就是扫圈）。
-			var direction := 1.0 if delta >= 0.0 else -1.0
-			target = previous.angle + 45.0 * direction
-		if _angle_taken(chart, current, target):
-			target = previous.angle
-		if absf(JudgeMath.angle_delta(current.angle, target)) > 0.01:
-			current.angle = fposmod(target, 360.0)
-			changed += 1
-	if changed > 0:
-		counts["relaxed"] = int(counts.get("relaxed", 0)) + changed
-
-
-## 同拍是否已经有别的音符占着这个角度（避免叠到别人身上）。
-static func _angle_taken(chart: Chart, note: Note, angle: float) -> bool:
-	for other in chart.notes:
-		if other == note:
-			continue
-		if other.type != "tap" and other.type != "hold":
-			continue
-		if absf(other.beat - note.beat) > 0.001:
-			continue
-		if absf(JudgeMath.angle_delta(other.angle, angle)) < 20.0:
-			return true
-	return false
-
-static func _resolve_conflicts(chart: Chart, counts: Dictionary) -> void:
-	# 同刻目标角度不重合时只保留最宽的一侧，保证单手可打。
-	for _pass in 6:
-		var by_beat := {}
-		for note in chart.notes:
-			if note.type in ["tap", "hold", "path"]:
-				var key := snappedf(note.beat, 0.001)
-				if not by_beat.has(key):
-					by_beat[key] = []
-				by_beat[key].append({"note": note, "angle": note.angle, "width": note.width})
-			if note.type == "path":
-				var tail_key := snappedf(note.end_beat, 0.001)
-				if not by_beat.has(tail_key):
-					by_beat[tail_key] = []
-				by_beat[tail_key].append({"note": note, "angle": note.tail_angle, "width": note.tail_width})
-		var remove: Array[Note] = []
-		for key in by_beat.keys():
-			var events: Array = by_beat[key]
-			if events.size() <= 1:
-				continue
-			var lists: Array = []
-			for event in events:
-				lists.append(JudgeMath.interval(float(event["angle"]), float(event["width"])))
-			if not JudgeMath.intersect_all(lists).is_empty():
-				continue
-			events.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return float(a["width"]) > float(b["width"]))
-			var keeper: Note = events[0]["note"]
-			for event in events:
-				var note: Note = event["note"]
-				if note != keeper and not remove.has(note):
-					remove.append(note)
-		if remove.is_empty():
-			return
-		for note in remove:
-			chart.notes.erase(note)
-			counts["dropped"] += 1

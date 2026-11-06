@@ -81,9 +81,10 @@ godot --path .
 - 长度体系：l = 旧版 Tap 与判定环重合时的条带长度（即 `note.width`）。新版普通 Tap 与 Hold 头都是 **0.5 l**，且"看到多长 = 能打多长"（绘制与判定共用 `Note.arc_width()`）；**Tap 的长度**直接在检查器"长度 ×l" 调到 **0.00–1.50 l**（两位小数），改了就自动变成"大小 Tap"，"恢复 0.5 l" 按钮可还原，0 长度仍保留一个点标记；Tap / Hold 在环心出现时只有 **1/6 l**，飞近判定环时长到 1 l
 - Path 视觉尺寸 ×2（`PATH_SIZE_SCALE`）：轨迹笔画、V 形箭头、星头、尾环、进度球全部放大，轨迹几何与判定不变；Trace 使用重做后的门框/游标绘制
 - Hold 外观：头部与 Tap 用同一条"长度条"（`_draw_length_band`），只是主体色换成黄色，缩放节奏与 Tap 完全一致（环心 1/6 l → 判定环 1 l）；身体从**圆心**画到 **1.44R**（旧版 0.28R→1R 的 0.72R 的 2 倍，外端越过判定环 0.44R），飞入时同样跟着 `grow` 长出来
-- osu!std 落道：circle 的角度改成 Sentakki 式 **8 道 45°** 对齐（`_std_closest_lane`），流向用它的中点法（`_std_stream_direction`：同向保持、共线归零、否则取角差符号），大跳按两端道差（`jumpLaneOffset`），间隔超过 1 拍重新回绝对位置
+- osu!std 落道：照 Sentakki 的 8 道 45°（`_std_closest_lane` / `_std_lane_u`），流向用它的中点法（`_std_stream_direction`：同向保持、共线归零、否则取角差符号），大跳按两端道差（`_std_jump_offset`），间隔超过 1 拍重新回绝对位置
 - 星星颜色：默认使用全局星色（舞萌蓝）；有任意两条 Path 在**时间 + 盘面轨迹**上重叠时，按同色系逐级压明度区分。旧版自定义 RGB 数据（`"rgb"`）保留兼容；新 Path 界面已隐藏该入口
-- osu!std 滑条：照 Sentakki 的**程序化段链**（`_std_choose_slide_segments`）——不跟随 osu 控制点，而是从 `Straight / Circle / V / U / Cup / Thunder / Fan` × 1–7 道 × 镜像的候选表里，按剩余时长反复挑段（`min_ms × (1 + 1/velocity) < 剩余`），连续同向圆弧不合法；wait 从 1 拍开始减半，低于 0.5 拍退回 Hold；轨迹用 `_std_slide_trace_from_parts` 按段生成并重采样到每段 10 点
+- osu!std 滑条：照 Sentakki 的**程序化段链**（`core/sentakki_slide.gd`）——不跟随 osu 控制点，而是从 `Straight / Circle / V / U / Cup / Thunder / Fan` × 8 道 × 镜像的合法段表里，按剩余时长反复挑段（`min_ms × (1 + 1/velocity) < 剩余`），连续同向圆弧不合法；wait 从 1 拍开始减半，低于 0.5 拍退回 Hold；轨迹按弧长匀速采样
+- 舞萌转谱两层：先做布局优化（同刻/近同刻只剩一只鼠标打不了的音符、按 45° 车道压连续大位移、Path 头尾一起限速），再用 Sentakki 段库重建自交/急折/超速的星星；连 45° 都塞不下才降级成 Hold/Tap。`maidata` 的星星从头部当拍开始走，不再额外延后 1 拍
 - 星星出场：星头与轨迹一起从圆心长出，随预读同步放大；没有独立的星显或启动延迟，尾判与轨迹一起到位
 - Path 旧数据兼容：擦除区间、旧视觉点等字段仍可读取；新 Path 编辑界面不再显示这些旧控件
 - Trace 表现：宽笔刷 + 流动高光 + 星头/尾环同色，去掉中心虚线；鼠标向前跳区时跳过的轨迹从画面削掉且不累计移动距离
@@ -113,8 +114,8 @@ godot --path .
 - 帧率：视图/设置 可选 60 / 120 / 跟随显示器（vsync）/ 无限制，默认跟随显示器
 - 判定偏移：试玩设置里可手动填 −200…200ms，游戏内 [ / ] 微调，数值写入设置；勾选「动态 offset」后，≥8 次命中起每命中一次按偏差 5% 自动校准（自动部分最多 ±50ms）
 - 偏差显示：试玩右上角实时显示本次平均偏差 BIA 与当前偏移 OFF；结算页给出判定偏差直方图、平均判定偏差、不稳定率（UR）和命中统计
-- osu!std 混合层导入：circle → 环上 Tap（连续 u）；slider → 环内平面 Slide Trace（星头按键 + 沿轨迹移动，尾部是轨迹终点不单独判定）；lazy/短/重复 → Hold；滑条带 Sentakki 式 wait 阶段，Hold 与下一个 note 重叠时夹短、不足 0.5 拍降级 Tap
-- 连续角度：流内按 Sentakki 式 45° 步进，jump 用压缩角度差，360°/s 限速；不吸固定轨
+- osu!std 混合层导入：circle → 环上 Tap（连续 u）；slider → 环内平面 Path（星头按键 + 沿轨迹移动，尾部在终点时刻按鼠标位置判定）；lazy/短 → Hold；重复滑条按 Sentakki 段链转成单向 Path；滑条带 Sentakki 式 wait 阶段，Hold 与下一个 note 重叠时夹短、不足 0.5 拍降级 Tap
+- 连续角度：流内按 Sentakki 式 45° 步进，jump 用两端道差，间隔超过 1 拍回绝对位置
 - 可变 Tap 宽度：按相邻角度/时间补偿（45–75°），密集段更容易跟，jump 略窄
 - 负拍前奏：最早 note 自动平移到 beat 0，并调整 offset；F5 从头不会漏前奏
 - 试玩延迟：`audio/driver/output_latency=10`；顶部 `OFF` 与 `[` / `]` 可手动校准音频/输入综合延迟，Path 头尾改为窗口内可命中而不是窗口一开始就判 Miss
@@ -124,13 +125,13 @@ godot --path .
 ## 格式互通
 
 - **导入 `.osz`**：支持 osu!std 与 osu!taiko；circle → Tap、slider → Slide Trace/Hold、drumroll → Hold；spinner 跳过；多难度包会弹窗选择 `.osu`；导入报告列出保留/丢弃原因。
-- **导入 Simai**：支持舞萌 `maidata.txt`（`.zip` 或 `.txt`）；Tap/Hold/Slide→环上 Path/Break→加宽 Tap/Touch→Bell 会导入，双押只保留顺流向一侧，中心 Touch 跳过；复杂轨迹先近似为圆弧；音频导入时转成 OGG，避免 MP3 在部分驱动上静音。
-- **osu!std 混合层**：circle → 环上 Tap（连续 u、45–75° 宽度）；slider 用 B/L/C/P 判断方向和长度，能跟随的转成**环内平面 Slide Trace**，星头/圆环尾/轨迹一起出现，尾部只是轨迹终点、不单独判定；lazy/短/多重复转 Hold。没有 8 轨吸附，也没有全平面模式。
+- **导入 Simai**：支持舞萌 `maidata.txt`（`.zip` 或 `.txt`）；Tap/Hold/Slide→Path/Break→加宽 Tap/Touch→Bell 会导入，双押只保留顺流向一侧，中心 Touch 跳过；导入后先做布局优化（同刻/近同刻、连续大位移、Path 头尾限速），再用 Sentakki 段库重建自交/急折/超速的星星；星星从头部当拍开始走，不额外延后 1 拍；音频导入时转成 OGG，避免 MP3 在部分驱动上静音。
+- **osu!std 混合层**：circle → 环上 Tap（连续 u）；slider 按 Sentakki 段库转成**环内平面 Path**（星头按键 + 沿轨迹移动，尾部在终点时刻判定），lazy/短 → Hold；没有 8 轨吸附，也没有全平面模式。
 - **宽度补偿**：Tap/Path 头宽按相邻角度差和时间差自动变宽（52–110°），密集流加宽、jump 收窄；这是无轨环用来吸收 osu 不可打配置的主要手段。
 - **taiko 映射**：don/kat 按 hitsound（whistle/clap = kat，finish = 大音符）分色；就近取 0/90/180/270 两车道，密集段（<0.32 拍）堆叠不甩圈；短滑条拆成拍点，长滑条（≥1.5 拍）→ Hold；spinner 跳过。
 - **导出 `.lbp` v2**：按设计文档第 7 章输出 `[General] / [Video] / [Metadata] / [TimingPoints] / [BoundaryShapes] / [BoundaryEvents] / [ViewStates] / [Regions] / [Notes] / [Editor]`，保留 Path 五角星、Trace 二维点、Bell、Anchor 配对和颜色/锁定选项。
 - 导入时会把 `.osz` 内的音频、背景、视频解包到 `user://imports/`；音频仍可用 ffmpeg 转码。
-- Simai 的 V/wifi/p/q 等复杂轨迹先近似为圆弧；中心 Touch 和部分多段同头 Slide 会跳过并在报告里计数。
+- Simai 的 V/wifi/p/q 等复杂轨迹先近似为圆弧；近似后仍然自交/急折/超速的星星用 Sentakki 段库重建，连 45° 都放不下才降级；中心 Touch 和部分多段同头 Slide 会跳过并在报告里计数。
 - 不做 `.mcz`、osu!mania/catch、`.lbp` 反向导入、Malody 4.3.7 运行时。
 
 ## 未实现（本轮范围之外）
@@ -149,7 +150,7 @@ godot --headless --path . --import
 godot --headless --path . --script res://tests/test_runner.gd
 ```
 
-当前结果：**409 passed, 0 failed**。测试覆盖：
+当前结果：**442 passed, 0 failed**。测试覆盖：
 
 - 120 BPM / 变速 / offset 的时间换算与反解
 - 新建谱面 BPM 三位小数/一位小数取整与 offset 三位小数规范化
@@ -158,7 +159,7 @@ godot --headless --path . --script res://tests/test_runner.gd
 - 小节线细分吸附目标随 N 变化（1/4、1/3、1/5）
 - 音符镜像的 +180° 角度回绕、Bell center_u、Path 头尾/平面坐标/视觉偏移
 - 长度体系：普通 Tap / Hold 头 = 0.5 l、大小 Tap 的 0–1.5 l 范围与两位小数吸附、环心 1/6 l、Path 不受影响、JSON 只给大小 Tap 写 `sized`/`size`
-- osu!std 落道：合成谱面里左/右/上/左上四个 circle 分别落到 4/0/6/5 道，且所有角度都是 45° 的整数倍
+- osu!std 落道：合成谱面里左/中/右/上/左上五个 circle 按 Sentakki 的流/大跳落到 5/1/1/6/4 道，且所有角度都落在 Sentakki 的 45° 道上
 - FLAC 纳入可读取音频格式（经 ffmpeg 解码缓存）
 - 圆的 C(u)、最近点反解、五角星 Path 表现层
 - `.lbp` 导出头部/段落/Path 五角星/换行
@@ -167,6 +168,7 @@ godot --headless --path . --script res://tests/test_runner.gd
 - Path 跳区擦除范围、擦除段不生成中段检查点、JSON / `.lbp` 保留
 - 试玩打击音资源可加载
 - Simai 导入的难度列表、offset、按钮角度、Hold/Slide 时长、双押删除、Path 尾冲突删除、Touch→Bell
+- 舞萌两层优化：Sentakki 段库长度/端点、快星星自动缩短尾判、慢星星保持原样
 - osu!std 的 45° 流步长、Slide wait 阶段、Hold 重叠夹短/降级
 - `.osz` 多难度列表与指定难度导入
 - 固定预读 `P(T)=C(u,T)`（多形状/事件）
@@ -215,7 +217,7 @@ tests/     SceneTree 无头测试
 - 边界编辑器是“分段参数 + 控制点 + 预设”，按本次要求只允许**简单凸轮廓**；凹口、星形、折返、自交、局部半径过激都会被校验拒绝。`b` 插值按平滑曲线处理，语法保留。
 - 局部 BoundaryEvent 仍可用，但若过渡中产生凹口/自交也会被拒绝；首版示例使用整环事件。
 - 试玩是文档 §8.9 的“最小判定模拟器”：二值命中/失误 + 事件日志 + 调试准确率/评级，不是正式评分公式。Path 中段已改为屏幕距离判定（容差 24px × tolerance/0.24），头尾仍是独立点判定。
-- osu!std 的 slider 转成环内平面 Slide Trace（星头按键 + 沿轨迹，尾部只是终点）或 Hold（lazy/短/重复）；circle 仍是环上 Tap，角度连续、宽度 45–75°。星头和圆环尾与轨迹一起出现，尾部没有单独 Hit/Miss。
+- osu!std 的 slider 按 Sentakki 段库转成环内平面 Path（星头按键 + 沿轨迹，尾部在终点时刻判定）或 Hold（lazy/短）；circle 仍是环上 Tap，角度按 8 道 45° 的流/大跳推进。Path 头尾一起出现，尾部有独立 Hit/Miss。
 - 试玩判定偏移只在当前会话生效，不做自动延迟测量；如果设备/耳机延迟大，用 `[` / `]` 手动校准，或启动时加 `--audio-output-latency 5` 覆盖 10ms 缓冲。
 - 命中窗口固定 40ms，尚未做 Perfect/Great/Good 分级；评分规则仍等文档冻结。
 - 拍号分母固定 4；3/8、6/8 需要后续 BeatUnit 扩展。
@@ -225,7 +227,7 @@ tests/     SceneTree 无头测试
 - 打击音是 Freesound CC0 素材（Wood block hit / wood block / ShiningRinging / Fast swipe / Thin bell ding），来源与授权见 `audio/sfx/ATTRIBUTION.md`。
 - 流速是编辑器/试玩会话选项，不写入谱面；谱面仍只保存固定预读 `pre_read_ms`。
 - 音量滑杆目前是会话级，不写入谱面/配置文件；重启后回到 100%。
-- osu!std 混合层是“可玩性重解释”，不是原谱 1:1 还原；Tap 角度经过方向步进/限速，宽度是自动补偿值；slider 的环内平面轨迹由原曲线方向/长度近似，不是原图逐点复刻。
+- osu!std 混合层是“可玩性重解释”，不是原谱 1:1 还原；Tap 角度经过 Sentakki 的流向/大跳推进，slider 的轨迹由 Sentakki 合法段链按剩余时长生成，不是原图逐点复刻。
 
 ## 字体与资源
 
