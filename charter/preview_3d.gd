@@ -10,8 +10,12 @@ const PREVIEW_MARGIN := 1.24
 const MOUSE_TILT_DEGREES := 11.0
 ## Path / Trace 的视觉尺寸：相对旧版 ×2。只放大笔画与头尾，不改轨迹几何与判定。
 const PATH_SIZE_SCALE := 2.0
-## Anchor / Bell 的磁铁吸附范围（屏幕像素）。
-const MAGNET_RANGE := 140.0
+## Bell 吸附：光标进入这个半径且距判定 0.5 拍内时，Bell 自己飞向光标。
+const BELL_SNAP_RANGE := 120.0
+## 吸附动画时长（秒），缓出吸到光标上。
+const BELL_SNAP_TIME := 0.15
+## 距判定点多少拍内才允许吸附，避免远处的 Bell 抢注意力。
+const BELL_SNAP_BEATS := 0.5
 ## 星头单独缩小（轨迹宽度不受影响）。
 const PATH_HEAD_SCALE := 0.62
 ## Bell 直径缩放（相对旧版）。
@@ -79,6 +83,7 @@ var _frame_mesh: MeshInstance3D
 var _amber_mesh: MeshInstance3D
 var _rim_mesh: MeshInstance3D
 var _overlay: Control
+var _cursor_layer: Control
 var _ring_material: StandardMaterial3D
 var _glow_material: StandardMaterial3D
 var _stage_material: StandardMaterial3D
@@ -107,6 +112,8 @@ var _last_mesh_usec: int = 0
 var _last_process_time: float = -9999.0
 var _last_mouse_screen: Vector2 = Vector2(-9999, -9999)
 var _cursor_trail: Array[Dictionary] = []
+## Bell 吸附进度：note.id -> 0..1（线性，读取时缓出）。
+var _bell_snap: Dictionary = {}
 ## 舞萌星星的默认深蓝色，以及重叠时使用的同色系配色。
 const STAR_BLUE := Color(0.22, 0.36, 0.88)
 const STAR_BLUE_PALETTE: Array[Color] = [
@@ -281,6 +288,15 @@ func _build_layers() -> void:
 	_overlay.set("preview", self)
 	add_child(_overlay)
 	_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	# 光标单独一层：鼠标移动只重绘这一层，不再重画整个场景。
+	_cursor_layer = Control.new()
+	_cursor_layer.set_script(load("res://charter/preview_overlay.gd"))
+	_cursor_layer.name = "CursorLayer"
+	_cursor_layer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_cursor_layer.set("preview", self)
+	_cursor_layer.set("cursor_only", true)
+	add_child(_cursor_layer)
+	_cursor_layer.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_viewport_container.visible = use_3d_ring
 
 
@@ -458,13 +474,17 @@ func _process(_delta: float) -> void:
 	if playtest_mode:
 		mouse_screen = get_local_mouse_position()
 		mouse_inside = true
+	_update_bell_snap(chart, t, _delta)
 	var mouse_moved := mouse_screen.distance_to(_last_mouse_screen) > 0.1
 	if mouse_inside and (playtest_mode or (playing and Engine.get_process_frames() % 6 == 0) or mouse_moved):
 		_update_cursor()
 	_update_cursor_trail(_delta)
-	var needs_overlay := time_changed or mouse_moved or view_changed or flat_dirty or not _cursor_trail.is_empty()
+	# 场景层只在时间/几何/特效变化时重绘；鼠标移动只触发光标层。
+	var needs_overlay := time_changed or view_changed or flat_dirty or not _pulses.is_empty() or not _arc_flashes.is_empty()
 	if needs_overlay:
 		_overlay.queue_redraw()
+	if mouse_moved or time_changed or view_changed or not _cursor_trail.is_empty():
+		_cursor_layer.queue_redraw()
 	if use_3d_ring:
 		_update_3d_mode(playing or playtest_mode or _tilt.distance_to(_tilt_target) > 0.01, view_changed or _mesh_dirty)
 	_last_process_time = t
@@ -866,14 +886,14 @@ func _on_mouse_entered() -> void:
 	if not playtest_mode:
 		Input.set_mouse_mode(Input.MOUSE_MODE_HIDDEN)
 	_update_cursor()
-	_overlay.queue_redraw()
+	_cursor_layer.queue_redraw()
 
 
 func _on_mouse_exited() -> void:
 	mouse_inside = false
 	if not playtest_mode:
 		Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
-	_overlay.queue_redraw()
+	_cursor_layer.queue_redraw()
 
 
 func _gui_input(event: InputEvent) -> void:
@@ -892,7 +912,9 @@ func _gui_input(event: InputEvent) -> void:
 			elif _drawing_trace:
 				_append_trace_point(event.position)
 		_update_cursor()
-		_overlay.queue_redraw()
+		_cursor_layer.queue_redraw()
+		if _drag_segment >= 0 or _drag_visual >= 0 or _drawing_red or _drawing_path or _drawing_trace:
+			_overlay.queue_redraw()
 		accept_event()
 		return
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
@@ -1385,16 +1407,37 @@ func _update_cursor_trail(delta: float) -> void:
 	if not mouse_inside:
 		_cursor_trail.clear()
 		return
-	if _last_mouse_screen.distance_to(mouse_screen) <= 1.0:
+	var moved := _last_mouse_screen.distance_to(mouse_screen)
+	if moved <= 1.0:
 		return
 	_cursor_trail.append({"pos": mouse_screen, "age": 0.0})
-	if _cursor_trail.size() > 28:
+	# 快速划动时缩短拖尾，减少绘制量（慢速保持 28 点）。
+	var cap := 8 if moved > 60.0 else 28
+	while _cursor_trail.size() > cap:
 		_cursor_trail.pop_front()
 
 
 func _update_cursor() -> void:
 	var chart := get_chart()
 	if chart == null:
+		return
+	if playtest_mode:
+		# 试玩完全按鼠标屏幕位置判定（osu 式自由移动），不再反解环上角度。
+		# 仍要刷新平均半径缓存：音符缩放和光标尺寸都靠它。
+		var center_pt := project_design(Vector2.ZERO)
+		var average_key := "%s|%s|%.0f|%.0f" % [_mesh_key(chart, get_time_beat()), _last_view_key, size.x, size.y]
+		if average_key != _avg_radius_key:
+			_avg_radius_key = average_key
+			var total := 0.0
+			var counted := 0
+			var samples := 12
+			for i in samples:
+				var sample_point := project_u(float(i) / float(samples), get_time_beat())
+				if _valid_point(sample_point):
+					total += sample_point.distance_to(center_pt)
+					counted += 1
+			_avg_radius_cache = total / float(maxi(1, counted)) if counted > 0 else 100.0
+		cursor_valid = true
 		return
 	var t := get_time_beat()
 	# 鼠标和边界几何都没变时，直接复用上一帧的 u，避免每帧 96 次反解。
@@ -1523,13 +1566,20 @@ func draw_overlay(canvas: Control) -> void:
 	_draw_holds(canvas, chart, t, pre)
 	_draw_notes(canvas, chart, t, pre)
 	_draw_boundary_controls(canvas, chart)
-	_draw_cursor(canvas, chart, t)
 	if show_hud:
 		_draw_hud(canvas, chart, t)
 	_draw_arc_flashes(canvas)
 	_draw_pulses(canvas)
 	if show_debug:
 		_draw_debug(canvas, chart, t)
+
+
+## 光标层：鼠标移动时只重绘这里。
+func draw_cursor_overlay(canvas: Control) -> void:
+	var chart := get_chart()
+	if chart == null:
+		return
+	_draw_cursor(canvas, chart, get_time_beat())
 
 
 func _screen_affine() -> Array:
@@ -1650,6 +1700,20 @@ func _draw_red_regions(canvas: Control, chart: Chart, t: float) -> void:
 		var label_point := _arc_point_scaled(region.angle, t, 0.86)
 		if _valid_point(label_point):
 			_draw_badge(canvas, "RED" if active else "RED IN", label_point + Vector2(0, -4), UITheme.RED)
+
+
+## 红区的可见多边形（外弧 + 内弧），判定和绘制共用同一份几何。
+func red_region_polygon(region: Region, beat: float) -> PackedVector2Array:
+	var outer := _arc_points_scaled(region.angle, region.width, beat, 40, 1.0)
+	var inner := _arc_points_scaled(region.angle, region.width, beat, 40, 0.68)
+	if outer.size() < 2 or inner.size() < 2:
+		return PackedVector2Array()
+	var polygon := PackedVector2Array()
+	for point in outer:
+		polygon.append(point)
+	for i in range(inner.size() - 1, -1, -1):
+		polygon.append(inner[i])
+	return polygon
 
 
 func _arc_points_scaled(angle: float, width: float, beat: float, steps: int, scale: float) -> PackedVector2Array:
@@ -2408,7 +2472,8 @@ func _draw_notes(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 			"bell":
 				var bell := bell_screen(note, t)
 				if not bell.is_empty():
-					_draw_bell(canvas, bell["center"], bell["radius"], t, note.beat, pre)
+					var bell_center: Vector2 = bell.get("origin", bell["center"])
+					_draw_bell(canvas, bell_center, bell["radius"], t, note.beat, pre, float(bell.get("snap", 0.0)))
 
 
 func _draw_tap_donut(canvas: Control, point: Vector2, radius: float, color: Color, alpha: float = 1.0) -> void:
@@ -2771,28 +2836,29 @@ func _draw_cursor(canvas: Control, chart: Chart, t: float) -> void:
 			canvas.draw_string(UITheme.mono_font(), p + Vector2(12, 22), "u %.1f°" % (cursor_u * 360.0), HORIZONTAL_ALIGNMENT_LEFT, -1, 11, UITheme.MUTED)
 
 
-## 最近的 Anchor / Bell（屏幕坐标）与吸附强度，用于磁铁动画。
-func _magnet_target(chart: Chart, t: float) -> Dictionary:
-	if chart == null:
-		return {}
-	var best := {}
-	var best_distance := MAGNET_RANGE
-	for note in _notes_in_range(chart, t - 1.0, t + 1.0):
-		var pos := Vector2(INF, INF)
-		if note.type == "bell":
-			var bell := bell_screen(note, t)
-			if bell.is_empty():
-				continue
-			pos = bell["center"]
-		elif note.type == "anchor":
-			pos = project_u(fposmod(note.angle, 360.0) / 360.0, t)
-		if not _valid_point(pos):
+## Bell 被光标吸附：进入 120px 且距判定 0.5 拍内时，Bell 自己飞向光标。
+func _update_bell_snap(chart: Chart, t: float, delta: float) -> void:
+	if not playtest_mode:
+		_bell_snap.clear()
+		return
+	var wanted := {}
+	var pre := _pre_read_beats(chart, t)
+	for note in _notes_in_range(chart, t - BELL_SNAP_BEATS, t + BELL_SNAP_BEATS):
+		if note.type != "bell" or absf(t - note.beat) > BELL_SNAP_BEATS:
 			continue
-		var distance := mouse_screen.distance_to(pos)
-		if distance <= best_distance:
-			best_distance = distance
-			best = {"pos": pos, "pull": clampf(1.0 - distance / MAGNET_RANGE, 0.0, 1.0), "type": note.type}
-	return best
+		var bell := _bell_screen_raw(note, t)
+		if bell.is_empty():
+			continue
+		# 按画面上看到的位置触发，而不是它在判定环上的落点。
+		var q := clampf((t - (note.beat - pre)) / maxf(0.001, pre), 0.0, 1.0)
+		var shown: Vector2 = project_design(Vector2.ZERO).lerp(bell["center"], q)
+		if mouse_screen.distance_to(shown) <= BELL_SNAP_RANGE:
+			wanted[note.id] = true
+	for id in _bell_snap.keys():
+		if not wanted.has(id):
+			_bell_snap.erase(id)
+	for id in wanted.keys():
+		_bell_snap[id] = clampf(float(_bell_snap.get(id, 0.0)) + delta / BELL_SNAP_TIME, 0.0, 1.0)
 
 
 func _draw_player_cursor(canvas: Control) -> void:
@@ -2819,17 +2885,6 @@ func _draw_player_cursor(canvas: Control) -> void:
 		canvas.draw_circle(point, radius, Color(accent.r, accent.g, accent.b, 0.26 * life))
 		canvas.draw_circle(point, radius * 0.45, Color(1, 1, 1, 0.16 * life))
 	var m := mouse_screen
-	var magnet := _magnet_target(get_chart(), get_time_beat())
-	if not magnet.is_empty():
-		var target: Vector2 = magnet["pos"]
-		var pull := float(magnet["pull"])
-		m = m.lerp(target, pull * 0.55)
-		var tint: Color = UITheme.GOLD if String(magnet.get("type", "")) == "bell" else UITheme.VIOLET
-		canvas.draw_line(mouse_screen, target, Color(tint.r, tint.g, tint.b, 0.16 + 0.30 * pull), 1.4, true)
-		canvas.draw_arc(target, 18.0 + 16.0 * pull, 0.0, TAU, 40, Color(tint.r, tint.g, tint.b, 0.25 + 0.45 * pull), 1.4, true)
-		for k in 3:
-			var dot := mouse_screen.lerp(target, float(k + 1) / 4.0)
-			canvas.draw_circle(dot, 1.6 + 1.2 * pull, Color(tint.r, tint.g, tint.b, 0.20 + 0.35 * pull))
 	var spin := Time.get_ticks_msec() / 1000.0 * 2.2
 	canvas.draw_circle(m, 27.0, Color(accent.r, accent.g, accent.b, 0.035))
 	canvas.draw_circle(m, 20.0, Color(accent.r, accent.g, accent.b, 0.06))
@@ -2853,13 +2908,13 @@ func request_redraw() -> void:
 		_overlay.queue_redraw()
 
 
-func add_hit_pulse(point: Vector2, color: Color, label: String = "HIT", kind: String = "tap") -> void:
+func add_hit_pulse(point: Vector2, color: Color, label: String = "HIT", kind: String = "tap", detail: String = "") -> void:
 	if not _valid_point(point):
 		return
 	var sparks: Array[float] = []
 	for i in 16:
 		sparks.append(randf_range(0.0, TAU))
-	_pulses.append({"pos": point, "age": 0.0, "color": color, "label": label, "kind": kind, "sparks": sparks})
+	_pulses.append({"pos": point, "age": 0.0, "color": color, "label": label, "kind": kind, "sparks": sparks, "detail": detail})
 	if _overlay != null:
 		_overlay.queue_redraw()
 
@@ -2920,6 +2975,10 @@ func _draw_pulses(canvas: Control) -> void:
 		var text_scale := 1.0 + 0.28 * clampf(1.0 - age / 0.12, 0.0, 1.0)
 		canvas.draw_string_outline(UITheme.bold_font(), point + Vector2(30, -36 - age * 30), String(pulse.get("label", "")), HORIZONTAL_ALIGNMENT_LEFT, -1, int(13.0 * text_scale), 4, Color(0, 0, 0, 0.55 * alpha))
 		canvas.draw_string(UITheme.bold_font(), point + Vector2(30, -36 - age * 30), String(pulse.get("label", "")), HORIZONTAL_ALIGNMENT_LEFT, -1, int(13.0 * text_scale), Color(color.r, color.g, color.b, alpha))
+		# 早/晚提示：Estella 被批评判定反馈不清，这里把偏差方向直接写在判定字下面。
+		var detail := String(pulse.get("detail", ""))
+		if not detail.is_empty():
+			canvas.draw_string(UITheme.mono_font(), point + Vector2(30, -22 - age * 30), detail, HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(1, 1, 1, 0.72 * alpha))
 
 
 func _draw_fx_burst(canvas: Control, point: Vector2, color: Color, age: float, sparks: Array) -> void:
@@ -3253,10 +3312,17 @@ func _draw_diamond(canvas: Control, point: Vector2, radius: float, color: Color)
 	canvas.draw_circle(point, maxf(1.2, radius * 0.14), Color(1, 1, 1, 0.92))
 
 
-func _draw_bell(canvas: Control, point: Vector2, radius: float, t: float, target: float, pre: float) -> void:
+func _draw_bell(canvas: Control, point: Vector2, radius: float, t: float, target: float, pre: float, snap: float = 0.0) -> void:
 	var q := clampf((t - (target - pre)) / maxf(0.001, pre), 0.0, 1.0)
 	var r := maxf(12.0, radius * 1.35) * lerpf(0.7, 1.0, q) * BELL_SIZE_SCALE
 	var p := project_design(Vector2.ZERO).lerp(point, q)
+	if snap > 0.01:
+		# 吸附拖尾：从原来的飞行位置拉向光标，画几个递减的光点。
+		var snapped := p.lerp(mouse_screen, snap)
+		for k in 4:
+			var dot := p.lerp(snapped, float(k) / 4.0)
+			canvas.draw_circle(dot, r * 0.32 * (1.0 - 0.16 * float(k)), Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, 0.08 + 0.30 * snap))
+		p = snapped
 	var since := t - target
 	var pop := 1.0
 	var alpha := 1.0
@@ -3302,24 +3368,37 @@ func _draw_bell(canvas: Control, point: Vector2, radius: float, t: float, target
 			var spark := p + Vector2(cos(a), sin(a)) * d
 			var s := 4.0 * (1.0 - k2) + 1.0
 			canvas.draw_rect(Rect2(spark - Vector2(s, s) * 0.5, Vector2(s, s)), Color(1, 0.88, 0.45, 0.85 * (1.0 - k2)))
-	# Bell 吸附：鼠标靠近时显示收缩环 + 四向吸点。
-	var snap := maxf(96.0, r)
+	# Bell 吸附提示：进入吸附范围后收缩环收紧，吸住后跟着 Bell 一起走。
+	var range_px := maxf(96.0, r)
 	if mouse_inside:
 		var distance := mouse_screen.distance_to(p)
-		if distance <= snap * 1.7:
-			var pull := clampf(1.0 - distance / snap, 0.0, 1.0)
-			canvas.draw_arc(p, snap, 0.0, TAU, 48, Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, 0.08 + 0.20 * pull), 1.2 + 1.4 * pull, true)
-			var ring := lerpf(snap, r + 4.0, pull)
+		if distance <= range_px * 1.7:
+			var pull := maxf(clampf(1.0 - distance / range_px, 0.0, 1.0), snap)
+			canvas.draw_arc(p, range_px, 0.0, TAU, 48, Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, 0.08 + 0.20 * pull), 1.2 + 1.4 * pull, true)
+			var ring := lerpf(range_px, r + 4.0, pull)
 			canvas.draw_arc(p, ring, 0.0, TAU, 36, Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, 0.45 + 0.45 * pull), 2.2, true)
 			canvas.draw_arc(p, ring + 5.0, 0.0, TAU, 36, Color(1, 1, 1, 0.18 + 0.30 * pull), 1.0, true)
 			for i in 4:
 				var a := t * TAU * 1.5 + float(i) * TAU / 4.0
-				var spark := p + Vector2(cos(a), sin(a)) * lerpf(snap * 0.95, r * 0.72, pull)
+				var spark := p + Vector2(cos(a), sin(a)) * lerpf(range_px * 0.95, r * 0.72, pull)
 				canvas.draw_circle(spark, 1.6 + 1.4 * pull, Color(1, 1, 1, 0.55 + 0.35 * pull))
 				canvas.draw_circle(spark, 3.2 + 2.0 * pull, Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, 0.16 + 0.20 * pull))
 
 
 func bell_screen(note: Note, beat: float) -> Dictionary:
+	var raw := _bell_screen_raw(note, beat)
+	if raw.is_empty():
+		return raw
+	var progress := float(_bell_snap.get(note.id, 0.0))
+	if progress <= 0.0:
+		return raw
+	# 缓出：一开始快、贴到光标时慢下来，才有“被吸住”的感觉。
+	var eased := 1.0 - pow(1.0 - progress, 3.0)
+	var center: Vector2 = (raw["center"] as Vector2).lerp(mouse_screen, eased)
+	return {"center": center, "radius": float(raw["radius"]), "origin": raw["center"], "snap": eased}
+
+
+func _bell_screen_raw(note: Note, beat: float) -> Dictionary:
 	var chart := get_chart()
 	if chart == null:
 		return {}
@@ -3331,6 +3410,67 @@ func bell_screen(note: Note, beat: float) -> Dictionary:
 	if not _valid_point(center):
 		return {}
 	return {"center": center, "radius": _design_radius_to_screen(design, note.radius)}
+
+
+## 判定用：判定时刻（beat）环上条带的屏幕折线，宽度为角度 width。
+func note_band_points(angle_deg: float, width_deg: float, beat: float, scale: float = 1.0) -> PackedVector2Array:
+	var chart := get_chart()
+	var points := PackedVector2Array()
+	if chart == null:
+		return points
+	var width := maxf(0.0, width_deg)
+	if width <= 0.05:
+		var data := _boundary_point(chart, fposmod(angle_deg, 360.0) / 360.0, beat)
+		if not bool(data.get("gap", false)):
+			var p := project_design((data.point as Vector2) * scale)
+			if _valid_point(p):
+				points.append(p)
+		return points
+	var steps := clampi(int(width / 3.0), 6, 48)
+	for i in steps + 1:
+		var a := angle_deg - width * 0.5 + width * float(i) / float(steps)
+		var data := _boundary_point(chart, fposmod(a, 360.0) / 360.0, beat)
+		if bool(data.get("gap", false)):
+			continue
+		var p := project_design((data.point as Vector2) * scale)
+		if _valid_point(p):
+			points.append(p)
+	return points
+
+
+## 判定用：音符此刻画在屏幕上的条带（含飞入半径），和绘制走同一套几何。
+func note_live_band(note: Note, beat: float, pad: float = 0.0) -> PackedVector2Array:
+	var chart := get_chart()
+	if chart == null:
+		return PackedVector2Array()
+	var pre := _pre_read_beats(chart, beat)
+	var progress := clampf((beat - (note.beat - pre)) / maxf(0.001, pre), 0.0, 1.0)
+	var grow := lerpf(Note.SPAWN_LENGTH_RATIO, 1.0, progress)
+	return note_band_points(note.angle, note.arc_width() + pad, beat, grow)
+
+
+## 鼠标在环平面上的角度（度），用于密集流的扇区判定。
+func screen_angle_deg(screen: Vector2) -> float:
+	var design := _screen_to_ring_plane(screen)
+	if not design.is_finite() or design.x > 1.0e9:
+		return NAN
+	return fposmod(rad_to_deg(atan2(design.y, design.x)), 360.0)
+
+
+## 音符头部此刻的屏幕位置（和绘制一样从环心飞入）：Anchor 与 Path 头共用。
+func note_head_screen(note: Note, beat: float) -> Vector2:
+	var chart := get_chart()
+	if chart == null:
+		return Vector2(INF, INF)
+	return _flying_position(chart, note.angle, note.beat, beat, _pre_read_beats(chart, beat))
+
+
+## 音符图形自身的屏幕半径（位置判定容差用）。
+func note_graphic_radius(kind: String) -> float:
+	var ns := _note_scale() * float(_skin()["scale"])
+	if kind == "anchor":
+		return 16.0 * ns
+	return 9.0 * ns
 
 
 func _design_radius_to_screen(point: Vector2, radius: float) -> float:

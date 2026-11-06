@@ -17,6 +17,8 @@ func _initialize() -> void:
 		"test_path_erase_merge",
 		"test_path_run_split",
 		"test_style_presets",
+		"test_position_judgement",
+		"test_timing_stats",
 		"test_nearest_u",
 		"test_pre_read",
 		"test_shrink_example",
@@ -405,6 +407,36 @@ func test_style_presets() -> bool:
 	eq(Playtest.PERFECT_MS, 65.0, "perfect window tightened")
 	eq(Playtest.GREAT_MS, 115.0, "great window tightened")
 	eq(Playtest.GOOD_MS, 170.0, "good window tightened")
+	eq(Playtest.POSITION_TOLERANCE_PX, 90.0, "position tolerance is 90px")
+	eq(Playtest.HOLD_HEAD_EXTRA_PX, 40.0, "hold head gets extra tolerance")
+	eq(Playtest.BAD_MS, 250.0, "bad tier extends to 250ms")
+	return true
+
+
+func test_timing_stats() -> bool:
+	var run := Playtest.new()
+	for error in [-10.0, -10.0, 10.0, 10.0]:
+		run._record_error(error, "test")
+	eq(run._mean_error(), 0.0, "mean timing error")
+	ok(absf(run._unstable_rate() - 115.47) < 0.1, "unstable rate is stddev x10")
+	run.free()
+	var tiers := Playtest.new()
+	eq(tiers._tier_for(150.0), "GOOD", "good tier stays at 170ms")
+	eq(tiers._tier_for(200.0), "BAD", "200ms late lands in the bad tier")
+	eq(tiers._tier_for(260.0), "MISS", "beyond 250ms is a miss")
+	tiers.free()
+	eq(Playtest.DYNAMIC_SAMPLE_MIN, 8, "dynamic offset waits for 8 hits")
+	eq(Playtest.DYNAMIC_LIMIT_MS, 50.0, "dynamic offset is capped at 50ms")
+	return true
+
+
+func test_position_judgement() -> bool:
+	var run := Playtest.new()
+	var line := PackedVector2Array([Vector2(0, 0), Vector2(100, 0)])
+	eq(run._distance_to_polyline(Vector2(50, 30), line), 30.0, "distance to a band segment")
+	eq(run._distance_to_polyline(Vector2(130, 0), line), 30.0, "distance past the band end")
+	eq(run._distance_to_polyline(Vector2(10, 20), PackedVector2Array([Vector2(10, 0)])), 20.0, "distance to a point note")
+	run.free()
 	return true
 
 

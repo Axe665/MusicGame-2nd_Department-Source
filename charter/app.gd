@@ -35,6 +35,12 @@ var trace_color: Color = Color(0.78, 0.86, 1.0)
 var note_skin: String = "candy"
 var hit_fx_style: String = "burst"
 var hit_sfx_style: String = "default"
+## 帧率上限："60" / "120" / "vsync" / "unlimited"。
+var frame_cap: String = "vsync"
+## 局内动态校准判定偏移（默认关）。
+var dynamic_offset: bool = false
+## 上一局的平均判定偏差，供试玩设置显示。
+var last_bias_ms: float = 0.0
 
 var selected_notes: Array[int] = []
 var clipboard_notes: Array[Dictionary] = []
@@ -102,11 +108,33 @@ func _load_settings() -> void:
 			hit_fx_style = String(data.get("hit_fx_style", hit_fx_style))
 			hit_sfx_style = String(data.get("hit_sfx_style", hit_sfx_style))
 			ffmpeg_path = String(data.get("ffmpeg", ffmpeg_path))
+			frame_cap = String(data.get("frame_cap", frame_cap))
+			playtest_offset_ms = float(data.get("playtest_offset_ms", playtest_offset_ms))
+			dynamic_offset = bool(data.get("dynamic_offset", dynamic_offset))
+			last_bias_ms = float(data.get("last_bias_ms", last_bias_ms))
 	MediaIO.set_ffmpeg_exe(ffmpeg_path)
+	apply_frame_cap()
+
+
+## 帧率选项：60 / 120 关垂直同步；vsync 跟随显示器；unlimited 不限帧。
+func apply_frame_cap() -> void:
+	match frame_cap:
+		"60":
+			Engine.max_fps = 60
+			DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
+		"120":
+			Engine.max_fps = 120
+			DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
+		"unlimited":
+			Engine.max_fps = 0
+			DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
+		_:
+			Engine.max_fps = 0
+			DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_ENABLED)
 
 
 func save_settings() -> void:
-	var data := {"note_skin": note_skin, "hit_fx_style": hit_fx_style, "hit_sfx_style": hit_sfx_style, "ffmpeg": ffmpeg_path}
+	var data := {"note_skin": note_skin, "hit_fx_style": hit_fx_style, "hit_sfx_style": hit_sfx_style, "ffmpeg": ffmpeg_path, "frame_cap": frame_cap, "playtest_offset_ms": playtest_offset_ms, "dynamic_offset": dynamic_offset, "last_bias_ms": last_bias_ms}
 	var file := FileAccess.open(SETTINGS_PATH, FileAccess.WRITE)
 	if file != null:
 		file.store_string(JSON.stringify(data, "\t"))
