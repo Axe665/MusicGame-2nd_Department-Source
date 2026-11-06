@@ -433,6 +433,8 @@ func _start_audio() -> void:
 
 
 func _process(delta: float) -> void:
+	if delta > 0.15 and _chart_ms() > 250.0:
+		print("[stall] dt=%.0fms t=%.1fs" % [delta * 1000.0, _chart_ms() / 1000.0])
 	if not _running or chart == null or _paused:
 		return
 	var chart_ms := _chart_ms()
@@ -482,6 +484,8 @@ func _chart_ms() -> float:
 	if _audio_available and _audio.playing:
 		var stream_ms := (_audio.get_playback_position() + AudioServer.get_time_since_last_mix() - AudioServer.get_output_latency()) * 1000.0
 		var candidate := stream_ms + chart.offset_ms
+		if _last_chart_ms > -INF and absf(candidate - _last_chart_ms) > 200.0:
+			print("[clock] jump %.0fms -> %.0fms" % [_last_chart_ms, candidate])
 		if not is_finite(candidate) or candidate > 1.0e9:
 			candidate = _last_chart_ms
 		elif _last_chart_ms > -INF:
@@ -536,6 +540,14 @@ func _judge_all(ms: float, beat: float, delta: float) -> void:
 		if float(note_state["target_ms"]) > ms + JUDGE_LOOKAHEAD_MS:
 			break
 		if float(note_state["end_ms"]) < ms - JUDGE_LOOKBEHIND_MS:
+			# 主线程停顿/时钟跳变会把整段音符甩到身后。这里绝不能静默跳过，
+			# 否则玩家看到的就是“这段 Tap 完全没反应”。
+			print("[skip] #%d %s beat=%.2f behind=%.0fms" % [note.id, note.type, note.beat,
+				ms - float(note_state["end_ms"])])
+			_miss_count += 1
+			_add_judgement("MISS")
+			_combo = 0
+			note_state["done"] = true
 			if i == _judge_from:
 				_judge_from += 1
 			continue
