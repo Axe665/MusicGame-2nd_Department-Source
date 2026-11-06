@@ -2360,6 +2360,24 @@ func _draw_hold_cap_band(canvas: Control, band_a: Vector2, band_b: Vector2, fade
 	canvas.draw_line(band_a + Vector2(0, -band_w * 0.18), band_b + Vector2(0, -band_w * 0.18), Color(1, 1, 0.94, 0.45 * fade), band_w * 0.18, false)
 
 
+## Hold 尾端：形状同头，但用多层柔光代替锐利描边，一眼就能分清头尾。
+func _draw_hold_tail_band(canvas: Control, band_a: Vector2, band_b: Vector2, fade: float) -> void:
+	var ns := _note_scale()
+	var band_w := 16.0 * ns
+	for layer in 4:
+		var k := float(layer) / 3.0
+		var w := band_w * lerpf(2.0, 0.9, k)
+		var a := lerpf(0.05, 0.28, k) * fade
+		var c := Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, a)
+		canvas.draw_line(band_a, band_b, c, w, false)
+		canvas.draw_circle(band_a, w * 0.5, c)
+		canvas.draw_circle(band_b, w * 0.5, c)
+	# 中间只留一点白芯，保证尾巴位置读得出来，但不抢头部的注意力。
+	canvas.draw_line(band_a, band_b, Color(1, 1, 1, 0.30 * fade), band_w * 0.34, false)
+	canvas.draw_circle(band_a, band_w * 0.17, Color(1, 1, 1, 0.30 * fade))
+	canvas.draw_circle(band_b, band_w * 0.17, Color(1, 1, 1, 0.30 * fade))
+
+
 func _draw_hold_sector(canvas: Control, chart: Chart, note: Note, t: float, pre: float, fade: float) -> void:
 	# 直长条 = 一个从圆心张开的扇形。整根条按**同一个径向速度**往判定环落：
 	# 头部（外缘）在 pre 拍内从圆心走到环上，尾部（内缘）晚 duration 拍跟随，
@@ -2413,17 +2431,17 @@ func _draw_hold_sector(canvas: Control, chart: Chart, note: Note, t: float, pre:
 	if inner.size() > 1 and inner_scale > 0.002:
 		var tail_alpha := lerpf(0.35, 1.0, clampf(inner_scale, 0.0, 1.0))
 		canvas.draw_polyline(inner, Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, tail_alpha * fade), 3.0, false)
-		canvas.draw_polyline(inner, Color(1, 1, 1, 0.55 * tail_alpha * fade), 1.2, false)
+		canvas.draw_polyline(inner, Color(1, 1, 1, 0.28 * tail_alpha * fade), 1.2, false)
 	# 两侧的径向边，让扇形边界清楚。
 	if outer.size() == inner.size() and outer.size() > 1:
 		var edge_alpha := 0.30 * fade
 		canvas.draw_line(outer[0], inner[0], Color(1, 1, 1, edge_alpha), 1.0, false)
 		canvas.draw_line(outer[-1], inner[-1], Color(1, 1, 1, edge_alpha), 1.0, false)
-	# 头部与尾部都用同一套圆角金条 + 白色内高光（世界计划式的圆润端头）。
+	# 头部：圆角金条 + 白色内高光（世界计划式的圆润端头）；尾部虚化。
 	if outer.size() > 1:
 		_draw_hold_cap_band(canvas, outer[0], outer[outer.size() - 1], fade)
 	if inner.size() > 1 and inner_scale > 0.002:
-		_draw_hold_cap_band(canvas, inner[0], inner[inner.size() - 1], fade)
+		_draw_hold_tail_band(canvas, inner[0], inner[inner.size() - 1], fade)
 
 
 func _draw_holds(canvas: Control, chart: Chart, t: float, pre: float) -> void:
@@ -2476,8 +2494,11 @@ func _draw_holds(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 		canvas.draw_polyline(body, Color(0, 0, 0, 0.55 * fade), 11.0 * cs, false)
 		canvas.draw_polyline(body, Color(1, 1, 1, 0.90 * fade), 6.0 * cs, false)
 		canvas.draw_polyline(body, Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, 0.92 * fade), 3.0 * cs, false)
-		canvas.draw_circle(body[0], 4.5 * cs, Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, 0.90 * fade))
-		canvas.draw_circle(body[0], 2.0 * cs, Color(1, 1, 1, 0.55 * fade))
+		# 尾端同为虚化：柔光层代替实心金点。
+		canvas.draw_circle(body[0], 9.0 * cs, Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, 0.10 * fade))
+		canvas.draw_circle(body[0], 6.0 * cs, Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, 0.20 * fade))
+		canvas.draw_circle(body[0], 3.0 * cs, Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, 0.70 * fade))
+		canvas.draw_circle(body[0], 1.6 * cs, Color(1, 1, 1, 0.30 * fade))
 		# 外端：一小段横杆当"头"，宽度随整体一起放大。
 		var knob := 9.0 * cs
 		canvas.draw_line(boundary - normal * knob, boundary + normal * knob, Color(0, 0, 0, 0.55 * fade), 7.0 * cs, false)

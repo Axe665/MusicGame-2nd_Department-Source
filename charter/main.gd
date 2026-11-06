@@ -144,7 +144,12 @@ func _run_bench() -> void:
 	var first: Note = _playtest._ordered_notes[0]
 	print("[bench] start playhead=%.1f playtest_beat=%.1f first_id=%d first_beat=%.1f" % [_app.playhead_beat, _playtest.start_beat, first.id, first.beat])
 	if "--bench-shot" in OS.get_cmdline_user_args():
-		await get_tree().create_timer(3.0).timeout
+		# --bench-shot-at=秒 可以指定截图时刻（默认 3 秒），用来对准某个段位。
+		var shot_at := 3.0
+		for arg in OS.get_cmdline_user_args():
+			if arg.begins_with("--bench-shot-at="):
+				shot_at = float(arg.get_slice("=", 1))
+		await get_tree().create_timer(shot_at).timeout
 		var shot := get_viewport().get_texture().get_image()
 		if shot != null:
 			shot.save_png("/tmp/bench_shot.png")
