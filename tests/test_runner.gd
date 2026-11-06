@@ -13,6 +13,9 @@ func _initialize() -> void:
 		"test_live_edit_notifications",
 		"test_self_intersection",
 		"test_plane_path",
+		"test_path_axis_centrifuge",
+		"test_demo_path_migration",
+		"test_legacy_path_chart_migration",
 		"test_path_erase_overlap",
 		"test_path_erase_merge",
 		"test_path_run_split",
@@ -322,6 +325,83 @@ func test_plane_path() -> bool:
 	eq(restored.trace_pts.size(), 3, "plane path points survive json")
 	near(restored.path_speed, 1.35, 0.001, "path slide speed survives json")
 	eq(restored.path_gaps.size(), 1, "path gaps survive json")
+	return true
+
+
+func test_path_axis_centrifuge() -> bool:
+	var note := Note.new("path", 0.0, 0.0, 60.0)
+	note.end_beat = 4.0
+	note.tail_angle = 180.0
+	note.path_centrifuge = 1.0
+	note.path_axis = 0.0
+	note.generate_path_shape()
+	near(note.path_tail_local().length(), 1.0, 0.001, "centrifuge 1 tail on ring")
+	var mid := note.path_local_at(2.0)
+	near(mid.x, 0.0, 0.001, "axis 0 straight x")
+	near(mid.y, 0.0, 0.001, "axis 0 straight y")
+	note.set_path_axis(0.5)
+	mid = note.path_local_at(2.0)
+	near(mid.y, -1.0, 0.01, "positive axis bows one way")
+	note.set_path_axis(-0.5)
+	mid = note.path_local_at(2.0)
+	near(mid.y, 1.0, 0.01, "negative axis mirrors across chord")
+	note.set_path_axis(2.0)
+	mid = note.path_local_at(2.0)
+	ok(note.path_axis <= 0.501, "axis clamps before midpoint leaves ring")
+	ok(mid.length() <= 1.001, "clamped midpoint stays inside ring")
+	note.set_path_centrifuge(0.0)
+	near(note.path_tail_local().length(), 0.0, 0.001, "centrifuge 0 at centre")
+	note.path_part = 1
+	note.path_prev_id = 3
+	note.path_next_id = 5
+	note.path_head_local = Vector2(0.5, 0.2)
+	var restored := Note.from_dict(note.to_dict())
+	eq(restored.path_part, 1, "path part survives json")
+	eq(restored.path_prev_id, 3, "path previous link survives json")
+	eq(restored.path_next_id, 5, "path next link survives json")
+	near(restored.path_head_local.x, 0.5, 0.001, "path part head x survives json")
+	return true
+
+
+func test_demo_path_migration() -> bool:
+	var chart := ChartIO.load_chart("res://charts/demo.json")
+	ok(chart != null, "migrated demo loads")
+	if chart == null:
+		return true
+	var paths := 0
+	for note in chart.notes:
+		if note.type != "path":
+			continue
+		paths += 1
+		ok(note.path_controls_set, "demo path has controls")
+		ok(note.trace_pts.size() > 1, "demo path has generated trace")
+		ok(note.path_centrifuge >= 0.0 and note.path_centrifuge <= 1.0, "demo centrifuge in range")
+		ok(note.path_axis >= -2.0 and note.path_axis <= 2.0, "demo axis in range")
+	eq(paths, 6, "demo path count")
+	return true
+
+
+func test_legacy_path_chart_migration() -> bool:
+	var chart := DemoChart.make_demo()
+	var data := ChartIO.chart_to_dict(chart)
+	for raw in data.get("notes", []):
+		if raw.get("type") == "path":
+			raw.erase("centrifuge")
+			raw.erase("axis")
+			raw.erase("trace")
+			raw["visual"] = [{"db": 0.5, "da": 12.0}]
+			break
+	var loaded := ChartIO.chart_from_dict(data)
+	var migrated := false
+	for note in loaded.notes:
+		if note.type != "path":
+			continue
+		migrated = true
+		ok(note.path_controls_set, "legacy chart path gains controls")
+		ok(note.trace_pts.size() > 1, "legacy chart path gains new trace")
+		eq(note.visual_pts.size(), 0, "legacy chart path drops old visual points")
+		break
+	ok(migrated, "legacy chart path found after migration")
 	return true
 
 
@@ -990,6 +1070,9 @@ func test_note_mirror() -> bool:
 	tap.mirror_u()
 	near(tap.angle, 270.0, 0.001, "mirror tap angle")
 	near(tap.beat, 2.0, 0.001, "mirror keeps beat")
+	var wrap := Note.new("tap", 2.0, 270.0, 60.0)
+	wrap.mirror_u()
+	near(wrap.angle, 90.0, 0.001, "mirror wraps past 360")
 	var bell := Note.new("bell", 4.0, 0.0, 0.0)
 	bell.center_u = 0.25
 	bell.mirror_u()
@@ -999,10 +1082,11 @@ func test_note_mirror() -> bool:
 	path.trace_pts = [{"x": 0.2, "y": 0.3, "db": 0.0}, {"x": 0.8, "y": 0.6, "db": 1.0}]
 	path.visual_pts = [{"db": 0.5, "da": 15.0}]
 	path.mirror_u()
-	near(path.angle, 330.0, 0.001, "mirror path head")
-	near(path.tail_angle, 300.0, 0.001, "mirror path tail")
-	near(float(path.trace_pts[0]["x"]), 0.8, 0.001, "mirror path trace x")
-	near(float(path.visual_pts[0]["da"]), -15.0, 0.001, "mirror path visual delta")
+	near(path.angle, 210.0, 0.001, "mirror path head")
+	near(path.tail_angle, 240.0, 0.001, "mirror path tail")
+	near(float(path.trace_pts[0]["x"]), -0.2, 0.001, "mirror path trace x")
+	near(float(path.trace_pts[0]["y"]), -0.3, 0.001, "mirror path trace y")
+	near(float(path.visual_pts[0]["da"]), 15.0, 0.001, "mirror path visual delta stays relative")
 	return true
 
 

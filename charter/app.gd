@@ -16,6 +16,7 @@ signal appearance_changed
 signal preview_sfx
 signal snap_changed(division: int)
 signal flow_changed(down: bool)
+signal stretch_changed(value: float)
 signal audio_import_requested
 signal audio_detect_requested(path: String)
 
@@ -442,6 +443,14 @@ func set_time_flows_down(down: bool) -> void:
 	status_changed.emit()
 
 
+func set_vertical_stretch(value: float) -> void:
+	var clamped := clampf(snappedf(value, 0.1), 0.0, 10.0)
+	if is_equal_approx(vertical_stretch, clamped):
+		return
+	vertical_stretch = clamped
+	stretch_changed.emit(vertical_stretch)
+
+
 func request_audio_import() -> void:
 	audio_import_requested.emit()
 
@@ -474,24 +483,27 @@ func select_note(note_id: int, additive: bool = false) -> void:
 	status_changed.emit()
 
 
+func toggle_note_selection(note_id: int) -> void:
+	if note_id < 0:
+		return
+	selected_region_id = -1
+	selected_event_id = ""
+	selected_view_index = -1
+	if selected_notes.has(note_id):
+		selected_notes.erase(note_id)
+	else:
+		selected_notes.append(note_id)
+	selection_changed.emit()
+	status_changed.emit()
+
+
 func mirror_selected_notes() -> void:
 	var notes := get_selected_notes()
 	if notes.is_empty():
 		return
 	begin_edit()
 	for note in notes:
-		note.angle = fposmod(360.0 - note.angle, 360.0)
-		note.tail_angle = fposmod(360.0 - note.tail_angle, 360.0)
-		for point in note.visual_pts:
-			point["da"] = -float(point.get("da", 0.0))
-		if note.type == "bell":
-			note.center_u = fposmod(1.0 - note.center_u, 1.0)
-		if note.type == "trace" or note.trace_style == "slider":
-			for point in note.trace_pts:
-				point["x"] = -float(point.get("x", 0.0))
-		elif note.type == "path":
-			for point in note.trace_pts:
-				point["x"] = -float(point.get("x", 0.0))
+		note.mirror_u()
 	finish_edit()
 	notice.emit("已镜像 %d 个音符" % notes.size(), "info")
 

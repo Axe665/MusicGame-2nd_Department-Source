@@ -11,6 +11,7 @@ const RIGHT_MARGIN := 58.0
 const WAVE_WIDTH := 24.0
 const NOTE_TOOLS := ["tap", "hold", "path", "trace", "anchor", "bell"]
 const PATH_HIT_RADIUS := 12.0
+const PATH_CHAIN_BLUE := Color("#4D8DFF")
 const DIVISION_WIDTH := 42.0
 const DIVISION_ITEM_HEIGHT := 22.0
 const DIVISION_GAP := 3.0
@@ -37,8 +38,13 @@ var _drag_width_note: Note = null
 var _drag_width_origin: float = 0.0
 var _drag_width_start: float = 0.0
 var _marquee: Rect2 = Rect2()
+var _marquee_start_beat: float = 0.0
+var _marquee_start_u: float = 0.0
+var _marquee_end_beat: float = 0.0
+var _marquee_end_u: float = 0.0
 var _right_hit: Dictionary = {}
 var _pending_path: Note = null
+var _pending_path_parent: Note = null
 var _pending_hold: Note = null
 var _trace_hint_shown: bool = false
 
@@ -806,13 +812,35 @@ func _draw_hold(note: Note) -> void:
 		_draw_type_label("HOLD", Vector2(x + 11.0, y0 + 12.0), color)
 
 
+func _path_screen_point(note: Note, local: float) -> Vector2:
+	## Follow the same local geometry as the 3D Path (trace points included)
+	## and project it to the u×time canvas. This keeps a negative tail radius
+	## connected to the body instead of ending at the author-facing tail angle.
+	var design := note.path_local_at(local)
+	var angle := rad_to_deg(atan2(design.y, design.x))
+	return Vector2(
+		_u_to_x(fposmod(angle, 360.0) / 360.0),
+		_beat_to_y(note.beat + local)
+	)
+
+
 func _draw_path(note: Note) -> void:
 	var total := maxf(0.001, note.duration())
 	var y0 := _beat_to_y(note.beat)
 	var y1 := _beat_to_y(note.beat + total)
-	var x0 := _u_to_x(fposmod(note.angle, 360.0) / 360.0)
-	var x1 := _u_to_x(fposmod(note.tail_angle, 360.0) / 360.0)
+	var head_local := note.path_local_at(0.0)
+	var head_draw_angle := note.angle
+	if head_local.length() > 0.0001:
+		head_draw_angle = rad_to_deg(atan2(head_local.y, head_local.x))
+	var x0 := _path_screen_point(note, 0.0).x
+	var tail_local := note.path_tail_local()
+	var tail_draw_angle := note.tail_angle
+	if tail_local.length() > 0.0001:
+		tail_draw_angle = rad_to_deg(atan2(tail_local.y, tail_local.x))
+	var x1 := _u_to_x(fposmod(tail_draw_angle, 360.0) / 360.0)
 	var selected := _is_note_selected(note.id)
+	var tail_color := PATH_CHAIN_BLUE if note.path_next_id >= 0 else UITheme.GOLD
+	var head_color := PATH_CHAIN_BLUE if note.path_part > 0 else UITheme.CORAL
 	var runs: Array[PackedVector2Array] = []
 	var run := PackedVector2Array()
 	for i in 41:
@@ -822,10 +850,7 @@ func _draw_path(note: Note) -> void:
 				runs.append(run)
 			run = PackedVector2Array()
 			continue
-		run.append(Vector2(
-			_u_to_x(fposmod(note.path_angle_at(local), 360.0) / 360.0),
-			_beat_to_y(note.beat + local)
-		))
+		run.append(_path_screen_point(note, local))
 	if run.size() > 1:
 		runs.append(run)
 	for piece in runs:
@@ -842,14 +867,11 @@ func _draw_path(note: Note) -> void:
 			var local := float(point.get("db", 0.0))
 			if note.erased_at(local):
 				continue
-			draw_circle(Vector2(
-				_u_to_x(fposmod(note.path_angle_at(local), 360.0) / 360.0),
-				_beat_to_y(note.beat + local)
-			), 2.5, UITheme.CYAN)
-	_draw_width_band(note.angle, note.width, y0, UITheme.CYAN)
-	_draw_width_band(note.tail_angle, note.tail_width, y1, UITheme.GOLD)
-	_draw_star(Vector2(x0, y0), 9.0 if selected else 8.0, UITheme.CORAL)
-	_draw_donut(Vector2(x1, y1), 7.0, UITheme.GOLD)
+			draw_circle(_path_screen_point(note, local), 2.5, UITheme.CYAN)
+	_draw_width_band(head_draw_angle, note.width, y0, UITheme.CYAN)
+	_draw_width_band(tail_draw_angle, note.tail_width, y1, tail_color)
+	_draw_star(Vector2(x0, y0), 9.0 if selected else 8.0, head_color)
+	_draw_donut(Vector2(x1, y1), 7.0, tail_color)
 	if _show_type_label(note):
 		_draw_type_label("PATH", Vector2(x0 + 11.0, y0 + 12.0), UITheme.CYAN)
 
@@ -1081,7 +1103,7 @@ func _gui_input(event: InputEvent) -> void:
 		elif _drag_mode == "hold_end":
 			_drag_hold_update(event.position, event)
 		elif _drag_mode == "marquee":
-			_marquee = Rect2(_drag_start, event.position - _drag_start).abs()
+			_update_marquee(event.position)
 		elif _drag_mode == "scrub":
 			_app.seek(_app.snap_beat(_y_to_beat(event.position.y), event.alt_pressed))
 		elif _drag_mode == "right_delete":
@@ -1111,6 +1133,16 @@ func _gui_input(event: InputEvent) -> void:
 		if event.button_index == MOUSE_BUTTON_RIGHT:
 			# 右键单击音符 = 删除；右键按住拖动 = 框选（沿用旧操作）。
 			if event.pressed and _drag_mode == "" and _pending_path == null:
+				var tail_note := _path_tail_hit(event.position)
+				if tail_note != null:
+					# Right-clicking a Path tail is the "new part" gesture and
+					# must not start a marquee or delete the Path.
+					if tail_note.path_next_id < 0:
+						_begin_path_part(tail_note)
+					else:
+						_app.select_note(tail_note.path_next_id)
+					accept_event()
+					return
 				var hit := _hit_test(event.position)
 				if hit.is_empty():
 					_begin_marquee(event.position)
@@ -1128,11 +1160,17 @@ func _gui_input(event: InputEvent) -> void:
 			accept_event()
 			return
 		if event.button_index == MOUSE_BUTTON_LEFT:
-			# A right-drag starts the marquee; the following left release ends
-			# it and must not be interpreted as a note placement click.
+			# Right-click stores the start time; the following left click sets
+			# the end time and completes the marquee.
 			if _drag_mode == "marquee":
-				if not event.pressed:
-					_on_left_release(event)
+				if event.pressed:
+					_update_marquee(event.position)
+					_finish_marquee()
+					_drag_mode = ""
+					_marquee = Rect2()
+					queue_redraw()
+					if _overlay != null:
+						_overlay.queue_redraw()
 				accept_event()
 				return
 			if event.pressed:
@@ -1169,17 +1207,17 @@ func _gui_input(event: InputEvent) -> void:
 
 func _handle_wheel(event: InputEventMouseButton) -> void:
 	if event.ctrl_pressed:
-		var anchor := _y_to_beat(event.position.y)
-		var factor := 1.12 if event.button_index == MOUSE_BUTTON_WHEEL_UP else 0.89
-		px_per_beat = clampf(px_per_beat * factor, 10.0, 400.0)
-		var plot := _plot_rect()
-		var distance := (event.position.y - plot.position.y) if flow_down else (plot.end.y - event.position.y)
-		scroll_beat = maxf(0.0, anchor - distance / _effective_px_per_beat())
+		# Ctrl+wheel edits vertical stretch (clamped by App); it no longer zooms.
+		var step := 0.1 if event.button_index == MOUSE_BUTTON_WHEEL_UP else -0.1
 		if _app != null:
-			_app.zoom_px_per_beat = px_per_beat
+			_app.set_vertical_stretch(_app.vertical_stretch + step)
 	else:
 		var direction := -1.0 if event.button_index == MOUSE_BUTTON_WHEEL_UP else 1.0
 		scroll_beat = maxf(0.0, scroll_beat + direction * 3.0)
+	if _drag_mode == "marquee":
+		# Re-anchor the marquee's start screen point after scrolling/stretching;
+		# its stored start beat is unchanged.
+		_update_marquee(event.position)
 	queue_redraw()
 	if _overlay != null:
 		_overlay.queue_redraw()
@@ -1267,9 +1305,16 @@ func _on_left_press(event: InputEventMouseButton) -> void:
 		var end_beat := _snap_beat_to_subdivision(_y_to_beat(event.position.y), event.alt_pressed)
 		_finish_pending_hold(end_beat)
 		return
+	# Ctrl is a selection modifier across all tools: toggle the clicked note
+	# and suppress every placement action while it is held. A pending Path is
+	# exempt because its second click is the tail-placement step.
+	if _pending_path == null and event.ctrl_pressed:
+		var ctrl_hit := _hit_test(event.position)
+		if String(ctrl_hit.get("kind", "")) == "note":
+			_app.toggle_note_selection(int(ctrl_hit["id"]))
+		return
 	# When a note tool is active, clicking an existing note selects it instead
-	# of stacking a new note on top. A pending Path is exempt because its
-	# second click is the tail-placement step.
+	# of stacking a new note on top.
 	if _pending_path == null and _app.tool in NOTE_TOOLS:
 		var hit := _hit_test(event.position)
 		if String(hit.get("kind", "")) == "note":
@@ -1323,15 +1368,30 @@ func _begin_marquee(position: Vector2) -> void:
 	grab_focus()
 	_drag_mode = "marquee"
 	_drag_start = position
+	_marquee_start_beat = _y_to_beat(position.y)
+	_marquee_start_u = _x_to_u(position.x)
+	_marquee_end_beat = _marquee_start_beat
+	_marquee_end_u = _marquee_start_u
 	_marquee = Rect2(position, Vector2.ZERO)
 	queue_redraw()
 	if _overlay != null:
 		_overlay.queue_redraw()
 
 
+func _update_marquee(current: Vector2) -> void:
+	_marquee_end_beat = _y_to_beat(current.y)
+	_marquee_end_u = _x_to_u(current.x)
+	# The start is anchored to its beat, not to a screen pixel: scrolling or
+	# stretching between the right-click and the left-click keeps it fixed.
+	var start := Vector2(_u_to_x(_marquee_start_u), _beat_to_y(_marquee_start_beat))
+	_marquee = Rect2(start, current - start).abs()
+
+
 func _select_press(event: InputEventMouseButton) -> void:
 	var hit := _hit_test(event.position)
 	if hit.is_empty():
+		if event.ctrl_pressed:
+			return
 		if event.double_click:
 			_app.seek(_app.snap_beat(_y_to_beat(event.position.y)))
 			return
@@ -1340,6 +1400,9 @@ func _select_press(event: InputEventMouseButton) -> void:
 	match hit["kind"]:
 		"note":
 			var note_id := int(hit["id"])
+			if event.ctrl_pressed:
+				_app.toggle_note_selection(note_id)
+				return
 			_app.select_note(note_id, event.shift_pressed)
 			if hit.get("part", "") == "width":
 				_begin_width_drag(note_id, event.position)
@@ -1411,10 +1474,7 @@ func _path_body_hit(note: Note, pos: Vector2) -> bool:
 				return true
 			run = []
 			continue
-		run.append(Vector2(
-			_u_to_x(fposmod(note.path_angle_at(local), 360.0) / 360.0),
-			_beat_to_y(note.beat + local)
-		))
+		run.append(_path_screen_point(note, local))
 	return _path_run_hit(run, pos)
 
 
@@ -1441,12 +1501,19 @@ func _note_positions(note: Note) -> Array[Dictionary]:
 	var result: Array[Dictionary] = []
 	match note.type:
 		"path":
-			result.append({"point": Vector2(_u_to_x(note.angle / 360.0), _beat_to_y(note.beat)), "part": "head"})
-			result.append({"point": Vector2(_u_to_x(note.tail_angle / 360.0), _beat_to_y(note.end_beat)), "part": "tail"})
+			result.append({"point": _path_screen_point(note, 0.0), "part": "head"})
+			var tail_local := note.path_tail_local()
+			var tail_angle := note.tail_angle
+			if tail_local.length() > 0.0001:
+				tail_angle = rad_to_deg(atan2(tail_local.y, tail_local.x))
+			result.append({"point": Vector2(_u_to_x(fposmod(tail_angle, 360.0) / 360.0), _beat_to_y(note.end_beat)), "part": "tail"})
 		"trace":
 			result.append({"point": Vector2(_u_to_x(0.5), _beat_to_y(note.beat)), "part": "head"})
 		"bell":
 			result.append({"point": Vector2(_u_to_x(note.center_u), _beat_to_y(note.beat)), "part": "head"})
+		"tap":
+			var tap_x := _u_to_x(clampf(note.plane_x, 0.0, 1.0)) if note.space == "plane" else _u_to_x(fposmod(note.angle, 360.0) / 360.0)
+			result.append({"point": Vector2(tap_x, _beat_to_y(note.beat)), "part": "head"})
 		_:
 			result.append({"point": Vector2(_u_to_x(fposmod(note.angle, 360.0) / 360.0), _beat_to_y(note.beat)), "part": "head"})
 	return result
@@ -1608,6 +1675,35 @@ func _finish_pending_hold(end_beat: float) -> void:
 	queue_redraw()
 
 
+func _begin_path_part(parent: Note) -> void:
+	var chart: Chart = _app.chart
+	if chart == null or parent == null:
+		return
+	_app.set_tool("path")
+	var head := parent.path_tail_local()
+	var beat := parent.end_beat
+	var angle := rad_to_deg(atan2(head.y, head.x))
+	var note := Note.new("path", beat, angle, parent.width)
+	note.id = chart.next_note_id()
+	note.end_beat = beat + 1.0
+	note.tail_angle = angle
+	note.tail_width = parent.tail_width
+	note.tolerance = parent.tolerance
+	note.samples_per_beat = parent.samples_per_beat
+	note.path_part = parent.path_part + 1
+	note.path_prev_id = parent.id
+	note.path_head_local = head
+	note.path_centrifuge = 0.72
+	note.path_axis = 0.0
+	note.generate_path_shape()
+	_app.begin_edit()
+	chart.notes.append(note)
+	_app.select_note(note.id)
+	_pending_path = note
+	_pending_path_parent = parent
+	notice.emit("Path part%d：左键放置本段尾部；Esc 取消。" % note.path_part, "info")
+
+
 func _place_path(beat: float, u: float) -> void:
 	var chart: Chart = _app.chart
 	if chart == null:
@@ -1620,20 +1716,30 @@ func _place_path(beat: float, u: float) -> void:
 		note.tail_width = 45.0
 		note.tolerance = 0.24
 		note.samples_per_beat = 4.0
+		note.path_centrifuge = 0.72
+		note.path_axis = 0.0
+		note.generate_path_shape()
 		_app.begin_edit()
 		chart.notes.append(note)
 		_app.finish_edit()
 		_app.select_note(note.id)
 		_pending_path = note
+		_pending_path_parent = null
 		notice.emit("Path：再点一次放置尾部；Esc 取消。", "info")
 	else:
 		_app.begin_edit()
 		_pending_path.end_beat = maxf(_pending_path.beat + 0.25, beat)
 		_pending_path.tail_angle = u * 360.0
+		if _pending_path_parent != null:
+			_pending_path.path_head_local = _pending_path_parent.path_tail_local()
+			_pending_path.path_prev_id = _pending_path_parent.id
+			_pending_path_parent.path_next_id = _pending_path.id
+		_pending_path.generate_path_shape()
 		_app.finish_edit()
 		# Keep the Path tool active so the note-selection block stays on Path
 		# after choosing the tail; Esc is the explicit way to deselect it.
 		_pending_path = null
+		_pending_path_parent = null
 
 
 func _create_trace_at(beat: float) -> void:
@@ -1709,14 +1815,104 @@ func _finish_marquee() -> void:
 	if _marquee.size.x < 3.0 and _marquee.size.y < 3.0:
 		_app.clear_selection()
 		return
+	if _marquee_start_beat > _marquee_end_beat:
+		var beat := _marquee_start_beat
+		_marquee_start_beat = _marquee_end_beat
+		_marquee_end_beat = beat
+		var u := _marquee_start_u
+		_marquee_start_u = _marquee_end_u
+		_marquee_end_u = u
 	var ids: Array[int] = []
 	var chart: Chart = _app.chart
 	for note in chart.notes:
-		var p := Vector2(_u_to_x(fposmod(note.angle, 360.0) / 360.0), _beat_to_y(note.beat))
-		var box := Rect2(p - Vector2(8, 8), Vector2(16, 16))
-		if _marquee.intersects(box):
+		if _note_in_marquee(note):
 			ids.append(note.id)
 	_app.select_notes(ids)
+
+
+func _note_in_marquee(note: Note) -> bool:
+	for item in _note_positions(note):
+		if _circle_hits_marquee(item["point"], _note_point_radius(note, String(item.get("part", "head")))):
+			return true
+	if note.type in ["tap", "hold", "path"] and (note.type != "tap" or note.space != "plane"):
+		var head_width := note.width if note.type == "path" else note.arc_width()
+		if _arc_hits_marquee(note.angle, head_width, _beat_to_y(note.beat)):
+			return true
+	if note.type == "path":
+		var tail_local := note.path_tail_local()
+		var tail_angle := note.tail_angle
+		if tail_local.length() > 0.0001:
+			tail_angle = rad_to_deg(atan2(tail_local.y, tail_local.x))
+		if _arc_hits_marquee(tail_angle, note.tail_width, _beat_to_y(note.end_beat)):
+			return true
+		var total := maxf(0.001, note.duration())
+		var previous := Vector2.INF
+		for i in 41:
+			var local := total * float(i) / 40.0
+			if note.erased_at(local):
+				previous = Vector2.INF
+				continue
+			var point := _path_screen_point(note, local)
+			if previous.is_finite() and _segment_hits_marquee(previous, point):
+				return true
+			previous = point
+	if note.type == "hold" or note.type == "trace":
+		var y0 := _beat_to_y(note.beat)
+		var y1 := _beat_to_y(note.end_beat)
+		var body_x := _u_to_x(0.5) if note.type == "trace" else _u_to_x(fposmod(note.angle, 360.0) / 360.0)
+		var half_width := 24.0 if note.type == "trace" else 8.0
+		var body := Rect2(Vector2(body_x - half_width, minf(y0, y1)), Vector2(half_width * 2.0, maxf(2.0, absf(y1 - y0))))
+		if _marquee.intersects(body):
+			return true
+	return false
+
+
+func _note_point_radius(note: Note, part: String) -> float:
+	if note.type == "path":
+		return 7.0 if part == "tail" else 9.0
+	if note.type == "hold" or note.type == "tap":
+		return 9.0
+	if note.type == "trace":
+		return 7.0
+	return 8.0
+
+
+func _arc_hits_marquee(center_angle: float, width: float, y: float) -> bool:
+	var steps := 8
+	var previous := Vector2.INF
+	var half := maxf(0.0, width) * 0.5
+	for i in steps + 1:
+		var angle := center_angle - half + half * 2.0 * float(i) / float(steps)
+		var point := Vector2(_u_to_x(fposmod(angle, 360.0) / 360.0), y)
+		if _circle_hits_marquee(point, 4.0):
+			return true
+		if previous.is_finite() and _segment_hits_marquee(previous, point):
+			return true
+		previous = point
+	return false
+
+
+func _circle_hits_marquee(center: Vector2, radius: float) -> bool:
+	var closest := Vector2(
+		clampf(center.x, _marquee.position.x, _marquee.end.x),
+		clampf(center.y, _marquee.position.y, _marquee.end.y)
+	)
+	return center.distance_squared_to(closest) <= radius * radius
+
+
+func _segment_hits_marquee(a: Vector2, b: Vector2) -> bool:
+	if _marquee.has_point(a) or _marquee.has_point(b):
+		return true
+	var corners := [
+		_marquee.position,
+		Vector2(_marquee.end.x, _marquee.position.y),
+		_marquee.end,
+		Vector2(_marquee.position.x, _marquee.end.y),
+	]
+	for i in 4:
+		if Geometry2D.segment_intersects_segment(a, b, corners[i], corners[(i + 1) % 4]) != null:
+			return true
+	return false
 
 
 func _select_visible() -> void:
@@ -1796,6 +1992,7 @@ func _cancel_pending() -> void:
 			_app.finish_edit()
 			_app.clear_selection()
 		_pending_path = null
+		_pending_path_parent = null
 	if _drag_mode != "":
 		if _drag_mode == "marquee":
 			_marquee = Rect2()
@@ -1804,6 +2001,26 @@ func _cancel_pending() -> void:
 	queue_redraw()
 	if _overlay != null:
 		_overlay.queue_redraw()
+
+
+func _path_tail_hit(pos: Vector2) -> Note:
+	if _app == null or _app.chart == null:
+		return null
+	var best: Note = null
+	var best_distance := 14.0
+	for note in _app.chart.notes:
+		if note.type != "path":
+			continue
+		var tail: Vector2 = note.path_tail_local()
+		var angle: float = float(note.tail_angle)
+		if tail.length() > 0.0001:
+			angle = rad_to_deg(atan2(tail.y, tail.x))
+		var point := Vector2(_u_to_x(fposmod(angle, 360.0) / 360.0), _beat_to_y(note.end_beat))
+		var distance := point.distance_to(pos)
+		if distance < best_distance:
+			best_distance = distance
+			best = note
+	return best
 
 
 func _find_note(note_id: int) -> Note:
