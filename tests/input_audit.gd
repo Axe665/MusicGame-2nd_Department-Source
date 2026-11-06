@@ -1,10 +1,9 @@
 extends Control
 
 ## 真实输入审计：用 Input.parse_input_event 注入真正的 InputEventKey（走 _input）。
-## 三种场景各跑一遍完整试玩：
-##   A 严格位置判定 + 光标对准音符      → 全部命中
-##   B 严格位置判定 + 光标在角落        → 全部 MISS（证明位置判定确实生效）
-##   C 宽松判定 + 光标在角落            → 全部命中（普通段按键即判定）
+## 两组场景各跑一遍完整试玩：
+##   A 光标对准音符 → 全部命中（位置判定能正常命中）
+##   B 光标在角落   → 全部 MISS（位置判定确实生效，不是按键即判定）
 ## 覆盖：普通 Tap、1/4 拍密集三连、同拍双押、Hold、Path 头、对照片、6.5 秒后的 Tap。
 
 var passed := 0
@@ -30,19 +29,14 @@ func _run() -> void:
 	if app != null:
 		app.playtest_offset_ms = 0.0
 
-	var strict_on := await _run_case(true, false)
-	_check(int(strict_on["tap_miss"]) == 1, "A 严格+对准：只有对照片 MISS（实际 %d）" % int(strict_on["tap_miss"]))
-	_check(int(strict_on["hit"]) >= 10, "A 严格+对准：至少 10 颗命中（实际 %d）" % int(strict_on["hit"]))
+	var aligned := await _run_case(false)
+	_check(int(aligned["tap_miss"]) == 1, "A 光标对准：只有对照片 MISS（实际 %d）" % int(aligned["tap_miss"]))
+	_check(int(aligned["hit"]) >= 10, "A 光标对准：至少 10 颗命中（实际 %d）" % int(aligned["hit"]))
+	_check(bool(aligned["late_hit"]), "A 光标对准：6.5 秒后的 Tap 仍能判定（end_beat 兜底）")
 
-	var strict_off := await _run_case(true, true)
-	_check(int(strict_off["tap_miss"]) >= 8, "B 严格+光标在角落：Tap 应被位置判定拒收（实际 MISS %d）" % int(strict_off["tap_miss"]))
-
-	var lenient := await _run_case(false, true)
-	_check(int(lenient["tap_miss"]) == 1, "C 宽松+光标在角落：只有对照片 MISS（实际 %d）" % int(lenient["tap_miss"]))
-	_check(int(lenient["hit"]) >= 10, "C 宽松+光标在角落：至少 10 颗命中（实际 %d）" % int(lenient["hit"]))
-
-	if app != null:
-		app.strict_position_judge = true
+	var far := await _run_case(true)
+	_check(int(far["tap_miss"]) >= 8, "B 光标在角落：Tap 应被位置判定拒收（实际 MISS %d）" % int(far["tap_miss"]))
+	_check(int(far["hit"]) == 0, "B 光标在角落：0 命中（实际 %d）" % int(far["hit"]))
 
 
 func _build_chart() -> Chart:
@@ -83,10 +77,7 @@ func _build_chart() -> Chart:
 	return chart
 
 
-func _run_case(strict: bool, cursor_far: bool) -> Dictionary:
-	var app := get_node_or_null("/root/App")
-	if app != null:
-		app.strict_position_judge = strict
+func _run_case(cursor_far: bool) -> Dictionary:
 	var chart := _build_chart()
 	var control_id := 0
 	for note in chart.notes:
@@ -146,14 +137,12 @@ func _run_case(strict: bool, cursor_far: bool) -> Dictionary:
 				control_missed = true
 		if text.contains("Tap #%d " % (chart.notes.size())) and not text.contains("MISS"):
 			late_hit = true
-	print("[case strict=%s far=%s] 按键=%d 过期=%d 命中=%d MISS=%d TapMISS=%d late_hit=%s" % [
-		str(strict), str(cursor_far), playtest._press_total, playtest._press_expired,
-		playtest._hit_count, playtest._miss_count, tap_misses, str(late_hit)])
+	print("[case far=%s] 命中=%d MISS=%d TapMISS=%d late_hit=%s" % [
+		str(cursor_far), playtest._hit_count, playtest._miss_count, tap_misses, str(late_hit)])
 	var result := {
 		"hit": playtest._hit_count,
 		"tap_miss": tap_misses,
 		"miss": playtest._miss_count,
-		"expired": playtest._press_expired,
 		"late_hit": late_hit,
 		"control_missed": control_missed,
 		"log": playtest._log.duplicate(),

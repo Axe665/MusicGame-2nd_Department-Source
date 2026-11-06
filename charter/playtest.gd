@@ -52,12 +52,6 @@ var _ui_accum: float = 0.0
 var _states: Dictionary = {}
 var _key_presses: Array[Dictionary] = []
 var _keys_held: Dictionary = {}
-## 输入诊断：最后一次收到按键的时间、累计收到/过期未用的按键数。
-var _last_key_usec: int = 0
-var _key_dead_logged: bool = false
-var _ime_guard_usec: int = 0
-var _press_total: int = 0
-var _press_expired: int = 0
 var _red_states: Dictionary = {}
 
 var _hit_count: int = 0
@@ -94,7 +88,6 @@ var _sfx: HitSfx
 
 var _top_time: Label
 var _top_stats: Label
-var _key_state: Label
 var _style_label: Label
 var _results: PanelContainer
 var _results_text: RichTextLabel
@@ -139,16 +132,6 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	_preview.hit_fx_style = String(_app.hit_fx_style if _app != null else "burst")
 	# 鼠标移动不再按帧累积，瞄准反馈早一帧到达。
 	Input.set_use_accumulated_input(false)
-	# 输入法会吞掉按键（中文输入法按 Shift 切换就中招），试玩期间强制关掉；
-	# 释放编辑器残留焦点，避免按键被某个输入框吃掉；
-	# 光标限制在窗口内：隐藏光标时若跑丢，位置相关的判定会全部落空。
-	DisplayServer.window_set_ime_active(false)
-	get_viewport().gui_release_focus()
-	_last_key_usec = Time.get_ticks_usec()
-	_key_dead_logged = false
-	_ime_guard_usec = 0
-	_press_total = 0
-	_press_expired = 0
 	_paused = false
 	if _pause_overlay != null:
 		_pause_overlay.visible = false
@@ -157,7 +140,7 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	_preview.visible = true
 	_start_audio()
 	_running = true
-	Input.set_mouse_mode(Input.MOUSE_MODE_CONFINED_HIDDEN)
+	Input.set_mouse_mode(Input.MOUSE_MODE_HIDDEN)
 
 
 func _build_pause_overlay() -> void:
@@ -203,7 +186,6 @@ func _add_pause_button(parent: VBoxContainer, text: String, callback: Callable) 
 func _set_paused(value: bool) -> void:
 	if _finished:
 		return
-	print("[playtest] pause=%s t=%.1fs" % [str(value), _chart_ms() / 1000.0])
 	_paused = value
 	if _pause_overlay != null:
 		_pause_overlay.visible = value
@@ -216,7 +198,7 @@ func _set_paused(value: bool) -> void:
 		if _pause_usec > 0:
 			_start_usec += Time.get_ticks_usec() - _pause_usec
 			_pause_usec = 0
-		Input.set_mouse_mode(Input.MOUSE_MODE_CONFINED_HIDDEN)
+		Input.set_mouse_mode(Input.MOUSE_MODE_HIDDEN)
 
 
 func _build_ui() -> void:
@@ -260,12 +242,6 @@ func _build_ui() -> void:
 	_style_label.add_theme_font_size_override("font_size", 11)
 	_style_label.add_theme_color_override("font_color", UITheme.ACCENT)
 	row.add_child(_style_label)
-	# 键盘事件指示灯：>2 秒收不到任何按键就变红，用来区分“游戏吞键”和“系统/输入法没送键”。
-	_key_state = Label.new()
-	_key_state.text = "键盘 —"
-	_key_state.add_theme_font_size_override("font_size", 11)
-	_key_state.add_theme_color_override("font_color", UITheme.MUTED)
-	row.add_child(_key_state)
 
 	var stats_panel := PanelContainer.new()
 	stats_panel.name = "StatsBar"
@@ -433,8 +409,6 @@ func _start_audio() -> void:
 
 
 func _process(delta: float) -> void:
-	if delta > 0.15 and _chart_ms() > 250.0:
-		print("[stall] dt=%.0fms t=%.1fs" % [delta * 1000.0, _chart_ms() / 1000.0])
 	if not _running or chart == null or _paused:
 		return
 	var chart_ms := _chart_ms()
@@ -449,17 +423,6 @@ func _process(delta: float) -> void:
 		if "--bench-tilt" in OS.get_cmdline_user_args():
 			# 模拟鼠标持续移动带来的镜头视差（get_local_mouse_position 无法在基准里伪造）。
 			_preview._tilt_target = Vector2(sin(beat * 3.0), cos(beat * 2.3)) * 7.0
-	var guard_now := Time.get_ticks_usec()
-	if guard_now - _ime_guard_usec >= 250000:
-		_ime_guard_usec = guard_now
-		DisplayServer.window_set_ime_active(false)
-	var first_target := float(_states[_ordered_notes[0].id]["target_ms"]) if not _ordered_notes.is_empty() else 0.0
-	if _last_key_usec > 0 and guard_now - _last_key_usec > 2000000 and not _key_dead_logged and _running \
-			and _chart_ms() > first_target + 500.0:
-		_key_dead_logged = true
-		print("[input] no key events for %.1fs (focus=%s presses=%d expired=%d)" % [
-			float(guard_now - _last_key_usec) / 1000000.0,
-			str(DisplayServer.window_is_focused()), _press_total, _press_expired])
 	_probe_frame_time()
 	if _frame_last_beat >= 0.0:
 		if absf(beat - _frame_last_beat) < 0.000001:
@@ -475,7 +438,6 @@ func _process(delta: float) -> void:
 	var keep_ms := _early_protect_ms() + 60.0
 	while not _key_presses.is_empty() and float(_key_presses[0].get("time", -INF)) < judge_ms - keep_ms:
 		_key_presses.pop_front()
-		_press_expired += 1
 
 
 func _chart_ms() -> float:
@@ -493,8 +455,6 @@ func _chart_ms() -> float:
 		# 音频时钟只做小步校正。设备重连、VBR MP3 的播放位置估算跳变都可能一次偏几秒，
 		# 直接接受会把整段音符甩到身后（表现就是“这段完全没判定/没输入响应”）。
 		if _last_chart_ms > -INF and absf(candidate - _last_chart_ms) > 250.0:
-			print("[clock] glitch %.0fms -> %.0fms (ignored, %+.0fms)" % [
-				_last_chart_ms, candidate, candidate - _last_chart_ms])
 			candidate = _last_chart_ms + dt
 	elif _last_chart_ms > -INF:
 		# 音频不可用时沿用当前时钟按墙钟推进，绝不能跳回起点。
@@ -541,7 +501,6 @@ func _judge_all(ms: float, beat: float, delta: float) -> void:
 		if live_end_ms < ms - JUDGE_LOOKBEHIND_MS:
 			# 主线程停顿/时钟跳变会把整段音符甩到身后。这里绝不能静默跳过，
 			# 否则玩家看到的就是“这段 Tap 完全没反应”。
-			print("[skip] #%d %s beat=%.2f behind=%.0fms" % [note.id, note.type, note.beat, ms - live_end_ms])
 			_miss_count += 1
 			_add_judgement("MISS")
 			_combo = 0
@@ -915,29 +874,6 @@ func _pulse_at(angle_degrees: float, beat: float, color: Color, label: String, w
 		_preview.add_arc_flash(angle_degrees, width, beat, color)
 
 
-## 在 [lo, hi] 里取一个按键，优先取离 target 最近的那个。
-## 关键：按键只归一颗音符，不能用“窗口里第一个”这种顺序依赖的取法。
-func _take_press_in_window(lo: float, hi: float, target: float) -> Dictionary:
-	var best_index := -1
-	var best_distance := INF
-	for i in _key_presses.size():
-		var press: Dictionary = _key_presses[i]
-		var stamp := float(press.get("time", -INF))
-		if stamp < lo:
-			continue
-		if stamp > hi:
-			break
-		var distance := absf(stamp - target)
-		if distance < best_distance:
-			best_distance = distance
-			best_index = i
-	if best_index < 0:
-		return {}
-	var result: Dictionary = _key_presses[best_index]
-	_key_presses.remove_at(best_index)
-	return result
-
-
 ## 光标贴近某个点（Path/Trace 头）。命中里挑离 target 最近的。
 func _take_key_for_point(lo: float, hi: float, point: Vector2, radius: float, target: float = NAN) -> Dictionary:
 	var best_index := -1
@@ -991,41 +927,21 @@ func _take_key_for_sector(lo: float, hi: float, angle: float, width: float, targ
 	return result
 
 
-func _strict_position() -> bool:
-	return bool(_app.strict_position_judge) if _app != null else true
-
-
 ## 一组候选图形的取键（Path 头 / Anchor / Trace 头）。
-## 严格模式（PR 原设计）：密集段走角度扇区，普通段走像素位置。
-## 宽松模式：普通段按键即判定；密集段位置 → 扇区 → 时间窗。
+## 密集流（相邻 ≤0.25 拍）按环平面角度扇区；其余按鼠标实际位置（90px + 图形半宽）。
 func _take_press_for_shape(lo: float, hi: float, target: float, note: Note, points: PackedVector2Array, tolerance: float, pad: float = 0.0) -> Dictionary:
 	if _key_presses.is_empty():
 		return {}
-	var strict := _strict_position()
 	if _dense_ids.has(note.id):
-		var press: Dictionary = {}
-		if not strict:
-			press = _take_key_near(lo, hi, points, tolerance, target)
-			if not press.is_empty():
-				return press
-		press = _take_key_for_sector(lo, hi, note.angle, note.arc_width() + pad, target)
-		if not press.is_empty():
-			return press
-		return {} if strict else _take_press_in_window(lo, hi, target)
-	if not strict:
-		return _take_press_in_window(lo, hi, target)
+		return _take_key_for_sector(lo, hi, note.angle, note.arc_width() + pad, target)
 	return _take_key_near(lo, hi, points, tolerance, target)
 
 
-## Tap / Hold 头：严格模式按 PR 原设计（普通段位置、密集段扇区），
-## 宽松模式普通段按键即判定、密集段三级兜底。
+## Tap / Hold 头：密集流走角度扇区，其余按鼠标实际位置。
 func _take_press_for_note(lo: float, hi: float, note: Note, beat: float, pad: float = 0.0, extra_px: float = 0.0) -> Dictionary:
 	if _key_presses.is_empty():
 		return {}
 	var target := float(_states[note.id]["target_ms"]) if _states.has(note.id) else (lo + hi) * 0.5
-	# 宽松模式下普通段不需要算图形，直接按时间窗取键。
-	if not _strict_position() and not _dense_ids.has(note.id):
-		return _take_press_in_window(lo, hi, target)
 	var points := _preview.note_live_band(note, beat, pad)
 	var tolerance := POSITION_TOLERANCE_PX + extra_px + float(_preview.note_graphic_radius(note.type))
 	return _take_press_for_shape(lo, hi, target, note, points, tolerance, pad)
@@ -1134,14 +1050,6 @@ func _update_top_bar(ms: float, beat: float) -> void:
 	var fx_label := String(Preview3D.hit_fx_presets().get(_preview.hit_fx_style, _preview.hit_fx_style))
 	if _style_label != null:
 		_style_label.text = "%s · %s" % [skin_label, fx_label]
-	if _key_state != null:
-		var since_key := float(Time.get_ticks_usec() - _last_key_usec) / 1000.0
-		if since_key > 2000.0:
-			_key_state.text = "键盘 无输入 %.0fs" % (since_key / 1000.0)
-			_key_state.add_theme_color_override("font_color", UITheme.RED)
-		else:
-			_key_state.text = "键盘 OK"
-			_key_state.add_theme_color_override("font_color", UITheme.MINT)
 	_top_stats.text = "HIT %d  MISS %d  ACC %s  COMBO %d  |  BELL %d/%d  RED %d  |  BIA %+.1fms  OFF %+.0fms" % [
 		_hit_count,
 		_miss_count,
@@ -1179,28 +1087,14 @@ func _bench_tick(ms: float, beat: float) -> void:
 			continue
 		if ms < target - 10.0 or ms > target + 20.0:
 			continue
-		if "--bench-realkeys" in OS.get_cmdline_user_args():
-			# 用真实按键事件走 _input，并把光标固定在角落，验证普通段不依赖光标位置。
-			_preview.mouse_screen = Vector2(24, 24)
-			var down := InputEventKey.new()
-			down.keycode = KEY_A
-			down.physical_keycode = KEY_A
-			down.pressed = true
-			Input.parse_input_event(down)
-			var up := InputEventKey.new()
-			up.keycode = KEY_A
-			up.physical_keycode = KEY_A
-			up.pressed = false
-			Input.parse_input_event(up)
-		else:
-			_key_presses.append({
-				"time": ms,
-				"mouse": _preview.note_head_screen(note, beat),
-				"angle": note.angle,
-				"u": note.angle / 360.0,
-				"valid": true,
-				"key": 65,
-			})
+		_key_presses.append({
+			"time": ms,
+			"mouse": _preview.note_head_screen(note, beat),
+			"angle": note.angle,
+			"u": note.angle / 360.0,
+			"valid": true,
+			"key": 65,
+		})
 
 
 ## 基准模式：模拟真实鼠标（每帧注入多枚移动事件），复现高回报率鼠标的输入压力。
@@ -1321,11 +1215,7 @@ func _format_ms(ms: float) -> String:
 func _input(event: InputEvent) -> void:
 	if not (event is InputEventKey):
 		return
-	# 只要收到键盘事件就更新时间戳：HUD 的“键盘 OK/无输入”和日志都靠它。
-	_last_key_usec = Time.get_ticks_usec()
 	if event.pressed and event.echo:
-		return
-	if (_paused or _finished) and not (event.pressed and event.keycode == KEY_ESCAPE):
 		return
 	if event is InputEventKey:
 		if event.keycode == KEY_ESCAPE and event.pressed:
@@ -1356,7 +1246,6 @@ func _input(event: InputEvent) -> void:
 				return
 			var key: int = event.physical_keycode if event.physical_keycode != 0 else event.keycode
 			var stamp := _chart_ms() + float(_app.playtest_offset_ms if _app != null else 0.0)
-			_press_total += 1
 			_key_presses.append({
 				"time": stamp,
 				"mouse": _preview.mouse_screen,
@@ -1439,7 +1328,6 @@ func _exit() -> void:
 		_audio.stop()
 	_flush_offset()
 	Input.set_use_accumulated_input(true)
-	DisplayServer.window_set_ime_active(true)
 	Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
 	exit_requested.emit()
 
@@ -1448,11 +1336,3 @@ func _notification(what: int) -> void:
 	if what == NOTIFICATION_PREDELETE or what == NOTIFICATION_WM_CLOSE_REQUEST:
 		Input.set_use_accumulated_input(true)
 		Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
-	elif what == NOTIFICATION_APPLICATION_FOCUS_OUT:
-		print("[playtest] focus out")
-		# 失焦后键盘事件不再送到游戏，继续跑只会一路 MISS。
-		if _running and not _paused and not _finished and not bench_mode:
-			_add_log("窗口失焦：已自动暂停")
-			_set_paused(true)
-	elif what == NOTIFICATION_APPLICATION_FOCUS_IN:
-		print("[playtest] focus in")
