@@ -35,6 +35,7 @@ func _initialize() -> void:
 		"test_osu_std_negative_shift",
 		"test_osu_std_readability",
 		"test_osu_std_chain_no_conflict",
+		"test_note_span_defaults",
 		"test_judgement_text_font",
 		"test_osu_taiko_import",
 		"test_osu_taiko_flow",
@@ -999,6 +1000,19 @@ CircleSize: 4
 	eq(errors.size(), 0, "osu std chain has no validation errors")
 	for issue in errors:
 		print("  chain issue: ", issue.get("message"))
+	return true
+
+
+func test_note_span_defaults() -> bool:
+	# 单点音符的 end_beat 必须等于自身 beat；默认 0 会让判定把它当成“0ms 就结束”，
+	# 谱面播到 6 秒后所有 Tap 都被当作过期跳过（历史上“突然没判定”的根因）。
+	var tap := Note.new("tap", 7.5, 90.0, 60.0)
+	near(tap.end_beat, 7.5, 0.001, "tap end_beat defaults to its own beat")
+	near(tap.duration(), 0.0, 0.001, "tap has zero duration")
+	var hold := Note.new("hold", 2.0, 0.0, 60.0)
+	near(hold.end_beat, 2.0, 0.001, "hold end_beat starts at its beat")
+	hold.end_beat = 4.5
+	near(hold.duration(), 2.5, 0.001, "hold duration uses explicit end_beat")
 	return true
 
 

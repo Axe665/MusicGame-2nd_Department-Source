@@ -42,6 +42,7 @@ func _run() -> void:
 		["hold", 5.0, 6.0],
 		["path", 6.0, 7.0],
 		["tap", 8.0, 0.0],
+		["tap", 13.0, 0.0],
 	]
 	var last_tap_id := 0
 	for i in definitions.size():
@@ -59,8 +60,16 @@ func _run() -> void:
 		chart.notes.append(note)
 		if note.type == "tap":
 			last_tap_id = note.id
+	# 模拟历史脏数据：把 6.5 秒后那颗 Tap 的 end_beat 写成 0，
+	# 判定必须靠 target_ms 兜底，不能把它当“已过期”跳过。
+	for note in chart.notes:
+		if note.type == "tap" and absf(note.beat - 13.0) < 0.001:
+			note.end_beat = 0.0
 	# 最后一颗 Tap 作为对照片：故意不按，必须 MISS。
-	var control_id := last_tap_id
+	var control_id := 0
+	for note in chart.notes:
+		if note.type == "tap" and absf(note.beat - 8.0) < 0.001:
+			control_id = note.id
 
 	var events: Array = []
 	for i in chart.notes.size():
@@ -83,7 +92,7 @@ func _run() -> void:
 	playtest.setup(chart, 0.0, "")
 	await get_tree().process_frame
 
-	var finish_ms := chart.timing.beat_to_chart_ms(9.5)
+	var finish_ms := chart.timing.beat_to_chart_ms(14.5)
 	while is_instance_valid(playtest) and playtest._chart_ms() < finish_ms:
 		await get_tree().process_frame
 		var now_ms: float = playtest._chart_ms()
@@ -120,6 +129,12 @@ func _run() -> void:
 			if String(line).contains("#%d " % control_id):
 				control_missed = true
 	_check(tap_misses == 1, "只有对照片 MISS，其它 Tap 都判定成功（实际 Tap MISS=%d）" % tap_misses)
+	# 6.5 秒后的 Tap：如果 end_beat 仍是 0，会被 JUDGE_LOOKBEHIND 当成过期直接跳过。
+	var late_hit := false
+	for line in playtest._log:
+		if String(line).contains("Tap #%d " % (chart.notes.size())) and not String(line).contains("MISS"):
+			late_hit = true
+	_check(late_hit, "6.5 秒之后的 Tap 仍能正常判定（end_beat 兜底）")
 	_check(control_missed, "对照片 #%d 正确判为 MISS" % control_id)
 	_check(playtest._hit_count >= 8, "至少 8 颗音符被判定（实际 %d）" % playtest._hit_count)
 	var hold_ok := false

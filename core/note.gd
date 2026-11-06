@@ -73,6 +73,10 @@ func _init(p_type: String = "tap", p_beat: float = 0.0, p_angle: float = 0.0, p_
 	beat = p_beat
 	angle = p_angle
 	width = p_width
+	# 单点音符的结束拍必须等于开始拍。以前默认 0，导致 tap 的 end_beat=0，
+	# 判定里按“结束时间”做过期检查时会把它们当成 0ms：谱面播到 6 秒后，
+	# 所有 tap 都被判定为“早就过期”而跳过（表现就是突然整段没有判定）。
+	end_beat = p_beat
 	if type == "path" or type == "trace":
 		space = "plane"
 

@@ -535,11 +535,13 @@ func _judge_all(ms: float, beat: float, delta: float) -> void:
 		# 只看离当前时间足够近的音符，跳过整段已经过去/还没到的谱面。
 		if float(note_state["target_ms"]) > ms + JUDGE_LOOKAHEAD_MS:
 			break
-		if float(note_state["end_ms"]) < ms - JUDGE_LOOKBEHIND_MS:
+		# end_ms 绝不能小于 target_ms：单点音符的结束时间就是它自己。
+		# 老数据里 tap 的 end_beat 可能是 0，这里兜底，避免整段音符被判成“过期”跳过。
+		var live_end_ms := maxf(float(note_state["end_ms"]), float(note_state["target_ms"]))
+		if live_end_ms < ms - JUDGE_LOOKBEHIND_MS:
 			# 主线程停顿/时钟跳变会把整段音符甩到身后。这里绝不能静默跳过，
 			# 否则玩家看到的就是“这段 Tap 完全没反应”。
-			print("[skip] #%d %s beat=%.2f behind=%.0fms" % [note.id, note.type, note.beat,
-				ms - float(note_state["end_ms"])])
+			print("[skip] #%d %s beat=%.2f behind=%.0fms" % [note.id, note.type, note.beat, ms - live_end_ms])
 			_miss_count += 1
 			_add_judgement("MISS")
 			_combo = 0
