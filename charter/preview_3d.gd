@@ -2209,8 +2209,8 @@ func _draw_path_tail(canvas: Control, point: Vector2, top: bool, scale: float = 
 	var alpha := 1.0 if top else 0.45
 	var s := clampf(scale, 0.2, 2.0) * float(_skin()["scale"]) * PATH_SIZE_SCALE
 	# 尾部不再画星星，只留一个细环标记终点。
-	canvas.draw_circle(point, 16.0 * s, Color(color.r, color.g, color.b, 0.08 * alpha))
-	canvas.draw_arc(point, 13.0 * s, 0.0, TAU, 30, Color(color.r, color.g, color.b, 0.70 * alpha), 2.0, true)
+	canvas.draw_circle(point, 8.0 * s, Color(color.r, color.g, color.b, 0.08 * alpha))
+	canvas.draw_arc(point, 6.5 * s, 0.0, TAU, 30, Color(color.r, color.g, color.b, 0.70 * alpha), 1.6, true)
 
 
 func _hold_node_screen(chart: Chart, note: Note, relative_beat: float, relative_angle: float, t: float) -> Vector2:
