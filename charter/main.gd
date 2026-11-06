@@ -131,25 +131,54 @@ func _ready() -> void:
 
 
 ## 无人值守性能基准：载入 Apollo 谱，从扫圈段自动打 25 秒后退出。
+## --bench-osz=路径 可改用导入的 .osz 复现问题，--bench-from=拍 指定起始拍。
 func _run_bench() -> void:
-	var chart: Chart = ChartIO.load_chart("user://autosave.json")
-	if chart != null:
-		_app.set_chart(chart, "user://autosave.json", false)
-	_app.playhead_beat = 0.0 if "--bench-start0" in OS.get_cmdline_user_args() else 312.0
+	var start_beat := 0.0 if "--bench-start0" in OS.get_cmdline_user_args() else 312.0
+	var osz := ""
+	for arg in OS.get_cmdline_user_args():
+		if arg.begins_with("--bench-osz="):
+			osz = arg.get_slice("=", 1)
+		elif arg.begins_with("--bench-from="):
+			start_beat = float(arg.get_slice("=", 1))
+	if osz.is_empty():
+		var chart: Chart = ChartIO.load_chart("user://autosave.json")
+		if chart != null:
+			_app.set_chart(chart, "user://autosave.json", false)
+	else:
+		var imported := OsuIO.import_osz(osz, 0)
+		if imported.is_empty():
+			print("[bench] osz import failed: ", OsuIO.last_error)
+			get_tree().quit()
+			return
+		_app.set_chart(imported["chart"], "", false)
+	_app.playhead_beat = start_beat
 	_start_playtest(false)
 	if _playtest == null:
 		print("[bench] playtest failed to start")
 		get_tree().quit()
 		return
+	if "--bench-unlimited" in OS.get_cmdline_user_args():
+		# 基准量的是真实开销，不被垂直同步的 120/240Hz 挡住。
+		Engine.max_fps = 0
+		DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
 	var first: Note = _playtest._ordered_notes[0]
 	print("[bench] start playhead=%.1f playtest_beat=%.1f first_id=%d first_beat=%.1f" % [_app.playhead_beat, _playtest.start_beat, first.id, first.beat])
 	if "--bench-shot" in OS.get_cmdline_user_args():
-		# --bench-shot-at=秒 可以指定截图时刻（默认 3 秒），用来对准某个段位。
+		# --bench-shot-at=秒 按墙钟截图；--bench-shot-beat=拍 等谱面播放到该拍再截（更准）。
 		var shot_at := 3.0
+		var shot_beat := NAN
 		for arg in OS.get_cmdline_user_args():
 			if arg.begins_with("--bench-shot-at="):
 				shot_at = float(arg.get_slice("=", 1))
-		await get_tree().create_timer(shot_at).timeout
+			elif arg.begins_with("--bench-shot-beat="):
+				shot_beat = float(arg.get_slice("=", 1))
+		if is_nan(shot_beat):
+			await get_tree().create_timer(shot_at).timeout
+		else:
+			var target_ms := _playtest.chart.beat_to_ms(shot_beat)
+			while is_instance_valid(_playtest) and _playtest._chart_ms() < target_ms:
+				await get_tree().process_frame
+			print("[bench] shot beat=%.2f" % _playtest._chart_ms())
 		var shot := get_viewport().get_texture().get_image()
 		if shot != null:
 			shot.save_png("/tmp/bench_shot.png")

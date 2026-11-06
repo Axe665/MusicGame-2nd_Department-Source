@@ -425,6 +425,9 @@ func load_autosave() -> bool:
 
 
 func _on_autosave_timer() -> void:
+	# 基准/导入测试会换掉当前谱面，自动保存会把用户正在编辑的谱面覆盖掉。
+	if "--bench" in OS.get_cmdline_user_args():
+		return
 	autosave()
 
 

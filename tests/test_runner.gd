@@ -31,6 +31,8 @@ func _initialize() -> void:
 		"test_osu_std_slider_kinds",
 		"test_osu_std_negative_shift",
 		"test_osu_std_readability",
+		"test_osu_std_chain_no_conflict",
+		"test_judgement_text_font",
 		"test_osu_taiko_import",
 		"test_osu_taiko_flow",
 		"test_osu_bpm_change",
@@ -876,6 +878,57 @@ SliderMultiplier: 1.4
 	for note in chart.notes:
 		eq(note.space, "ring", "std readability stays on the ring")
 		ok(note.width >= 45.0 and note.width <= 75.0, "std width is playable")
+	return true
+
+
+func test_osu_std_chain_no_conflict() -> bool:
+	# 四条首尾相接的滑条（2 拍一条，后一条正好落在前一条的尾判定拍上）。
+	# 之前的转换器会让下一条星头和上一条尾判定点落在不相交的角度上，
+	# 校验报“同刻目标没有公共角度”，试玩直接被拦住。
+	var text := """osu file format v14
+
+[General]
+Mode: 0
+
+[Metadata]
+Title: Chain
+Artist: A
+Creator: C
+Version: H
+
+[Difficulty]
+SliderMultiplier: 1.4
+CircleSize: 4
+
+[TimingPoints]
+0,200,4,2,0,100,1,0
+
+[HitObjects]
+160,96,0,2,0,P|96:192|160:288,1,280
+352,96,400,2,0,P|416:192|352:288,1,280
+160,352,800,2,0,P|224:192|160:288,1,280
+352,352,1200,2,0,P|288:192|352:288,1,280
+256,192,1600,1,0,0:0:0:0:
+"""
+	var result := OsuIO.parse_osu(text, "chain.osu")
+	ok(not result.is_empty(), "osu std chain parsed")
+	if result.is_empty():
+		return false
+	var chart: Chart = result["chart"]
+	var errors := Validator.errors(Validator.validate(chart))
+	eq(errors.size(), 0, "osu std chain has no validation errors")
+	for issue in errors:
+		print("  chain issue: ", issue.get("message"))
+	return true
+
+
+func test_judgement_text_font() -> bool:
+	# 判定提示里的“早/晚”必须用含中文的字体：等宽字体缺中文字形，
+	# 每个不同的提示串都会触发一次系统字体回退（单次 ~18ms），判定密集时卡顿。
+	var regular := UITheme.FONT_REGULAR
+	var mono := UITheme.FONT_MONO
+	ok(regular.has_char("早".unicode_at(0)), "judgement detail font has CJK glyphs")
+	ok(not mono.has_char("早".unicode_at(0)), "mono font still lacks CJK (do not use it for judgement text)")
 	return true
 
 
