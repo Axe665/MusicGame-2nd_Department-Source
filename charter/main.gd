@@ -126,6 +126,34 @@ func _ready() -> void:
 		var tw := create_tween()
 		tw.tween_property(intro_control, "modulate:a", 1.0, 0.45).set_delay(0.05)
 	set_process(true)
+	if "--bench" in OS.get_cmdline_user_args():
+		call_deferred("_run_bench")
+
+
+## 无人值守性能基准：载入 Apollo 谱，从扫圈段自动打 25 秒后退出。
+func _run_bench() -> void:
+	var chart: Chart = ChartIO.load_chart("user://autosave.json")
+	if chart != null:
+		_app.set_chart(chart, "user://autosave.json", false)
+	_app.playhead_beat = 0.0 if "--bench-start0" in OS.get_cmdline_user_args() else 312.0
+	_start_playtest(false)
+	if _playtest == null:
+		print("[bench] playtest failed to start")
+		get_tree().quit()
+		return
+	var first: Note = _playtest._ordered_notes[0]
+	print("[bench] start playhead=%.1f playtest_beat=%.1f first_id=%d first_beat=%.1f" % [_app.playhead_beat, _playtest.start_beat, first.id, first.beat])
+	if "--bench-shot" in OS.get_cmdline_user_args():
+		await get_tree().create_timer(3.0).timeout
+		var shot := get_viewport().get_texture().get_image()
+		if shot != null:
+			shot.save_png("/tmp/bench_shot.png")
+			print("[bench] screenshot saved")
+		await get_tree().create_timer(17.0).timeout
+	else:
+		await get_tree().create_timer(95.0 if "--bench-start0" in OS.get_cmdline_user_args() else 20.0).timeout
+	print("[bench] stop")
+	get_tree().quit()
 
 
 func _build_ui() -> void:
@@ -1575,6 +1603,7 @@ func _start_playtest(from_start: bool) -> void:
 	editor_root.process_mode = Node.PROCESS_MODE_DISABLED
 	_preview.set_suspended(true)
 	_playtest = Playtest.new()
+	_playtest.bench_mode = "--bench" in OS.get_cmdline_user_args()
 	add_child(_playtest)
 	_playtest.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_playtest.setup(_app.chart, 0.0 if from_start else _app.playhead_beat, _app.chart_path)

@@ -29,6 +29,9 @@ const DYNAMIC_SAMPLE_MIN := 8
 const DYNAMIC_STEP := 0.05
 ## 自动校准最多把偏移推离开局值多少毫秒。
 const DYNAMIC_LIMIT_MS := 50.0
+## 判定循环的时间窗：只需看未来 1.5 秒内、过去 6 秒内的音符。
+const JUDGE_LOOKAHEAD_MS := 1500.0
+const JUDGE_LOOKBEHIND_MS := 6000.0
 
 var _app: Node = null
 var chart: Chart = null
@@ -63,6 +66,17 @@ var _errors: Array[float] = []
 var _error_sum: float = 0.0
 var _auto_origin_ms: float = 0.0
 var _offset_dirty: bool = false
+## 自动基准模式：不进音频、按谱面自动出判定，用于无人值守测帧率。
+var bench_mode: bool = false
+var _judge_from: int = 0
+## 帧时间采样（基准模式诊断卡顿）：每帧间隔 + 2 秒统计。
+var _frame_last_usec: int = 0
+var _frame_samples: Array[int] = []
+var _frame_since_usec: int = 0
+var _smooth_ms: float = 0.0
+var _clock_update_usec: int = 0
+var _frame_last_beat: float = -1.0
+var _beat_stalls: int = 0
 var _dense_ids: Dictionary = {}
 var _near_miss_logs: int = 0
 var _near_miss_stamp: float = 0.0
@@ -326,6 +340,8 @@ func _init_states() -> void:
 				break
 	for note in _ordered_notes:
 		_states[note.id] = {
+			"target_ms": chart.timing.beat_to_chart_ms(note.beat),
+			"end_ms": chart.timing.beat_to_chart_ms(note.end_beat),
 			"done": false,
 			"head": false,
 			"started": false,
@@ -344,12 +360,21 @@ func _init_states() -> void:
 		}
 		if note.type == "bell":
 			_bell_total += 1
+	_judge_from = 0
 	for region in chart.regions:
 		_red_states[region.id] = {"time": 0.0, "broken": false}
 
 
 func _start_audio() -> void:
 	_last_chart_ms = -INF
+	_smooth_ms = 0.0
+	_clock_update_usec = 0
+	var bench_audio := bench_mode and "--bench-audio" in OS.get_cmdline_user_args()
+	if bench_mode and not bench_audio:
+		_audio_available = false
+		_start_chart_ms = chart.timing.beat_to_chart_ms(start_beat)
+		_start_usec = Time.get_ticks_usec()
+		return
 	# 重开/重进时先停掉旧播放器，避免音频叠加。
 	if _audio != null:
 		_audio.stop()
@@ -372,6 +397,11 @@ func _start_audio() -> void:
 		return
 	_audio_available = true
 	_audio.stream = stream
+	if bench_audio:
+		# 基准模式带音频时可以静音，只测解码开销。
+		var music_bus := AudioServer.get_bus_index("Music")
+		if music_bus >= 0:
+			AudioServer.set_bus_volume_db(music_bus, -60.0)
 	print("[audio] playtest ", path, " -> ", stream, " bus=", _audio.bus)
 	_audio.finished.connect(_finish)
 	var from_sec := maxf(0.0, (_start_chart_ms - chart.offset_ms) / 1000.0)
@@ -387,6 +417,17 @@ func _process(delta: float) -> void:
 	_preview.time_beat = beat
 	_preview.playing = true
 	_judge_all(judge_ms, beat, delta)
+	if bench_mode:
+		_bench_tick(judge_ms, beat)
+		_bench_mouse(beat)
+		if "--bench-tilt" in OS.get_cmdline_user_args():
+			# 模拟鼠标持续移动带来的镜头视差（get_local_mouse_position 无法在基准里伪造）。
+			_preview._tilt_target = Vector2(sin(beat * 3.0), cos(beat * 2.3)) * 7.0
+	_probe_frame_time()
+	if _frame_last_beat >= 0.0:
+		if absf(beat - _frame_last_beat) < 0.000001:
+			_beat_stalls += 1
+	_frame_last_beat = beat
 	_ui_accum += delta
 	if _ui_accum >= 0.05:
 		_ui_accum = 0.0
@@ -412,7 +453,21 @@ func _chart_ms() -> float:
 				_last_chart_ms = candidate
 			elif candidate < _last_chart_ms:
 				candidate = _last_chart_ms
-		_last_chart_ms = maxf(_last_chart_ms, candidate)
+		# 音频时钟本身是跳变的（混音周期 4–20ms），直接用会让音符停几帧再跳。
+		# 这里用系统时钟按帧推进，音频只做向前校正，画面因此是连续位移。
+		var now_usec := Time.get_ticks_usec()
+		if _clock_update_usec == 0:
+			_clock_update_usec = now_usec
+			_smooth_ms = candidate
+		else:
+			var dt := float(now_usec - _clock_update_usec) / 1000.0
+			_clock_update_usec = now_usec
+			_smooth_ms += dt
+			if _smooth_ms < candidate:
+				_smooth_ms = candidate
+			elif _smooth_ms > candidate + 30.0:
+				_smooth_ms = candidate + 30.0
+		_last_chart_ms = maxf(_last_chart_ms, _smooth_ms)
 		return _last_chart_ms
 	var elapsed := float(Time.get_ticks_usec() - _start_usec) / 1000.0
 	var fallback := _start_chart_ms + elapsed
@@ -434,8 +489,19 @@ func _early_protect_ms() -> float:
 
 func _judge_all(ms: float, beat: float, delta: float) -> void:
 	var mouse: Vector2 = _preview.mouse_screen
-	for note in _ordered_notes:
-		if _states[note.id]["done"]:
+	for i in range(_judge_from, _ordered_notes.size()):
+		var note := _ordered_notes[i]
+		var note_state: Dictionary = _states[note.id]
+		if note_state["done"]:
+			if i == _judge_from:
+				_judge_from += 1
+			continue
+		# 只看离当前时间足够近的音符，跳过整段已经过去/还没到的谱面。
+		if float(note_state["target_ms"]) > ms + JUDGE_LOOKAHEAD_MS:
+			break
+		if float(note_state["end_ms"]) < ms - JUDGE_LOOKBEHIND_MS:
+			if i == _judge_from:
+				_judge_from += 1
 			continue
 		match note.type:
 			"tap":
@@ -455,7 +521,7 @@ func _judge_all(ms: float, beat: float, delta: float) -> void:
 
 func _judge_tap(note: Note, ms: float, beat: float) -> void:
 	var state: Dictionary = _states[note.id]
-	var target := chart.timing.beat_to_chart_ms(note.beat)
+	var target := float(state["target_ms"])
 	var protect := _early_protect_ms()
 	if ms < target - protect:
 		return
@@ -480,8 +546,8 @@ func _judge_tap(note: Note, ms: float, beat: float) -> void:
 
 func _judge_hold(note: Note, ms: float, beat: float) -> void:
 	var state: Dictionary = _states[note.id]
-	var target := chart.timing.beat_to_chart_ms(note.beat)
-	var end_ms := chart.timing.beat_to_chart_ms(note.end_beat)
+	var target := float(state["target_ms"])
+	var end_ms := float(state["end_ms"])
 	if not state["started"]:
 		var head_protect := _early_protect_ms()
 		if ms < target - head_protect:
@@ -513,7 +579,7 @@ func _judge_hold(note: Note, ms: float, beat: float) -> void:
 		var release_window := 60000.0 / maxf(1.0, chart.timing.bpm_at(note.beat)) * 0.5
 		var held_tier := "PERFECT"
 		if ms < end_ms - release_window:
-			var head_ms := chart.timing.beat_to_chart_ms(note.beat)
+			var head_ms := float(state["target_ms"])
 			var held := clampf((ms - head_ms) / maxf(1.0, end_ms - head_ms), 0.0, 1.0)
 			held_tier = "GREAT" if held >= 0.5 else "GOOD"
 		state["done"] = true
@@ -537,8 +603,8 @@ func _judge_hold(note: Note, ms: float, beat: float) -> void:
 
 func _judge_path(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 	var state: Dictionary = _states[note.id]
-	var head_ms := chart.timing.beat_to_chart_ms(note.beat)
-	var tail_ms := chart.timing.beat_to_chart_ms(note.end_beat)
+	var head_ms := float(state["target_ms"])
+	var tail_ms := float(state["end_ms"])
 	var head_point: Vector2 = _preview.note_head_screen(note, beat)
 	if not state["head_judged"]:
 		var head_protect := _early_protect_ms()
@@ -608,8 +674,8 @@ func _judge_path(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 
 func _judge_trace(note: Note, ms: float, beat: float, delta: float, mouse: Vector2) -> void:
 	var state: Dictionary = _states[note.id]
-	var start_ms := chart.timing.beat_to_chart_ms(note.beat)
-	var end_ms := chart.timing.beat_to_chart_ms(note.end_beat)
+	var start_ms := float(_states[note.id]["target_ms"])
+	var end_ms := float(_states[note.id]["end_ms"])
 	var contact := _trace_contact(note, mouse, beat)
 	if not state["trace_started"]:
 		if ms < start_ms - HIT_WINDOW_MS:
@@ -723,7 +789,7 @@ func _trace_contact(note: Note, mouse: Vector2, beat: float) -> bool:
 
 func _judge_bell(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 	var state: Dictionary = _states[note.id]
-	var target := chart.timing.beat_to_chart_ms(note.beat)
+	var target := float(state["target_ms"])
 	if ms < target - BELL_WINDOW_MS:
 		return
 	if ms <= target + BELL_WINDOW_MS:
@@ -744,7 +810,7 @@ func _judge_bell(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 
 func _judge_anchor(note: Note, ms: float, beat: float) -> void:
 	var state: Dictionary = _states[note.id]
-	var target := chart.timing.beat_to_chart_ms(note.beat)
+	var target := float(state["target_ms"])
 	var anchor_protect := _early_protect_ms()
 	if ms < target - anchor_protect:
 		return
@@ -982,6 +1048,72 @@ func _accuracy() -> float:
 	if _judged_total <= 0:
 		return -1.0
 	return 100.0 * _accuracy_sum / float(_judged_total)
+
+
+## 基准模式：给每颗接近判定时间的 Tap 塞一个“完美”按键，制造真实特效负载。
+func _bench_tick(ms: float, beat: float) -> void:
+	for note in _ordered_notes:
+		var st: Dictionary = _states[note.id]
+		var target := float(st["target_ms"])
+		if target > ms + 50.0:
+			break
+		if note.type != "tap" or st["done"]:
+			continue
+		if ms < target - 10.0 or ms > target + 20.0:
+			continue
+		_key_presses.append({
+			"time": ms,
+			"mouse": _preview.note_head_screen(note, beat),
+			"angle": note.angle,
+			"u": note.angle / 360.0,
+			"valid": true,
+			"key": 65,
+		})
+
+
+## 基准模式：模拟真实鼠标（每帧注入多枚移动事件），复现高回报率鼠标的输入压力。
+func _bench_mouse(beat: float) -> void:
+	if not "--bench-mouse" in OS.get_cmdline_user_args():
+		return
+	var center := Vector2(800, 450)
+	for k in 6:
+		var a := beat * 4.0 + float(k) * 0.02
+		var ev := InputEventMouseMotion.new()
+		ev.position = center + Vector2(cos(a), sin(a)) * 260.0
+		ev.relative = Vector2(-sin(a), cos(a)) * 6.0
+		Input.parse_input_event(ev)
+
+
+## 基准模式：统计帧间隔的 p50/p95/最大值，找出平均帧率看不出的卡顿尖峰。
+func _probe_frame_time() -> void:
+	var now := Time.get_ticks_usec()
+	if _frame_last_usec > 0:
+		_frame_samples.append(now - _frame_last_usec)
+	_frame_last_usec = now
+	if _frame_since_usec == 0:
+		_frame_since_usec = now
+		return
+	if now - _frame_since_usec < 2000000 or _frame_samples.size() < 10:
+		return
+	var sorted := _frame_samples.duplicate()
+	sorted.sort()
+	var n := sorted.size()
+	var median := float(sorted[n / 2]) / 1000.0
+	var p95 := float(sorted[int(n * 0.95)]) / 1000.0
+	var worst := float(sorted[n - 1]) / 1000.0
+	var spikes := 0
+	for value in sorted:
+		if float(value) > float(sorted[n / 2]) * 2.0:
+			spikes += 1
+	# 只在出现明显卡顿时打印，正常游玩不会刷屏。
+	if worst > 8.0 or spikes > 20:
+		print("[frame] t=%.1fs n=%d med=%.1fms p95=%.1fms max=%.1fms spikes=%d notes=%d" % [
+			_chart_ms() / 1000.0, n, median, p95, worst, spikes, _ordered_notes.size(),
+		])
+		print("[frame] beat_stalls=%d / %d frames" % [_beat_stalls, n])
+		_beat_stalls = 0
+	_frame_samples.clear()
+	_frame_since_usec = now
 
 
 func _tier_for(error_ms: float) -> String:
