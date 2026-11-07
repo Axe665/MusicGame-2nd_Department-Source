@@ -1465,6 +1465,13 @@ func _pre_read_beats(chart: Chart, beat: float) -> float:
 	return chart.pre_read_ms / maxf(0.1, flow_scale) / 60000.0 * chart.timing.bpm_at(beat)
 
 
+## 星星从圆心落到环上的时长（固定 0.5 秒，换算成拍；不超过预读）。
+func _star_fall_beats(chart: Chart, beat: float) -> float:
+	var pre := _pre_read_beats(chart, beat)
+	var bpm := chart.timing.bpm_at(beat)
+	return clampf(0.5 * bpm / 60.0, 0.15, maxf(0.15, pre))
+
+
 func _flying_position(chart: Chart, angle: float, target_beat: float, current_beat: float, pre: float) -> Vector2:
 	var u := fposmod(angle, 360.0) / 360.0
 	var boundary := project_u(u, current_beat)
@@ -2088,8 +2095,9 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 		return
 	# 每条 Path 都按"顶层"完整画（箭头链 / 星头 / 尾环 / 进度球）。
 	top = true
-	# 轨迹不再从圆心长出来：保持环上的真实位置，只在星头前 1 拍整条淡入。
-	var trail_fade := smoothstep(0.0, 1.0, clampf((t - (note.beat - 1.0)) / 1.0, 0.0, 1.0))
+	# 先铺轨迹，再落星星：轨迹从生成开始淡入，星星落下的那一刻正好铺满。
+	var fall := _star_fall_beats(chart, t)
+	var trail_fade := smoothstep(0.0, 1.0, clampf((t - (note.beat - pre)) / maxf(0.001, pre - fall), 0.0, 1.0))
 	var ns := _note_scale()
 	var wait := clampf(note.wait_beat, 0.0, maxf(0.0, total - 0.001))
 	var q := clampf((t - note.beat - wait) / maxf(0.001, total - wait), 0.0, 1.0)
@@ -2165,7 +2173,7 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 			if _valid_point(node):
 				_draw_diamond(canvas, node, 5.0, UITheme.CYAN)
 				canvas.draw_circle(node, 1.8, UITheme.INK)
-	var star_head := _flying_position(chart, note.angle, note.beat, t, pre)
+	var star_head := _flying_position(chart, note.angle, note.beat, t, fall)
 	# 环上固定的落点（圆的中心）和滑动终点。
 	var ring_head := _path_screen_point(chart, note, 0.0, t, true, 1.0)
 	var tail := _path_screen_point(chart, note, total, t, true, 1.0)
@@ -2202,9 +2210,10 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 			_draw_arrowhead(canvas, ring_head + (ahead - ring_head).normalized() * 29.0 * ns * PATH_SIZE_SCALE, ahead - ring_head, Color(1, 1, 1, 0.95 * head_alpha * dim))
 		if show_debug:
 			canvas.draw_string(UITheme.bold_font(), ring_head + Vector2(-12, -22), "PATH", HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(UITheme.CORAL.r, UITheme.CORAL.g, UITheme.CORAL.b, 0.85))
-	# 滑动开始后星星交给进度球，不再留在起点。
-	if head_alpha > 0.01 and t < note.beat + wait + 0.02 and _valid_point(star_head):
-		_draw_path_star(canvas, star_head, ns * PATH_SIZE_SCALE * PATH_HEAD_SCALE, accent, head_alpha * dim)
+	# 滑动开始后星星交给进度球，不再留在起点。星星在轨迹铺满之后才开始下落。
+	if head_alpha > 0.01 and t >= note.beat - fall and t < note.beat + wait + 0.02 and _valid_point(star_head):
+		var star_in := clampf((t - (note.beat - fall)) / maxf(0.001, fall * 0.3), 0.0, 1.0)
+		_draw_path_star(canvas, star_head, ns * PATH_SIZE_SCALE * PATH_HEAD_SCALE, accent, head_alpha * dim * star_in)
 	_draw_path_tail(canvas, tail, top, ns * PATH_SIZE_SCALE, accent, dim * trail_fade)
 	# 大号发光球 + 短拖尾：当前进度点始终比星头更亮，方向一目了然。
 	if t >= note.beat and t <= note.end_beat:
@@ -3826,7 +3835,7 @@ func note_head_screen(note: Note, beat: float) -> Vector2:
 	var chart := get_chart()
 	if chart == null:
 		return Vector2(INF, INF)
-	return _flying_position(chart, note.angle, note.beat, beat, _pre_read_beats(chart, beat))
+	return _flying_position(chart, note.angle, note.beat, beat, _star_fall_beats(chart, beat))
 
 
 ## 音符图形自身的屏幕半径（位置判定容差用）。
