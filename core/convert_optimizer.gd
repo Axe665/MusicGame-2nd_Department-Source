@@ -17,17 +17,132 @@ const MAX_TURN_DEG := 120.0
 const MAX_TRACE_LENGTH_R := 12.0
 const MIN_GAP_MS := 45.0
 const PLAN_VELOCITY := 1.4
+## 滑条底线：比这更短的 Path 来不及滑（240BPM 的 1/8 拍 = 125ms 会被降级，
+## 120~180BPM 的常规滑条不受影响）。
+const MIN_SLIDE_MS := 160.0
+## 弦长底线：头尾离不到 0.6R 的滑条，玩家读起来和 Tap 没区别。
+const MIN_SLIDE_CHORD_R := 0.6
+## Bell 和同时段 Path 的最小设计距离（0.35R，试玩尺度约 150px）：
+## 鼠标要同时接铃铛和跟进滑条时，两个目标叠在一起就没法打。
+const BELL_PATH_CLEARANCE_R := 0.35
+const BELL_PATH_TIME_PAD := 0.6
 
 
 static func optimize_maimai(chart: Chart, counts: Dictionary) -> Dictionary:
-	var stats := {"dropped": 0, "relaxed": 0, "rebuilt": 0, "degraded": 0}
+	var stats := {"dropped": 0, "relaxed": 0, "rebuilt": 0, "degraded": 0, "bells_moved": 0}
 	_drop_near_duplicates(chart, counts, stats)
 	var degrade_ids := {}
 	_cap_events(chart, counts, stats, degrade_ids, true)
 	_rebuild_paths(chart, counts, stats, degrade_ids)
+	enforce_slide_floor(chart, counts, stats)
 	clamp_holds(chart, counts)
+	space_bells_from_paths(chart, counts, stats)
 	resolve_conflicts(chart, counts)
 	return stats
+
+
+## 太短 / 太小的滑条降级成 Hold 或 Tap：
+## 尾判需要一个 250ms 的提前窗口，比整条滑条还长的 Path 既读不出来也打不准；
+## 头尾弦长不到 0.6R 的滑条，玩家看不出“要滑”。
+static func enforce_slide_floor(chart: Chart, counts: Dictionary, stats: Dictionary) -> void:
+	for note in chart.sorted_notes():
+		if note.type != "path":
+			continue
+		var span_ms := chart.timing.beat_to_chart_ms(note.end_beat) - chart.timing.beat_to_chart_ms(note.beat)
+		var chord := _slide_chord(note) * RING_RADIUS
+		if span_ms >= MIN_SLIDE_MS and chord >= MIN_SLIDE_CHORD_R * RING_RADIUS:
+			continue
+		_degrade_path(note, counts, stats)
+
+
+static func _slide_chord(note: Note) -> float:
+	if note.trace_pts.size() < 2:
+		return 0.0
+	var head := Vector2(float(note.trace_pts[0].get("x", 0.0)), float(note.trace_pts[0].get("y", 0.0)))
+	var tail := Vector2(float(note.trace_pts[-1].get("x", 0.0)), float(note.trace_pts[-1].get("y", 0.0)))
+	return head.distance_to(tail)
+
+
+## Bell 和同时段的 Path 叠在一起时，把 Bell 沿环挪开（挪不动就删掉）。
+## 鼠标只有一个：滑条在跑的时候还要去接一个正好压在轨迹上的铃铛，是打不出来的。
+static func space_bells_from_paths(chart: Chart, counts: Dictionary, stats: Dictionary) -> void:
+	if chart.get_default_shape() == null:
+		return
+	var paths: Array[Note] = []
+	for note in chart.notes:
+		if note.type == "path":
+			paths.append(note)
+	if paths.is_empty():
+		return
+	for bell in chart.notes.duplicate():
+		if bell.type != "bell":
+			continue
+		if not _bell_conflicts(chart, bell.center_u, bell.beat, paths):
+			continue
+		var moved := false
+		for step in range(1, 21):
+			for direction in [1.0, -1.0]:
+				var u := fposmod(bell.center_u + direction * float(step) * 0.01, 1.0)
+				if _bell_conflicts(chart, u, bell.beat, paths):
+					continue
+				bell.center_u = u
+				moved = true
+				stats["bells_moved"] = int(stats["bells_moved"]) + 1
+				break
+			if moved:
+				break
+		if not moved:
+			_remove_note(chart, counts, bell, stats)
+
+
+static func _bell_conflicts(chart: Chart, u: float, beat: float, paths: Array[Note]) -> bool:
+	# 边界事件会让环在 Bell 的那一刻变形，所以按那一刻的真实边界取点。
+	var sampled: Dictionary = BoundaryRuntime.eval_point(chart, fposmod(u, 1.0), beat)
+	if bool(sampled.get("gap", false)):
+		return false
+	var bell_point: Vector2 = sampled.get("point", Vector2.ZERO)
+	if bell_point.length() <= 0.001:
+		return false
+	var limit := BELL_PATH_CLEARANCE_R * bell_point.length()
+	var scaled := bell_point.normalized() * RING_RADIUS
+	for path in paths:
+		if beat < path.beat - BELL_PATH_TIME_PAD or beat > path.end_beat + BELL_PATH_TIME_PAD:
+			continue
+		var count := maxi(4, mini(16, path.trace_pts.size()))
+		for i in count:
+			var q := float(i) / float(count - 1)
+			var point := _trace_point_at(path, q)
+			if point.distance_to(scaled) < limit:
+				return true
+	return false
+
+
+## 按比例在 trace_pts 上插值（用 db 当时间轴）。
+static func _trace_point_at(note: Note, fraction: float) -> Vector2:
+	var points := note.trace_pts
+	if points.is_empty():
+		return Vector2.ZERO
+	if points.size() == 1:
+		return Vector2(float(points[0].get("x", 0.0)), float(points[0].get("y", 0.0))) * RING_RADIUS
+	var first_db := float(points[0].get("db", 0.0))
+	var last_db := float(points[-1].get("db", 0.0))
+	var target := first_db + (last_db - first_db) * clampf(fraction, 0.0, 1.0)
+	var previous := 0
+	for i in range(1, points.size()):
+		if float(points[i].get("db", 0.0)) >= target:
+			previous = i - 1
+			break
+		previous = i
+	var a := points[previous]
+	var b := points[mini(previous + 1, points.size() - 1)]
+	var a_db := float(a.get("db", 0.0))
+	var b_db := float(b.get("db", 0.0))
+	var q := 0.0 if absf(b_db - a_db) <= 0.000001 else clampf((target - a_db) / (b_db - a_db), 0.0, 1.0)
+	var point := Vector2(
+		lerpf(float(a.get("x", 0.0)), float(b.get("x", 0.0)), q),
+		lerpf(float(a.get("y", 0.0)), float(b.get("y", 0.0)), q)
+	)
+	return point * RING_RADIUS
 
 
 static func optimize_osu(chart: Chart, counts: Dictionary) -> Dictionary:

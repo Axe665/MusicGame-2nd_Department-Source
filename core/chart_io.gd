@@ -189,6 +189,86 @@ static func save_chart(chart: Chart, path: String) -> Error:
 	return atomic_write(path, text)
 
 
+## ── 难度套组（一首歌多个难度，存成一个文件）──────────────────────────────
+const SET_FORMAT := "tamaki3-set"
+
+
+static func is_set_dict(data: Dictionary) -> bool:
+	return String(data.get("format", "")) == SET_FORMAT
+
+
+## 读一个套组文件：entries = [{"name": String, "chart": Chart}]。
+static func load_set(path: String) -> Dictionary:
+	last_error = ""
+	if not FileAccess.file_exists(path):
+		last_error = "文件不存在：%s" % path
+		return {"ok": false, "error": last_error}
+	var file := FileAccess.open(path, FileAccess.READ)
+	if file == null:
+		last_error = "无法读取：%s" % path
+		return {"ok": false, "error": last_error}
+	var text := file.get_as_text()
+	file.close()
+	var parser := JSON.new()
+	if parser.parse(text) != OK:
+		last_error = "JSON 解析失败：%s" % parser.get_error_message()
+		return {"ok": false, "error": last_error}
+	var data: Variant = parser.data
+	if not (data is Dictionary) or not is_set_dict(data):
+		last_error = "不是难度套组文件"
+		return {"ok": false, "error": last_error}
+	var raw: Dictionary = data
+	var entries: Array = []
+	for item in raw.get("difficulties", []):
+		if not (item is Dictionary):
+			continue
+		var entry: Dictionary = item
+		var chart_data: Variant = entry.get("chart", {})
+		if not (chart_data is Dictionary):
+			continue
+		var chart := chart_from_dict(chart_data)
+		if chart == null:
+			continue
+		var name := String(entry.get("name", "难度"))
+		chart.metadata["version"] = name
+		entries.append({"name": name, "chart": chart})
+	if entries.is_empty():
+		last_error = "套组里没有可用的难度"
+		return {"ok": false, "error": last_error}
+	return {
+		"ok": true,
+		"title": String(raw.get("title", "")),
+		"source": String(raw.get("source", "")),
+		"entries": entries,
+	}
+
+
+static func save_set(path: String, entries: Array, title: String = "", source: String = "") -> Error:
+	var difficulties: Array = []
+	for item in entries:
+		if not (item is Dictionary):
+			continue
+		var entry: Dictionary = item
+		var chart: Chart = entry.get("chart", null)
+		if chart == null:
+			continue
+		difficulties.append({
+			"name": String(entry.get("name", "难度")),
+			"chart": chart_to_dict(chart),
+		})
+	if difficulties.is_empty():
+		last_error = "没有可保存的难度"
+		return ERR_INVALID_DATA
+	var data := {
+		"format": SET_FORMAT,
+		"version": 1,
+		"title": title,
+		"source": source,
+		"difficulties": difficulties,
+	}
+	return atomic_write(path, JSON.stringify(data, "\t", true) + "\n")
+
+
 static func atomic_write(path: String, text: String) -> Error:
 	var dir := path.get_base_dir()
 	if not dir.is_empty():

@@ -2,6 +2,8 @@ class_name ChartBrowser
 extends AcceptDialog
 
 signal chart_imported
+## 下载完成：把落盘的 maidata.txt 路径交出去，由主窗口负责“转谱 → 存套组 → 开新窗口”。
+signal source_ready(source_path: String)
 
 var _search: LineEdit
 var _version: OptionButton
@@ -172,10 +174,11 @@ func _download_selected() -> void:
 		return
 	_progress.visible = true
 	_progress.value = 100.0
-	_status.text = "下载完成 100% · 开始导入…"
+	_status.text = "下载完成 100% · 开始转谱…"
 	_hide_download_progress()
-	_choose_difficulty(maidata)
-	_status.text = "导入完成 100%"
+	# 不在浏览器里选难度：交给新开的制谱窗口（顶部有难度下拉）。
+	source_ready.emit(maidata)
+	hide()
 
 func _fetch_bytes(url: String, label: String = "") -> PackedByteArray:
 	# 统一用 curl：adxdls 和 majdata 都可能让 Godot HTTPRequest 卡住。
@@ -345,10 +348,10 @@ func _download_majdata(id: String) -> void:
 		return
 	_progress.visible = true
 	_progress.value = 100.0
-	_status.text = "下载完成 100% · 开始导入…"
+	_status.text = "下载完成 100% · 开始转谱…"
 	_hide_download_progress()
-	_choose_difficulty(maidata)
-	_status.text = "导入完成 100%"
+	source_ready.emit(maidata)
+	hide()
 
 
 func _save(url: String, path: String, label: String = "") -> bool:

@@ -64,6 +64,8 @@ var cursor_u: float = 0.0
 var cursor_valid: bool = false
 var mouse_screen: Vector2 = Vector2.ZERO
 var mouse_inside: bool = false
+## AUTO 自动演示时的合成光标：有限值就盖掉真实鼠标，INF 表示用真鼠标。
+var auto_cursor: Vector2 = Vector2.INF
 
 var _bg: TextureRect
 var _background_image: TextureRect
@@ -487,7 +489,7 @@ func _process(_delta: float) -> void:
 	var beat_phase := fposmod(t, 1.0)
 	_glow_material.albedo_color = Color(0.37, 0.92, 0.86, 0.10 + 0.09 * exp(-beat_phase * 7.0))
 	if playtest_mode:
-		mouse_screen = get_local_mouse_position()
+		mouse_screen = auto_cursor if auto_cursor.is_finite() else get_local_mouse_position()
 		mouse_inside = true
 		var perf_now := Time.get_ticks_usec()
 		if _perf_since_usec == 0:
@@ -2306,6 +2308,10 @@ func path_erased(note: Note, relative_beat: float) -> bool:
 	return false
 
 
+## 局部坐标（1.0 = 环外缘）→ 屏幕点。
+## scale < 1 表示“还在从圆心飞过来”：插值放在**屏幕空间**做，
+## 因为缩放设计半径再投影会被透视拉扁——环上半边（远）慢、下半边（近）快，
+## 玩家看到的就是“下落不是匀速”。
 func _path_local_screen(chart: Chart, local: Vector2, t: float, scale: float = 1.0) -> Vector2:
 	var radius := local.length()
 	if radius <= 0.0001:
@@ -2314,7 +2320,11 @@ func _path_local_screen(chart: Chart, local: Vector2, t: float, scale: float = 1
 	var data := _boundary_point(chart, degrees / 360.0, t)
 	if bool(data.get("gap", false)):
 		return Vector2(INF, INF)
-	return project_design((data.point as Vector2) * radius * clampf(scale, 0.0, 1.0))
+	var full := project_design((data.point as Vector2) * radius)
+	var grow := clampf(scale, 0.0, 1.0)
+	if grow >= 0.999:
+		return full
+	return project_design(Vector2.ZERO).lerp(full, grow)
 
 
 func _path_screen_point(chart: Chart, note: Note, relative_beat: float, t: float, cache_sample: bool = true, scale: float = 1.0) -> Vector2:
@@ -2479,7 +2489,8 @@ func _draw_hold_sector(canvas: Control, chart: Chart, note: Note, t: float, pre:
 	var width := maxf(4.0, note.arc_width())
 	var half := width * 0.5
 	var steps := clampi(int(width / 3.0), 8, 48)
-	var read := maxf(0.25, pre)
+	# read 必须就是 pre：以前夹了个 0.25 拍下限，流速调快时 Hold 会比 Tap 慢。
+	var read := maxf(0.05, pre)
 	var duration := maxf(0.001, note.duration())
 	var outer_scale := clampf((t - note.beat + read) / read, 0.0, 1.0)
 	var inner_scale := clampf((t - note.beat - duration + read) / read, 0.0, 1.0)
@@ -2551,8 +2562,8 @@ func _draw_holds(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 		if fade <= 0.01:
 			continue
 		var grow_raw := clampf((t - (note.beat - pre)) / maxf(0.001, pre), 0.0, 1.0)
-		# 与 Tap 同一套接近表现：环心处只有 1/6 长，飞近时长大到 1。
-		var grow := lerpf(Note.SPAWN_LENGTH_RATIO, 1.0, grow_raw)
+		# 入场位置：从圆心匀速飞到环上（和 Tap / Path 同一套，pre 拍走完）。
+		var grow := grow_raw
 		# 直长条：扇形 → 扇环 → 收到判定线上消失（WACCA 玩家的读法）。
 		# 弯长条已移除，体节点只在真的把身体掰弯（da≠0）时才走折线分支。
 		var straight := true
@@ -2666,26 +2677,32 @@ func _draw_tap_donut(canvas: Control, point: Vector2, radius: float, color: Colo
 
 
 func _draw_tap_note(canvas: Control, chart: Chart, note: Note, t: float, pre: float) -> void:
-	# 长度系统：普通 Tap = 0.5 l，大小 Tap = size_ratio × l；条带随半径从 1/6 长到 1。
+	# 长度系统：普通 Tap = 0.5 l，大小 Tap = size_ratio × l。
+	# 位置：从圆心匀速飞到环上，和 Hold / Path / Anchor 完全同一套（同样 pre 拍走完）；
+	# 长度：从 1/6 l 长到 l。以前两件事共用同一个半径缩放，
+	# 结果 Tap 从 1/6 半径起跑，全程只有别人 5/6 的速度。
 	var progress := clampf((t - (note.beat - pre)) / maxf(0.001, pre), 0.0, 1.0)
-	var q := lerpf(Note.SPAWN_LENGTH_RATIO, 1.0, progress)
-	var center_point := _draw_length_band(canvas, chart, note.angle, note.arc_width(), q, t, UITheme.PINK)
+	var length_ratio := lerpf(Note.SPAWN_LENGTH_RATIO, 1.0, progress)
+	var center_point := _draw_length_band(canvas, chart, note.angle, note.arc_width() * length_ratio, progress, t, UITheme.PINK)
 	if show_debug and _valid_point(center_point):
 		var ns := _note_scale()
 		canvas.draw_string(UITheme.bold_font(), center_point + Vector2(-12, -22), "TAP %.0f°%s" % [note.arc_width(), " ×l %.2f" % note.size_ratio if note.sized else ""], HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(UITheme.PINK.r, UITheme.PINK.g, UITheme.PINK.b, 0.85))
 
 
-## Tap 与 Hold 头共用的"长度条"：一段按 radius_scale 缩放的弧带 + 两端圆头 + 中心点。
+## Tap 与 Hold 头共用的“长度条”：一段弧带 + 两端圆头 + 中心点。
+## `spawn` 是入场进度 0 → 1：几何按满尺寸算，再在**屏幕空间**从圆心插值过去，
+## 这样任何视角下都是匀速下落（缩放设计半径再投影会被透视拉扁）。
 ## 返回中心点屏幕坐标（可能为 INF）。
-func _draw_length_band(canvas: Control, chart: Chart, angle: float, width: float, radius_scale: float, t: float, color: Color, alpha: float = 1.0) -> Vector2:
+func _draw_length_band(canvas: Control, chart: Chart, angle: float, width: float, spawn: float, t: float, color: Color, alpha: float = 1.0) -> Vector2:
 	var ns := _note_scale()
-	var radius := clampf(radius_scale, 0.0, 1.0)
+	var grow := clampf(spawn, 0.0, 1.0)
+	var origin := project_design(Vector2.ZERO)
 	if width <= 0.05:
 		# 长度为 0 的大小 Tap 仍然占一个位置，留一个点提示它存在。
 		var tip := _boundary_point(chart, fposmod(angle, 360.0) / 360.0, t)
 		if bool(tip.get("gap", false)):
 			return Vector2(INF, INF)
-		var dot := project_design((tip.point as Vector2) * radius)
+		var dot := origin.lerp(project_design(tip.point as Vector2), grow)
 		if _valid_point(dot):
 			canvas.draw_circle(dot, 7.0 * ns, Color(color.r, color.g, color.b, 0.90 * alpha))
 		return dot
@@ -2696,7 +2713,7 @@ func _draw_length_band(canvas: Control, chart: Chart, angle: float, width: float
 		var data := _boundary_point(chart, fposmod(sample_angle, 360.0) / 360.0, t)
 		if bool(data.get("gap", false)):
 			continue
-		var p := project_design(data.point * radius)
+		var p := origin.lerp(project_design(data.point), grow)
 		if _valid_point(p):
 			points.append(p)
 	if points.size() < 2:
@@ -3602,10 +3619,12 @@ func note_band_points(angle_deg: float, width_deg: float, beat: float, scale: fl
 	if chart == null:
 		return points
 	var width := maxf(0.0, width_deg)
+	var grow := clampf(scale, 0.0, 1.0)
+	var origin := project_design(Vector2.ZERO)
 	if width <= 0.05:
 		var data := _boundary_point(chart, fposmod(angle_deg, 360.0) / 360.0, beat)
 		if not bool(data.get("gap", false)):
-			var p := project_design((data.point as Vector2) * scale)
+			var p := origin.lerp(project_design(data.point as Vector2), grow)
 			if _valid_point(p):
 				points.append(p)
 		return points
@@ -3615,21 +3634,22 @@ func note_band_points(angle_deg: float, width_deg: float, beat: float, scale: fl
 		var data := _boundary_point(chart, fposmod(a, 360.0) / 360.0, beat)
 		if bool(data.get("gap", false)):
 			continue
-		var p := project_design((data.point as Vector2) * scale)
+		var p := origin.lerp(project_design(data.point as Vector2), grow)
 		if _valid_point(p):
 			points.append(p)
 	return points
 
 
-## 判定用：音符此刻画在屏幕上的条带（含飞入半径），和绘制走同一套几何。
+## 判定用：音符此刻画在屏幕上的条带（含飞入进度），和绘制走同一套几何。
 func note_live_band(note: Note, beat: float, pad: float = 0.0) -> PackedVector2Array:
 	var chart := get_chart()
 	if chart == null:
 		return PackedVector2Array()
 	var pre := _pre_read_beats(chart, beat)
 	var progress := clampf((beat - (note.beat - pre)) / maxf(0.001, pre), 0.0, 1.0)
-	var grow := lerpf(Note.SPAWN_LENGTH_RATIO, 1.0, progress)
-	return note_band_points(note.angle, note.arc_width() + pad, beat, grow)
+	# 位置和绘制一致：从圆心匀速飞过来；长度也跟着从 1/6 l 长到 l。
+	var length_ratio := lerpf(Note.SPAWN_LENGTH_RATIO, 1.0, progress)
+	return note_band_points(note.angle, note.arc_width() * length_ratio + pad, beat, progress)
 
 
 ## 鼠标在环平面上的角度（度），用于密集流的扇区判定。
