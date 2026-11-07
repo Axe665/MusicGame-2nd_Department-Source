@@ -59,6 +59,10 @@ var _app: Node = null
 var hud_accuracy: float = -1.0
 var hud_rating: String = "—"
 var hud_errors: Array[float] = []
+## 试玩环心的大号连击数（Playtest 每 50ms 写入一次）。
+var hud_combo: int = 0
+var _hud_combo_seen: int = 0
+var _combo_pop: float = 0.0
 
 var cursor_u: float = 0.0
 var cursor_valid: bool = false
@@ -470,6 +474,11 @@ func _process(_delta: float) -> void:
 		_last_fit_key = ""
 		_last_mesh_key = ""
 	_update_mouse_tilt(_delta)
+	if hud_combo != _hud_combo_seen:
+		_hud_combo_seen = hud_combo
+		if hud_combo > 0:
+			_combo_pop = 1.0
+	_combo_pop = maxf(0.0, _combo_pop - _delta * 6.0)
 	for i in range(_pulses.size() - 1, -1, -1):
 		_pulses[i]["age"] = float(_pulses[i].get("age", 0.0)) + _delta
 		if float(_pulses[i]["age"]) > 0.5:
@@ -1687,6 +1696,7 @@ func draw_overlay(canvas: Control) -> void:
 	_draw_paths(canvas, chart, t, pre)
 	sec_usec = Time.get_ticks_usec()
 	_perf_sections[1] += sec_usec - sec2
+	_draw_combo(canvas)
 	_draw_holds(canvas, chart, t, pre)
 	sec2 = Time.get_ticks_usec()
 	_perf_sections[2] += sec2 - sec_usec
@@ -3372,14 +3382,14 @@ func _draw_pulses(canvas: Control) -> void:
 			"trace":
 				canvas.draw_line(point - Vector2(52, 0), point + Vector2(52, 0), Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.5 * alpha), 9.0 * alpha + 1.0, false)
 		var text_scale := 1.0 + 0.28 * clampf(1.0 - age / 0.12, 0.0, 1.0)
-		canvas.draw_string_outline(UITheme.bold_font(), point + Vector2(30, -36 - age * 30), String(pulse.get("label", "")), HORIZONTAL_ALIGNMENT_LEFT, -1, int(13.0 * text_scale), 4, Color(0, 0, 0, 0.55 * alpha))
-		canvas.draw_string(UITheme.bold_font(), point + Vector2(30, -36 - age * 30), String(pulse.get("label", "")), HORIZONTAL_ALIGNMENT_LEFT, -1, int(13.0 * text_scale), Color(color.r, color.g, color.b, alpha))
+		canvas.draw_string_outline(UITheme.bold_font(), point + Vector2(30, -40 - age * 30), String(pulse.get("label", "")), HORIZONTAL_ALIGNMENT_LEFT, -1, int(16.0 * text_scale), 5, Color(0, 0, 0, 0.55 * alpha))
+		canvas.draw_string(UITheme.bold_font(), point + Vector2(30, -40 - age * 30), String(pulse.get("label", "")), HORIZONTAL_ALIGNMENT_LEFT, -1, int(16.0 * text_scale), Color(color.r, color.g, color.b, alpha))
 		# 早/晚提示：Estella 被批评判定反馈不清，这里把偏差方向直接写在判定字下面。
 		var detail := String(pulse.get("detail", ""))
 		if not detail.is_empty():
 			# 这里原本用等宽字体，但它没有中文字形，每个不同的“早/晚 X ms”都会触发一次
 			# 系统字体回退查找（单次约 18ms），判定密集时会周期性卡顿。改用含中文的正文字体。
-			canvas.draw_string(UITheme.FONT_REGULAR, point + Vector2(30, -22 - age * 30), detail, HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(1, 1, 1, 0.72 * alpha))
+			canvas.draw_string(UITheme.FONT_REGULAR, point + Vector2(30, -24 - age * 30), detail, HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(1, 1, 1, 0.72 * alpha))
 
 
 func _draw_fx_path_head(canvas: Control, point: Vector2, color: Color, age: float) -> void:
@@ -3518,6 +3528,28 @@ func _draw_fx_ink(canvas: Control, point: Vector2, color: Color, age: float, spa
 		var angle0 := float(sparks[0])
 		canvas.draw_line(point, point + Vector2(cos(angle0), sin(angle0)) * (36.0 + 72.0 * t), Color(color.r, color.g, color.b, 0.50 * fade), 3.5 * (1.0 - t) + 0.5, false)
 	canvas.draw_circle(point, 3.0 * fade, Color(1, 1, 1, 0.65 * fade))
+
+
+## 环心大号连击：只在试玩里显示，连击变化时轻微弹一下。
+func _draw_combo(canvas: Control) -> void:
+	if not playtest_mode or hud_combo <= 0:
+		return
+	var center := project_design(Vector2.ZERO)
+	if not _valid_point(center):
+		return
+	var base := int(clampf(minf(size.x, size.y) * 0.065, 36.0, 64.0))
+	var font_size := int(float(base) * (1.0 + 0.18 * _combo_pop))
+	var pos := Vector2(center.x - size.x * 0.5, center.y + float(font_size) * 0.34)
+	var font := UITheme.bold_font()
+	canvas.draw_string_outline(font, pos, str(hud_combo), HORIZONTAL_ALIGNMENT_CENTER, size.x, font_size, maxi(4, font_size / 8), Color(0, 0, 0, 0.50))
+	canvas.draw_string(font, pos, str(hud_combo), HORIZONTAL_ALIGNMENT_CENTER, size.x, font_size, Color(1, 1, 1, 0.80))
+
+
+## 新一局开始时清掉上一局的连击残留。
+func reset_combo_hud() -> void:
+	hud_combo = 0
+	_hud_combo_seen = 0
+	_combo_pop = 0.0
 
 
 func _draw_hud(canvas: Control, chart: Chart, t: float) -> void:

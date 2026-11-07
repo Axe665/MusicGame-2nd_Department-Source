@@ -533,6 +533,11 @@ func test_position_judgement() -> bool:
 	eq(run._distance_to_polyline(Vector2(50, 30), line), 30.0, "distance to a band segment")
 	eq(run._distance_to_polyline(Vector2(130, 0), line), 30.0, "distance past the band end")
 	eq(run._distance_to_polyline(Vector2(10, 20), PackedVector2Array([Vector2(10, 0)])), 20.0, "distance to a point note")
+	# 早按不再强升 GOOD：只有 BAD 窗口内的早按才会被吃掉。
+	eq(Playtest.HIT_WINDOW_MS, Playtest.BAD_MS, "early protection uses the BAD window")
+	eq(run._tier_for(-60.0), "PERFECT", "a 60ms early press is PERFECT")
+	eq(run._tier_for(-200.0), "BAD", "a 200ms early press is BAD, not upgraded")
+	eq(run._tier_for(-260.0), "MISS", "a 260ms early press is outside the window")
 	run.free()
 	return true
 
