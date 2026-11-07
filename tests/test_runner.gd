@@ -54,6 +54,8 @@ func _initialize() -> void:
 		"test_simai_osu_friendly",
 		"test_simai_dense_relax",
 		"test_simai_relax_keeps_slow",
+		"test_sentakki_slide_library",
+		"test_convert_optimizer_fast_path",
 		"test_note_length_system",
 		"test_osu_std_lanes",
 		"test_path_custom_color",
@@ -875,8 +877,8 @@ SliderMultiplier: 1.4
 	eq(chart.notes.size(), 3, "slider kinds note count")
 	eq(chart.notes[0].type, "hold", "short slider -> hold")
 	eq(chart.notes[0].hold_style, "straight", "short slider hold is straight")
-	eq(chart.notes[1].type, "hold", "repeat slider -> hold")
-	eq(chart.notes[1].hold_style, "straight", "repeat slider hold is straight")
+	eq(chart.notes[1].type, "path", "repeat slider -> sentakki slide")
+	ok(chart.notes[1].end_beat > chart.notes[1].beat, "repeat slider slide has duration")
 	eq(chart.notes[2].type, "path", "long slider -> plane path")
 	eq(chart.notes[2].space, "plane", "long slider stays planar")
 	ok(chart.notes[2].end_beat > chart.notes[2].beat, "long slider slide has duration")
@@ -947,7 +949,7 @@ SliderMultiplier: 1.4
 		return false
 	var chart: Chart = result["chart"]
 	eq(chart.notes.size(), 5, "std readability note count")
-	near(chart.notes[0].angle, 270.0, 0.001, "std first note keeps absolute angle")
+	near(chart.notes[0].angle, 67.5, 0.001, "std first note keeps the visual top angle")
 	var max_step := 0.0
 	var min_step := 360.0
 	for i in range(1, chart.notes.size()):
@@ -1230,7 +1232,7 @@ func test_simai_import() -> bool:
 	eq(Validator.errors(Validator.validate(chart)).size(), 0, "simai import is playable without double-hand conflicts")
 	if chart.notes.size() >= 3:
 		near(chart.notes[0].angle, 90.0, 0.001, "simai button 1 is top")
-		near(chart.notes[2].end_beat, 4.0, 0.001, "simai slide wait + duration")
+		near(chart.notes[2].end_beat, 3.0, 0.001, "simai slide duration starts on the head beat")
 		near(chart.notes[2].tail_angle, 270.0, 0.001, "simai slide tail button 5")
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
 	return true
@@ -1471,15 +1473,16 @@ SliderMultiplier: 1.4
 		return true
 	var lanes: Array[int] = []
 	for note in chart.notes:
-		var lane := posmod(int(round(fposmod(note.angle, 360.0) / 45.0)), 8)
-		near(note.angle, float(lane) * 45.0, 0.001, "std angle snaps to a 45° lane")
+		var lane := posmod(roundi((90.0 - note.angle - 22.5) / 45.0), 8)
+		near(note.angle, fposmod(90.0 - (22.5 + float(lane) * 45.0), 360.0), 0.001, "std angle snaps to a Sentakki lane")
 		lanes.append(lane)
 	eq(lanes.size(), 5, "five circles import")
 	if lanes.size() == 5:
-		eq(lanes[0], 4, "left circle lands on lane 4")
-		eq(lanes[2], 0, "right circle lands on lane 0")
-		eq(lanes[3], 6, "top circle lands on lane 6")
-		eq(lanes[4], 5, "top-left circle lands on lane 5")
+		eq(lanes[0], 5, "left circle lands on Sentakki lane 5")
+		eq(lanes[1], 1, "center circle follows the stream to lane 1")
+		eq(lanes[2], 1, "right circle stays on lane 1")
+		eq(lanes[3], 6, "top circle jumps to lane 6")
+		eq(lanes[4], 4, "top-left circle jumps to lane 4")
 	return true
 
 
@@ -1626,3 +1629,62 @@ func _click_track(bpm: float, offset_ms: float, seconds: float, rate: float) -> 
 			samples[index] += sin(TAU * 1200.0 * float(i) / rate) * decay * 0.22
 		beat += 1
 	return samples
+
+
+func test_sentakki_slide_library() -> bool:
+	var parts := SentakkiSlide.valid_parts(false)
+	ok(parts.size() > 20, "sentakki slide library has usable parts")
+	var straight: Dictionary = {}
+	for part in parts:
+		if String(part["shape"]) == "straight" and int(part["lanes"]) == 3 and not bool(part["mirrored"]):
+			straight = part
+			break
+	ok(not straight.is_empty(), "sentakki straight 3 exists")
+	if not straight.is_empty():
+		near(float(straight["min_ms"]), 109.6, 8.0, "sentakki straight 3 min duration")
+		var trace := SentakkiSlide.trace_from_parts(90.0, [straight], 2.0, 0.5)
+		ok(trace.size() >= 12, "sentakki trace is densified")
+		var first := Vector2(float(trace[0]["x"]), float(trace[0]["y"]))
+		near(first.distance_to(Vector2(cos(deg_to_rad(90.0)), sin(deg_to_rad(90.0)))), 0.0, 0.01, "sentakki trace starts at the head")
+		var last := Vector2(float(trace[-1]["x"]), float(trace[-1]["y"]))
+		var expected := Vector2(cos(deg_to_rad(90.0 - 3.0 * 45.0)), sin(deg_to_rad(90.0 - 3.0 * 45.0)))
+		near(last.distance_to(expected), 0.0, 0.01, "sentakki trace ends at the relative end lane")
+	var short_parts := SentakkiSlide.valid_parts(true)
+	var has_short := false
+	for part in short_parts:
+		if String(part["shape"]) == "straight" and int(part["lanes"]) == 1:
+			has_short = true
+			break
+	ok(has_short, "maimai allows a one-lane straight")
+	return true
+
+
+func test_convert_optimizer_fast_path() -> bool:
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 240.0, 4)]
+	var note := Note.new("path", 0.0, 90.0, 62.0)
+	note.end_beat = 0.5
+	note.wait_beat = 0.0
+	note.tail_angle = 270.0
+	note.tail_width = 52.0
+	note.space = "plane"
+	note.trace_pts = _straight_trace(90.0, 270.0, 0.5, 9)
+	chart.notes = [note]
+	var counts := {"tap": 0, "hold": 0, "path": 1, "bell": 0, "dropped": 0}
+	var stats := ConvertOptimizer.optimize_maimai(chart, counts)
+	eq(int(stats["rebuilt"]) + int(stats["degraded"]), 1, "fast path is rebuilt or degraded")
+	eq(note.type, "path", "fast path stays a path after shortening")
+	ok(absf(JudgeMath.angle_delta(note.angle, note.tail_angle)) <= 45.01, "fast path tail is shortened to a reachable lane")
+	ok(note.trace_pts.size() >= 12, "rebuilt path is densely sampled")
+	return true
+
+
+func _straight_trace(from_deg: float, to_deg: float, duration: float, count: int) -> Array[Dictionary]:
+	var result: Array[Dictionary] = []
+	var from := Vector2(cos(deg_to_rad(from_deg)), sin(deg_to_rad(from_deg)))
+	var to := Vector2(cos(deg_to_rad(to_deg)), sin(deg_to_rad(to_deg)))
+	for i in count:
+		var t := float(i) / float(count - 1)
+		var point := from.lerp(to, t)
+		result.append({"x": point.x, "y": point.y, "db": duration * t})
+	return result
