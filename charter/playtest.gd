@@ -15,6 +15,10 @@ const RED_LIMIT_SEC := 0.2
 # 鼠标判定半径：非 Tap 音符统一放大，避免要求像素级瞄准。
 const PATH_HEAD_RADIUS := 138.0
 const PATH_TAIL_RADIUS := 192.0
+## 尾判半径最多占“头到尾直线距离”的多少（短滑条要跟着缩）。
+const PATH_TAIL_RADIUS_RATIO := 0.42
+## 尾判还要求光标滑到轨迹的多少进度，防止站在中段就提前算完成。
+const PATH_TAIL_MIN_FRACTION := 0.86
 const TRACE_HEAD_RADIUS := 72.0
 const TRACE_CONTACT_PX := 56.0
 const BELL_COLLECT_RADIUS := 112.0
@@ -68,6 +72,18 @@ var _auto_origin_ms: float = 0.0
 var _offset_dirty: bool = false
 ## 自动基准模式：不进音频、按谱面自动出判定，用于无人值守测帧率。
 var bench_mode: bool = false
+## AUTO 自动演示：把「完美演奏」合成成真实输入（按键 / 鼠标位置），
+## 走的是同一条判定管线，所以打击特效、音效、连击、结算都和真人一样。
+var auto_play: bool = false
+var _auto_index: int = 0
+var _auto_cursor: Vector2 = Vector2.ZERO
+var _auto_hold_keys: Dictionary = {}   # note_id -> {"key": int, "end_ms": float}
+var _auto_key_phase: int = 0
+const AUTO_LEAD_MS := 8.0              # 比判定时间早这么多就按下（吃掉帧量化误差）
+const AUTO_RELEASE_MS := 60.0          # Hold 尾判之后再松手，避免被判成提前松开
+const AUTO_PREVIEW_MS := 900.0         # 光标提前多久开始预判下一个要点
+const AUTO_KEY_A := 65                 # 'A'
+const AUTO_KEY_B := 66                 # 'B'
 var _judge_from: int = 0
 ## 帧时间采样（基准模式诊断卡顿）：每帧间隔 + 2 秒统计。
 var _frame_last_usec: int = 0
@@ -136,6 +152,10 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	_preview.star_speed = float(_app.star_speed if _app != null else 1.0)
 	_preview.note_skin = String(_app.note_skin if _app != null else "candy")
 	_preview.hit_fx_style = String(_app.hit_fx_style if _app != null else "burst")
+	# AUTO 关掉时 auto_cursor 保持 INF，等于用真实鼠标。
+	_preview.auto_cursor = Vector2.INF
+	if auto_play:
+		_preview.auto_cursor = _preview.project_design(Vector2.ZERO)
 	# 鼠标移动不再按帧累积，瞄准反馈早一帧到达。
 	Input.set_use_accumulated_input(false)
 	_paused = false
@@ -367,6 +387,9 @@ func _init_states() -> void:
 		if note.type == "bell":
 			_bell_total += 1
 	_judge_from = 0
+	_auto_index = 0
+	_auto_cursor = Vector2.ZERO
+	_auto_hold_keys.clear()
 	for region in chart.regions:
 		_red_states[region.id] = {"time": 0.0, "broken": false}
 
@@ -422,6 +445,8 @@ func _process(delta: float) -> void:
 	var beat := chart.timing.chart_ms_to_beat(chart_ms)
 	_preview.time_beat = beat
 	_preview.playing = true
+	if auto_play:
+		_auto_step(judge_ms, beat, delta)
 	_judge_all(judge_ms, beat, delta)
 	if bench_mode:
 		_bench_tick(judge_ms, beat)
@@ -487,6 +512,214 @@ func _early_protect_ms() -> float:
 		pre = maxf(200.0, float(chart.pre_read_ms))
 	var flow := float(_app.flow_scale) if _app != null else 1.0
 	return clampf(pre / maxf(0.05, flow) * 0.25, 80.0, 600.0)
+
+
+## ── AUTO 自动演示 ────────────────────────────────────────────────────────
+## 把「完美演奏」翻译成真实输入，判定管线完全不知道这是 AUTO：
+##   · Tap / Anchor / Path 头 / Trace 头 → 判定时间塞一次按键
+##   · Hold → 判定时按下、尾判之后再松
+##   · Path / Trace → 合成光标贴着轨迹走，轨迹按进度擦除
+##   · Bell → 合成光标停在金币上
+##   · Red → 合成光标躲到红区外
+## 所以打击特效、音效、连击、结算都和真人打出来的一样。
+
+## AUTO 的按键长这样：时间就用判定时间，位置用音符当时的屏幕位置。
+static func auto_press_payload(target_ms: float, point: Vector2, angle: float, key: int) -> Dictionary:
+	return {
+		"time": target_ms,
+		"mouse": point,
+		"angle": angle,
+		"u": fposmod(angle, 360.0) / 360.0,
+		"valid": true,
+		"key": key,
+	}
+
+## 到点了没：比判定时间早 lead_ms 就把按键推进队列。
+static func auto_due(target_ms: float, ms: float, lead_ms: float = 8.0) -> bool:
+	return ms >= target_ms - lead_ms
+
+
+func _auto_step(ms: float, beat: float, _delta: float) -> void:
+	if chart == null or _preview == null:
+		return
+	_auto_cursor = _auto_cursor_target(ms, beat)
+	_preview.auto_cursor = _auto_cursor
+	while _auto_index < _ordered_notes.size():
+		var note := _ordered_notes[_auto_index]
+		var state: Dictionary = _states[note.id]
+		if not auto_due(float(state["target_ms"]), ms, AUTO_LEAD_MS):
+			break
+		_auto_press_note(note, state, beat)
+		_auto_index += 1
+	_auto_feed_trace(ms)
+	_auto_release_holds(ms)
+
+
+func _auto_press_note(note: Note, state: Dictionary, beat: float) -> void:
+	var key := AUTO_KEY_A if _auto_key_phase % 2 == 0 else AUTO_KEY_B
+	_auto_key_phase += 1
+	if note.type == "bell":
+		# 金币只认光标位置，不需要按键。
+		return
+	var point := _preview.note_head_screen(note, beat)
+	if not point.is_finite():
+		point = _auto_cursor
+	_key_presses.append(auto_press_payload(float(state["target_ms"]), point, note.angle, key))
+	if note.type == "hold":
+		_keys_held[key] = true
+		_auto_hold_keys[note.id] = {"key": key, "end_ms": float(state["end_ms"])}
+
+
+## Trace 判定的是「鼠标走过的总距离」。轨迹比 move_px 短时真人也会来回蹭，
+## AUTO 直接把差的距离补上，保证演示一定打得完。
+func _auto_feed_trace(ms: float) -> void:
+	var star_speed := float(_app.star_speed if _app != null else 1.0)
+	var last := mini(_ordered_notes.size(), _judge_from + 64)
+	for i in range(maxi(0, _judge_from), last):
+		var note := _ordered_notes[i]
+		if note.type != "trace":
+			continue
+		var state: Dictionary = _states[note.id]
+		if bool(state.get("done", false)) or not bool(state.get("trace_started", false)):
+			continue
+		if ms > float(state["end_ms"]) + 200.0:
+			continue
+		var required := note.move_px * star_speed
+		if float(state["trace_distance"]) < required:
+			state["trace_distance"] = required
+		return
+
+
+func _auto_release_holds(ms: float) -> void:
+	for note_id in _auto_hold_keys.keys():
+		var info: Dictionary = _auto_hold_keys[note_id]
+		if ms < float(info["end_ms"]) + AUTO_RELEASE_MS:
+			continue
+		_keys_held.erase(int(info["key"]))
+		_auto_hold_keys.erase(note_id)
+
+
+## AUTO 光标往哪放：Bell 的窗口很短先满足它，其次 Path/Trace 的身体期，否则待机。
+func _auto_cursor_target(ms: float, beat: float) -> Vector2:
+	var center: Vector2 = _preview.project_design(Vector2.ZERO)
+	if not center.is_finite():
+		center = Vector2.ZERO
+	var body := Vector2.INF
+	var bell_point := Vector2.INF
+	var last := mini(_ordered_notes.size(), _judge_from + 64)
+	for i in range(maxi(0, _judge_from - 4), last):
+		var note := _ordered_notes[i]
+		var state: Dictionary = _states.get(note.id, {})
+		if state.is_empty() or bool(state.get("done", false)):
+			continue
+		var target := float(state["target_ms"])
+		var end_ms := float(state["end_ms"])
+		if ms > end_ms + 200.0:
+			continue
+		match note.type:
+			"bell":
+				if not bell_point.is_finite() and ms >= target - BELL_WINDOW_MS and ms <= target + BELL_WINDOW_MS:
+					var bell: Dictionary = _preview.bell_screen(note, beat)
+					if not bell.is_empty():
+						bell_point = bell["center"]
+			"path", "trace":
+				if not body.is_finite() and ms >= target - AUTO_PREVIEW_MS and ms <= end_ms + 120.0:
+					body = _auto_body_point(note, ms, beat, end_ms)
+	if bell_point.is_finite():
+		return _auto_avoid_red(bell_point, beat, center)
+	if body.is_finite():
+		return _auto_avoid_red(body, beat, center)
+	# 待机：圆心稍微偏一点，别挡住判定环上的东西。
+	var idle := center
+	var rim: Vector2 = _preview.project_u(0.0, beat)
+	if rim.is_finite():
+		idle = center.lerp(rim, 0.18)
+	return _auto_avoid_red(idle, beat, center)
+
+
+## Path 的进度点 / Trace 的进度采样点。
+func _auto_body_point(note: Note, ms: float, beat: float, end_ms: float) -> Vector2:
+	if note.type == "path":
+		return _auto_path_point(note, ms, beat, end_ms)
+	var points: PackedVector2Array = _preview.trace_screen_points(note, beat)
+	if points.size() < 2:
+		return _preview.note_head_screen(note, beat)
+	var q := clampf((beat - note.beat) / maxf(0.001, note.duration()), 0.0, 1.0)
+	var index := clampi(int(round(q * float(points.size() - 1))), 0, points.size() - 1)
+	return points[index]
+
+
+## Path 的尾巴是「光标靠近就算」，半径 192px 很大：离判定时间还远时，
+## 光标要沿着轨迹往回退一点，否则尾巴会被提前判成 BAD。
+func _auto_path_point(note: Note, ms: float, beat: float, end_ms: float) -> Vector2:
+	var total := note.duration()
+	var tail: Vector2 = _preview.path_point(note, total, beat)
+	if ms >= end_ms - 40.0:
+		return tail
+	var rel := clampf(beat - note.beat, 0.0, total)
+	var point: Vector2 = _preview.path_point(note, rel, beat)
+	if not point.is_finite() or not tail.is_finite():
+		return point
+	var guard := PATH_TAIL_RADIUS + 36.0
+	if point.distance_to(tail) > guard:
+		return point
+	var steps := 16
+	for k in steps:
+		var candidate: Vector2 = _preview.path_point(note, maxf(0.0, rel - total * float(k + 1) / float(steps)), beat)
+		if candidate.is_finite() and candidate.distance_to(tail) > guard:
+			return candidate
+	return point
+
+
+## 光标落进红区就换一个安全点：沿环内一圈找第一个不在红区里的位置。
+func _auto_avoid_red(point: Vector2, beat: float, center: Vector2) -> Vector2:
+	if not point.is_finite() or not _inside_red(point, beat):
+		return point
+	var rim: Vector2 = _preview.project_u(0.0, beat)
+	var radius := center.distance_to(rim) if rim.is_finite() else 120.0
+	if radius <= 1.0:
+		radius = 120.0
+	for k in 8:
+		var angle := TAU * float(k) / 8.0
+		var candidate: Vector2 = center + Vector2(cos(angle), sin(angle)) * radius * 0.66
+		if not _inside_red(candidate, beat):
+			return candidate
+	return center
+
+
+func _inside_red(point: Vector2, beat: float) -> bool:
+	if chart == null or _preview == null:
+		return false
+	for region in chart.regions:
+		if not region.active_at(beat):
+			continue
+		var polygon: PackedVector2Array = _preview.red_region_polygon(region, beat)
+		if polygon.size() >= 3 and Geometry2D.is_point_in_polygon(point, polygon):
+			return true
+	return false
+
+
+func _toggle_auto() -> void:
+	auto_play = not auto_play
+	if _preview != null:
+		_preview.auto_cursor = Vector2.INF if not auto_play else _preview.mouse_screen
+	if not auto_play:
+		for info in _auto_hold_keys.values():
+			_keys_held.erase(int(info["key"]))
+		_auto_hold_keys.clear()
+	else:
+		# 中途打开时不要补打已经过去的音符。
+		var now_ms := _chart_ms()
+		_auto_index = 0
+		while _auto_index < _ordered_notes.size():
+			var note := _ordered_notes[_auto_index]
+			if float(_states[note.id]["target_ms"]) >= now_ms - 100.0:
+				break
+			_auto_index += 1
+	_auto_key_phase = 0
+	_add_log("AUTO %s" % ("ON" if auto_play else "OFF"))
+	if chart != null:
+		_update_top_bar(_chart_ms(), chart.timing.chart_ms_to_beat(_chart_ms()))
 
 
 func _judge_all(ms: float, beat: float, delta: float) -> void:
@@ -642,7 +875,20 @@ func _judge_path(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 				state["head_judged"] = true
 	if not state["tail_judged"] and ms >= tail_ms - HIT_WINDOW_MS:
 		var tail_point: Vector2 = _preview.path_point(note, note.duration(), beat)
-		if mouse.is_finite() and tail_point.is_finite() and mouse.distance_to(tail_point) <= PATH_TAIL_RADIUS:
+		# 尾判半径跟着滑条长度缩：45° 的短滑条头尾只隔 0.48R（≈330px），
+		# 固定 192px 会让“刚摸到头”就被当成“已经滑到尾巴”，直接判成 BAD。
+		var chord := PATH_TAIL_RADIUS
+		var start_point: Vector2 = _preview.path_point(note, 0.0, beat)
+		if start_point.is_finite() and tail_point.is_finite():
+			chord = start_point.distance_to(tail_point)
+		var tail_radius := clampf(minf(PATH_TAIL_RADIUS, chord * PATH_TAIL_RADIUS_RATIO), 56.0, PATH_TAIL_RADIUS)
+		# 还要求真的滑到后段：站在轨迹中段即使离尾巴够近也不算完成。
+		var tail_info: Dictionary = _preview.path_fraction(note, mouse, beat)
+		var tail_fraction := float(tail_info.get("fraction", 0.0))
+		var near_tail := mouse.is_finite() and tail_point.is_finite() and mouse.distance_to(tail_point) <= tail_radius
+		# 时间已经压在尾巴上时，只按距离给判（照顾真人瞄偏但时机对的滑条）。
+		var tail_due := absf(ms - tail_ms) <= PERFECT_MS
+		if near_tail and (tail_fraction >= PATH_TAIL_MIN_FRACTION or tail_due):
 			var tier := _tier_for(ms - tail_ms)
 			state["tail_hit"] = true
 			_register_hit(tier)
@@ -1056,7 +1302,8 @@ func _update_top_bar(ms: float, beat: float) -> void:
 	var fx_label := String(Preview3D.hit_fx_presets().get(_preview.hit_fx_style, _preview.hit_fx_style))
 	if _style_label != null:
 		_style_label.text = "%s · %s" % [skin_label, fx_label]
-	_top_stats.text = "HIT %d  MISS %d  ACC %s  COMBO %d  |  BELL %d/%d  RED %d  |  BIA %+.1fms  OFF %+.0fms" % [
+	_top_stats.text = "%sHIT %d  MISS %d  ACC %s  COMBO %d  |  BELL %d/%d  RED %d  |  BIA %+.1fms  OFF %+.0fms" % [
+		"[AUTO] " if auto_play else "",
 		_hit_count,
 		_miss_count,
 		"—" if accuracy < 0.0 else "%.1f%%" % accuracy,
@@ -1242,6 +1489,10 @@ func _input(event: InputEvent) -> void:
 				_cycle_hit_fx(1)
 				get_viewport().set_input_as_handled()
 				return
+			if event.keycode == KEY_F8:
+				_toggle_auto()
+				get_viewport().set_input_as_handled()
+				return
 			if event.keycode == KEY_BRACKETLEFT or event.keycode == KEY_BRACKETRIGHT:
 				var delta := 5.0 if event.keycode == KEY_BRACKETRIGHT else -5.0
 				if _app != null:
@@ -1278,6 +1529,8 @@ func _finish() -> void:
 	_preview.playing = false
 	_preview.custom_cursor_visible = false
 	var lines: Array[String] = []
+	if auto_play:
+		lines.append("AUTO 自动演示（成绩不计入）")
 	lines.append("命中 %d / 失误 %d" % [_hit_count, _miss_count])
 	lines.append("调试准确率：%s" % ("—" if _accuracy() < 0.0 else "%.2f%%" % _accuracy()))
 	lines.append("评级：%s（预览/非正式）" % _rating(_accuracy()))
@@ -1290,7 +1543,9 @@ func _finish() -> void:
 	lines.append("Bell 收集：%d / %d" % [_bell_hits, _bell_total])
 	lines.append("Red 断连：%d 次" % _red_breaks)
 	var average_error := _mean_error()
-	_flush_offset()
+	# AUTO 的“误差”恒为 0，不能让它把动态 offset 带偏。
+	if not auto_play:
+		_flush_offset()
 	if _timing_chart != null:
 		_timing_chart.set_errors(_errors)
 	if _bias_label != null:

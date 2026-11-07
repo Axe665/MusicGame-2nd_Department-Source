@@ -40,6 +40,8 @@ var hit_sfx_style: String = "default"
 var frame_cap: String = "vsync"
 ## 局内动态校准判定偏移（默认关）。
 var dynamic_offset: bool = false
+## AUTO 自动演示：试玩时自动完美演奏，用来快速检查谱面（成绩不计入）。
+var playtest_auto: bool = false
 ## 上一局的平均判定偏差，供试玩设置显示。
 var last_bias_ms: float = 0.0
 
@@ -74,6 +76,23 @@ var _live_change_pending: bool = false
 var _commands_since_autosave: int = 0
 var _autosave_timer: Timer
 
+## ── 转谱窗口 ─────────────────────────────────────────────────────────────
+## 导入（osu / 舞萌）不再覆盖当前谱面：另开一个窗口，窗口顶部能切难度。
+signal import_set_changed
+## 同一个来源（或同一首歌）下的难度组：每项 {"name": String, "chart": Chart}。
+## 下拉框直接读它；导入时一次性把来源里的所有难度都转好放进来。
+signal difficulties_changed
+var difficulties: Array[Dictionary] = []
+var difficulty_index: int = 0
+var _switching_difficulty: bool = false
+## 当前窗口在编辑的是一个难度套组文件（非空时保存写回套组）。
+var set_path: String = ""
+var import_source: String = ""
+var import_kind: String = ""                       # "osu" | "simai"
+var import_difficulties: Array[Dictionary] = []     # [{index, name, label}]（兼容旧下拉）
+var import_index: int = 0
+var child_window: bool = false
+
 
 func _ready() -> void:
 	_load_settings()
@@ -82,19 +101,302 @@ func _ready() -> void:
 	_autosave_timer.autostart = true
 	_autosave_timer.timeout.connect(_on_autosave_timer)
 	add_child(_autosave_timer)
+	child_window = "--child-window" in OS.get_cmdline_user_args()
+	if child_window:
+		# 新开的转谱窗口默认最大化：编辑器三栏 + 顶部工具在 1600×900 以下会挤掉右侧控件。
+		DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_MAXIMIZED)
+	var set_arg := cmdline_value("--open-set=")
+	if not set_arg.is_empty():
+		# 转谱窗口：先放一张空谱占位，等主界面建好再载入套组。
+		set_chart(Chart.new(), "", false)
+		call_deferred("_boot_set_window", set_arg)
+		return
+	var import_arg := cmdline_value("--import-source=")
+	if not import_arg.is_empty():
+		# 转谱窗口：先放一张空谱占位，等主界面建好再导入，
+		# 这样 main.gd 不会在 _ready 里拿到 null chart。
+		set_chart(Chart.new(), "", false)
+		call_deferred("_boot_import_window", import_arg)
+		return
 	var demo_path := "user://charts/demo.json"
 	var start_chart: Chart = null
-	var from_repo := false
 	if FileAccess.file_exists(demo_path):
 		start_chart = ChartIO.load_chart(demo_path)
 	if start_chart == null and FileAccess.file_exists("res://charts/demo.json"):
 		start_chart = ChartIO.load_chart("res://charts/demo.json")
-		from_repo = true
 	if start_chart == null:
 		start_chart = DemoChart.make_demo()
-		from_repo = true
-	set_chart(start_chart, demo_path, from_repo)
+	# 启动时载入的示例谱不算“改过”：否则自动保存会把用户上一次的
+	# user://autosave.json 覆盖成示例谱（真正的谱面只剩 .bak.1..5）。
+	set_chart(start_chart, demo_path, false)
 	call_deferred("_set_initial_focus_notice")
+
+
+static func cmdline_value(prefix: String) -> String:
+	for arg in OS.get_cmdline_user_args():
+		if arg.begins_with(prefix):
+			return arg.substr(prefix.length())
+	return ""
+
+
+## 转谱窗口的启动流程：解析来源 → 建难度列表 → 导入第一份。
+func _boot_import_window(source: String) -> void:
+	if open_import_source(source):
+		return
+	notice.emit("转谱窗口：读不出 %s 的难度列表" % source.get_file(), "error")
+	set_chart(DemoChart.make_demo(), "user://charts/demo.json", false)
+
+
+## 转谱窗口的启动流程（套组版）：读 set.json，把里面每个难度都装进下拉框。
+func _boot_set_window(path: String) -> void:
+	if open_set_file(path):
+		return
+	notice.emit("转谱窗口：打不开 %s" % path.get_file(), "error")
+	set_chart(DemoChart.make_demo(), "user://charts/demo.json", false)
+
+
+## 打开一个导入来源（.osz/.zip/maidata.txt），把来源里的所有难度都转好放进难度组，
+## 所以不管在哪个窗口导入，顶部都会出现难度下拉框。
+func open_import_source(source: String) -> bool:
+	if source.is_empty() or not FileAccess.file_exists(source):
+		return false
+	import_source = source
+	import_kind = ""
+	import_difficulties.clear()
+	import_index = 0
+	difficulties.clear()
+	var simai := SimaiIO.list_maidata(source)
+	if not simai.is_empty():
+		import_kind = "simai"
+		for i in simai.size():
+			var item: Dictionary = simai[i]
+			var version := String(item.get("version", ""))
+			import_difficulties.append({
+				"index": int(item.get("index", i)),
+				"name": version if not version.is_empty() else "未命名难度",
+				"label": import_label(version, String(item.get("title", "")), String(item.get("creator", "")), ""),
+			})
+	else:
+		var diffs := OsuIO.list_osz_difficulties(source)
+		if diffs.is_empty():
+			import_source = ""
+			return false
+		import_kind = "osu"
+		for i in diffs.size():
+			var item: Dictionary = diffs[i]
+			var mode_label := "taiko" if int(item.get("mode", 0)) == 1 else "std"
+			var version := String(item.get("version", ""))
+			import_difficulties.append({
+				"index": i,
+				"name": version if not version.is_empty() else "未命名难度",
+				"label": import_label(version, String(item.get("title", "")), String(item.get("creator", "")), mode_label),
+			})
+	# 一次性把每个难度都转出来：切换是瞬时的，也不会因为重新导入丢改动。
+	for i in import_difficulties.size():
+		var entry: Dictionary = import_difficulties[i]
+		var converted: Chart = null
+		if import_kind == "simai":
+			converted = SimaiIO.import_maidata(source, int(entry.get("index", i)))
+		else:
+			var result := OsuIO.import_osz(source, int(entry.get("index", i)))
+			if not result.is_empty():
+				converted = result.get("chart")
+		if converted != null:
+			difficulties.append({"name": String(entry.get("name", "难度")), "chart": converted})
+	if difficulties.is_empty():
+		return false
+	# 先把所有转好的谱面落盘成一个难度套组文件，再切第一个进去。
+	set_path = import_set_target(source)
+	ChartIO.save_set(set_path, difficulties, String((difficulties[0].get("chart") as Chart).metadata.get("title", "")), source)
+	import_set_changed.emit()
+	return switch_difficulty(0)
+
+
+## 导入时套组写到 user://sets/<曲名> [导入].set.json。
+func import_set_target(source: String) -> String:
+	var base := source.get_file().get_basename()
+	var title := base
+	if not difficulties.is_empty():
+		var first: Chart = difficulties[0].get("chart", null)
+		if first != null:
+			title = String(first.metadata.get("title", base))
+	var slug := _safe_file_name("%s [导入]" % title)
+	if slug.is_empty():
+		slug = "imported"
+	var dir := "user://sets"
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(dir))
+	return dir.path_join(slug + ".set.json")
+
+
+## 打开一个难度套组文件（.set.json）。
+func open_set_file(path: String) -> bool:
+	var loaded := ChartIO.load_set(path)
+	if not bool(loaded.get("ok", false)):
+		notice.emit("打开难度套组失败：%s" % String(loaded.get("error", "")), "error")
+		return false
+	difficulties.clear()
+	for entry in loaded.get("entries", []):
+		difficulties.append(entry)
+	difficulty_index = 0
+	set_path = path
+	import_source = String(loaded.get("source", ""))
+	import_set_changed.emit()
+	return switch_difficulty(0)
+
+
+## 把难度组写回套组文件；path 为空时写回当前 set_path。
+func save_set_file(path: String = "") -> bool:
+	if difficulties.is_empty():
+		return false
+	var target := path if not path.is_empty() else set_path
+	if target.is_empty():
+		return false
+	var title := ""
+	var first: Chart = difficulties[0].get("chart", null)
+	if first != null:
+		title = String(first.metadata.get("title", ""))
+	if ChartIO.save_set(target, difficulties, title, import_source) != OK:
+		notice.emit("保存难度套组失败：%s" % ChartIO.last_error, "error")
+		return false
+	set_path = target
+	chart_path = target
+	dirty = false
+	save_state_changed.emit()
+	status_changed.emit()
+	notice.emit("已保存 %d 个难度到 %s" % [difficulties.size(), target.get_file()], "info")
+	return true
+
+
+## 当前窗口能切的所有难度名（下拉框用）。
+func difficulty_names() -> Array[String]:
+	var names: Array[String] = []
+	for entry in difficulties:
+		names.append(String(entry.get("name", "难度")))
+	return names
+
+
+func difficulty_name(index: int) -> String:
+	if index < 0 or index >= difficulties.size():
+		return ""
+	return String(difficulties[index].get("name", "难度"))
+
+
+## 切到难度组里的第 index 个（0 起）。
+func switch_difficulty(index: int) -> bool:
+	if index < 0 or index >= difficulties.size():
+		return false
+	var target: Chart = difficulties[index].get("chart", null)
+	if target == null:
+		return false
+	difficulty_index = index
+	import_index = index
+	var keep_path := set_path if not set_path.is_empty() else chart_path
+	_switching_difficulty = true
+	set_chart(target, keep_path, false)
+	_switching_difficulty = false
+	_update_window_title()
+	import_set_changed.emit()
+	difficulties_changed.emit()
+	return true
+
+
+## 给同一首歌加一个难度：把当前谱面复制一份放进难度组。
+func add_difficulty_copy(label: String) -> int:
+	if chart == null:
+		return -1
+	# 组还不存在时，先把当前谱面当成第 1 个难度放进去，才有“同一首歌”的容器。
+	if difficulties.is_empty():
+		var current_name := String(chart.metadata.get("version", "难度 1"))
+		difficulties.append({"name": current_name if not current_name.is_empty() else "难度 1", "chart": chart})
+		difficulty_index = 0
+	var copy := ChartIO.chart_from_dict(ChartIO.chart_to_dict(chart))
+	var name := label.strip_edges()
+	if name.is_empty():
+		name = "难度 %d" % (difficulties.size() + 1)
+	copy.metadata["version"] = name
+	difficulties.append({"name": name, "chart": copy})
+	difficulty_index = difficulties.size() - 1
+	difficulties_changed.emit()
+	import_set_changed.emit()
+	return difficulty_index
+
+
+func remove_difficulty(index: int) -> bool:
+	if difficulties.size() <= 1 or index < 0 or index >= difficulties.size():
+		return false
+	difficulties.remove_at(index)
+	difficulty_index = clampi(difficulty_index, 0, difficulties.size() - 1)
+	switch_difficulty(difficulty_index)
+	return true
+
+
+func clear_difficulties() -> void:
+	if difficulties.is_empty():
+		return
+	difficulties.clear()
+	difficulty_index = 0
+	difficulties_changed.emit()
+	import_set_changed.emit()
+
+
+## 把难度组里每一份都存成单独文件，返回写成功的个数。
+func save_all_difficulties(dir: String) -> int:
+	if difficulties.is_empty():
+		return 0
+	var target_dir := dir if not dir.is_empty() else "user://charts"
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(target_dir))
+	var written := 0
+	for i in difficulties.size():
+		var entry: Dictionary = difficulties[i]
+		var c: Chart = entry.get("chart", null)
+		if c == null:
+			continue
+		var name := _safe_file_name("%s [%s]" % [String(c.metadata.get("title", "chart")), String(entry.get("name", i))])
+		var path := target_dir.path_join(name + ".json")
+		if ChartIO.atomic_write(path, ChartIO.to_json(c)) == OK:
+			written += 1
+	return written
+
+
+static func _safe_file_name(text: String) -> String:
+	var out := ""
+	for ch in text:
+		if ch in ["\\", "/", ":", "*", "?", "\"", "<", ">", "|"]:
+			out += "_"
+		else:
+			out += ch
+	return out.strip_edges()
+
+
+static func import_label(version: String, title: String, creator: String, mode_label: String) -> String:
+	var head := version if not version.is_empty() else "未命名难度"
+	if not mode_label.is_empty():
+		head += "  [%s]" % mode_label
+	if title.is_empty() and creator.is_empty():
+		return head
+	if creator.is_empty():
+		return "%s  ·  %s" % [head, title]
+	return "%s  ·  %s  (%s)" % [head, title, creator]
+
+
+func import_difficulty_label(position: int) -> String:
+	if position < 0 or position >= import_difficulties.size():
+		return ""
+	return String(import_difficulties[position].get("label", ""))
+
+
+## 切换转谱窗口里的难度（position 是下拉列表下标）。旧名字保留，等价于 switch_difficulty。
+func select_import_difficulty(position: int) -> bool:
+	return switch_difficulty(position)
+
+
+func _update_window_title() -> void:
+	if chart == null or DisplayServer.get_name() == "headless":
+		return
+	var title := String(chart.metadata.get("title", "Tamaki₃ 制谱器"))
+	var version := difficulty_name(difficulty_index)
+	var suffix := "  ·  %s" % version if not version.is_empty() else ""
+	DisplayServer.window_set_title("Tamaki₃ 制谱器  —  %s%s" % [title, suffix])
 
 
 const SETTINGS_PATH := "user://settings.json"
@@ -112,6 +414,7 @@ func _load_settings() -> void:
 			frame_cap = String(data.get("frame_cap", frame_cap))
 			playtest_offset_ms = float(data.get("playtest_offset_ms", playtest_offset_ms))
 			dynamic_offset = bool(data.get("dynamic_offset", dynamic_offset))
+			playtest_auto = bool(data.get("playtest_auto", playtest_auto))
 			last_bias_ms = float(data.get("last_bias_ms", last_bias_ms))
 	MediaIO.set_ffmpeg_exe(ffmpeg_path)
 	apply_frame_cap()
@@ -135,7 +438,7 @@ func apply_frame_cap() -> void:
 
 
 func save_settings() -> void:
-	var data := {"note_skin": note_skin, "hit_fx_style": hit_fx_style, "hit_sfx_style": hit_sfx_style, "ffmpeg": ffmpeg_path, "frame_cap": frame_cap, "playtest_offset_ms": playtest_offset_ms, "dynamic_offset": dynamic_offset, "last_bias_ms": last_bias_ms}
+	var data := {"note_skin": note_skin, "hit_fx_style": hit_fx_style, "hit_sfx_style": hit_sfx_style, "ffmpeg": ffmpeg_path, "frame_cap": frame_cap, "playtest_offset_ms": playtest_offset_ms, "dynamic_offset": dynamic_offset, "playtest_auto": playtest_auto, "last_bias_ms": last_bias_ms}
 	var file := FileAccess.open(SETTINGS_PATH, FileAccess.WRITE)
 	if file != null:
 		file.store_string(JSON.stringify(data, "\t"))
@@ -157,6 +460,14 @@ func set_ffmpeg_path(path: String) -> void:
 
 func set_chart(new_chart: Chart, path: String = "", mark_dirty: bool = false) -> void:
 	_live_change_pending = false
+	# 打开别的谱面（不是难度组内部切换）时，旧的难度组作废。
+	if not _switching_difficulty:
+		set_path = ""
+		if not difficulties.is_empty():
+			difficulties.clear()
+			difficulty_index = 0
+			difficulties_changed.emit()
+			import_set_changed.emit()
 	chart_replaced.emit()
 	chart = new_chart
 	chart_path = path
@@ -321,6 +632,9 @@ func redo_chart() -> void:
 func save_chart() -> bool:
 	if chart == null:
 		return false
+	# 难度套组：保存写回 set.json（所有难度一起），不是单张谱面。
+	if not set_path.is_empty():
+		return save_set_file()
 	if chart_path.is_empty():
 		notice.emit("请先另存为（Ctrl+Shift+S）", "warning")
 		return false
@@ -342,11 +656,17 @@ func save_chart() -> bool:
 
 
 func save_chart_as(path: String) -> bool:
+	# 另存为单张谱面时，把当前难度从套组里摘出来，避免之后误写回套组。
+	if not set_path.is_empty():
+		set_path = ""
 	chart_path = path
 	return save_chart()
 
 
 func load_chart(path: String) -> bool:
+	# .set.json 是难度套组：走套组流程，顶部会出现难度下拉。
+	if _is_set_file(path):
+		return open_set_file(path)
 	var loaded := ChartIO.load_chart(path)
 	if loaded == null:
 		notice.emit("打开失败：%s" % ChartIO.last_error, "error")
@@ -354,6 +674,17 @@ func load_chart(path: String) -> bool:
 	set_chart(loaded, path)
 	notice.emit("已打开 %s" % path.get_file(), "info")
 	return true
+
+
+func _is_set_file(path: String) -> bool:
+	if not FileAccess.file_exists(path):
+		return false
+	var file := FileAccess.open(path, FileAccess.READ)
+	if file == null:
+		return false
+	var head := file.get_as_text()
+	file.close()
+	return head.contains("\"tamaki3-set\"")
 
 
 func new_chart(meta: Dictionary) -> void:
@@ -410,7 +741,9 @@ func autosave() -> void:
 	if chart == null or not dirty:
 		return
 	var data := ChartIO.to_json(chart)
-	var err := ChartIO.atomic_write("user://autosave.json", data)
+	# 转谱窗口不覆盖主窗口的 autosave.json。
+	var target := "user://autosave_import.json" if child_window else "user://autosave.json"
+	var err := ChartIO.atomic_write(target, data)
 	if err == OK:
 		_commands_since_autosave = 0
 		status_changed.emit()

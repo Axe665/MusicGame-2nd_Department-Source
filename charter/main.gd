@@ -57,6 +57,8 @@ var _last_beat_int: int = -1
 var _open_dialog: FileDialog
 var _save_dialog: FileDialog
 var _import_dialog: FileDialog
+var _import_diff: OptionButton = null
+var _import_diff_label: Label = null
 var _snap_option: OptionButton
 var _lbp_dialog: FileDialog
 var _report_dialog: AcceptDialog
@@ -79,6 +81,7 @@ var _playtest_star_color: ColorPickerButton = null
 var _playtest_trace_color: ColorPickerButton = null
 var _playtest_offset: SpinBox = null
 var _playtest_dynamic: CheckBox = null
+var _playtest_auto: CheckBox = null
 var _playtest_bias: Label = null
 var _playtest_from_start: bool = false
 ## 制谱界面保留的流速输入框（试玩设置改流速后要同步回来）。
@@ -120,6 +123,7 @@ func _ready() -> void:
 		_app.stretch_changed.connect(_on_stretch_value_changed)
 		_app.audio_import_requested.connect(_on_audio_import_requested)
 		_app.audio_detect_requested.connect(_on_audio_detect_requested)
+		_app.import_set_changed.connect(_refresh_import_difficulty)
 		_app.chart_changed.emit()
 	_sync_from_app()
 	for intro_control in [_canvas, _inspector, _palette, _preview]:
@@ -221,11 +225,28 @@ func _build_ui() -> void:
 	subtitle.add_theme_font_size_override("font_size", 10)
 	subtitle.add_theme_color_override("font_color", UITheme.MUTED)
 	brand_row.add_child(subtitle)
+	# 转谱窗口：难度选择器放在左边，窗口窄的时候也不会被右侧菜单挤掉。
+	_import_diff_label = Label.new()
+	_import_diff_label.text = "难度"
+	UITheme.style_mono(_import_diff_label, 11, UITheme.MUTED)
+	_import_diff_label.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_import_diff_label.visible = false
+	brand_row.add_child(_import_diff_label)
+	_import_diff = OptionButton.new()
+	_import_diff.custom_minimum_size = Vector2(280, 26)
+	_import_diff.add_theme_font_size_override("font_size", 12)
+	_import_diff.tooltip_text = "转谱窗口：切换要编辑/试玩的难度"
+	_import_diff.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_import_diff.visible = false
+	_import_diff.item_selected.connect(_on_import_difficulty_selected)
+	brand_row.add_child(_import_diff)
 	var brand_spacer := Control.new()
 	brand_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	brand_row.add_child(brand_spacer)
 	brand_row.add_child(_menu("文件", [
-		["新建", 0], ["打开", 1], ["保存", 2], ["另存为", 3], ["-", 0], ["在线舞萌谱面…", 12], ["导入歌曲 / 识别 BPM…", 9], ["导入谱面 (.osz/.zip/.txt)", 6], ["导入舞萌文件夹", 8], ["导出 .lbp", 7], ["-", 0], ["恢复自动保存", 4], ["-", 0], ["退出", 5],
+		["新建", 0], ["打开", 1], ["保存", 2], ["另存为", 3], ["-", 0],
+		["新增难度（复制当前）", 13], ["保存全部难度", 14], ["-", 0],
+		["在线舞萌谱面…", 12], ["导入歌曲 / 识别 BPM…", 9], ["导入谱面 (.osz/.zip/.txt)", 6], ["导入舞萌文件夹", 8], ["导出 .lbp", 7], ["-", 0], ["恢复自动保存", 4], ["-", 0], ["退出", 5],
 	]))
 	brand_row.add_child(_menu("编辑", [
 		["撤销", 10], ["重做", 11], ["-", 0], ["删除", 12], ["取消选择", 13], ["全选可见", 14],
@@ -923,6 +944,11 @@ func _build_dialogs() -> void:
 	)
 	add_child(_song_dialog)
 	_chart_browser = ChartBrowser.new()
+	# 在线谱面：下载完的 maidata.txt 走和本地导入完全一样的流程
+	# （转好所有难度 → 存套组 → 开新窗口），新窗口顶部可切难度。
+	_chart_browser.source_ready.connect(func(source_path: String) -> void:
+		_on_import_osz_selected(source_path)
+	)
 	_chart_browser.chart_imported.connect(func(chart: Chart) -> void:
 		_app.set_chart(chart, "", true)
 		_sync_from_app()
@@ -989,6 +1015,7 @@ func _sync_appearance() -> void:
 func _sync_from_app() -> void:
 	if _app == null or _app.chart == null:
 		return
+	_refresh_import_difficulty()
 	_preview.show_hud = _app.hud_visible
 	_preview.use_3d_ring = _app.use_3d_ring
 	_preview.mouse_tilt = _app.mouse_tilt
@@ -1365,6 +1392,108 @@ func _on_song_timing_applied() -> void:
 
 
 func _on_import_osz_selected(path: String) -> void:
+	# 转谱：先把所有难度转好、存成一个套组文件，再开一个新窗口去编辑它。
+	if _app == null:
+		return
+	var previous_chart: Chart = _app.chart
+	var previous_path: String = _app.chart_path
+	var previous_dirty: bool = _app.dirty
+	if not _app.open_import_source(path):
+		_show_toast("导入失败：%s" % _import_error_text(), "error")
+		return
+	var set_file: String = _app.set_path
+	var count: int = _app.difficulties.size()
+	# 父窗口恢复成原来的谱面：新窗口才是用来放转谱的。
+	if previous_chart != null:
+		_app.set_chart(previous_chart, previous_path, previous_dirty)
+		_sync_from_app()
+	if _spawn_import_window(set_file):
+		_show_toast("已保存 %d 个难度并打开新窗口：%s" % [count, set_file.get_file()], "info")
+		return
+	# 起不了新窗口就退回到当前窗口，直接打开这个套组。
+	if _app.open_set_file(set_file):
+		_sync_from_app()
+		_show_report("转谱完成：%d 个难度已存入 %s\n顶部可以切换难度。" % [count, set_file.get_file()])
+		return
+	_show_toast("没能打开套组，已取消导入。", "error")
+
+
+func _import_error_text() -> String:
+	if not OsuIO.last_error.is_empty():
+		return OsuIO.last_error
+	return SimaiIO.last_error
+
+
+## 另起一个进程 = 真正的新窗口：它有自己的 App 状态，互不影响。
+func _spawn_import_window(set_file: String) -> bool:
+	if set_file.is_empty():
+		return false
+	var exe := OS.get_executable_path()
+	if exe.is_empty():
+		return false
+	var args: Array = []
+	if OS.has_feature("editor"):
+		args.append_array(["--path", ProjectSettings.globalize_path("res://")])
+	args.append_array(["--", "--open-set=" + set_file, "--child-window"])
+	var pid := OS.create_process(exe, args)
+	if pid > 0:
+		print("[import] child window pid=%d set=%s" % [pid, set_file])
+	return pid > 0
+
+
+func _on_import_difficulty_selected(position: int) -> void:
+	if _app == null:
+		return
+	if _app.switch_difficulty(position):
+		_sync_from_app()
+		_show_toast("已切换到难度：%s" % _app.difficulty_name(position), "info")
+
+
+func _refresh_import_difficulty() -> void:
+	if _import_diff == null:
+		return
+	var names: Array[String] = _app.difficulty_names() if _app != null else []
+	var show: bool = names.size() > 1
+	if _import_diff_label != null:
+		_import_diff_label.visible = show
+	_import_diff.visible = show
+	if not show:
+		return
+	_import_diff.clear()
+	for name in names:
+		_import_diff.add_item(name)
+	_import_diff.select(clampi(_app.difficulty_index, 0, maxi(0, names.size() - 1)))
+
+
+## 同一首歌多难度：复制当前谱面成一个新难度（之后用「保存全部难度」落盘）。
+func _add_difficulty_copy() -> void:
+	if _app == null or _app.chart == null:
+		return
+	var index: int = _app.add_difficulty_copy("难度 %d" % (_app.difficulties.size() + 1))
+	if index < 0:
+		_show_toast("复制难度失败", "error")
+		return
+	_sync_from_app()
+	_show_toast("已新增难度 %s（改完记得「保存全部难度」）" % _app.difficulty_name(index), "info")
+
+
+func _save_all_difficulties() -> void:
+	if _app == null or _app.difficulties.is_empty():
+		_show_toast("当前没有多难度组，先导入或新增一个难度", "warning")
+		return
+	if _app.save_set_file():
+		_sync_from_app()
+	else:
+		_show_toast("保存难度套组失败", "error")
+
+
+## 新窗口起不来时的退路：老流程（多难度弹窗选一个，直接在当前窗口导入）。
+func _import_into_current_window(path: String) -> void:
+	# 直接走难度组：多难度来源会一次性转好，顶部会出现难度下拉。
+	if _app != null and _app.open_import_source(path):
+		_sync_from_app()
+		_show_report(_app.last_import_report)
+		return
 	var simai := SimaiIO.list_maidata(path)
 	if not simai.is_empty():
 		_pending_kind = "simai"
@@ -1443,6 +1572,10 @@ func _on_menu(id: int) -> void:
 			_save()
 		3:
 			_save_dialog.popup_centered_ratio(0.75)
+		13:
+			_add_difficulty_copy()
+		14:
+			_save_all_difficulties()
 		4:
 			_app.load_autosave()
 			_sync_from_app()
@@ -1530,6 +1663,8 @@ func _open_playtest_setup(from_start: bool) -> void:
 		_playtest_offset.value = float(_app.playtest_offset_ms)
 	if _playtest_dynamic != null:
 		_playtest_dynamic.button_pressed = bool(_app.dynamic_offset)
+	if _playtest_auto != null:
+		_playtest_auto.button_pressed = bool(_app.playtest_auto)
 	if _playtest_bias != null:
 		_playtest_bias.text = "上次平均偏差 %+.1fms" % float(_app.last_bias_ms)
 	_playtest_dialog.popup_centered(Vector2i(400, 320))
@@ -1551,6 +1686,10 @@ func _build_playtest_dialog() -> void:
 	_playtest_dynamic.text = "动态 offset（局内自动校准，≤±50ms）"
 	_playtest_dynamic.tooltip_text = "至少 8 次命中后，每次命中按偏差的 5% 自动微调判定偏移"
 	box.add_child(_playtest_dynamic)
+	_playtest_auto = CheckBox.new()
+	_playtest_auto.text = "AUTO 自动演示（游戏内 F8 切换）"
+	_playtest_auto.tooltip_text = "自动完美演奏所有音符，用来快速看谱面；结算会标注 AUTO"
+	box.add_child(_playtest_auto)
 	_playtest_bias = Label.new()
 	_playtest_bias.text = "上次平均偏差 +0.0ms"
 	_playtest_bias.add_theme_font_size_override("font_size", 11)
@@ -1613,6 +1752,8 @@ func _begin_playtest_with_settings() -> void:
 		_app.playtest_offset_ms = _playtest_offset.value
 	if _playtest_dynamic != null:
 		_app.dynamic_offset = _playtest_dynamic.button_pressed
+	if _playtest_auto != null:
+		_app.playtest_auto = _playtest_auto.button_pressed
 	_app.save_settings()
 	if _playtest_star_color != null:
 		_app.star_color = _playtest_star_color.color
@@ -1653,6 +1794,7 @@ func _start_playtest(from_start: bool) -> void:
 	_preview.set_suspended(true)
 	_playtest = Playtest.new()
 	_playtest.bench_mode = "--bench" in OS.get_cmdline_user_args()
+	_playtest.auto_play = bool(_app.playtest_auto) or "--auto" in OS.get_cmdline_user_args()
 	add_child(_playtest)
 	_playtest.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_playtest.setup(_app.chart, 0.0 if from_start else _app.playhead_beat, _app.chart_path)

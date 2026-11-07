@@ -65,6 +65,11 @@ func _initialize() -> void:
 		"test_bpm_detect_128",
 		"test_bpm_detect_87",
 		"test_bpm_detect_silence",
+		"test_auto_play",
+		"test_path_tail_judge",
+		"test_slide_floor",
+		"test_bell_path_clearance",
+		"test_import_window_set",
 	]
 	for test_name in tests:
 		if call(test_name) != true:
@@ -1239,7 +1244,9 @@ func test_simai_import() -> bool:
 
 
 func test_simai_osu_friendly() -> bool:
-	var text := "&title=T\n&wholebpm=120\n&lv_1=1\n&inote_1=(120){4},1p5[16:1],,,,\nE\n"
+	# 300BPM 的 1 拍 = 200ms（高于 MIN_SLIDE_MS），180° p 型星星弧长约 2.35R，
+	# 折合 2.35*330/0.2 = 3878px/s，超过 3400 的“甩尾”阈值，所以还是会被拉直。
+	var text := "&title=T\n&wholebpm=120\n&lv_1=1\n&inote_1=(300){4},1p5[4:1],,,,\nE\n"
 	var path := "user://test_simai_friendly.txt"
 	var file := FileAccess.open(path, FileAccess.WRITE)
 	if file == null:
@@ -1663,6 +1670,7 @@ func test_convert_optimizer_fast_path() -> bool:
 	var chart := Chart.new()
 	chart.timing.points = [TimingPoint.new(0.0, 240.0, 4)]
 	var note := Note.new("path", 0.0, 90.0, 62.0)
+	# 0.5 拍 @240BPM = 125ms：先被"限速重建"，再被滑条底线降级，两段都要测。
 	note.end_beat = 0.5
 	note.wait_beat = 0.0
 	note.tail_angle = 270.0
@@ -1671,11 +1679,16 @@ func test_convert_optimizer_fast_path() -> bool:
 	note.trace_pts = _straight_trace(90.0, 270.0, 0.5, 9)
 	chart.notes = [note]
 	var counts := {"tap": 0, "hold": 0, "path": 1, "bell": 0, "dropped": 0}
-	var stats := ConvertOptimizer.optimize_maimai(chart, counts)
+	var stats := {"dropped": 0, "relaxed": 0, "rebuilt": 0, "degraded": 0, "bells_moved": 0}
+	ConvertOptimizer._rebuild_paths(chart, counts, stats, {})
 	eq(int(stats["rebuilt"]) + int(stats["degraded"]), 1, "fast path is rebuilt or degraded")
-	eq(note.type, "path", "fast path stays a path after shortening")
+	eq(note.type, "path", "rebuild keeps it a path")
 	ok(absf(JudgeMath.angle_delta(note.angle, note.tail_angle)) <= 45.01, "fast path tail is shortened to a reachable lane")
 	ok(note.trace_pts.size() >= 12, "rebuilt path is densely sampled")
+	# 125ms 仍然低于 MIN_SLIDE_MS：底线把它降级成 Hold。
+	ConvertOptimizer.enforce_slide_floor(chart, counts, stats)
+	ok(note.type != "path", "a 125ms slide is degraded by the floor")
+	eq(int(stats["degraded"]), 1, "the floor reports one degradation")
 	return true
 
 
@@ -1688,3 +1701,164 @@ func _straight_trace(from_deg: float, to_deg: float, duration: float, count: int
 		var point := from.lerp(to, t)
 		result.append({"x": point.x, "y": point.y, "db": duration * t})
 	return result
+
+
+## 滑条底线：太短（<180ms）或太小（弦长 <0.6R）的 Path 应该降级。
+func test_slide_floor() -> bool:
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	var counts := {"tap": 0, "hold": 0, "path": 0, "bell": 0, "dropped": 0}
+	# 1) 50ms 的滑条：来不及滑，降级成 Tap。
+	var short_time := Note.new("path", 0.0, 0.0, 62.0)
+	short_time.end_beat = 0.1
+	short_time.space = "plane"
+	short_time.trace_pts = _straight_trace(0.0, 90.0, 0.1, 6)
+	# 2) 2 拍（1000ms）但弦长只有 0.2R：读不出“要滑”，也降级。
+	var tiny := Note.new("path", 2.0, 0.0, 62.0)
+	tiny.end_beat = 4.0
+	tiny.space = "plane"
+	for i in 6:
+		var t := float(i) / 5.0
+		tiny.trace_pts.append({"x": 1.0 - 0.2 * t, "y": 0.05 * t, "db": 2.0 * t})
+	# 3) 正常滑条：2 拍 + 弦长 1.4R，必须留下。
+	var good := Note.new("path", 6.0, 90.0, 62.0)
+	good.end_beat = 8.0
+	good.space = "plane"
+	good.trace_pts = _straight_trace(90.0, 90.0, 2.0, 9)
+	var tail_pt := Vector2(cos(deg_to_rad(-45.0)), sin(deg_to_rad(-45.0)))
+	for i in good.trace_pts.size():
+		var t := float(i) / float(good.trace_pts.size() - 1)
+		var head_pt := Vector2(cos(deg_to_rad(90.0)), sin(deg_to_rad(90.0)))
+		var p := head_pt.lerp(tail_pt, t)
+		good.trace_pts[i] = {"x": p.x, "y": p.y, "db": 2.0 * t}
+	chart.notes = [short_time, tiny, good]
+	counts["path"] = 3
+	var stats := ConvertOptimizer.optimize_maimai(chart, counts)
+	eq(short_time.type, "tap", "50ms slide degrades to a tap")
+	eq(tiny.type, "hold", "tiny chord slide degrades to a hold (it still has length)")
+	eq(good.type, "path", "a normal slide survives the floor")
+	ok(int(stats["degraded"]) >= 2, "the floor reports two degradations")
+	return true
+
+
+## Bell 压在同时段 Path 上时会被挪开（或者删掉），不能两个目标叠在一起。
+func test_bell_path_clearance() -> bool:
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	if chart.get_default_shape() == null:
+		return true
+	var path := Note.new("path", 2.0, 0.0, 62.0)
+	path.end_beat = 4.0
+	path.space = "plane"
+	path.tail_angle = 90.0
+	path.tail_width = 52.0
+	path.trace_pts = _straight_trace(0.0, 90.0, 2.0, 9)
+	var bell := Note.new("bell", 3.0, 0.0, 0.0)
+	bell.center_u = 0.0
+	chart.notes = [path, bell]
+	var counts := {"tap": 0, "hold": 0, "path": 1, "bell": 1, "dropped": 0}
+	var stats := ConvertOptimizer.optimize_maimai(chart, counts)
+	var kept := chart.notes.has(bell)
+	ok(kept and int(stats.get("bells_moved", 0)) >= 1, "bell is pushed away from the path")
+	if kept:
+		ok(absf(bell.center_u - 0.0) > 0.001, "bell centre actually moved along the ring")
+	return true
+
+
+func test_auto_play() -> bool:
+	# AUTO 的按键骨架：时间取判定时间，位置/角度取音符在屏幕上的位置。
+	var payload := Playtest.auto_press_payload(2000.0, Vector2(120.0, 80.0), 90.0, Playtest.AUTO_KEY_A)
+	near(float(payload["time"]), 2000.0, 0.001, "auto press time is the judgement time")
+	near(float(payload["u"]), 0.25, 0.001, "auto press carries the ring u")
+	eq(int(payload["key"]), Playtest.AUTO_KEY_A, "auto press carries a key code")
+	eq(payload["mouse"], Vector2(120.0, 80.0), "auto press carries the note screen position")
+	ok(bool(payload["valid"]), "auto press is a valid input")
+	# 到点判断：比判定时间早 lead 就按下，早了不按。
+	ok(Playtest.auto_due(2000.0, 1995.0), "auto presses a few ms early")
+	ok(not Playtest.auto_due(2000.0, 1900.0), "auto does not press 100ms early")
+	# 默认关闭，且切换到 AUTO 前不能用合成光标（INF = 用真鼠标）。
+	var run := Playtest.new()
+	ok(not run.auto_play, "autoplay is off by default")
+	ok(not Vector2.INF.is_finite(), "INF cursor means the real mouse is used")
+	run.free()
+	ok(Playtest.AUTO_LEAD_MS < Playtest.PERFECT_MS, "auto lead is inside the perfect window")
+	ok(Playtest.AUTO_RELEASE_MS > 0.0, "hold releases after the tail, not before")
+	return true
+
+
+## Path 尾判：短滑条的尾判半径必须跟着缩，而且要求真的滑到后段。
+## 45° 的滑条头尾直线只有 0.765R，固定 192px 半径会让“刚摸到头”就被判成尾巴（BAD）。
+func test_path_tail_judge() -> bool:
+	ok(Playtest.PATH_TAIL_RADIUS_RATIO > 0.15 and Playtest.PATH_TAIL_RADIUS_RATIO < 0.75,
+		"tail radius shrinks with the slide length")
+	ok(Playtest.PATH_TAIL_MIN_FRACTION >= 0.8, "tail wants most of the slide to be covered")
+	ok(Playtest.PATH_TAIL_MIN_FRACTION < 1.0, "tail still tolerates a small aiming error")
+	var ring := 430.0
+	var chord := 2.0 * ring * sin(deg_to_rad(22.5))
+	var radius := clampf(minf(Playtest.PATH_TAIL_RADIUS, chord * Playtest.PATH_TAIL_RADIUS_RATIO), 56.0, Playtest.PATH_TAIL_RADIUS)
+	ok(radius < chord * 0.5, "short slide tail radius stays under half the chord")
+	ok(radius >= 56.0 - 0.01, "tail radius never collapses to nothing")
+	# 长滑条（1.5R）仍然保留完整的 192px 容错。
+	var long_chord := 1.5 * ring
+	var long_radius := clampf(minf(Playtest.PATH_TAIL_RADIUS, long_chord * Playtest.PATH_TAIL_RADIUS_RATIO), 56.0, Playtest.PATH_TAIL_RADIUS)
+	near(long_radius, Playtest.PATH_TAIL_RADIUS, 0.01, "long slides keep the full tail radius")
+	return true
+
+
+## 转谱窗口：一个来源里列出所有难度，能切换，且不碰当前窗口的谱面。
+func test_import_window_set() -> bool:
+	var path := "user://test_import_set.txt"
+	var text := "&title=Two&wholebpm=120\n&lv_1=3\n&inote_1=(120){4},1,2,3,4,\n&lv_2=9\n&inote_2=(120){4},1,2,3,4,5,6,7,8,\nE\n"
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	if file == null:
+		ok(false, "import set fixture")
+		return true
+	file.store_string(text)
+	file.close()
+	var app = load("res://charter/app.gd").new()
+	var ok_open: bool = app.open_import_source(ProjectSettings.globalize_path(path))
+	ok(ok_open, "import source opens")
+	eq(app.import_kind, "simai", "import source is detected as simai")
+	eq(app.import_difficulties.size(), 2, "both difficulties are listed")
+	ok(app.chart != null and app.chart.notes.size() > 0, "first difficulty is imported")
+	var first_count: int = app.chart.notes.size()
+	ok(not app.import_difficulty_label(0).is_empty(), "difficulty label is not empty")
+	ok(app.import_difficulty_label(0) != app.import_difficulty_label(1), "labels differ per difficulty")
+	ok(app.select_import_difficulty(1), "switching difficulty works")
+	ok(app.chart.notes.size() != first_count, "the chart actually changes with the difficulty")
+	eq(app.import_index, 1, "selected index is remembered")
+	# 难度组：名字列表、复制新增、整套保存。
+	eq(app.difficulty_names().size(), 2, "difficulty group has two names")
+	ok(app.difficulty_name(0) != app.difficulty_name(1), "difficulty names differ")
+	var before_add: int = app.difficulties.size()
+	var added: int = app.add_difficulty_copy("我的难度")
+	eq(added, before_add, "added difficulty is appended")
+	eq(app.difficulties.size(), before_add + 1, "group grows by one")
+	eq(app.difficulty_names()[added], "我的难度", "new difficulty keeps its name")
+	ok(app.chart != null and app.chart.notes.size() > 0, "new difficulty starts as a copy of the chart")
+	ok(app.save_set_file(), "saving the set writes every difficulty")
+	var out_dir := "user://test_set_out"
+	var written: int = app.save_all_difficulties(out_dir)
+	eq(written, app.difficulties.size(), "every difficulty is written to disk")
+	# 难度套组：一个文件装下所有难度，重新打开还在。
+	ok(not app.set_path.is_empty(), "import writes a .set.json next to the import")
+	var reopened: App = load("res://charter/app.gd").new()
+	ok(reopened.open_set_file(app.set_path), "set file reopens")
+	eq(reopened.difficulties.size(), app.difficulties.size(), "reopened set has every difficulty")
+	eq(reopened.difficulty_names()[0], app.difficulty_names()[0], "difficulty names survive the round trip")
+	ok(reopened.chart != null and reopened.chart.notes.size() > 0, "reopened set loads its first difficulty")
+	ok(reopened.switch_difficulty(1), "reopened set can switch difficulty")
+	ok(reopened.chart.notes.size() > 0, "switched difficulty has notes")
+	# 静态小工具：命令行参数解析与标签拼装。
+	eq(app.import_label("Lv.9", "Song", "me", "std"), "Lv.9  [std]  ·  Song  (me)", "import label format")
+	eq(app.import_label("", "", "", ""), "未命名难度", "empty label falls back")
+	reopened.free()
+	app.free()
+	if FileAccess.file_exists(ProjectSettings.globalize_path("user://sets")):
+		for file_name in DirAccess.get_files_at(ProjectSettings.globalize_path("user://sets")):
+			DirAccess.remove_absolute(ProjectSettings.globalize_path("user://sets").path_join(file_name))
+	for file_name in DirAccess.get_files_at(ProjectSettings.globalize_path(out_dir)):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(out_dir).path_join(file_name))
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(out_dir))
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	return true
