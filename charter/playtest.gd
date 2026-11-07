@@ -177,6 +177,10 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	_preview.time_beat = start_beat
 	_preview.playing = true
 	_preview.visible = true
+	# 进场 / 重开时整体淡入，避免音符和轨迹直接蹦出来。
+	modulate.a = 0.0
+	var fade := create_tween()
+	fade.tween_property(self, "modulate:a", 1.0, 0.2).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
 	_start_audio()
 	_running = true
 	Input.set_mouse_mode(Input.MOUSE_MODE_HIDDEN)
@@ -1115,6 +1119,9 @@ func _judge_bell(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 	if ms > target + BELL_WINDOW_MS:
 		state["done"] = true
 		_preview.set_note_state(note.id, "miss")
+		var missed: Dictionary = _preview.bell_screen(note, beat)
+		if not missed.is_empty():
+			_preview.add_hit_pulse(missed["center"], UITheme.MUTED, "漏", "miss")
 		_add_log("BELL #%d MISSED" % note.id)
 
 
@@ -1364,12 +1371,11 @@ func _update_top_bar(ms: float, beat: float) -> void:
 	var fx_label := String(Preview3D.hit_fx_presets().get(_preview.hit_fx_style, _preview.hit_fx_style))
 	if _style_label != null:
 		_style_label.text = "%s · %s" % [skin_label, fx_label]
-	_top_stats.text = "%sHIT %d  MISS %d  ACC %s  COMBO %d  |  BELL %d/%d  RED %d  |  BIA %+.1fms  OFF %+.0fms" % [
+	_top_stats.text = "%sHIT %d  MISS %d  ACC %s  |  BELL %d/%d  RED %d  |  BIA %+.1fms  OFF %+.0fms" % [
 		"[AUTO] " if auto_play else "",
 		_hit_count,
 		_miss_count,
 		"—" if accuracy < 0.0 else "%.1f%%" % accuracy,
-		_combo,
 		_bell_hits,
 		_bell_total,
 		_red_breaks,
@@ -1609,6 +1615,11 @@ func _finish() -> void:
 	var lines: Array[String] = []
 	if auto_play:
 		lines.append("AUTO 自动演示（成绩不计入）")
+	elif _judged_total > 0 and _miss_count == 0:
+		if int(_tier_counts.get("PERFECT", 0)) == _judged_total:
+			lines.append("★ ALL PERFECT")
+		else:
+			lines.append("★ FULL COMBO")
 	lines.append("命中 %d / 失误 %d" % [_hit_count, _miss_count])
 	lines.append("调试准确率：%s" % ("—" if _accuracy() < 0.0 else "%.2f%%" % _accuracy()))
 	lines.append("评级：%s（预览/非正式）" % _rating(_accuracy()))
@@ -1682,3 +1693,7 @@ func _notification(what: int) -> void:
 	if what == NOTIFICATION_PREDELETE or what == NOTIFICATION_WM_CLOSE_REQUEST:
 		Input.set_use_accumulated_input(true)
 		Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
+	elif what == NOTIFICATION_APPLICATION_FOCUS_OUT:
+		# 切出窗口时自动暂停，避免切走的几秒把谱面打空。
+		if _running and not _paused and not _finished:
+			_set_paused(true)

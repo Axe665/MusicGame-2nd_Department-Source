@@ -3402,6 +3402,8 @@ func _draw_pulses(canvas: Control) -> void:
 			_draw_fx_path_head(canvas, fx_point, color, age)
 		elif kind == "bell":
 			_draw_fx_bell(canvas, fx_point, age)
+		elif kind == "miss":
+			_draw_fx_miss(canvas, fx_point, age, color)
 		else:
 			match hit_fx_style:
 				"ring":
@@ -3463,6 +3465,13 @@ func _draw_fx_bell(canvas: Control, point: Vector2, age: float) -> void:
 	var radius := 18.0 + 64.0 * (1.0 - pow(1.0 - t, 2.0))
 	canvas.draw_arc(point, radius, 0.0, TAU, 40, Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, 0.85 * fade), 2.0 + 3.0 * fade, false)
 	canvas.draw_circle(point, 10.0 * fade, Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, 0.40 * fade))
+
+
+func _draw_fx_miss(canvas: Control, point: Vector2, age: float, color: Color) -> void:
+	# 漏掉的 Bell：灰色收缩环，不抢连击/判定的注意力。
+	var t := clampf(age / 0.34, 0.0, 1.0)
+	var fade := 1.0 - t
+	canvas.draw_arc(point, lerpf(46.0, 16.0, t), 0.0, TAU, 32, Color(color.r, color.g, color.b, 0.70 * fade), 2.0 + 1.0 * fade, false)
 
 
 func _draw_fx_burst(canvas: Control, point: Vector2, color: Color, age: float, sparks: Array) -> void:
