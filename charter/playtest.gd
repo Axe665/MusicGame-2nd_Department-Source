@@ -146,6 +146,9 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	chart = p_chart
 	start_beat = p_start_beat
 	chart_path = p_chart_path
+	_finished = false
+	if _results != null:
+		_results.visible = false
 	_init_states()
 	_last_chart_ms = -INF
 	_preview.chart_override = chart
@@ -173,6 +176,10 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	_preview.time_beat = start_beat
 	_preview.playing = true
 	_preview.visible = true
+	# 进场 / 重开时整体淡入，避免音符和轨迹直接蹦出来。
+	modulate.a = 0.0
+	var fade := create_tween()
+	fade.tween_property(self, "modulate:a", 1.0, 0.2).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
 	_start_audio()
 	_running = true
 	Input.set_mouse_mode(Input.MOUSE_MODE_HIDDEN)
@@ -324,10 +331,19 @@ func _build_ui() -> void:
 	_results_text.custom_minimum_size = Vector2(600, 150)
 	_results_text.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	box.add_child(_results_text)
+	var result_buttons := HBoxContainer.new()
+	result_buttons.add_theme_constant_override("separation", 12)
+	box.add_child(result_buttons)
+	var retry_button := Button.new()
+	retry_button.text = "重试"
+	retry_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	retry_button.pressed.connect(_retry)
+	result_buttons.add_child(retry_button)
 	_results_button = Button.new()
 	_results_button.text = "返回编辑器（Esc）"
+	_results_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_results_button.pressed.connect(func() -> void: _exit())
-	box.add_child(_results_button)
+	result_buttons.add_child(_results_button)
 
 	var bottom := Label.new()
 	bottom.text = "任意有效键：Tap / Hold / Anchor；Path / Bell / Trace 用鼠标定位；Red 停留 200ms 断连；[ / ] 判定偏移；F6 换音符外观；F7 换打击特效。"
@@ -477,7 +493,7 @@ func _process(delta: float) -> void:
 		_update_hud()
 	if beat > chart.duration_beats() + 2.0:
 		_finish()
-	var keep_ms := _early_protect_ms() + 60.0
+	var keep_ms := HIT_WINDOW_MS + 60.0
 	while not _key_presses.is_empty() and float(_key_presses[0].get("time", -INF)) < judge_ms - keep_ms:
 		_key_presses.pop_front()
 
@@ -513,16 +529,6 @@ func _chart_ms() -> float:
 		_smooth_ms = minf(_smooth_ms, candidate + 30.0)
 	_last_chart_ms = maxf(_last_chart_ms, _smooth_ms)
 	return _last_chart_ms
-
-
-## 判定保护：音符离判定环还剩 25% 半径（= 预读时间的 25%）时，
-## 提前按下的键也会被缓存并按 GOOD 结算，而不是直接丢掉。
-func _early_protect_ms() -> float:
-	var pre := 1200.0
-	if chart != null:
-		pre = maxf(200.0, float(chart.pre_read_ms))
-	var flow := float(_app.flow_scale) if _app != null else 1.0
-	return clampf(pre / maxf(0.05, flow) * 0.25, 80.0, 600.0)
 
 
 ## ── AUTO 自动演示 ────────────────────────────────────────────────────────
@@ -777,13 +783,12 @@ func _judge_all(ms: float, beat: float, delta: float) -> void:
 func _judge_tap(note: Note, ms: float, beat: float) -> void:
 	var state: Dictionary = _states[note.id]
 	var target := float(state["target_ms"])
-	var protect := _early_protect_ms()
-	if ms < target - protect:
+	if ms < target - HIT_WINDOW_MS:
 		return
-	var press := _take_press_for_note(target - protect, target + HIT_WINDOW_MS, note, beat, 0.0)
+	var press := _take_press_for_note(target - HIT_WINDOW_MS, target + HIT_WINDOW_MS, note, beat, 0.0)
 	if not press.is_empty():
 		var error := float(press["time"]) - target
-		var tier := "GOOD" if error < -GOOD_MS else _tier_for(error)
+		var tier := _tier_for(error)
 		state["done"] = true
 		_preview.set_note_state(note.id, "hit")
 		_register_hit(tier)
@@ -806,13 +811,12 @@ func _judge_hold(note: Note, ms: float, beat: float) -> void:
 	var target := float(state["target_ms"])
 	var end_ms := float(state["end_ms"])
 	if not state["started"]:
-		var head_protect := _early_protect_ms()
-		if ms < target - head_protect:
+		if ms < target - HIT_WINDOW_MS:
 			return
-		var press := _take_press_for_note(target - head_protect, target + HIT_WINDOW_MS, note, beat, HOLD_ARC_PAD, HOLD_HEAD_EXTRA_PX)
+		var press := _take_press_for_note(target - HIT_WINDOW_MS, target + HIT_WINDOW_MS, note, beat, HOLD_ARC_PAD, HOLD_HEAD_EXTRA_PX)
 		if not press.is_empty():
 			var head_error := float(press["time"]) - target
-			var head_tier := "GOOD" if head_error < -GOOD_MS else _tier_for(head_error)
+			var head_tier := _tier_for(head_error)
 			state["started"] = true
 			state["head"] = true
 			state["key"] = int(press.get("key", 0))
@@ -868,14 +872,13 @@ func _judge_path(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 	var tail_ms := float(state["end_ms"])
 	var head_point: Vector2 = _preview.note_head_screen(note, beat)
 	if not state["head_judged"]:
-		var head_protect := _early_protect_ms()
-		if ms >= head_ms - head_protect:
+		if ms >= head_ms - HIT_WINDOW_MS:
 			# 头部：鼠标实际位置贴近判定时刻的星头（不再用角度条带兜底）。
-			var press := _take_press_for_shape(head_ms - head_protect, head_ms + HIT_WINDOW_MS, head_ms, note,
+			var press := _take_press_for_shape(head_ms - HIT_WINDOW_MS, head_ms + HIT_WINDOW_MS, head_ms, note,
 				PackedVector2Array([head_point]), PATH_HEAD_RADIUS)
 			if not press.is_empty():
 				var head_error := float(press["time"]) - head_ms
-				var tier := "GOOD" if head_error < -GOOD_MS else _tier_for(head_error)
+				var tier := _tier_for(head_error)
 				state["head_hit"] = true
 				_register_hit(tier)
 				# 星头用实际的星头屏幕位置，平面星星（V / 折线）也能炸在正确的位置。
@@ -1115,22 +1118,24 @@ func _judge_bell(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 	if ms > target + BELL_WINDOW_MS:
 		state["done"] = true
 		_preview.set_note_state(note.id, "miss")
+		var missed: Dictionary = _preview.bell_screen(note, beat)
+		if not missed.is_empty():
+			_preview.add_hit_pulse(missed["center"], UITheme.MUTED, "漏", "miss")
 		_add_log("BELL #%d MISSED" % note.id)
 
 
 func _judge_anchor(note: Note, ms: float, beat: float) -> void:
 	var state: Dictionary = _states[note.id]
 	var target := float(state["target_ms"])
-	var anchor_protect := _early_protect_ms()
-	if ms < target - anchor_protect:
+	if ms < target - HIT_WINDOW_MS:
 		return
 	var anchor_point := _preview.note_head_screen(note, beat)
 	var anchor_tolerance := POSITION_TOLERANCE_PX + float(_preview.note_graphic_radius(note.type))
-	var press := _take_press_for_shape(target - anchor_protect, target + HIT_WINDOW_MS, target, note,
+	var press := _take_press_for_shape(target - HIT_WINDOW_MS, target + HIT_WINDOW_MS, target, note,
 		PackedVector2Array([anchor_point]), anchor_tolerance)
 	if not press.is_empty():
 		var anchor_error := float(press["time"]) - target
-		var tier := "GOOD" if anchor_error < -GOOD_MS else _tier_for(anchor_error)
+		var tier := _tier_for(anchor_error)
 		state["done"] = true
 		_preview.set_note_state(note.id, "hit")
 		_register_hit(tier)
@@ -1165,6 +1170,13 @@ func _judge_red(ms: float, beat: float, delta: float, mouse: Vector2) -> void:
 				_red_breaks += 1
 				_miss_count += 1
 				_add_judgement("MISS")
+				# 红区断连：真的清空连击，并在红区中心炸一次红色反馈。
+				_combo = 0
+				var center := Vector2.ZERO
+				for point in polygon:
+					center += point
+				if not polygon.is_empty():
+					_preview.add_hit_pulse(center / float(polygon.size()), UITheme.RED, "RED", "tap")
 				_add_log("RED #%d BREAK @ %.0fms" % [region.id, ms])
 		else:
 			state["time"] = 0.0
@@ -1601,6 +1613,11 @@ func _finish() -> void:
 	var lines: Array[String] = []
 	if auto_play:
 		lines.append("AUTO 自动演示（成绩不计入）")
+	elif _judged_total > 0 and _miss_count == 0:
+		if int(_tier_counts.get("PERFECT", 0)) == _judged_total:
+			lines.append("★ ALL PERFECT")
+		else:
+			lines.append("★ FULL COMBO")
 	lines.append("命中 %d / 失误 %d" % [_hit_count, _miss_count])
 	lines.append("调试准确率：%s" % ("—" if _accuracy() < 0.0 else "%.2f%%" % _accuracy()))
 	lines.append("评级：%s（预览/非正式）" % _rating(_accuracy()))
@@ -1654,6 +1671,13 @@ func _cycle_hit_fx(step: int) -> void:
 	_update_top_bar(_chart_ms(), chart.timing.chart_ms_to_beat(_chart_ms()))
 
 
+func _retry() -> void:
+	if chart == null:
+		_exit()
+		return
+	setup(chart, 0.0, chart_path)
+
+
 func _exit() -> void:
 	if _audio != null:
 		_audio.stop()
@@ -1667,3 +1691,7 @@ func _notification(what: int) -> void:
 	if what == NOTIFICATION_PREDELETE or what == NOTIFICATION_WM_CLOSE_REQUEST:
 		Input.set_use_accumulated_input(true)
 		Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
+	elif what == NOTIFICATION_APPLICATION_FOCUS_OUT:
+		# 切出窗口时自动暂停，避免切走的几秒把谱面打空。
+		if _running and not _paused and not _finished:
+			_set_paused(true)

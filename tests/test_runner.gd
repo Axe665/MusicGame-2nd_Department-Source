@@ -496,6 +496,9 @@ func test_style_presets() -> bool:
 	var effects := Preview3D.hit_fx_presets()
 	for key in ["burst", "ring", "prism", "ink"]:
 		ok(effects.has(key), "hit effect %s exists" % key)
+	eq(Preview3D.tier_fx_scale("PERFECT"), 1.0, "a PERFECT keeps the full hit effect")
+	ok(Preview3D.tier_fx_scale("BAD") < Preview3D.tier_fx_scale("GOOD"), "a BAD hit draws a smaller effect")
+	eq(Preview3D.tier_fx_scale("MISS"), 1.0, "a MISS keeps the full hit effect")
 	ok(Playtest.PATH_HEAD_RADIUS >= 130.0, "path head judgement is forgiving")
 	ok(Playtest.PATH_TAIL_RADIUS >= 180.0, "path tail judgement is forgiving")
 	ok(Playtest.TRACE_CONTACT_PX >= 50.0, "trace contact is forgiving")
@@ -533,6 +536,11 @@ func test_position_judgement() -> bool:
 	eq(run._distance_to_polyline(Vector2(50, 30), line), 30.0, "distance to a band segment")
 	eq(run._distance_to_polyline(Vector2(130, 0), line), 30.0, "distance past the band end")
 	eq(run._distance_to_polyline(Vector2(10, 20), PackedVector2Array([Vector2(10, 0)])), 20.0, "distance to a point note")
+	# 早按不再强升 GOOD：只有 BAD 窗口内的早按才会被吃掉。
+	eq(Playtest.HIT_WINDOW_MS, Playtest.BAD_MS, "early protection uses the BAD window")
+	eq(run._tier_for(-60.0), "PERFECT", "a 60ms early press is PERFECT")
+	eq(run._tier_for(-200.0), "BAD", "a 200ms early press is BAD, not upgraded")
+	eq(run._tier_for(-260.0), "MISS", "a 260ms early press is outside the window")
 	run.free()
 	return true
 

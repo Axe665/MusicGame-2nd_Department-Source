@@ -3300,12 +3300,31 @@ func add_hit_pulse(point: Vector2, color: Color, label: String = "HIT", kind: St
 	var sparks: Array[float] = []
 	for i in 6:
 		sparks.append(randf_range(0.0, TAU))
-	_pulses.append({"pos": point, "age": 0.0, "color": color, "label": label, "kind": kind, "sparks": sparks, "detail": detail})
+	# 同一位置连续判定时把文字错开，避免完全叠在一起。
+	var stack := 0
+	for other in _pulses:
+		if (other["pos"] as Vector2).distance_to(point) < 56.0:
+			stack += 1
+	_pulses.append({
+		"pos": point, "age": 0.0, "color": color, "label": label, "kind": kind,
+		"sparks": sparks, "detail": detail,
+		"scale": tier_fx_scale(label),
+		"label_y": float(stack % 3) * 22.0,
+	})
 	# 特效预算：密集段最多同时保留 20 个脉冲，超出丢最旧的。
 	while _pulses.size() > 20:
 		_pulses.pop_front()
 	if _overlay != null:
 		_overlay.queue_redraw()
+
+
+## 档位越差，爆点越小：BAD 看起来不该和 PERFECT 一样大。
+static func tier_fx_scale(label: String) -> float:
+	match label:
+		"GREAT": return 0.92
+		"GOOD": return 0.82
+		"BAD": return 0.68
+	return 1.0
 
 
 func add_arc_flash(angle_degrees: float, width: float, beat: float, color: Color) -> void:
@@ -3339,7 +3358,7 @@ func _draw_arc_flashes(canvas: Control) -> void:
 
 func _draw_pulses(canvas: Control) -> void:
 	# 脉冲多时只给最新的 6 个画完整特效，其余降级成一个细环。
-	var crowded := _pulses.size() > 3
+	var crowded := _pulses.size() > 6
 	for index in _pulses.size():
 		var pulse: Dictionary = _pulses[index]
 		var age := float(pulse.get("age", 0.0))
@@ -3349,37 +3368,48 @@ func _draw_pulses(canvas: Control) -> void:
 		var sparks: Array = pulse.get("sparks", [])
 		var kind := String(pulse.get("kind", "tap"))
 		# 星头单独一套 osu!std 式发散：密度再高也不降级，否则根本看不见。
-		if kind != "path" and crowded and index < _pulses.size() - 3:
+		if kind != "path" and crowded and index < _pulses.size() - 6:
 			canvas.draw_arc(point, 16.0 + age * 30.0, 0.0, TAU, 16, Color(color.r, color.g, color.b, 0.5 * alpha), 2.0, false)
 			continue
+		# 档位越差，爆点越小；位置按脉冲缩放，文字不缩。
+		var fx_scale := float(pulse.get("scale", 1.0))
+		var scaled := absf(fx_scale - 1.0) > 0.001
+		if scaled:
+			canvas.draw_set_transform(point, 0.0, Vector2(fx_scale, fx_scale))
+		var fx_point := Vector2.ZERO if scaled else point
 		if kind == "path":
-			_draw_fx_path_head(canvas, point, color, age)
+			_draw_fx_path_head(canvas, fx_point, color, age)
 		elif kind == "bell":
-			_draw_fx_bell(canvas, point, age)
+			_draw_fx_bell(canvas, fx_point, age)
+		elif kind == "miss":
+			_draw_fx_miss(canvas, fx_point, age, color)
 		else:
 			match hit_fx_style:
 				"ring":
-					_draw_fx_ring(canvas, point, color, age, sparks)
+					_draw_fx_ring(canvas, fx_point, color, age, sparks)
 				"prism":
-					_draw_fx_prism(canvas, point, color, age, sparks)
+					_draw_fx_prism(canvas, fx_point, color, age, sparks)
 				"ink":
-					_draw_fx_ink(canvas, point, color, age, sparks)
+					_draw_fx_ink(canvas, fx_point, color, age, sparks)
 				_:
-					_draw_fx_burst(canvas, point, color, age, sparks)
+					_draw_fx_burst(canvas, fx_point, color, age, sparks)
+		if scaled:
+			canvas.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 		match kind:
 			"hold":
 				canvas.draw_line(point + Vector2(0, -92.0 * (1.0 - alpha)), point - Vector2(0, 20), Color(color.r, color.g, color.b, 0.35 * alpha), 12.0, false)
 			"trace":
 				canvas.draw_line(point - Vector2(52, 0), point + Vector2(52, 0), Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.5 * alpha), 9.0 * alpha + 1.0, false)
 		var text_scale := 1.0 + 0.28 * clampf(1.0 - age / 0.12, 0.0, 1.0)
-		canvas.draw_string_outline(UITheme.bold_font(), point + Vector2(30, -36 - age * 30), String(pulse.get("label", "")), HORIZONTAL_ALIGNMENT_LEFT, -1, int(13.0 * text_scale), 4, Color(0, 0, 0, 0.55 * alpha))
-		canvas.draw_string(UITheme.bold_font(), point + Vector2(30, -36 - age * 30), String(pulse.get("label", "")), HORIZONTAL_ALIGNMENT_LEFT, -1, int(13.0 * text_scale), Color(color.r, color.g, color.b, alpha))
+		var label_y := float(pulse.get("label_y", 0.0))
+		canvas.draw_string_outline(UITheme.bold_font(), point + Vector2(30, -40 - age * 30 + label_y), String(pulse.get("label", "")), HORIZONTAL_ALIGNMENT_LEFT, -1, int(16.0 * text_scale), 5, Color(0, 0, 0, 0.55 * alpha))
+		canvas.draw_string(UITheme.bold_font(), point + Vector2(30, -40 - age * 30 + label_y), String(pulse.get("label", "")), HORIZONTAL_ALIGNMENT_LEFT, -1, int(16.0 * text_scale), Color(color.r, color.g, color.b, alpha))
 		# 早/晚提示：Estella 被批评判定反馈不清，这里把偏差方向直接写在判定字下面。
 		var detail := String(pulse.get("detail", ""))
 		if not detail.is_empty():
 			# 这里原本用等宽字体，但它没有中文字形，每个不同的“早/晚 X ms”都会触发一次
 			# 系统字体回退查找（单次约 18ms），判定密集时会周期性卡顿。改用含中文的正文字体。
-			canvas.draw_string(UITheme.FONT_REGULAR, point + Vector2(30, -22 - age * 30), detail, HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(1, 1, 1, 0.72 * alpha))
+			canvas.draw_string(UITheme.FONT_REGULAR, point + Vector2(30, -24 - age * 30 + label_y), detail, HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(1, 1, 1, 0.72 * alpha))
 
 
 func _draw_fx_path_head(canvas: Control, point: Vector2, color: Color, age: float) -> void:
@@ -3414,6 +3444,13 @@ func _draw_fx_bell(canvas: Control, point: Vector2, age: float) -> void:
 	var radius := 18.0 + 64.0 * (1.0 - pow(1.0 - t, 2.0))
 	canvas.draw_arc(point, radius, 0.0, TAU, 40, Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, 0.85 * fade), 2.0 + 3.0 * fade, false)
 	canvas.draw_circle(point, 10.0 * fade, Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, 0.40 * fade))
+
+
+func _draw_fx_miss(canvas: Control, point: Vector2, age: float, color: Color) -> void:
+	# 漏掉的 Bell：灰色收缩环，不抢连击/判定的注意力。
+	var t := clampf(age / 0.34, 0.0, 1.0)
+	var fade := 1.0 - t
+	canvas.draw_arc(point, lerpf(46.0, 16.0, t), 0.0, TAU, 32, Color(color.r, color.g, color.b, 0.70 * fade), 2.0 + 1.0 * fade, false)
 
 
 func _draw_fx_burst(canvas: Control, point: Vector2, color: Color, age: float, sparks: Array) -> void:
