@@ -1607,6 +1607,7 @@ func draw_overlay(canvas: Control) -> void:
 		_draw_flat_ring(canvas, chart, t)
 	if not use_3d_ring:
 		_draw_bezel(canvas, chart, t)
+	_draw_bar_lines(canvas, chart, t, pre)
 	_draw_red_regions(canvas, chart, t)
 	# 图层顺序：滑条底带 → Path → Hold → Tap/Anchor/Bell，命中目标始终在上层。
 	var sec_usec := Time.get_ticks_usec()
@@ -1641,6 +1642,48 @@ func draw_cursor_overlay(canvas: Control) -> void:
 	if chart == null:
 		return
 	_draw_cursor(canvas, chart, get_time_beat())
+
+
+## Match the timeline's bar grid, including local time-signature changes.
+static func bar_line_beats(timing: TimingMap, beat: float, pre: float) -> Array[float]:
+	var result: Array[float] = []
+	if pre <= 0.0:
+		return result
+	for index in range(maxi(0, ceili(beat)), floori(beat + pre) + 1):
+		if index % timing.beats_per_bar_at(float(index)) == 0:
+			result.append(float(index))
+	return result
+
+
+func _draw_bar_lines(canvas: Control, chart: Chart, beat: float, pre: float) -> void:
+	var bars := bar_line_beats(chart.timing, beat, pre)
+	if bars.is_empty():
+		return
+	# Reuse the boundary evaluator for every ring; scale before camera projection
+	# so the lines follow deformations and tilt exactly like the note bands.
+	var frame := _frame_for(chart, beat)
+	var boundary: Array[Dictionary] = []
+	for i in 128:
+		boundary.append(frame.point_at(float(i) / 128.0))
+	# Reuse the exact start point: evaluating u=1 can select the first
+	# segment but interpolate its far endpoint, leaving a spur at the seam.
+	boundary.append(boundary[0])
+	for target in bars:
+		var progress := clampf(1.0 - (target - beat) / pre, 0.0, 1.0)
+		var alpha := 0.58 * smoothstep(0.0, 0.15, progress)
+		if alpha <= 0.001:
+			continue
+		var run := PackedVector2Array()
+		for item in boundary:
+			var point := project_design((item["point"] as Vector2) * progress)
+			if bool(item.get("gap", false)) or not _valid_point(point):
+				if run.size() > 1:
+					canvas.draw_polyline(run, Color(1, 1, 1, alpha), 1.2, true)
+				run = PackedVector2Array()
+			else:
+				run.append(point)
+		if run.size() > 1:
+			canvas.draw_polyline(run, Color(1, 1, 1, alpha), 1.2, true)
 
 
 func _screen_affine() -> Array:
