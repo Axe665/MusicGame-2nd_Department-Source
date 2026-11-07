@@ -74,9 +74,10 @@ func _run() -> void:
 		before = editor._sfx._index
 		editor._fire_editor_sfx(1.0)
 		_check(editor._sfx._index == before, "same beat never duplicates sounds")
-		editor._rebase_playback(4.0)
+		# 滑条尾现在落在第 4 拍（头拍 + 1 拍等待 + 滑动），跳转点放在它之前。
+		editor._rebase_playback(3.0)
 		before = editor._sfx._index
-		editor._fire_editor_sfx(4.0)
+		editor._fire_editor_sfx(3.0)
 		_check(editor._sfx._index == before, "explicit seek skips earlier sounds")
 	app.hit_sfx_style = "mute"
 	for player in editor._sfx._players:
