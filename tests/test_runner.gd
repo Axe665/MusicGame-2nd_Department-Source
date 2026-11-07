@@ -58,6 +58,8 @@ func _initialize() -> void:
 		"test_sentakki_slide_library",
 		"test_convert_optimizer_fast_path",
 		"test_simai_bpm_jump_star_speed",
+		"test_ring_sector_and_tail_tier",
+		"test_path_sector_erase",
 		"test_note_length_system",
 		"test_osu_std_lanes",
 		"test_path_custom_color",
@@ -1711,6 +1713,41 @@ func test_convert_optimizer_fast_path() -> bool:
 	ConvertOptimizer.enforce_slide_floor(chart, counts, stats)
 	ok(note.type != "path", "a 125ms slide is degraded by the floor")
 	eq(int(stats["degraded"]), 1, "the floor reports one degradation")
+	return true
+
+
+func test_ring_sector_and_tail_tier() -> bool:
+	# 8 分区边界在 22.5° + 45°k，和 8 个按键对齐。
+	eq(Preview3D.ring_sector(0.0), 0, "sector 0 centred on up")
+	eq(Preview3D.ring_sector(22.4), 0, "just before the boundary stays in sector 0")
+	eq(Preview3D.ring_sector(22.6), 1, "just after the boundary moves to sector 1")
+	eq(Preview3D.ring_sector(90.0), 2, "sector 2 centred on right")
+	eq(Preview3D.ring_sector(337.6), 0, "wrap-around closes back into sector 0")
+	# 星尾独立档位：PERFECT ±80 / GREAT ±140 / GOOD ±220。
+	eq(Playtest.tail_tier(-79.0), "PERFECT", "tail within 80ms is perfect")
+	eq(Playtest.tail_tier(81.0), "GREAT", "tail 81ms is great")
+	eq(Playtest.tail_tier(-141.0), "GOOD", "tail 141ms is good")
+	eq(Playtest.tail_tier(221.0), "BAD", "tail 221ms is bad")
+	return true
+
+
+func test_path_sector_erase() -> bool:
+	var note := Note.new("path", 0.0, 90.0, 62.0)
+	note.end_beat = 2.0
+	note.space = "plane"
+	var points: Array[Dictionary] = []
+	for i in 9:
+		var angle := deg_to_rad(90.0 - float(i) * 11.25)
+		points.append({"x": cos(angle), "y": sin(angle), "db": float(i) * 0.25})
+	note.trace_pts = points
+	var preview := Preview3D.new()
+	var ranges := preview.path_sector_ranges(note)
+	eq(ranges.size(), 3, "trail crosses three 45-degree sectors")
+	preview.cut_path_sector(note, 1)
+	ok(preview.path_erased(note, 1.0), "sector erase removes the middle of the trail")
+	ok(not preview.path_erased(note, 0.1), "head 10 percent stays visible")
+	ok(not preview.path_erased(note, 1.9), "tail 15 percent stays visible")
+	preview.free()
 	return true
 
 

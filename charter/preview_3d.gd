@@ -174,7 +174,13 @@ var _skin_cache: Dictionary = {}
 var _skin_cache_key: String = ""
 var trace_cuts: Dictionary = {}
 var path_cuts: Dictionary = {}
+## 环分区擦除：note.id -> [{from,to}]，和 path_cuts 分开存，避免每帧的
+## set_path_erased_to 把分区擦除覆盖掉。
+var path_sector_cuts: Dictionary = {}
 var path_cut_versions: Dictionary = {}
+var _path_sector_cache: Dictionary = {}
+## 星头判定结果（试玩时由 Playtest 写入）：{hit: bool, beat: float}。
+var _path_head_state: Dictionary = {}
 var _drawing_path: bool = false
 var _path_points: Array[Vector2] = []
 var _path_head_angle: float = 0.0
@@ -867,10 +873,29 @@ func _update_video(chart: Chart, beat: float) -> void:
 		_video.stream_position = seconds
 
 
+## 每次进试玩都从干净的轨迹开始（上一局的擦除不能留到下局）。
+func reset_path_cuts() -> void:
+	path_cuts.clear()
+	path_sector_cuts.clear()
+	path_cut_versions.clear()
+	_path_head_state.clear()
+	_path_runs_cache.clear()
+
+
+## 星头判定结果：决定圆和下落星星什么时候开始淡出。
+func set_path_head_state(note_id: int, hit: bool, beat: float) -> void:
+	_path_head_state[note_id] = {"hit": hit, "beat": beat}
+	if _overlay != null:
+		_overlay.queue_redraw()
+
+
 func _on_chart_changed() -> void:
 	_sorted_notes_chart = null
 	trace_cuts.clear()
 	path_cuts.clear()
+	path_sector_cuts.clear()
+	_path_sector_cache.clear()
+	_path_head_state.clear()
 	path_cut_versions.clear()
 	_path_runs_cache.clear()
 	_boundary_frame_cache = null
@@ -889,6 +914,9 @@ func _on_chart_live_changed() -> void:
 	_sorted_notes_chart = null
 	trace_cuts.clear()
 	path_cuts.clear()
+	path_sector_cuts.clear()
+	_path_sector_cache.clear()
+	_path_head_state.clear()
 	path_cut_versions.clear()
 	_path_runs_cache.clear()
 	_boundary_frame_cache = null
@@ -1435,6 +1463,13 @@ func _split_segment() -> void:
 
 func _pre_read_beats(chart: Chart, beat: float) -> float:
 	return chart.pre_read_ms / maxf(0.1, flow_scale) / 60000.0 * chart.timing.bpm_at(beat)
+
+
+## 星星从圆心落到环上的时长（固定 0.5 秒，换算成拍；不超过预读）。
+func _star_fall_beats(chart: Chart, beat: float) -> float:
+	var pre := _pre_read_beats(chart, beat)
+	var bpm := chart.timing.bpm_at(beat)
+	return clampf(0.5 * bpm / 60.0, 0.15, maxf(0.15, pre))
 
 
 func _flying_position(chart: Chart, angle: float, target_beat: float, current_beat: float, pre: float) -> Vector2:
@@ -2060,7 +2095,9 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 		return
 	# 每条 Path 都按"顶层"完整画（箭头链 / 星头 / 尾环 / 进度球）。
 	top = true
-	var grow := clampf((t - (note.beat - pre)) / maxf(0.001, pre), 0.0, 1.0)
+	# 先铺轨迹，再落星星：轨迹从生成开始淡入，星星落下的那一刻正好铺满。
+	var fall := _star_fall_beats(chart, t)
+	var trail_fade := smoothstep(0.0, 1.0, clampf((t - (note.beat - pre)) / maxf(0.001, pre - fall), 0.0, 1.0))
 	var ns := _note_scale()
 	var wait := clampf(note.wait_beat, 0.0, maxf(0.0, total - 0.001))
 	var q := clampf((t - note.beat - wait) / maxf(0.001, total - wait), 0.0, 1.0)
@@ -2084,39 +2121,31 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 		if _path_runs_cache.size() > 64:
 			_path_runs_cache.clear()
 		_path_runs_cache[cache_key] = runs
-	if grow < 0.999:
-		# 缓存的是完整轨迹；飞入阶段只缩放副本，不能改缓存。
-		var center := project_design(Vector2.ZERO)
-		var scaled_runs: Array[PackedVector2Array] = []
-		for piece in runs:
-			var scaled := PackedVector2Array()
-			for p in piece:
-				scaled.append(center.lerp(p, grow))
-			scaled_runs.append(scaled)
-		runs = scaled_runs
 	# 颜色由 _draw_paths 统一分配（自定义优先，重叠时同色系压明度）。
-	var dash := Color(accent.r, accent.g, accent.b, 0.92 * dim)
-	var future := Color(accent.r, accent.g, accent.b, 0.98 * dim)
-	var passed := Color(accent.r, accent.g, accent.b, 0.14 * dim)
-	for piece in runs:
-		if piece.size() < 2:
-			continue
-		var path_band := float(_skin()["band"])
-		var band_width := 5.0 * PATH_SIZE_SCALE * ns * path_band
-		# 每条 Path 都完整画自己的轨迹：多条星重合时不再只剩一条亮线。
-		canvas.draw_polyline(piece, Color(0, 0, 0, 0.50 * dim), band_width + 4.0, false)
-		canvas.draw_polyline(piece, Color(accent.r, accent.g, accent.b, 0.95 * dim), band_width, false)
-		_draw_dashed_polyline(canvas, piece, dash, 2.4 * PATH_SIZE_SCALE, 10.0 * PATH_SIZE_SCALE)
-		# V 形箭头链：约每 52px 一个，最多 10 个，避免糊成一片。
-		var piece_length := 0.0
-		for i in piece.size() - 1:
-			piece_length += piece[i].distance_to(piece[i + 1])
-		var chevron_cap := 10 if visible_count < 4 else (8 if visible_count < 8 else 6)
-		var chevron_count := clampi(int(piece_length / maxf(40.0, 52.0 * ns)), 2, chevron_cap)
-		for k in chevron_count:
-			var fraction := (float(k) + 0.5) / float(chevron_count)
-			var sample: Dictionary = _polyline_sample(piece, fraction)
-			_draw_chevron(canvas, sample["point"], sample["direction"], passed if fraction < progress else future, 12.0 * ns * PATH_SIZE_SCALE)
+	var trail_dim := dim * trail_fade
+	var dash := Color(accent.r, accent.g, accent.b, 0.92 * trail_dim)
+	var future := Color(accent.r, accent.g, accent.b, 0.98 * trail_dim)
+	var passed := Color(accent.r, accent.g, accent.b, 0.14 * trail_dim)
+	if trail_fade > 0.001:
+		for piece in runs:
+			if piece.size() < 2:
+				continue
+			var path_band := float(_skin()["band"])
+			var band_width := 5.0 * PATH_SIZE_SCALE * ns * path_band
+			# 每条 Path 都完整画自己的轨迹：多条星重合时不再只剩一条亮线。
+			canvas.draw_polyline(piece, Color(0, 0, 0, 0.50 * trail_dim), band_width + 4.0, false)
+			canvas.draw_polyline(piece, Color(accent.r, accent.g, accent.b, 0.95 * trail_dim), band_width, false)
+			_draw_dashed_polyline(canvas, piece, dash, 2.4 * PATH_SIZE_SCALE, 10.0 * PATH_SIZE_SCALE)
+			# V 形箭头链：约每 52px 一个，最多 10 个，避免糊成一片。
+			var piece_length := 0.0
+			for i in piece.size() - 1:
+				piece_length += piece[i].distance_to(piece[i + 1])
+			var chevron_cap := 10 if visible_count < 4 else (8 if visible_count < 8 else 6)
+			var chevron_count := clampi(int(piece_length / maxf(40.0, 52.0 * ns)), 2, chevron_cap)
+			for k in chevron_count:
+				var fraction := (float(k) + 0.5) / float(chevron_count)
+				var sample: Dictionary = _polyline_sample(piece, fraction)
+				_draw_chevron(canvas, sample["point"], sample["direction"], passed if fraction < progress else future, 12.0 * ns * PATH_SIZE_SCALE)
 	var selected_note: Note = _app.get_selected_note() if _app != null else null
 	var selected := selected_note != null and selected_note.id == note.id
 	if selected:
@@ -2125,7 +2154,7 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 			var rel := clampf(sample_beat - note.beat, 0.0, total)
 			if path_erased(note, rel):
 				continue
-			var p := _path_screen_point(chart, note, rel, t, true, grow)
+			var p := _path_screen_point(chart, note, rel, t, true, 1.0)
 			if _valid_point(p):
 				canvas.draw_circle(p, 2.6 * ns, Color(0, 0, 0, 0.5))
 				canvas.draw_circle(p, 1.8 * ns, Color(accent.r, accent.g, accent.b, 0.85))
@@ -2134,19 +2163,20 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 			var rel := clampf(float(point.get("db", 0.0)), 0.0, total)
 			if path_erased(note, rel):
 				continue
-			var p := _path_screen_point(chart, note, rel, t, true, grow)
+			var p := _path_screen_point(chart, note, rel, t, true, 1.0)
 			if _valid_point(p):
 				_draw_diamond(canvas, p, 4.5, UITheme.GOLD)
 	_draw_target_arc(canvas, note.angle, note.width, t, UITheme.CORAL, 14.0 * PATH_SIZE_SCALE)
 	if selected:
 		for point in note.trace_pts:
-			var node := _path_local_screen(chart, Vector2(float(point.get("x", 0.0)), float(point.get("y", 0.0))), t, grow)
+			var node := _path_local_screen(chart, Vector2(float(point.get("x", 0.0)), float(point.get("y", 0.0))), t, 1.0)
 			if _valid_point(node):
 				_draw_diamond(canvas, node, 5.0, UITheme.CYAN)
 				canvas.draw_circle(node, 1.8, UITheme.INK)
-	var head := _flying_position(chart, note.angle, note.beat, t, pre)
-	# 星头和轨迹一起从圆心出发；尾部跟随轨迹一起长出。
-	var tail := _path_screen_point(chart, note, total, t, true, grow)
+	var star_head := _flying_position(chart, note.angle, note.beat, t, fall)
+	# 环上固定的落点（圆的中心）和滑动终点。
+	var ring_head := _path_screen_point(chart, note, 0.0, t, true, 1.0)
+	var tail := _path_screen_point(chart, note, total, t, true, 1.0)
 	# 尾点倒计时环：距尾判定 2 拍内从大圈收到尾环，贴合时正是尾判定时刻。
 	# 多条星同时在场时，环先缩满的那条就是要先划完的。
 	if _valid_point(tail) and t >= note.beat - 0.15:
@@ -2154,27 +2184,37 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 		if remain <= 2.0 and remain > -0.06:
 			var k := clampf(1.0 - remain / 2.0, 0.0, 1.0)
 			var ring_radius := lerpf(52.0, 14.0, k) * ns
-			var ring_alpha := lerpf(0.10, 0.95, k * k) * maxf(dim, 0.75)
+			var ring_alpha := lerpf(0.10, 0.95, k * k) * maxf(dim, 0.75) * trail_fade
 			canvas.draw_arc(tail, ring_radius, 0.0, TAU, 40, Color(accent.r, accent.g, accent.b, ring_alpha), 2.6, false)
 			if active:
 				canvas.draw_arc(tail, ring_radius + 3.5, 0.0, TAU, 40, Color(1, 1, 1, 0.30 * ring_alpha), 1.2, false)
-	# 试玩时星星头在滑动开始后交给进度球，不再留在起点造成“断开的星头”。
-	var head_visible := not playtest_mode or t < note.beat + wait + 0.02
+	# 星头拆成两部分：
+	#   环上的圆 = 落点标记（预读出现，头判后淡出）
+	#   下落的星星 = 星形 + 光晕（从圆心飞到圆上；击中后继续落到圆上再淡出，
+	#   打空则停在圆上淡出）
+	var head_state: Dictionary = _path_head_state.get(note.id, {})
+	var state_beat := float(head_state.get("beat", note.beat))
+	var head_hit := bool(head_state.get("hit", true))
+	var fade_start := maxf(note.beat, state_beat) if head_hit else state_beat
+	var fade_beats := 0.3 * chart.timing.bpm_at(note.beat) / 60.0
+	var head_alpha := 1.0 - clampf((t - fade_start) / maxf(0.001, fade_beats), 0.0, 1.0)
 	var ring_mul := 0.5 if note.path_chain else 1.0
-	if head_visible:
-		_draw_path_head(canvas, head, top, grow * ns * PATH_SIZE_SCALE * PATH_HEAD_SCALE, accent, dim, ring_mul)
-		if _valid_point(head):
-			# 重叠 Path 用不同明度的外环区分星头。
-			canvas.draw_arc(head, 28.0 * ns * PATH_SIZE_SCALE * PATH_HEAD_SCALE * ring_mul, 0.0, TAU, 30, Color(accent.r, accent.g, accent.b, 0.95 * dim), 2.4, false)
-			canvas.draw_string(UITheme.mono_font(), head + Vector2(14, -13), "#%d" % note.id, HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(accent.r, accent.g, accent.b, 0.9 * dim))
-		if _valid_point(head):
-			# 头部的白色箭头指向轨迹内侧，进一步区分头和尾。
-			var ahead := _path_screen_point(chart, note, minf(total, maxf(0.05, total * 0.08)), t, true, grow)
-			if _valid_point(ahead):
-				_draw_arrowhead(canvas, head + (ahead - head).normalized() * 29.0 * ns * PATH_SIZE_SCALE, ahead - head, Color(1, 1, 1, 0.95 * dim))
-		if show_debug and _valid_point(head):
-			canvas.draw_string(UITheme.bold_font(), head + Vector2(-12, -22), "PATH", HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(UITheme.CORAL.r, UITheme.CORAL.g, UITheme.CORAL.b, 0.85))
-	_draw_path_tail(canvas, tail, top, grow * ns * PATH_SIZE_SCALE, accent, dim)
+	if head_alpha > 0.01 and _valid_point(ring_head):
+		_draw_path_circle(canvas, ring_head, ns * PATH_SIZE_SCALE * PATH_HEAD_SCALE, accent, head_alpha * dim, ring_mul)
+		# 重叠 Path 用不同明度的外环区分星头。
+		canvas.draw_arc(ring_head, 28.0 * ns * PATH_SIZE_SCALE * PATH_HEAD_SCALE * ring_mul, 0.0, TAU, 30, Color(accent.r, accent.g, accent.b, 0.95 * head_alpha * dim), 2.4, false)
+		canvas.draw_string(UITheme.mono_font(), ring_head + Vector2(14, -13), "#%d" % note.id, HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(accent.r, accent.g, accent.b, 0.9 * head_alpha * dim))
+		# 头部的白色箭头指向轨迹内侧，进一步区分头和尾。
+		var ahead := _path_screen_point(chart, note, minf(total, maxf(0.05, total * 0.08)), t, true, 1.0)
+		if _valid_point(ahead):
+			_draw_arrowhead(canvas, ring_head + (ahead - ring_head).normalized() * 29.0 * ns * PATH_SIZE_SCALE, ahead - ring_head, Color(1, 1, 1, 0.95 * head_alpha * dim))
+		if show_debug:
+			canvas.draw_string(UITheme.bold_font(), ring_head + Vector2(-12, -22), "PATH", HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(UITheme.CORAL.r, UITheme.CORAL.g, UITheme.CORAL.b, 0.85))
+	# 滑动开始后星星交给进度球，不再留在起点。星星在轨迹铺满之后才开始下落。
+	if head_alpha > 0.01 and t >= note.beat - fall and t < note.beat + wait + 0.02 and _valid_point(star_head):
+		var star_in := clampf((t - (note.beat - fall)) / maxf(0.001, fall * 0.3), 0.0, 1.0)
+		_draw_path_star(canvas, star_head, ns * PATH_SIZE_SCALE * PATH_HEAD_SCALE, accent, head_alpha * dim * star_in)
+	_draw_path_tail(canvas, tail, top, ns * PATH_SIZE_SCALE, accent, dim * trail_fade)
 	# 大号发光球 + 短拖尾：当前进度点始终比星头更亮，方向一目了然。
 	if t >= note.beat and t <= note.end_beat:
 		var rel := progress * total
@@ -2348,7 +2388,77 @@ func path_erased(note: Note, relative_beat: float) -> bool:
 	for gap in path_cuts.get(note.id, []):
 		if p >= float(gap.get("from", 0.0)) and p <= float(gap.get("to", 1.0)):
 			return true
+	for gap in path_sector_cuts.get(note.id, []):
+		if p >= float(gap.get("from", 0.0)) and p <= float(gap.get("to", 1.0)):
+			return true
 	return false
+
+
+## 8 分区（45°，边界在 22.5° + 45°k），和 8 个按键 / 车道对齐。
+static func ring_sector(angle_deg: float) -> int:
+	return int(floor((fposmod(angle_deg, 360.0) + 22.5) / 45.0)) % 8
+
+
+## 一条 Path 的轨迹按环分区切出的分数区间：sector -> [{from,to}]。
+## 结果缓存到 note 上，轨迹不变就不用重算。
+func path_sector_ranges(note: Note) -> Dictionary:
+	if _path_sector_cache.has(note):
+		return _path_sector_cache[note]
+	var result := {}
+	var total := maxf(0.000001, note.duration())
+	var pts: Array = note.trace_pts
+	if pts.size() >= 2:
+		var current := -1
+		var start := 0.0
+		var last_frac := 0.0
+		for i in pts.size():
+			var point: Dictionary = pts[i]
+			var angle := fposmod(rad_to_deg(atan2(float(point.get("y", 0.0)), float(point.get("x", 0.0)))), 360.0)
+			var sector := ring_sector(angle)
+			var frac := clampf(float(point.get("db", 0.0)) / total, 0.0, 1.0)
+			if sector != current:
+				if current >= 0:
+					if not result.has(current):
+						result[current] = []
+					(result[current] as Array).append({"from": start, "to": last_frac})
+				current = sector
+				start = frac
+			last_frac = frac
+		if current >= 0:
+			if not result.has(current):
+				result[current] = []
+			(result[current] as Array).append({"from": start, "to": last_frac})
+	_path_sector_cache[note] = result
+	return result
+
+
+## 星星扫到某个分区时，把该分区里这条 Path 的中段擦掉（头 10% / 尾 15% 保留）。
+func cut_path_sector(note: Note, sector: int) -> void:
+	var ranges: Array = (path_sector_ranges(note) as Dictionary).get(sector, [])
+	if ranges.is_empty():
+		return
+	var cuts: Array = path_sector_cuts.get(note.id, [])
+	var changed := false
+	for span in ranges:
+		var a := maxf(0.10, float(span.get("from", 0.0)))
+		var b := minf(0.85, float(span.get("to", 0.0)))
+		if b - a <= 0.01:
+			continue
+		var duplicate := false
+		for old in cuts:
+			if absf(float(old.get("from", 0.0)) - a) < 0.005 and absf(float(old.get("to", 0.0)) - b) < 0.005:
+				duplicate = true
+				break
+		if duplicate:
+			continue
+		cuts.append({"from": a, "to": b})
+		changed = true
+	if not changed:
+		return
+	path_sector_cuts[note.id] = cuts
+	path_cut_versions[note.id] = int(path_cut_versions.get(note.id, 0)) + 1
+	if _overlay != null:
+		_overlay.queue_redraw()
 
 
 func _path_local_screen(chart: Chart, local: Vector2, t: float, scale: float = 1.0) -> Vector2:
@@ -2437,14 +2547,23 @@ func _stroke_band(canvas: Control, points: PackedVector2Array, color: Color, wid
 		canvas.draw_polyline(points, Color(0.04, 0.06, 0.08, 0.85 * alpha), maxf(2.0, w * 0.20), false)
 
 
-func _draw_path_head(canvas: Control, point: Vector2, top: bool, scale: float = 1.0, color: Color = UITheme.CORAL, dim: float = 1.0, ring_mul: float = 1.0) -> void:
+## 环上的圆：星头的落点标记（不再包含星星本体）。
+func _draw_path_circle(canvas: Control, point: Vector2, scale: float, color: Color, alpha: float, ring_mul: float = 1.0) -> void:
 	if not _valid_point(point):
 		return
-	var alpha := (1.0 if top else 0.45) * dim
 	var s := clampf(scale, 0.2, 2.0) * float(_skin()["scale"]) * PATH_SIZE_SCALE * PATH_HEAD_SCALE
 	canvas.draw_circle(point, 31.0 * s * ring_mul, Color(color.r, color.g, color.b, 0.16 * alpha))
 	canvas.draw_circle(point, 24.0 * s * ring_mul, Color(0, 0, 0, 0.30 * alpha))
 	canvas.draw_arc(point, 24.0 * s * ring_mul, 0.0, TAU, 30, Color(1, 1, 1, 0.30 * alpha), 2.0, false)
+
+
+## 下落中的星星：只保留星形 + 光晕。
+func _draw_path_star(canvas: Control, point: Vector2, scale: float, color: Color, alpha: float) -> void:
+	if not _valid_point(point):
+		return
+	var s := clampf(scale, 0.2, 2.0) * float(_skin()["scale"]) * PATH_SIZE_SCALE * PATH_HEAD_SCALE
+	canvas.draw_circle(point, 26.0 * s, Color(color.r, color.g, color.b, 0.18 * alpha))
+	canvas.draw_circle(point, 16.0 * s, Color(color.r, color.g, color.b, 0.10 * alpha))
 	_draw_star_filled(canvas, point, 18.0 * s, Color(color.r, color.g, color.b, alpha))
 
 
@@ -3178,19 +3297,24 @@ func _draw_pulses(canvas: Control) -> void:
 		var point: Vector2 = pulse["pos"]
 		var color: Color = pulse["color"]
 		var sparks: Array = pulse.get("sparks", [])
-		if crowded and index < _pulses.size() - 3:
+		var kind := String(pulse.get("kind", "tap"))
+		# 星头单独一套 osu!std 式发散：密度再高也不降级，否则根本看不见。
+		if kind != "path" and crowded and index < _pulses.size() - 3:
 			canvas.draw_arc(point, 16.0 + age * 30.0, 0.0, TAU, 16, Color(color.r, color.g, color.b, 0.5 * alpha), 2.0, false)
 			continue
-		match hit_fx_style:
-			"ring":
-				_draw_fx_ring(canvas, point, color, age, sparks)
-			"prism":
-				_draw_fx_prism(canvas, point, color, age, sparks)
-			"ink":
-				_draw_fx_ink(canvas, point, color, age, sparks)
-			_:
-				_draw_fx_burst(canvas, point, color, age, sparks)
-		match String(pulse.get("kind", "tap")):
+		if kind == "path":
+			_draw_fx_path_head(canvas, point, color, age)
+		else:
+			match hit_fx_style:
+				"ring":
+					_draw_fx_ring(canvas, point, color, age, sparks)
+				"prism":
+					_draw_fx_prism(canvas, point, color, age, sparks)
+				"ink":
+					_draw_fx_ink(canvas, point, color, age, sparks)
+				_:
+					_draw_fx_burst(canvas, point, color, age, sparks)
+		match kind:
 			"hold":
 				canvas.draw_line(point + Vector2(0, -92.0 * (1.0 - alpha)), point - Vector2(0, 20), Color(color.r, color.g, color.b, 0.35 * alpha), 12.0, false)
 			"bell":
@@ -3200,10 +3324,6 @@ func _draw_pulses(canvas: Control) -> void:
 					var inner := point + Vector2(cos(a), sin(a)) * (12.0 + age * 26.0)
 					var outer := point + Vector2(cos(a), sin(a)) * (28.0 + age * 62.0)
 					canvas.draw_line(inner, outer, Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, 0.75 * alpha), 2.4, false)
-			"path":
-				for k in 5:
-					var a := float(k) * TAU / 5.0
-					canvas.draw_circle(point + Vector2(cos(a), sin(a)) * (22.0 + age * 54.0), 3.6 * alpha, Color(1, 1, 1, alpha))
 			"trace":
 				canvas.draw_line(point - Vector2(52, 0), point + Vector2(52, 0), Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.5 * alpha), 9.0 * alpha + 1.0, false)
 		var text_scale := 1.0 + 0.28 * clampf(1.0 - age / 0.12, 0.0, 1.0)
@@ -3215,6 +3335,31 @@ func _draw_pulses(canvas: Control) -> void:
 			# 这里原本用等宽字体，但它没有中文字形，每个不同的“早/晚 X ms”都会触发一次
 			# 系统字体回退查找（单次约 18ms），判定密集时会周期性卡顿。改用含中文的正文字体。
 			canvas.draw_string(UITheme.FONT_REGULAR, point + Vector2(30, -22 - age * 30), detail, HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(1, 1, 1, 0.72 * alpha))
+
+
+func _draw_fx_path_head(canvas: Control, point: Vector2, color: Color, age: float) -> void:
+	# osu!std 式发散：白闪 + 双层扩散圆环 + 12 道放射线，星头命中一眼可见。
+	var t := clampf(age / 0.46, 0.0, 1.0)
+	var fade := 1.0 - t
+	var flash := clampf(1.0 - age / 0.10, 0.0, 1.0)
+	if flash > 0.0:
+		canvas.draw_circle(point, 14.0 + 26.0 * flash, Color(1, 1, 1, 0.55 * flash))
+		canvas.draw_circle(point, 8.0 + 8.0 * flash, Color(1, 1, 1, 0.95 * flash))
+	var main_radius := 12.0 + 104.0 * (1.0 - pow(1.0 - t, 2.4))
+	canvas.draw_arc(point, main_radius, 0.0, TAU, 48, Color(1, 1, 1, 0.85 * fade), 2.0 + 5.0 * fade, false)
+	var delayed := clampf((age - 0.05) / 0.46, 0.0, 1.0)
+	if delayed > 0.0:
+		var fade2 := 1.0 - delayed
+		var second_radius := 8.0 + 74.0 * (1.0 - pow(1.0 - delayed, 2.0))
+		canvas.draw_arc(point, second_radius, 0.0, TAU, 36, Color(color.r, color.g, color.b, 0.65 * fade2), 1.6 + 3.0 * fade2, false)
+	for k in 12:
+		var angle := float(k) * TAU / 12.0 + age * 0.5
+		var direction := Vector2(cos(angle), sin(angle))
+		var inner := point + direction * (10.0 + 18.0 * t)
+		var outer := point + direction * (24.0 + 78.0 * t)
+		canvas.draw_line(inner, outer, Color(1, 1, 1, 0.80 * fade), 1.6 + 1.6 * fade, false)
+	canvas.draw_circle(point, 14.0 * fade, Color(color.r, color.g, color.b, 0.35 * fade))
+	canvas.draw_circle(point, 7.0 * fade, Color(1, 1, 1, 0.95 * fade))
 
 
 func _draw_fx_burst(canvas: Control, point: Vector2, color: Color, age: float, sparks: Array) -> void:
@@ -3690,7 +3835,7 @@ func note_head_screen(note: Note, beat: float) -> Vector2:
 	var chart := get_chart()
 	if chart == null:
 		return Vector2(INF, INF)
-	return _flying_position(chart, note.angle, note.beat, beat, _pre_read_beats(chart, beat))
+	return _flying_position(chart, note.angle, note.beat, beat, _star_fall_beats(chart, beat))
 
 
 ## 音符图形自身的屏幕半径（位置判定容差用）。
