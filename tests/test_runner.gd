@@ -71,6 +71,7 @@ func _initialize() -> void:
 		"test_bpm_detect_87",
 		"test_bpm_detect_silence",
 		"test_auto_play",
+		"test_note_retire_state",
 		"test_path_tail_judge",
 		"test_slide_floor",
 		"test_bell_path_clearance",
@@ -498,7 +499,8 @@ func test_style_presets() -> bool:
 	ok(Playtest.PATH_HEAD_RADIUS >= 130.0, "path head judgement is forgiving")
 	ok(Playtest.PATH_TAIL_RADIUS >= 180.0, "path tail judgement is forgiving")
 	ok(Playtest.TRACE_CONTACT_PX >= 50.0, "trace contact is forgiving")
-	ok(Playtest.BELL_COLLECT_RADIUS >= 100.0, "bell collect is forgiving")
+	ok(Playtest.BELL_COLLECT_RADIUS >= 64.0 and Playtest.BELL_COLLECT_RADIUS <= 96.0, "bell collect stays tight but forgiving")
+	ok(Preview3D.BELL_SNAP_RANGE <= Playtest.BELL_COLLECT_RADIUS, "bell snap never reaches farther than collect")
 	eq(Playtest.PERFECT_MS, 65.0, "perfect window tightened")
 	eq(Playtest.GREAT_MS, 115.0, "great window tightened")
 	eq(Playtest.GOOD_MS, 170.0, "good window tightened")
@@ -1869,6 +1871,24 @@ func test_bell_path_clearance() -> bool:
 	ok(kept and int(stats.get("bells_moved", 0)) >= 1, "bell is pushed away from the path")
 	if kept:
 		ok(absf(bell.center_u - 0.0) > 0.001, "bell centre actually moved along the ring")
+	return true
+
+
+## 判定一出来音符就退场；hold 头命中只收头部，长条继续画。
+func test_note_retire_state() -> bool:
+	var preview := Preview3D.new()
+	root.add_child(preview)
+	ok(not Preview3D.note_is_retired(preview.note_state(1)), "an unjudged note keeps drawing")
+	preview.set_note_state(1, "hit")
+	ok(Preview3D.note_is_retired(preview.note_state(1)), "a hit note is retired")
+	preview.set_note_state(2, "holding")
+	ok(not Preview3D.note_is_retired(preview.note_state(2)), "a held note keeps its body")
+	preview.set_note_state(3, "miss", 12.0)
+	ok(Preview3D.note_is_retired(preview.note_state(3)), "a missed note is retired")
+	near(float(preview.note_state_beats.get(3, 0.0)), 12.0, 0.001, "the miss beat drives the hold fade")
+	preview.clear_note_states()
+	eq(preview.note_state(1), "", "clearing drops every state")
+	preview.queue_free()
 	return true
 
 

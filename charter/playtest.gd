@@ -26,7 +26,7 @@ const TAIL_GREAT_MS := 140.0
 const TAIL_GOOD_MS := 220.0
 const TRACE_HEAD_RADIUS := 72.0
 const TRACE_CONTACT_PX := 56.0
-const BELL_COLLECT_RADIUS := 112.0
+const BELL_COLLECT_RADIUS := 72.0
 ## 位置判定：鼠标到音符图形边缘外还有这么多像素也算命中。
 const POSITION_TOLERANCE_PX := 90.0
 ## Hold 头比 Tap 窄，额外再放宽一点，避免擦边。
@@ -785,6 +785,7 @@ func _judge_tap(note: Note, ms: float, beat: float) -> void:
 		var error := float(press["time"]) - target
 		var tier := "GOOD" if error < -GOOD_MS else _tier_for(error)
 		state["done"] = true
+		_preview.set_note_state(note.id, "hit")
 		_register_hit(tier)
 		_pulse_at(note.angle, beat, _tier_color(tier), tier, note.arc_width(), "tap", _timing_detail(error, tier))
 		_sfx.play(HitSfx.kind_for_note(note), randf_range(0.98, 1.02))
@@ -792,6 +793,7 @@ func _judge_tap(note: Note, ms: float, beat: float) -> void:
 		return
 	if ms > target + HIT_WINDOW_MS:
 		state["done"] = true
+		_preview.set_note_state(note.id, "miss")
 		_miss_count += 1
 		_add_judgement("MISS")
 		_combo = 0
@@ -815,12 +817,14 @@ func _judge_hold(note: Note, ms: float, beat: float) -> void:
 			state["head"] = true
 			state["key"] = int(press.get("key", 0))
 			state["head_tier"] = head_tier
+			_preview.set_note_state(note.id, "holding")
 			_pulse_at(note.angle, beat, _tier_color(head_tier), head_tier, note.arc_width(), "hold", _timing_detail(head_error, head_tier))
 			_sfx.play("don")
 			_add_log("HOLD #%d HEAD %s" % [note.id, head_tier])
 			return
 		if ms > target + HIT_WINDOW_MS:
 			state["done"] = true
+			_preview.set_note_state(note.id, "miss", beat)
 			_miss_count += 1
 			_add_judgement("MISS")
 			_combo = 0
@@ -838,6 +842,7 @@ func _judge_hold(note: Note, ms: float, beat: float) -> void:
 			var held := clampf((ms - head_ms) / maxf(1.0, end_ms - head_ms), 0.0, 1.0)
 			held_tier = "GREAT" if held >= 0.5 else "GOOD"
 		state["done"] = true
+		_preview.set_note_state(note.id, "hit")
 		_register_hit(held_tier)
 		_pulse_at(note.angle, beat, _tier_color(held_tier), held_tier, note.arc_width(), "tap")
 		_sfx.play("hold_end")
@@ -850,6 +855,7 @@ func _judge_hold(note: Note, ms: float, beat: float) -> void:
 	if ms >= end_ms:
 		var tier := String(state.get("head_tier", "PERFECT"))
 		state["done"] = true
+		_preview.set_note_state(note.id, "hit")
 		_register_hit(tier)
 		_pulse_at(note.angle, beat, _tier_color(tier), tier, note.arc_width(), "tap")
 		_sfx.play("hold_end")
@@ -1097,17 +1103,18 @@ func _judge_bell(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 		return
 	if ms <= target + BELL_WINDOW_MS:
 		var bell: Dictionary = _preview.bell_screen(note, beat)
-		# 鼠标瞄准有误差：Bell 给一个至少 42px 的收取半径。
-		# 磁铁吸附：收取半径再放宽 35%，靠近 Bell 就算收到。
-		if not bell.is_empty() and mouse.distance_to(bell["center"]) <= maxf(BELL_COLLECT_RADIUS * 1.35, float(bell["radius"])):
+		# 鼠标瞄准有误差：Bell 收取半径与吸附范围对齐，靠近就算收到。
+		if not bell.is_empty() and mouse.distance_to(bell["center"]) <= maxf(BELL_COLLECT_RADIUS, float(bell["radius"])):
 			state["done"] = true
 			_bell_hits += 1
+			_preview.set_note_state(note.id, "hit")
 			_preview.add_hit_pulse(bell["center"], UITheme.GOLD, "BELL", "bell")
 			_sfx.play("bell", randf_range(0.99, 1.01))
 			_add_log("BELL #%d COLLECTED" % note.id)
 			return
 	if ms > target + BELL_WINDOW_MS:
 		state["done"] = true
+		_preview.set_note_state(note.id, "miss")
 		_add_log("BELL #%d MISSED" % note.id)
 
 
@@ -1125,6 +1132,7 @@ func _judge_anchor(note: Note, ms: float, beat: float) -> void:
 		var anchor_error := float(press["time"]) - target
 		var tier := "GOOD" if anchor_error < -GOOD_MS else _tier_for(anchor_error)
 		state["done"] = true
+		_preview.set_note_state(note.id, "hit")
 		_register_hit(tier)
 		_pulse_at(note.angle, beat, _tier_color(tier), tier, note.arc_width(), "tap", _timing_detail(anchor_error, tier))
 		_sfx.play("anchor", 1.0)
@@ -1132,6 +1140,7 @@ func _judge_anchor(note: Note, ms: float, beat: float) -> void:
 		return
 	if ms > target + HIT_WINDOW_MS:
 		state["done"] = true
+		_preview.set_note_state(note.id, "miss")
 		_miss_count += 1
 		_add_judgement("MISS")
 		_combo = 0
