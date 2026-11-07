@@ -82,6 +82,8 @@ signal import_set_changed
 ## 同一个来源（或同一首歌）下的难度组：每项 {"name": String, "chart": Chart}。
 ## 下拉框直接读它；导入时一次性把来源里的所有难度都转好放进来。
 signal difficulties_changed
+## 标签栏变化（新建/切换/关闭）。
+signal tabs_changed
 var difficulties: Array[Dictionary] = []
 var difficulty_index: int = 0
 var _switching_difficulty: bool = false
@@ -92,6 +94,9 @@ var import_kind: String = ""                       # "osu" | "simai"
 var import_difficulties: Array[Dictionary] = []     # [{index, name, label}]（兼容旧下拉）
 var import_index: int = 0
 var child_window: bool = false
+## 打开过的谱面标签页；每个标签保存一份完整文档状态。
+var tabs: Array[DocTab] = []
+var active_tab: int = -1
 
 
 func _ready() -> void:
@@ -142,17 +147,21 @@ static func cmdline_value(prefix: String) -> String:
 ## 转谱窗口的启动流程：解析来源 → 建难度列表 → 导入第一份。
 func _boot_import_window(source: String) -> void:
 	if open_import_source(source):
+		ensure_tab()
 		return
 	notice.emit("转谱窗口：读不出 %s 的难度列表" % source.get_file(), "error")
 	set_chart(DemoChart.make_demo(), "user://charts/demo.json", false)
+	ensure_tab()
 
 
 ## 转谱窗口的启动流程（套组版）：读 set.json，把里面每个难度都装进下拉框。
 func _boot_set_window(path: String) -> void:
 	if open_set_file(path):
+		ensure_tab()
 		return
 	notice.emit("转谱窗口：打不开 %s" % path.get_file(), "error")
 	set_chart(DemoChart.make_demo(), "user://charts/demo.json", false)
+	ensure_tab()
 
 
 ## 打开一个导入来源（.osz/.zip/maidata.txt），把来源里的所有难度都转好放进难度组，
@@ -674,6 +683,132 @@ func load_chart(path: String) -> bool:
 	set_chart(loaded, path)
 	notice.emit("已打开 %s" % path.get_file(), "info")
 	return true
+
+
+## ── 标签页 ─────────────────────────────────────────────────────────────────
+## 每个标签保存一份完整的文档状态；切换时把当前状态存回去，再把目标状态装进来。
+class DocTab:
+	var title: String = "未命名"
+	var chart: Chart = null
+	var chart_path: String = ""
+	var set_path: String = ""
+	var difficulties: Array[Dictionary] = []
+	var difficulty_index: int = 0
+	var dirty: bool = false
+	var playhead_beat: float = 0.0
+	var undo := UndoStack.new()
+
+
+func ensure_tab() -> void:
+	if not tabs.is_empty():
+		stash_active_tab()
+		tabs_changed.emit()
+		return
+	var tab := DocTab.new()
+	tab.title = _tab_title_for_current()
+	_copy_current_to(tab)
+	tabs.append(tab)
+	active_tab = 0
+	tabs_changed.emit()
+
+
+func stash_active_tab() -> void:
+	if active_tab < 0 or active_tab >= tabs.size():
+		return
+	_copy_current_to(tabs[active_tab])
+	tabs[active_tab].title = _tab_title_for_current()
+
+
+func _copy_current_to(tab: DocTab) -> void:
+	tab.chart = chart
+	tab.chart_path = chart_path
+	tab.set_path = set_path
+	tab.difficulties = difficulties.duplicate()
+	tab.difficulty_index = difficulty_index
+	tab.dirty = dirty
+	tab.playhead_beat = playhead_beat
+	tab.undo = undo
+
+
+## 把当前文档作为新标签放进标签栏（导入/打开新谱面时调用）。
+func add_tab_from_current(title: String = "") -> void:
+	var tab := DocTab.new()
+	_copy_current_to(tab)
+	tab.title = title if not title.is_empty() else _tab_title_for_current()
+	tabs.append(tab)
+	active_tab = tabs.size() - 1
+	tabs_changed.emit()
+
+
+func activate_tab(index: int) -> void:
+	if index < 0 or index >= tabs.size() or index == active_tab:
+		return
+	stash_active_tab()
+	active_tab = index
+	var tab: DocTab = tabs[index]
+	# set_chart 会清空 undo；先换成临时栈，免得洗掉上一个标签的历史。
+	undo = UndoStack.new()
+	_switching_difficulty = true
+	set_chart(tab.chart, tab.chart_path, tab.dirty)
+	_switching_difficulty = false
+	set_path = tab.set_path
+	difficulties = tab.difficulties.duplicate()
+	difficulty_index = tab.difficulty_index
+	undo = tab.undo
+	playhead_beat = tab.playhead_beat
+	import_set_changed.emit()
+	difficulties_changed.emit()
+	playhead_changed.emit(playhead_beat)
+	_update_window_title()
+	tabs_changed.emit()
+
+
+func close_tab(index: int) -> void:
+	if index < 0 or index >= tabs.size():
+		return
+	if index == active_tab:
+		tabs.remove_at(index)
+		if tabs.is_empty():
+			set_chart(DemoChart.make_empty({"bpm": 120.0}), "", false)
+			add_tab_from_current("未命名")
+			return
+		active_tab = -1
+		activate_tab(clampi(index, 0, tabs.size() - 1))
+	else:
+		tabs.remove_at(index)
+		if index < active_tab:
+			active_tab -= 1
+	tabs_changed.emit()
+
+
+func tab_label(index: int) -> String:
+	if index == active_tab:
+		return ("● " if dirty else "") + _tab_title_for_current()
+	if index < 0 or index >= tabs.size():
+		return ""
+	var tab: DocTab = tabs[index]
+	return ("● " if tab.dirty else "") + tab.title
+
+
+func _tab_title_for_current() -> String:
+	if not set_path.is_empty():
+		return set_path.get_file().get_basename()
+	if not chart_path.is_empty():
+		return chart_path.get_file().get_basename()
+	var title := String(chart.metadata.get("title", "")) if chart != null else ""
+	return title if not title.is_empty() else "未命名"
+
+
+## 导入失败时把当前标签的难度组/路径恢复回来（open_import_source 会先清空它们）。
+func restore_active_tab() -> void:
+	if active_tab < 0 or active_tab >= tabs.size():
+		return
+	var tab: DocTab = tabs[active_tab]
+	set_path = tab.set_path
+	difficulties = tab.difficulties.duplicate()
+	difficulty_index = tab.difficulty_index
+	import_set_changed.emit()
+	difficulties_changed.emit()
 
 
 func _is_set_file(path: String) -> bool:
