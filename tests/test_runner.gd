@@ -56,6 +56,7 @@ func _initialize() -> void:
 		"test_simai_dense_relax",
 		"test_simai_relax_keeps_slow",
 		"test_sentakki_slide_library",
+		"test_editor_tabs",
 		"test_convert_optimizer_fast_path",
 		"test_simai_bpm_jump_star_speed",
 		"test_ring_sector_and_tail_tier",
@@ -1687,6 +1688,31 @@ func test_sentakki_slide_library() -> bool:
 			has_short = true
 			break
 	ok(has_short, "maimai allows a one-lane straight")
+	return true
+
+
+func test_editor_tabs() -> bool:
+	# 标签页文档状态机：新建 / 切换 / 关闭都要保住各自的谱面与脏标记。
+	var app = load("res://charter/app.gd").new()
+	app.name = "TabTestApp"
+	root.add_child(app)
+	var a := DemoChart.make_empty({"bpm": 120.0})
+	var b := DemoChart.make_empty({"bpm": 150.0})
+	app.set_chart(a, "a.json", false)
+	app.ensure_tab()
+	eq(app.tabs.size(), 1, "first document opens one tab")
+	app.set_chart(b, "b.json", true)
+	app.add_tab_from_current("B")
+	eq(app.tabs.size(), 2, "the second document opens a new tab")
+	eq(app.active_tab, 1, "the new tab becomes active")
+	app.activate_tab(0)
+	ok(app.chart == a and not app.dirty, "switching back restores the first document")
+	app.activate_tab(1)
+	ok(app.chart == b and app.dirty, "switching forward restores the second document")
+	app.close_tab(1)
+	eq(app.tabs.size(), 1, "closing removes that tab")
+	ok(app.chart == a, "closing the active tab falls back to the other one")
+	app.queue_free()
 	return true
 
 

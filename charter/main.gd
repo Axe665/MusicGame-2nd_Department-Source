@@ -59,6 +59,10 @@ var _save_dialog: FileDialog
 var _import_dialog: FileDialog
 var _import_diff: OptionButton = null
 var _import_diff_label: Label = null
+var _tabs: TabBar = null
+var _tab_close_index: int = -1
+var _tab_close_dialog: ConfirmationDialog = null
+var _syncing_tabs: bool = false
 var _snap_option: OptionButton
 var _lbp_dialog: FileDialog
 var _report_dialog: AcceptDialog
@@ -124,8 +128,12 @@ func _ready() -> void:
 		_app.audio_import_requested.connect(_on_audio_import_requested)
 		_app.audio_detect_requested.connect(_on_audio_detect_requested)
 		_app.import_set_changed.connect(_refresh_import_difficulty)
+		_app.tabs_changed.connect(_refresh_tabs)
 		_app.chart_changed.emit()
 	_sync_from_app()
+	if _app != null:
+		_app.ensure_tab()
+		_refresh_tabs()
 	for intro_control in [_canvas, _inspector, _palette, _preview]:
 		intro_control.modulate.a = 0.0
 		var tw := create_tween()
@@ -204,7 +212,7 @@ func _build_ui() -> void:
 
 	var top := PanelContainer.new()
 	top.name = "TopBar"
-	top.custom_minimum_size = Vector2(0, 82)
+	top.custom_minimum_size = Vector2(0, 116)
 	root.add_child(top)
 	var top_box := VBoxContainer.new()
 	top_box.add_theme_constant_override("separation", 2)
@@ -213,6 +221,14 @@ func _build_ui() -> void:
 	var brand_row := HBoxContainer.new()
 	brand_row.add_theme_constant_override("separation", 12)
 	top_box.add_child(brand_row)
+	_tabs = TabBar.new()
+	_tabs.name = "Tabs"
+	_tabs.clip_tabs = false
+	_tabs.custom_minimum_size = Vector2(0, 30)
+	_tabs.tab_close_display_policy = TabBar.CLOSE_BUTTON_SHOW_ALWAYS
+	_tabs.tab_changed.connect(_on_tab_changed)
+	_tabs.tab_close_pressed.connect(_on_tab_close)
+	top_box.add_child(_tabs)
 	var brand := Label.new()
 	brand.text = "TAMAKI₃"
 	brand.add_theme_font_override("font", UITheme.bold_font())
@@ -898,8 +914,13 @@ func _build_dialogs() -> void:
 	_open_dialog.filters = PackedStringArray(["*.json ; Tamaki 谱面"])
 	_open_dialog.title = "打开谱面"
 	_open_dialog.file_selected.connect(func(path: String) -> void:
-		_app.load_chart(path)
-		_sync_from_app()
+		_app.ensure_tab()
+		if _app.load_chart(path):
+			_app.add_tab_from_current()
+			_sync_from_app()
+			_refresh_tabs()
+		else:
+			_app.restore_active_tab()
 	)
 	add_child(_open_dialog)
 	_save_dialog = FileDialog.new()
@@ -950,8 +971,11 @@ func _build_dialogs() -> void:
 		_on_import_osz_selected(source_path)
 	)
 	_chart_browser.chart_imported.connect(func(chart: Chart) -> void:
+		_app.ensure_tab()
 		_app.set_chart(chart, "", true)
+		_app.add_tab_from_current(String(chart.metadata.get("title", "在线导入")))
 		_sync_from_app()
+		_refresh_tabs()
 		_show_report("已从在线谱面导入：%d 个 note，%d 个 BPM 点。\n%s" % [chart.notes.size(), chart.timing.points.size(), SimaiIO.last_report])
 	)
 	add_child(_chart_browser)
@@ -1391,54 +1415,98 @@ func _on_song_timing_applied() -> void:
 	_show_toast("已写入识别结果；可在“时间”页继续微调 BPM / offset。", "info")
 
 
-func _on_import_osz_selected(path: String) -> void:
-	# 转谱：先把所有难度转好、存成一个套组文件，再开一个新窗口去编辑它。
+func _on_tab_changed(index: int) -> void:
+	if _syncing_tabs or _app == null:
+		return
+	_app.activate_tab(index)
+	_sync_from_app()
+	_refresh_tabs()
+
+
+func _refresh_tabs() -> void:
+	if _tabs == null or _app == null:
+		return
+	_syncing_tabs = true
+	_tabs.clear_tabs()
+	for i in _app.tabs.size():
+		_tabs.add_tab(_app.tab_label(i))
+	if _app.active_tab >= 0 and _app.active_tab < _tabs.tab_count:
+		_tabs.current_tab = _app.active_tab
+	_syncing_tabs = false
+
+
+func _on_tab_close(index: int) -> void:
+	if _app == null or index < 0 or index >= _app.tabs.size():
+		return
+	var dirty: bool = _app.dirty if index == _app.active_tab else bool(_app.tabs[index].dirty)
+	if not dirty:
+		_close_tab_now(index)
+		return
+	_tab_close_index = index
+	if _tab_close_dialog == null:
+		_tab_close_dialog = ConfirmationDialog.new()
+		_tab_close_dialog.title = "关闭标签页"
+		_tab_close_dialog.ok_button_text = "保存并关闭"
+		_tab_close_dialog.cancel_button_text = "取消"
+		_tab_close_dialog.add_button("直接关闭", true, "discard")
+		_tab_close_dialog.confirmed.connect(_on_tab_close_save)
+		_tab_close_dialog.custom_action.connect(func(action: StringName) -> void:
+			if action == &"discard":
+				_tab_close_dialog.hide()
+				_close_tab_now(_tab_close_index)
+		)
+		add_child(_tab_close_dialog)
+	_tab_close_dialog.dialog_text = "「%s」有未保存的修改。" % _app.tab_label(index).trim_prefix("● ")
+	_tab_close_dialog.popup_centered()
+
+
+func _on_tab_close_save() -> void:
+	var index := _tab_close_index
+	if index < 0 or _app == null:
+		return
+	_app.activate_tab(index)
+	_sync_from_app()
+	_refresh_tabs()
+	if _app.chart_path.is_empty() and _app.set_path.is_empty():
+		# 没保存过：先让用户选路径，选完再关。
+		_save()
+		return
+	if _app.save_chart():
+		_close_tab_now(index)
+
+
+func _close_tab_now(index: int) -> void:
 	if _app == null:
 		return
-	var previous_chart: Chart = _app.chart
-	var previous_path: String = _app.chart_path
-	var previous_dirty: bool = _app.dirty
+	_tab_close_index = -1
+	_app.close_tab(index)
+	_sync_from_app()
+	_refresh_tabs()
+
+
+func _on_import_osz_selected(path: String) -> void:
+	# 转谱：把来源里的所有难度转好，作为一个新标签页打开，不覆盖当前谱面。
+	if _app == null:
+		return
+	_app.ensure_tab()
 	if not _app.open_import_source(path):
+		_app.restore_active_tab()
 		_show_toast("导入失败：%s" % _import_error_text(), "error")
 		return
-	var set_file: String = _app.set_path
 	var count: int = _app.difficulties.size()
-	# 父窗口恢复成原来的谱面：新窗口才是用来放转谱的。
-	if previous_chart != null:
-		_app.set_chart(previous_chart, previous_path, previous_dirty)
-		_sync_from_app()
-	if _spawn_import_window(set_file):
-		_show_toast("已保存 %d 个难度并打开新窗口：%s" % [count, set_file.get_file()], "info")
-		return
-	# 起不了新窗口就退回到当前窗口，直接打开这个套组。
-	if _app.open_set_file(set_file):
-		_sync_from_app()
-		_show_report("转谱完成：%d 个难度已存入 %s\n顶部可以切换难度。" % [count, set_file.get_file()])
-		return
-	_show_toast("没能打开套组，已取消导入。", "error")
+	var title: String = _app.set_path.get_file().get_basename()
+	if title.is_empty():
+		title = "导入"
+	_app.add_tab_from_current(title)
+	_sync_from_app()
+	_refresh_tabs()
+	_show_report("转谱完成：%d 个难度已放进新标签页「%s」，顶部可以切换难度。" % [count, title])
 
 
 func _import_error_text() -> String:
 	if not OsuIO.last_error.is_empty():
 		return OsuIO.last_error
 	return SimaiIO.last_error
-
-
-## 另起一个进程 = 真正的新窗口：它有自己的 App 状态，互不影响。
-func _spawn_import_window(set_file: String) -> bool:
-	if set_file.is_empty():
-		return false
-	var exe := OS.get_executable_path()
-	if exe.is_empty():
-		return false
-	var args: Array = []
-	if OS.has_feature("editor"):
-		args.append_array(["--path", ProjectSettings.globalize_path("res://")])
-	args.append_array(["--", "--open-set=" + set_file, "--child-window"])
-	var pid := OS.create_process(exe, args)
-	if pid > 0:
-		print("[import] child window pid=%d set=%s" % [pid, set_file])
-	return pid > 0
 
 
 func _on_import_difficulty_selected(position: int) -> void:
