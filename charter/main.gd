@@ -1193,8 +1193,8 @@ func _build_sfx_events() -> void:
 			"tap":
 				_add_sfx_event(note.beat, HitSfx.kind_for_note(note))
 			"hold":
-				_add_sfx_event(note.beat, "hold", 0.92)
-				_add_sfx_event(note.end_beat, "hold", 1.08)
+				_add_sfx_event(note.beat, "don")
+				_add_sfx_event(note.end_beat, "hold_end")
 			"path":
 				_add_sfx_event(note.beat, "path", 1.0)
 				_add_sfx_event(note.end_beat, "tail")
@@ -1219,7 +1219,9 @@ func _first_sfx_event(beat: float) -> int:
 
 
 func _fire_editor_sfx(beat: float) -> void:
-	if beat < _sfx_last_beat - 0.001 or beat > _sfx_last_beat + 0.5:
+	# Forward progress can span many beats after a slow frame. Explicit seeks
+	# already reset the event index in _rebase_playback; do not drop crossed hits.
+	if beat < _sfx_last_beat - 0.001:
 		_sfx_event_index = _first_sfx_event(beat)
 		_sfx_last_beat = beat
 		return

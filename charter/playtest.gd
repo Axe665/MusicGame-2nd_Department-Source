@@ -107,9 +107,15 @@ func _ready() -> void:
 	_sfx = HitSfx.new()
 	_sfx.name = "PlaytestHitSfx"
 	add_child(_sfx)
-	_sfx.set_style(String(_app.hit_sfx_style) if _app != null else "default")
+	_sync_sfx_style()
+	if _app != null:
+		_app.appearance_changed.connect(_sync_sfx_style)
 	_build_ui()
 	_build_pause_overlay()
+
+
+func _sync_sfx_style() -> void:
+	_sfx.set_style(String(_app.hit_sfx_style) if _app != null else "default")
 
 
 func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
@@ -566,7 +572,7 @@ func _judge_hold(note: Note, ms: float, beat: float) -> void:
 			state["key"] = int(press.get("key", 0))
 			state["head_tier"] = head_tier
 			_pulse_at(note.angle, beat, _tier_color(head_tier), head_tier, note.arc_width(), "hold", _timing_detail(head_error, head_tier))
-			_sfx.play("hold", 0.92)
+			_sfx.play("don")
 			_add_log("HOLD #%d HEAD %s" % [note.id, head_tier])
 			return
 		if ms > target + HIT_WINDOW_MS:
@@ -590,7 +596,7 @@ func _judge_hold(note: Note, ms: float, beat: float) -> void:
 		state["done"] = true
 		_register_hit(held_tier)
 		_pulse_at(note.angle, beat, _tier_color(held_tier), held_tier, note.arc_width(), "tap")
-		_sfx.play("hold", 1.08)
+		_sfx.play("hold_end")
 		# 提前松手不算时机样本，避免污染平均偏差和动态 offset。
 		if held_tier == "PERFECT":
 			_record_error(ms - end_ms, "HOLD #%d COMPLETE PERFECT" % note.id)
@@ -602,7 +608,7 @@ func _judge_hold(note: Note, ms: float, beat: float) -> void:
 		state["done"] = true
 		_register_hit(tier)
 		_pulse_at(note.angle, beat, _tier_color(tier), tier, note.arc_width(), "tap")
-		_sfx.play("hold", 1.08)
+		_sfx.play("hold_end")
 		_record_error(ms - end_ms, "HOLD #%d COMPLETE %s" % [note.id, tier])
 
 
