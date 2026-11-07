@@ -18,7 +18,12 @@ const PATH_TAIL_RADIUS := 192.0
 ## 尾判半径最多占“头到尾直线距离”的多少（短滑条要跟着缩）。
 const PATH_TAIL_RADIUS_RATIO := 0.42
 ## 尾判还要求光标滑到轨迹的多少进度，防止站在中段就提前算完成。
-const PATH_TAIL_MIN_FRACTION := 0.86
+## 星尾：鼠标投影到轨迹这个比例就算完成，不再要求贴着尾点。
+const PATH_TAIL_MIN_FRACTION := 0.90
+## 星尾自己的档位窗口（连续滑动有鼠标延迟，比 Tap 宽）。
+const TAIL_PERFECT_MS := 80.0
+const TAIL_GREAT_MS := 140.0
+const TAIL_GOOD_MS := 220.0
 const TRACE_HEAD_RADIUS := 72.0
 const TRACE_CONTACT_PX := 56.0
 const BELL_COLLECT_RADIUS := 112.0
@@ -79,6 +84,9 @@ var _auto_index: int = 0
 var _auto_cursor: Vector2 = Vector2.ZERO
 var _auto_hold_keys: Dictionary = {}   # note_id -> {"key": int, "end_ms": float}
 var _auto_key_phase: int = 0
+## 环分区擦除：每颗活跃星星当前所在分区与停留帧数。
+var _sector_now: Dictionary = {}
+var _sector_frames: Dictionary = {}
 const AUTO_LEAD_MS := 8.0              # 比判定时间早这么多就按下（吃掉帧量化误差）
 const AUTO_RELEASE_MS := 60.0          # Hold 尾判之后再松手，避免被判成提前松开
 const AUTO_PREVIEW_MS := 900.0         # 光标提前多久开始预判下一个要点
@@ -141,6 +149,7 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	_init_states()
 	_last_chart_ms = -INF
 	_preview.chart_override = chart
+	_preview.reset_path_cuts()
 	_preview.follow_app = false
 	_preview.playtest_mode = true
 	_preview.custom_cursor_visible = true
@@ -390,6 +399,8 @@ func _init_states() -> void:
 	_auto_index = 0
 	_auto_cursor = Vector2.ZERO
 	_auto_hold_keys.clear()
+	_sector_now.clear()
+	_sector_frames.clear()
 	for region in chart.regions:
 		_red_states[region.id] = {"time": 0.0, "broken": false}
 
@@ -861,9 +872,11 @@ func _judge_path(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 				var tier := "GOOD" if head_error < -GOOD_MS else _tier_for(head_error)
 				state["head_hit"] = true
 				_register_hit(tier)
-				_pulse_at(note.angle, beat, _tier_color(tier), tier, note.arc_width(), "path", _timing_detail(head_error, tier))
+				# 星头用实际的星头屏幕位置，平面星星（V / 折线）也能炸在正确的位置。
+				_pulse_at(note.angle, beat, _tier_color(tier), tier, note.arc_width(), "path", _timing_detail(head_error, tier), head_point)
 				_sfx.play("path", randf_range(0.98, 1.02))
 				_add_log("PATH #%d HEAD %s" % [note.id, tier])
+				_preview.set_path_head_state(note.id, true, beat)
 				state["head_judged"] = true
 			elif ms > head_ms + HIT_WINDOW_MS:
 				state["head_hit"] = false
@@ -872,6 +885,7 @@ func _judge_path(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 				_combo = 0
 				_pulse_at(note.angle, beat, UITheme.RED, "MISS", note.arc_width())
 				_add_log("PATH #%d HEAD MISS" % note.id)
+				_preview.set_path_head_state(note.id, false, beat)
 				state["head_judged"] = true
 	if not state["tail_judged"] and ms >= tail_ms - HIT_WINDOW_MS:
 		var tail_point: Vector2 = _preview.path_point(note, note.duration(), beat)
@@ -882,14 +896,17 @@ func _judge_path(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 		if start_point.is_finite() and tail_point.is_finite():
 			chord = start_point.distance_to(tail_point)
 		var tail_radius := clampf(minf(PATH_TAIL_RADIUS, chord * PATH_TAIL_RADIUS_RATIO), 56.0, PATH_TAIL_RADIUS)
-		# 还要求真的滑到后段：站在轨迹中段即使离尾巴够近也不算完成。
 		var tail_info: Dictionary = _preview.path_fraction(note, mouse, beat)
 		var tail_fraction := float(tail_info.get("fraction", 0.0))
+		var tail_distance := float(tail_info.get("distance", INF))
 		var near_tail := mouse.is_finite() and tail_point.is_finite() and mouse.distance_to(tail_point) <= tail_radius
-		# 时间已经压在尾巴上时，只按距离给判（照顾真人瞄偏但时机对的滑条）。
-		var tail_due := absf(ms - tail_ms) <= PERFECT_MS
-		if near_tail and (tail_fraction >= PATH_TAIL_MIN_FRACTION or tail_due):
-			var tier := _tier_for(ms - tail_ms)
+		# 两种完成方式：
+		#   1) 鼠标沿轨迹扫到 90%（离轨迹别太远即可），不再要求贴着尾点；
+		#   2) 手已经贴到尾点，且时间在 GREAT 内（防止路过尾点就吃个早期 BAD）。
+		var swept := tail_fraction >= PATH_TAIL_MIN_FRACTION and tail_distance <= PATH_TAIL_RADIUS
+		var touched := near_tail and absf(ms - tail_ms) <= TAIL_GREAT_MS
+		if swept or touched:
+			var tier := tail_tier(ms - tail_ms)
 			state["tail_hit"] = true
 			_register_hit(tier)
 			_pulse_at(note.tail_angle, beat, _tier_color(tier), tier, note.tail_width, "path", _timing_detail(ms - tail_ms, tier))
@@ -927,7 +944,35 @@ func _judge_path(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 		if float(info.get("distance", INF)) <= 128.0 and fraction > progress and fraction <= progress + 0.20:
 			target = fraction
 		_preview.set_path_erased_to(note, target)
+		_track_sector_erase(note, progress)
 		state["path_last_mouse"] = mouse
+
+
+## 星星扫到哪个 45° 分区，就把该分区里所有「已经开始」的星星中段擦掉。
+## 停留 2 帧才算进入，避免正好压在分区边界时来回抖。
+func _track_sector_erase(note: Note, progress: float) -> void:
+	if _preview == null:
+		return
+	var local := note.path_local_at(note.duration() * clampf(progress, 0.0, 1.0))
+	if local.length_squared() <= 0.000001:
+		return
+	var angle := fposmod(rad_to_deg(atan2(local.y, local.x)), 360.0)
+	var sector := _preview.ring_sector(angle)
+	if int(_sector_now.get(note.id, -1)) != sector:
+		_sector_now[note.id] = sector
+		_sector_frames[note.id] = 0
+		return
+	var frames := int(_sector_frames.get(note.id, 0)) + 1
+	_sector_frames[note.id] = frames
+	if frames != 2:
+		return
+	for other in _ordered_notes:
+		if other.type != "path" or other == note:
+			continue
+		var other_state: Dictionary = _states.get(other.id, {})
+		if not bool(other_state.get("head_hit", false)) or bool(other_state.get("tail_judged", false)):
+			continue
+		_preview.cut_path_sector(other, sector)
 
 
 func _judge_trace(note: Note, ms: float, beat: float, delta: float, mouse: Vector2) -> void:
@@ -1117,10 +1162,12 @@ func _judge_red(ms: float, beat: float, delta: float, mouse: Vector2) -> void:
 			state["broken"] = false
 
 
-func _pulse_at(angle_degrees: float, beat: float, color: Color, label: String, width: float = 60.0, kind: String = "tap", detail: String = "") -> void:
+func _pulse_at(angle_degrees: float, beat: float, color: Color, label: String, width: float = 60.0, kind: String = "tap", detail: String = "", screen_point: Vector2 = Vector2.INF) -> void:
 	if _preview == null:
 		return
-	var p: Vector2 = _preview.project_u(fposmod(angle_degrees, 360.0) / 360.0, beat)
+	var p := screen_point
+	if not (p.is_finite() and p.x < 1.0e9):
+		p = _preview.project_u(fposmod(angle_degrees, 360.0) / 360.0, beat)
 	if p.is_finite() and p.x < 1.0e9:
 		_preview.add_hit_pulse(p, color, label, kind, detail)
 		_preview.add_arc_flash(angle_degrees, width, beat, color)
@@ -1402,6 +1449,20 @@ func _tier_for(error_ms: float) -> String:
 	if error <= GREAT_MS:
 		return "GREAT"
 	if error <= GOOD_MS:
+		return "GOOD"
+	if error <= BAD_MS:
+		return "BAD"
+	return "MISS"
+
+
+## 星尾档位：连续滑动有鼠标延迟，窗口比 Tap 宽一档。
+static func tail_tier(error_ms: float) -> String:
+	var error := absf(error_ms)
+	if error <= TAIL_PERFECT_MS:
+		return "PERFECT"
+	if error <= TAIL_GREAT_MS:
+		return "GREAT"
+	if error <= TAIL_GOOD_MS:
 		return "GOOD"
 	if error <= BAD_MS:
 		return "BAD"

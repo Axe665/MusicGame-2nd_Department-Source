@@ -479,6 +479,17 @@ static func _remove_chords(chart: Chart, counts: Dictionary) -> void:
 			counts["dropped"] += 1
 
 
+## 同一个 zip（路径 + 大小 + 修改时间）固定落到同一个目录，重复导入直接复用。
+static func _zip_import_folder(path: String) -> String:
+	var size := 0
+	var file := FileAccess.open(path, FileAccess.READ)
+	if file != null:
+		size = file.get_length()
+		file.close()
+	var key := "%s|%d|%d" % [path, FileAccess.get_modified_time(path), size]
+	return "user://imports/simai_zip_%d/" % (absi(key.hash()) % 1000000000)
+
+
 static func _extract_assets(path: String, chart: Chart) -> void:
 	var folder := ""
 	if path.to_lower().ends_with(".zip"):
@@ -486,7 +497,8 @@ static func _extract_assets(path: String, chart: Chart) -> void:
 		if zip.open(path) != OK:
 			return
 		var names := zip.get_files()
-		folder = "user://imports/simai_%d/" % Time.get_unix_time_from_system()
+		# 同一个压缩包只解一次：导入整个难度组时以前会每个难度都复制 20MB+ 并重跑 ffmpeg。
+		folder = _zip_import_folder(path)
 		DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(folder))
 		for name in names:
 			var lower := name.to_lower()
@@ -500,7 +512,7 @@ static func _extract_assets(path: String, chart: Chart) -> void:
 			elif lower.ends_with("pv.mp4"):
 				target = folder + "pv.mp4"
 				chart.video_path = target
-			if target.is_empty():
+			if target.is_empty() or FileAccess.file_exists(target):
 				continue
 			var data := zip.read_file(name)
 			var file := FileAccess.open(target, FileAccess.WRITE)
@@ -511,10 +523,13 @@ static func _extract_assets(path: String, chart: Chart) -> void:
 		if not chart.audio_path.is_empty() and chart.audio_path.get_extension().to_lower() != "ogg":
 			# MP3 在部分音频驱动/解码器上会静音；解包时转成 OGG 更稳。
 			var ogg_path := folder + "track.ogg"
-			var output: Array = []
-			var code := OS.execute("ffmpeg", ["-y", "-i", ProjectSettings.globalize_path(chart.audio_path), "-vn", "-acodec", "libvorbis", "-q:a", "5", ProjectSettings.globalize_path(ogg_path)], output, true, false)
-			if code == 0 and FileAccess.file_exists(ogg_path):
+			if FileAccess.file_exists(ogg_path):
 				chart.audio_path = ogg_path
+			else:
+				var output: Array = []
+				var code := OS.execute("ffmpeg", ["-y", "-i", ProjectSettings.globalize_path(chart.audio_path), "-vn", "-acodec", "libvorbis", "-q:a", "5", ProjectSettings.globalize_path(ogg_path)], output, true, false)
+				if code == 0 and FileAccess.file_exists(ogg_path):
+					chart.audio_path = ogg_path
 		return
 	# 直接选择 maidata.txt 或解压后的文件夹时，直接用同目录的 track 文件，不复制。
 	folder = path.get_base_dir() if not DirAccess.dir_exists_absolute(path) else path
