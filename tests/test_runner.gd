@@ -24,6 +24,7 @@ func _initialize() -> void:
 		"test_timing_stats",
 		"test_nearest_u",
 		"test_pre_read",
+		"test_bar_lines",
 		"test_shrink_example",
 		"test_event_restore",
 		"test_playability_validator",
@@ -541,6 +542,18 @@ func _preview_point(chart: Chart, u: float, target_beat: float, current_beat: fl
 	var beats := chart.pre_read_ms / 60000.0 * chart.timing.bpm_at(current_beat)
 	var q := clampf((current_beat - (target_beat - beats)) / maxf(0.001, beats), 0.0, 1.0)
 	return c * q
+
+
+func test_bar_lines() -> bool:
+	var timing := TimingMap.new()
+	eq(Preview3D.bar_line_beats(timing, 1.0, 8.0), [4.0, 8.0], "bar lines appear once per 4/4 measure")
+	eq(Preview3D.bar_line_beats(timing, 4.0, 1.0), [4.0], "bar line reaches boundary on downbeat")
+	eq(Preview3D.bar_line_beats(timing, 4.01, 1.0), [], "bar line disappears after downbeat")
+	eq(Preview3D.bar_line_beats(timing, -2.0, 4.0), [0.0], "count-in includes first measure")
+	eq(Preview3D.bar_line_beats(timing, 1.0, 0.0), [], "zero pre-read produces no bar lines")
+	timing.points.append(TimingPoint.new(8.0, 180.0, 3))
+	eq(Preview3D.bar_line_beats(timing, 4.0, 8.0), [4.0, 9.0, 12.0], "meter change matches timeline bar grid")
+	return true
 
 
 func test_pre_read() -> bool:
