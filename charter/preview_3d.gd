@@ -59,14 +59,6 @@ var _app: Node = null
 var hud_accuracy: float = -1.0
 var hud_rating: String = "—"
 var hud_errors: Array[float] = []
-## 试玩环心的大号连击数（Playtest 每 50ms 写入一次）。
-var hud_combo: int = 0
-var _hud_combo_seen: int = 0
-var _combo_pop: float = 0.0
-## 50/100/… 连击时金色闪一下；断连时把旧数字红着缩掉。
-var _combo_milestone: float = 0.0
-var _combo_break: float = 0.0
-var _combo_break_value: int = 0
 
 var cursor_u: float = 0.0
 var cursor_valid: bool = false
@@ -478,18 +470,6 @@ func _process(_delta: float) -> void:
 		_last_fit_key = ""
 		_last_mesh_key = ""
 	_update_mouse_tilt(_delta)
-	if hud_combo != _hud_combo_seen:
-		if hud_combo > _hud_combo_seen:
-			_combo_pop = 1.0
-			if int(hud_combo / 50.0) > int(_hud_combo_seen / 50.0):
-				_combo_milestone = 1.0
-		elif _hud_combo_seen > 0:
-			_combo_break_value = _hud_combo_seen
-			_combo_break = 1.0
-		_hud_combo_seen = hud_combo
-	_combo_pop = maxf(0.0, _combo_pop - _delta * 6.0)
-	_combo_milestone = maxf(0.0, _combo_milestone - _delta * 2.5)
-	_combo_break = maxf(0.0, _combo_break - _delta * 4.0)
 	for i in range(_pulses.size() - 1, -1, -1):
 		_pulses[i]["age"] = float(_pulses[i].get("age", 0.0)) + _delta
 		if float(_pulses[i]["age"]) > 0.5:
@@ -1707,7 +1687,6 @@ func draw_overlay(canvas: Control) -> void:
 	_draw_paths(canvas, chart, t, pre)
 	sec_usec = Time.get_ticks_usec()
 	_perf_sections[1] += sec_usec - sec2
-	_draw_combo(canvas)
 	_draw_holds(canvas, chart, t, pre)
 	sec2 = Time.get_ticks_usec()
 	_perf_sections[2] += sec2 - sec_usec
@@ -3576,44 +3555,6 @@ func _draw_fx_ink(canvas: Control, point: Vector2, color: Color, age: float, spa
 		var angle0 := float(sparks[0])
 		canvas.draw_line(point, point + Vector2(cos(angle0), sin(angle0)) * (36.0 + 72.0 * t), Color(color.r, color.g, color.b, 0.50 * fade), 3.5 * (1.0 - t) + 0.5, false)
 	canvas.draw_circle(point, 3.0 * fade, Color(1, 1, 1, 0.65 * fade))
-
-
-## 环心大号连击：只在试玩里显示；50/100 金色闪一下，断连时红环 + 旧数字缩掉。
-func _draw_combo(canvas: Control) -> void:
-	if not playtest_mode:
-		return
-	var center := project_design(Vector2.ZERO)
-	if not _valid_point(center):
-		return
-	var base := int(clampf(minf(size.x, size.y) * 0.065, 36.0, 64.0))
-	var font := UITheme.bold_font()
-	var pos_x := center.x - size.x * 0.5
-	if hud_combo > 0:
-		var font_size := int(float(base) * (1.0 + 0.18 * _combo_pop + 0.08 * _combo_milestone))
-		var pos := Vector2(pos_x, center.y + float(font_size) * 0.34)
-		var color := Color(1, 1, 1, 0.80).lerp(UITheme.GOLD, _combo_milestone)
-		canvas.draw_string_outline(font, pos, str(hud_combo), HORIZONTAL_ALIGNMENT_CENTER, size.x, font_size, maxi(4, font_size / 8), Color(0, 0, 0, 0.50))
-		canvas.draw_string(font, pos, str(hud_combo), HORIZONTAL_ALIGNMENT_CENTER, size.x, font_size, color)
-	if _combo_break > 0.01:
-		var k := _combo_break
-		canvas.draw_arc(center, float(base) * 0.55 + (1.0 - k) * 54.0, 0.0, TAU, 40, Color(UITheme.RED.r, UITheme.RED.g, UITheme.RED.b, 0.45 * k), 2.0 + 2.0 * k, false)
-		# 环心空着时把断掉的旧数字红着缩掉；马上又连上时只留红环，不叠两个数字。
-		if hud_combo <= 0 and _combo_break_value > 0:
-			var font_size := int(float(base) * (1.0 + 0.10 * (1.0 - k)))
-			var pos := Vector2(pos_x, center.y + float(font_size) * 0.34)
-			var color := Color(UITheme.RED.r, UITheme.RED.g, UITheme.RED.b, 0.85 * k)
-			canvas.draw_string_outline(font, pos, str(_combo_break_value), HORIZONTAL_ALIGNMENT_CENTER, size.x, font_size, maxi(4, font_size / 8), Color(0, 0, 0, 0.50 * k))
-			canvas.draw_string(font, pos, str(_combo_break_value), HORIZONTAL_ALIGNMENT_CENTER, size.x, font_size, color)
-
-
-## 新一局开始时清掉上一局的连击残留。
-func reset_combo_hud() -> void:
-	hud_combo = 0
-	_hud_combo_seen = 0
-	_combo_pop = 0.0
-	_combo_milestone = 0.0
-	_combo_break = 0.0
-	_combo_break_value = 0
 
 
 func _draw_hud(canvas: Control, chart: Chart, t: float) -> void:

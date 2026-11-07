@@ -153,7 +153,6 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	_last_chart_ms = -INF
 	_preview.chart_override = chart
 	_preview.reset_path_cuts()
-	_preview.reset_combo_hud()
 	_preview.follow_app = false
 	_preview.playtest_mode = true
 	_preview.custom_cursor_visible = true
@@ -1371,11 +1370,12 @@ func _update_top_bar(ms: float, beat: float) -> void:
 	var fx_label := String(Preview3D.hit_fx_presets().get(_preview.hit_fx_style, _preview.hit_fx_style))
 	if _style_label != null:
 		_style_label.text = "%s · %s" % [skin_label, fx_label]
-	_top_stats.text = "%sHIT %d  MISS %d  ACC %s  |  BELL %d/%d  RED %d  |  BIA %+.1fms  OFF %+.0fms" % [
+	_top_stats.text = "%sHIT %d  MISS %d  ACC %s  COMBO %d  |  BELL %d/%d  RED %d  |  BIA %+.1fms  OFF %+.0fms" % [
 		"[AUTO] " if auto_play else "",
 		_hit_count,
 		_miss_count,
 		"—" if accuracy < 0.0 else "%.1f%%" % accuracy,
+		_combo,
 		_bell_hits,
 		_bell_total,
 		_red_breaks,
@@ -1388,7 +1388,6 @@ func _update_hud() -> void:
 	var accuracy := _accuracy()
 	_preview.hud_accuracy = accuracy
 	_preview.hud_rating = _rating(accuracy)
-	_preview.hud_combo = _combo
 	_preview.hud_errors = _errors.slice(maxi(0, _errors.size() - 64))
 
 
@@ -1611,7 +1610,6 @@ func _finish() -> void:
 		_audio.stop()
 	_preview.playing = false
 	_preview.custom_cursor_visible = false
-	_preview.reset_combo_hud()
 	var lines: Array[String] = []
 	if auto_play:
 		lines.append("AUTO 自动演示（成绩不计入）")
