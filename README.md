@@ -229,6 +229,27 @@ tests/     SceneTree 无头测试
 - 音量滑杆目前是会话级，不写入谱面/配置文件；重启后回到 100%。
 - osu!std 混合层是“可玩性重解释”，不是原谱 1:1 还原；Tap 角度经过 Sentakki 的流向/大跳推进，slider 的轨迹由 Sentakki 合法段链按剩余时长生成，不是原图逐点复刻。
 
+## 打击音效与替换
+
+编辑器播放和 F5 试玩共用 `charter/hit_sfx.gd`，音效文件都在 `audio/sfx/`：
+
+| 文件 | 用途 |
+|---|---|
+| `tap_don.ogg` | 普通 Tap / don、Hold 头部 |
+| `tap_kat.wav` | kat Tap（当前以音符宽度 70° ≤ width < 85° 区分） |
+| `hold_end.ogg` | Hold 完成（头尾均不再额外调整音高） |
+| `path.wav` | Path 头部、滑动型 Trace 起点 |
+| `path_tail.wav` | Path 终点 |
+| `trace.wav` | Trace 完成；编辑器预听在起点触发 |
+| `anchor.wav` | Anchor 命中 |
+| `bell.ogg` | Bell 收集 |
+
+替换时可使用 WAV（建议 44.1 kHz、16 位 PCM）或 OGG Vorbis，短音效建议去掉起始静音。覆盖对应同名文件，然后回到 Godot 等待重新导入并重新运行游戏。保留 `.import` 文件，它记录导入设置；不要修改 `.godot/imported/` 中的缓存。如果使用新文件名或格式，修改 `HitSfx.PATHS` 中对应路径。
+
+`HitSfx.KIND_DB` 控制各类音效的音量（dB）；`STYLE_PITCH` / `STYLE_DB` 控制“原声、清脆、厚重”的音高与音量，它们共用这 8 个文件。编辑器运输条的“音效”滑杆控制共用 SFX 总线，“打击音”复选框只控制编辑器预听；外观设置中的“打击音效 → 静音”同时影响编辑器和试玩，恢复为“原声”即可解除。
+
+音效回归测试：`godot --headless --path . --script tests/sfx_playback.gd`。覆盖 8 种音效的总线输出、舞萌导入谱和自制谱的编辑器/试玩触发、卡帧后补发、跳转不补播和试玩静音切换；不验证扬声器或耳机的实际输出。
+
 ## 字体与资源
 
 - `assets/fonts/NotoSansSC-Regular.ttf` / `-Bold.ttf`：从系统 Noto Sans CJK SC 提取，随工程分发
