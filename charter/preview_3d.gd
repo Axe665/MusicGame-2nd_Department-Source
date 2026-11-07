@@ -63,6 +63,10 @@ var hud_errors: Array[float] = []
 var hud_combo: int = 0
 var _hud_combo_seen: int = 0
 var _combo_pop: float = 0.0
+## 50/100/… 连击时金色闪一下；断连时把旧数字红着缩掉。
+var _combo_milestone: float = 0.0
+var _combo_break: float = 0.0
+var _combo_break_value: int = 0
 
 var cursor_u: float = 0.0
 var cursor_valid: bool = false
@@ -475,10 +479,17 @@ func _process(_delta: float) -> void:
 		_last_mesh_key = ""
 	_update_mouse_tilt(_delta)
 	if hud_combo != _hud_combo_seen:
-		_hud_combo_seen = hud_combo
-		if hud_combo > 0:
+		if hud_combo > _hud_combo_seen:
 			_combo_pop = 1.0
+			if int(hud_combo / 50.0) > int(_hud_combo_seen / 50.0):
+				_combo_milestone = 1.0
+		elif _hud_combo_seen > 0:
+			_combo_break_value = _hud_combo_seen
+			_combo_break = 1.0
+		_hud_combo_seen = hud_combo
 	_combo_pop = maxf(0.0, _combo_pop - _delta * 6.0)
+	_combo_milestone = maxf(0.0, _combo_milestone - _delta * 2.5)
+	_combo_break = maxf(0.0, _combo_break - _delta * 4.0)
 	for i in range(_pulses.size() - 1, -1, -1):
 		_pulses[i]["age"] = float(_pulses[i].get("age", 0.0)) + _delta
 		if float(_pulses[i]["age"]) > 0.5:
@@ -3310,12 +3321,31 @@ func add_hit_pulse(point: Vector2, color: Color, label: String = "HIT", kind: St
 	var sparks: Array[float] = []
 	for i in 6:
 		sparks.append(randf_range(0.0, TAU))
-	_pulses.append({"pos": point, "age": 0.0, "color": color, "label": label, "kind": kind, "sparks": sparks, "detail": detail})
+	# 同一位置连续判定时把文字错开，避免完全叠在一起。
+	var stack := 0
+	for other in _pulses:
+		if (other["pos"] as Vector2).distance_to(point) < 56.0:
+			stack += 1
+	_pulses.append({
+		"pos": point, "age": 0.0, "color": color, "label": label, "kind": kind,
+		"sparks": sparks, "detail": detail,
+		"scale": tier_fx_scale(label),
+		"label_y": float(stack % 3) * 22.0,
+	})
 	# 特效预算：密集段最多同时保留 20 个脉冲，超出丢最旧的。
 	while _pulses.size() > 20:
 		_pulses.pop_front()
 	if _overlay != null:
 		_overlay.queue_redraw()
+
+
+## 档位越差，爆点越小：BAD 看起来不该和 PERFECT 一样大。
+static func tier_fx_scale(label: String) -> float:
+	match label:
+		"GREAT": return 0.92
+		"GOOD": return 0.82
+		"BAD": return 0.68
+	return 1.0
 
 
 func add_arc_flash(angle_degrees: float, width: float, beat: float, color: Color) -> void:
@@ -3349,7 +3379,7 @@ func _draw_arc_flashes(canvas: Control) -> void:
 
 func _draw_pulses(canvas: Control) -> void:
 	# 脉冲多时只给最新的 6 个画完整特效，其余降级成一个细环。
-	var crowded := _pulses.size() > 3
+	var crowded := _pulses.size() > 6
 	for index in _pulses.size():
 		var pulse: Dictionary = _pulses[index]
 		var age := float(pulse.get("age", 0.0))
@@ -3359,37 +3389,46 @@ func _draw_pulses(canvas: Control) -> void:
 		var sparks: Array = pulse.get("sparks", [])
 		var kind := String(pulse.get("kind", "tap"))
 		# 星头单独一套 osu!std 式发散：密度再高也不降级，否则根本看不见。
-		if kind != "path" and crowded and index < _pulses.size() - 3:
+		if kind != "path" and crowded and index < _pulses.size() - 6:
 			canvas.draw_arc(point, 16.0 + age * 30.0, 0.0, TAU, 16, Color(color.r, color.g, color.b, 0.5 * alpha), 2.0, false)
 			continue
+		# 档位越差，爆点越小；位置按脉冲缩放，文字不缩。
+		var fx_scale := float(pulse.get("scale", 1.0))
+		var scaled := absf(fx_scale - 1.0) > 0.001
+		if scaled:
+			canvas.draw_set_transform(point, 0.0, Vector2(fx_scale, fx_scale))
+		var fx_point := Vector2.ZERO if scaled else point
 		if kind == "path":
-			_draw_fx_path_head(canvas, point, color, age)
+			_draw_fx_path_head(canvas, fx_point, color, age)
 		elif kind == "bell":
-			_draw_fx_bell(canvas, point, age)
+			_draw_fx_bell(canvas, fx_point, age)
 		else:
 			match hit_fx_style:
 				"ring":
-					_draw_fx_ring(canvas, point, color, age, sparks)
+					_draw_fx_ring(canvas, fx_point, color, age, sparks)
 				"prism":
-					_draw_fx_prism(canvas, point, color, age, sparks)
+					_draw_fx_prism(canvas, fx_point, color, age, sparks)
 				"ink":
-					_draw_fx_ink(canvas, point, color, age, sparks)
+					_draw_fx_ink(canvas, fx_point, color, age, sparks)
 				_:
-					_draw_fx_burst(canvas, point, color, age, sparks)
+					_draw_fx_burst(canvas, fx_point, color, age, sparks)
+		if scaled:
+			canvas.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 		match kind:
 			"hold":
 				canvas.draw_line(point + Vector2(0, -92.0 * (1.0 - alpha)), point - Vector2(0, 20), Color(color.r, color.g, color.b, 0.35 * alpha), 12.0, false)
 			"trace":
 				canvas.draw_line(point - Vector2(52, 0), point + Vector2(52, 0), Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.5 * alpha), 9.0 * alpha + 1.0, false)
 		var text_scale := 1.0 + 0.28 * clampf(1.0 - age / 0.12, 0.0, 1.0)
-		canvas.draw_string_outline(UITheme.bold_font(), point + Vector2(30, -40 - age * 30), String(pulse.get("label", "")), HORIZONTAL_ALIGNMENT_LEFT, -1, int(16.0 * text_scale), 5, Color(0, 0, 0, 0.55 * alpha))
-		canvas.draw_string(UITheme.bold_font(), point + Vector2(30, -40 - age * 30), String(pulse.get("label", "")), HORIZONTAL_ALIGNMENT_LEFT, -1, int(16.0 * text_scale), Color(color.r, color.g, color.b, alpha))
+		var label_y := float(pulse.get("label_y", 0.0))
+		canvas.draw_string_outline(UITheme.bold_font(), point + Vector2(30, -40 - age * 30 + label_y), String(pulse.get("label", "")), HORIZONTAL_ALIGNMENT_LEFT, -1, int(16.0 * text_scale), 5, Color(0, 0, 0, 0.55 * alpha))
+		canvas.draw_string(UITheme.bold_font(), point + Vector2(30, -40 - age * 30 + label_y), String(pulse.get("label", "")), HORIZONTAL_ALIGNMENT_LEFT, -1, int(16.0 * text_scale), Color(color.r, color.g, color.b, alpha))
 		# 早/晚提示：Estella 被批评判定反馈不清，这里把偏差方向直接写在判定字下面。
 		var detail := String(pulse.get("detail", ""))
 		if not detail.is_empty():
 			# 这里原本用等宽字体，但它没有中文字形，每个不同的“早/晚 X ms”都会触发一次
 			# 系统字体回退查找（单次约 18ms），判定密集时会周期性卡顿。改用含中文的正文字体。
-			canvas.draw_string(UITheme.FONT_REGULAR, point + Vector2(30, -24 - age * 30), detail, HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(1, 1, 1, 0.72 * alpha))
+			canvas.draw_string(UITheme.FONT_REGULAR, point + Vector2(30, -24 - age * 30 + label_y), detail, HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(1, 1, 1, 0.72 * alpha))
 
 
 func _draw_fx_path_head(canvas: Control, point: Vector2, color: Color, age: float) -> void:
@@ -3530,19 +3569,32 @@ func _draw_fx_ink(canvas: Control, point: Vector2, color: Color, age: float, spa
 	canvas.draw_circle(point, 3.0 * fade, Color(1, 1, 1, 0.65 * fade))
 
 
-## 环心大号连击：只在试玩里显示，连击变化时轻微弹一下。
+## 环心大号连击：只在试玩里显示；50/100 金色闪一下，断连时红环 + 旧数字缩掉。
 func _draw_combo(canvas: Control) -> void:
-	if not playtest_mode or hud_combo <= 0:
+	if not playtest_mode:
 		return
 	var center := project_design(Vector2.ZERO)
 	if not _valid_point(center):
 		return
 	var base := int(clampf(minf(size.x, size.y) * 0.065, 36.0, 64.0))
-	var font_size := int(float(base) * (1.0 + 0.18 * _combo_pop))
-	var pos := Vector2(center.x - size.x * 0.5, center.y + float(font_size) * 0.34)
 	var font := UITheme.bold_font()
-	canvas.draw_string_outline(font, pos, str(hud_combo), HORIZONTAL_ALIGNMENT_CENTER, size.x, font_size, maxi(4, font_size / 8), Color(0, 0, 0, 0.50))
-	canvas.draw_string(font, pos, str(hud_combo), HORIZONTAL_ALIGNMENT_CENTER, size.x, font_size, Color(1, 1, 1, 0.80))
+	var pos_x := center.x - size.x * 0.5
+	if hud_combo > 0:
+		var font_size := int(float(base) * (1.0 + 0.18 * _combo_pop + 0.08 * _combo_milestone))
+		var pos := Vector2(pos_x, center.y + float(font_size) * 0.34)
+		var color := Color(1, 1, 1, 0.80).lerp(UITheme.GOLD, _combo_milestone)
+		canvas.draw_string_outline(font, pos, str(hud_combo), HORIZONTAL_ALIGNMENT_CENTER, size.x, font_size, maxi(4, font_size / 8), Color(0, 0, 0, 0.50))
+		canvas.draw_string(font, pos, str(hud_combo), HORIZONTAL_ALIGNMENT_CENTER, size.x, font_size, color)
+	if _combo_break > 0.01:
+		var k := _combo_break
+		canvas.draw_arc(center, float(base) * 0.55 + (1.0 - k) * 54.0, 0.0, TAU, 40, Color(UITheme.RED.r, UITheme.RED.g, UITheme.RED.b, 0.45 * k), 2.0 + 2.0 * k, false)
+		# 环心空着时把断掉的旧数字红着缩掉；马上又连上时只留红环，不叠两个数字。
+		if hud_combo <= 0 and _combo_break_value > 0:
+			var font_size := int(float(base) * (1.0 + 0.10 * (1.0 - k)))
+			var pos := Vector2(pos_x, center.y + float(font_size) * 0.34)
+			var color := Color(UITheme.RED.r, UITheme.RED.g, UITheme.RED.b, 0.85 * k)
+			canvas.draw_string_outline(font, pos, str(_combo_break_value), HORIZONTAL_ALIGNMENT_CENTER, size.x, font_size, maxi(4, font_size / 8), Color(0, 0, 0, 0.50 * k))
+			canvas.draw_string(font, pos, str(_combo_break_value), HORIZONTAL_ALIGNMENT_CENTER, size.x, font_size, color)
 
 
 ## 新一局开始时清掉上一局的连击残留。
@@ -3550,6 +3602,9 @@ func reset_combo_hud() -> void:
 	hud_combo = 0
 	_hud_combo_seen = 0
 	_combo_pop = 0.0
+	_combo_milestone = 0.0
+	_combo_break = 0.0
+	_combo_break_value = 0
 
 
 func _draw_hud(canvas: Control, chart: Chart, t: float) -> void:

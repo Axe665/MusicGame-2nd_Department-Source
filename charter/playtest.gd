@@ -146,6 +146,9 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	chart = p_chart
 	start_beat = p_start_beat
 	chart_path = p_chart_path
+	_finished = false
+	if _results != null:
+		_results.visible = false
 	_init_states()
 	_last_chart_ms = -INF
 	_preview.chart_override = chart
@@ -325,10 +328,19 @@ func _build_ui() -> void:
 	_results_text.custom_minimum_size = Vector2(600, 150)
 	_results_text.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	box.add_child(_results_text)
+	var result_buttons := HBoxContainer.new()
+	result_buttons.add_theme_constant_override("separation", 12)
+	box.add_child(result_buttons)
+	var retry_button := Button.new()
+	retry_button.text = "重试"
+	retry_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	retry_button.pressed.connect(_retry)
+	result_buttons.add_child(retry_button)
 	_results_button = Button.new()
 	_results_button.text = "返回编辑器（Esc）"
+	_results_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_results_button.pressed.connect(func() -> void: _exit())
-	box.add_child(_results_button)
+	result_buttons.add_child(_results_button)
 
 	var bottom := Label.new()
 	bottom.text = "任意有效键：Tap / Hold / Anchor；Path / Bell / Trace 用鼠标定位；Red 停留 200ms 断连；[ / ] 判定偏移；F6 换音符外观；F7 换打击特效。"
@@ -1593,6 +1605,7 @@ func _finish() -> void:
 		_audio.stop()
 	_preview.playing = false
 	_preview.custom_cursor_visible = false
+	_preview.reset_combo_hud()
 	var lines: Array[String] = []
 	if auto_play:
 		lines.append("AUTO 自动演示（成绩不计入）")
@@ -1647,6 +1660,13 @@ func _cycle_hit_fx(step: int) -> void:
 		_app.hit_fx_style = _preview.hit_fx_style
 		_app.save_settings()
 	_update_top_bar(_chart_ms(), chart.timing.chart_ms_to_beat(_chart_ms()))
+
+
+func _retry() -> void:
+	if chart == null:
+		_exit()
+		return
+	setup(chart, 0.0, chart_path)
 
 
 func _exit() -> void:
