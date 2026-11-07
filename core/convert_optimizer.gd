@@ -176,6 +176,9 @@ static func _rebuild_paths(chart: Chart, counts: Dictionary, stats: Dictionary, 
 				note.samples_per_beat = 4.0
 				note.path_style = "arc"
 				note.path_controls_set = false
+				# BPM 在滑动途中变化时，按拍均分的轨迹仍可能超速；不通过就再退一档。
+				if _trace_bad(note, chart):
+					continue
 				stats["rebuilt"] = int(stats["rebuilt"]) + 1
 				built = true
 				break

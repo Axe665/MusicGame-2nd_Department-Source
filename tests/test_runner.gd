@@ -56,6 +56,7 @@ func _initialize() -> void:
 		"test_simai_relax_keeps_slow",
 		"test_sentakki_slide_library",
 		"test_convert_optimizer_fast_path",
+		"test_simai_bpm_jump_star_speed",
 		"test_note_length_system",
 		"test_osu_std_lanes",
 		"test_path_custom_color",
@@ -1232,7 +1233,15 @@ func test_simai_import() -> bool:
 	eq(Validator.errors(Validator.validate(chart)).size(), 0, "simai import is playable without double-hand conflicts")
 	if chart.notes.size() >= 3:
 		near(chart.notes[0].angle, 90.0, 0.001, "simai button 1 is top")
-		near(chart.notes[2].end_beat, 3.0, 0.001, "simai slide duration starts on the head beat")
+		near(chart.notes[2].wait_beat, 1.0, 0.001, "maimai star waits one beat after the head tap")
+		near(chart.notes[2].end_beat, 4.0, 0.001, "slide tail is head + 1 beat wait + slide length")
+		var trace: Array = chart.notes[2].trace_pts
+		ok(trace.size() >= 3, "slide trace has samples")
+		if trace.size() >= 2:
+			var head := Vector2(float(trace[0]["x"]), float(trace[0]["y"]))
+			var held := Vector2(float(trace[1]["x"]), float(trace[1]["y"]))
+			near(float(trace[1]["db"]), 1.0, 0.001, "trace keeps the star at the head for the wait beat")
+			ok(held.distance_to(head) < 0.001, "star is parked during the wait beat")
 		near(chart.notes[2].tail_angle, 270.0, 0.001, "simai slide tail button 5")
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
 	return true
@@ -1676,6 +1685,28 @@ func test_convert_optimizer_fast_path() -> bool:
 	eq(note.type, "path", "fast path stays a path after shortening")
 	ok(absf(JudgeMath.angle_delta(note.angle, note.tail_angle)) <= 45.01, "fast path tail is shortened to a reachable lane")
 	ok(note.trace_pts.size() >= 12, "rebuilt path is densely sampled")
+	return true
+
+
+func test_simai_bpm_jump_star_speed() -> bool:
+	# BPM 在星星滑动途中跳变时，按拍均分的轨迹仍会超速；重建后必须再检查一次。
+	var text := "&title=T\n&wholebpm=220\n&lv_1=1\n&inote_1=(220){4}1-5[2:1],,(2020),,,,\nE\n"
+	var path := "user://test_simai_bpm_star.txt"
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	if file == null:
+		ok(false, "simai bpm star fixture")
+		return true
+	file.store_string(text)
+	file.close()
+	var chart := SimaiIO.import_maidata(path, 1)
+	ok(chart != null, "simai bpm jump chart imports")
+	if chart != null:
+		var bad := 0
+		for note in chart.notes:
+			if note.type == "path" and ConvertOptimizer._trace_bad(note, chart):
+				bad += 1
+		eq(bad, 0, "rebuilt star stays under the trace speed cap across a BPM jump")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
 	return true
 
 

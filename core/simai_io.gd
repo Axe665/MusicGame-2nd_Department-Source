@@ -255,9 +255,9 @@ static func _parse_note(token: String, beat: float, bpm: float) -> Note:
 		elif token.find("<") > 0:
 			delta = absf(delta)
 		var note := Note.new("path", beat, fposmod(start_angle, 360.0), 62.0)
-		# maidata 的 [a:b] 就是滑条从头部当拍到尾部的时间，没有额外 1 拍等待。
-		note.end_beat = beat + maxf(0.25, duration)
-		note.wait_beat = 0.0
+		# 舞萌星星按下星头后先原地等 1 拍（与 BPM 相关），[a:b] 只是之后的滑动时间。
+		note.wait_beat = 1.0
+		note.end_beat = beat + note.wait_beat + maxf(0.25, duration)
 		note.tail_angle = fposmod(start_angle + delta, 360.0)
 		note.tail_width = 52.0
 		note.tolerance = 0.24
