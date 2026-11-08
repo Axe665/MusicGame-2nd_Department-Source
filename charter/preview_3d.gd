@@ -43,6 +43,8 @@ var star_color: Color = Color(0.55, 0.75, 1.0)
 ## Trace 门框的主色（默认银白）。
 var trace_color: Color = Color(0.78, 0.86, 1.0)
 var custom_cursor_visible: bool = true
+## 光标大小倍率（1.0 = 默认）。
+var cursor_scale: float = 1.0
 var mouse_tilt: bool = true
 var use_3d_ring: bool = true:
 	set(value):
@@ -3271,6 +3273,7 @@ func _update_bell_snap(chart: Chart, t: float, delta: float) -> void:
 
 func _draw_player_cursor(canvas: Control) -> void:
 	var accent := UITheme.CYAN if cursor_valid or playtest_mode else UITheme.MUTED
+	var cs := clampf(cursor_scale, 0.5, 2.0)
 	# osu 风格拖尾：连续线段填补采样空隙，越靠近光标越大、越亮，停手后自然消失。
 	for i in range(1, _cursor_trail.size()):
 		var previous: Dictionary = _cursor_trail[i - 1]
@@ -3279,7 +3282,7 @@ func _draw_player_cursor(canvas: Control) -> void:
 		if life <= 0.01:
 			continue
 		var ratio := float(i) / float(maxi(1, _cursor_trail.size() - 1))
-		canvas.draw_line(previous["pos"], current["pos"], Color(accent.r, accent.g, accent.b, 0.10 * life), lerpf(2.5, 9.0, ratio), false)
+		canvas.draw_line(previous["pos"], current["pos"], Color(accent.r, accent.g, accent.b, 0.10 * life), lerpf(2.5, 9.0, ratio) * cs, false)
 	for i in _cursor_trail.size():
 		var item: Dictionary = _cursor_trail[i]
 		var age := float(item.get("age", 0.0))
@@ -3288,24 +3291,24 @@ func _draw_player_cursor(canvas: Control) -> void:
 			continue
 		var ratio := float(i + 1) / float(maxi(1, _cursor_trail.size()))
 		var point: Vector2 = item["pos"]
-		var radius := lerpf(3.0, 10.5, ratio)
+		var radius := lerpf(3.0, 10.5, ratio) * cs
 		canvas.draw_circle(point, radius * 1.9, Color(accent.r, accent.g, accent.b, 0.06 * life))
 		canvas.draw_circle(point, radius, Color(accent.r, accent.g, accent.b, 0.26 * life))
 		canvas.draw_circle(point, radius * 0.45, Color(1, 1, 1, 0.16 * life))
 	var m := mouse_screen
 	var spin := Time.get_ticks_msec() / 1000.0 * 2.2
-	canvas.draw_circle(m, 27.0, Color(accent.r, accent.g, accent.b, 0.035))
-	canvas.draw_circle(m, 20.0, Color(accent.r, accent.g, accent.b, 0.06))
-	canvas.draw_arc(m, 19.5, spin, spin + PI * 0.85, 22, Color(accent.r, accent.g, accent.b, 0.72), 1.7, false)
-	canvas.draw_arc(m, 19.5, spin + PI, spin + PI * 1.75, 22, Color(accent.r, accent.g, accent.b, 0.34), 1.2, false)
-	canvas.draw_arc(m, 14.0, 0.0, TAU, 48, Color(0, 0, 0, 0.62), 5.4, false)
-	canvas.draw_arc(m, 14.0, 0.0, TAU, 48, Color(1, 1, 1, 0.96), 2.6, false)
-	canvas.draw_arc(m, 9.2, 0.0, TAU, 36, Color(accent.r, accent.g, accent.b, 0.95), 2.0, false)
-	canvas.draw_circle(m, 4.4, Color(0, 0, 0, 0.78))
-	canvas.draw_circle(m, 2.5, Color(1, 1, 1, 0.98))
+	canvas.draw_circle(m, 27.0 * cs, Color(accent.r, accent.g, accent.b, 0.035))
+	canvas.draw_circle(m, 20.0 * cs, Color(accent.r, accent.g, accent.b, 0.06))
+	canvas.draw_arc(m, 19.5 * cs, spin, spin + PI * 0.85, 22, Color(accent.r, accent.g, accent.b, 0.72), 1.7 * cs, false)
+	canvas.draw_arc(m, 19.5 * cs, spin + PI, spin + PI * 1.75, 22, Color(accent.r, accent.g, accent.b, 0.34), 1.2 * cs, false)
+	canvas.draw_arc(m, 14.0 * cs, 0.0, TAU, 48, Color(0, 0, 0, 0.62), 5.4 * cs, false)
+	canvas.draw_arc(m, 14.0 * cs, 0.0, TAU, 48, Color(1, 1, 1, 0.96), 2.6 * cs, false)
+	canvas.draw_arc(m, 9.2 * cs, 0.0, TAU, 36, Color(accent.r, accent.g, accent.b, 0.95), 2.0 * cs, false)
+	canvas.draw_circle(m, 4.4 * cs, Color(0, 0, 0, 0.78))
+	canvas.draw_circle(m, 2.5 * cs, Color(1, 1, 1, 0.98))
 	for k in 4:
 		var direction := Vector2.from_angle(float(k) * PI * 0.5)
-		canvas.draw_line(m + direction * 15.5, m + direction * 19.0, Color(1, 1, 1, 0.42), 1.2, false)
+		canvas.draw_line(m + direction * 15.5 * cs, m + direction * 19.0 * cs, Color(1, 1, 1, 0.42), 1.2 * cs, false)
 	if not cursor_valid and playtest_mode and show_debug:
 		canvas.draw_string(UITheme.mono_font(), m + Vector2(18, -16), "环外", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, UITheme.MUTED)
 

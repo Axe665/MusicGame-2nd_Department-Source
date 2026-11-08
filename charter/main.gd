@@ -81,6 +81,7 @@ var _playtest_dialog: AcceptDialog = null
 var _playtest_rate: SpinBox = null
 var _playtest_flow: SpinBox = null
 var _playtest_star: SpinBox = null
+var _playtest_cursor: SpinBox = null
 var _playtest_star_color: ColorPickerButton = null
 var _playtest_trace_color: ColorPickerButton = null
 var _playtest_offset: SpinBox = null
@@ -1031,6 +1032,7 @@ func _sync_appearance() -> void:
 		return
 	_preview.note_skin = _app.note_skin
 	_preview.hit_fx_style = _app.hit_fx_style
+	_preview.cursor_scale = _app.cursor_scale
 	_preview.refresh_style()
 	if _sfx != null:
 		_sfx.set_style(_app.hit_sfx_style)
@@ -1050,6 +1052,7 @@ func _sync_from_app() -> void:
 	_preview.trace_color = _app.trace_color
 	_preview.note_skin = _app.note_skin
 	_preview.hit_fx_style = _app.hit_fx_style
+	_preview.cursor_scale = _app.cursor_scale
 	_sfx.set_style(_app.hit_sfx_style)
 	_canvas.px_per_beat = _app.zoom_px_per_beat
 	if _beat_subdiv_edit != null:
@@ -1723,6 +1726,8 @@ func _open_playtest_setup(from_start: bool) -> void:
 	_playtest_rate.value = _rate
 	_playtest_flow.value = _app.flow_scale
 	_playtest_star.value = _app.star_speed
+	if _playtest_cursor != null:
+		_playtest_cursor.value = _app.cursor_scale
 	if _playtest_star_color != null:
 		_playtest_star_color.color = _app.star_color
 	if _playtest_trace_color != null:
@@ -1735,7 +1740,7 @@ func _open_playtest_setup(from_start: bool) -> void:
 		_playtest_auto.button_pressed = bool(_app.playtest_auto)
 	if _playtest_bias != null:
 		_playtest_bias.text = "上次平均偏差 %+.1fms" % float(_app.last_bias_ms)
-	_playtest_dialog.popup_centered(Vector2i(400, 320))
+	_playtest_dialog.popup_centered(Vector2i(400, 360))
 
 
 func _build_playtest_dialog() -> void:
@@ -1749,6 +1754,7 @@ func _build_playtest_dialog() -> void:
 	_playtest_rate = _playtest_spin_row(box, "倍速", 0.5, 2.0, 0.05, 1.0, "×")
 	_playtest_flow = _playtest_spin_row(box, "流速", 0.05, 3.0, 0.01, 1.0, "×")
 	_playtest_star = _playtest_spin_row(box, "星速", 0.5, 2.0, 0.05, 1.0, "×")
+	_playtest_cursor = _playtest_spin_row(box, "光标大小", 0.5, 2.0, 0.05, 1.0, "×")
 	_playtest_offset = _playtest_spin_row(box, "判定偏移", -200.0, 200.0, 1.0, 0.0, "ms")
 	_playtest_dynamic = CheckBox.new()
 	_playtest_dynamic.text = "动态 offset（局内自动校准，≤±50ms）"
@@ -1816,6 +1822,8 @@ func _begin_playtest_with_settings() -> void:
 	_rate = _playtest_rate.value
 	_app.flow_scale = _playtest_flow.value
 	_app.star_speed = _playtest_star.value
+	if _playtest_cursor != null:
+		_app.cursor_scale = clampf(_playtest_cursor.value, 0.5, 2.0)
 	if _playtest_offset != null:
 		_app.playtest_offset_ms = _playtest_offset.value
 	if _playtest_dynamic != null:
@@ -1831,8 +1839,7 @@ func _begin_playtest_with_settings() -> void:
 	_preview.star_speed = _app.star_speed
 	_preview.star_color = _app.star_color
 	_preview.trace_color = _app.trace_color
-	_preview.star_color = _app.star_color
-	_preview.trace_color = _app.trace_color
+	_preview.cursor_scale = _app.cursor_scale
 	_preview.request_redraw()
 	# 试玩中从暂停菜单改设置：直接应用到正在跑的预览。
 	if _playtest != null:
@@ -1840,6 +1847,7 @@ func _begin_playtest_with_settings() -> void:
 		_playtest._preview.star_speed = _app.star_speed
 		_playtest._preview.star_color = _app.star_color
 		_playtest._preview.trace_color = _app.trace_color
+		_playtest._preview.cursor_scale = _app.cursor_scale
 		_playtest._preview.request_redraw()
 	if _editor_flow_spin != null:
 		_editor_flow_spin.value = _app.flow_scale

@@ -174,6 +174,7 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	_preview.star_speed = float(_app.star_speed if _app != null else 1.0)
 	_preview.note_skin = String(_app.note_skin if _app != null else "candy")
 	_preview.hit_fx_style = String(_app.hit_fx_style if _app != null else "burst")
+	_preview.cursor_scale = float(_app.cursor_scale if _app != null else 1.0)
 	# AUTO 关掉时 auto_cursor 保持 INF，等于用真实鼠标。
 	_preview.auto_cursor = Vector2.INF
 	if auto_play:
