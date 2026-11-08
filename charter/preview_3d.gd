@@ -2166,11 +2166,13 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 		for piece in runs:
 			if piece.size() < 2:
 				continue
-			var path_band := float(_skin()["band"])
-			var band_width := 5.0 * PATH_SIZE_SCALE * ns * path_band
-			# 每条 Path 都完整画自己的轨迹：多条星重合时不再只剩一条亮线。
-			canvas.draw_polyline(piece, Color(0, 0, 0, 0.50 * trail_dim), band_width + 4.0, false)
-			canvas.draw_polyline(piece, Color(accent.r, accent.g, accent.b, 0.95 * trail_dim), band_width, false)
+			# 试玩里只有“现在该划”的那条画粗带；其余只留一条细虚线，重叠时才分得清。
+			# 编辑器预览保持全部粗带，方便看谱。
+			if active or not playtest_mode:
+				var path_band := float(_skin()["band"])
+				var band_width := 5.0 * PATH_SIZE_SCALE * ns * path_band
+				canvas.draw_polyline(piece, Color(0, 0, 0, 0.50 * trail_dim), band_width + 4.0, false)
+				canvas.draw_polyline(piece, Color(accent.r, accent.g, accent.b, 0.95 * trail_dim), band_width, false)
 			_draw_dashed_polyline(canvas, piece, dash, 2.4 * PATH_SIZE_SCALE, 10.0 * PATH_SIZE_SCALE)
 			# V 形箭头链只画在“现在该划”的那条上：对向重叠的两条星都画箭头会叠成蝴蝶结。
 			if not active:
@@ -2183,7 +2185,9 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 			for k in chevron_count:
 				var fraction := (float(k) + 0.5) / float(chevron_count)
 				var sample: Dictionary = _polyline_sample(piece, fraction)
-				_draw_chevron(canvas, sample["point"], sample["direction"], passed if fraction < progress else future, 12.0 * ns * PATH_SIZE_SCALE)
+				# 试玩时轨迹已经被擦到光标处，剩下的每一段都在前方，不该再按“piece 内比例”压暗。
+				var chevron_color := future if playtest_mode else (passed if fraction < progress else future)
+				_draw_chevron(canvas, sample["point"], sample["direction"], chevron_color, 12.0 * ns * PATH_SIZE_SCALE)
 	var selected_note: Note = _app.get_selected_note() if _app != null else null
 	var selected := selected_note != null and selected_note.id == note.id
 	if selected:

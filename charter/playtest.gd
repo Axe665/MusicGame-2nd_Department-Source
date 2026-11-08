@@ -975,13 +975,9 @@ func _judge_path(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 		var wait := clampf(note.wait_beat, 0.0, maxf(0.0, total - 0.001))
 		var q := clampf((beat - note.beat - wait) / maxf(0.001, total - wait), 0.0, 1.0)
 		var progress := 1.0 - pow(1.0 - q, maxf(0.05, note.path_speed))
-		var target := progress
-		var info: Dictionary = _preview.path_fraction(note, mouse, beat)
-		var fraction := float(info.get("fraction", 0.0))
-		# 鼠标只允许领先当前进度一小段；避免停在远处把整条轨迹提前削光。
-		if float(info.get("distance", INF)) <= 128.0 and fraction > progress and fraction <= progress + 0.20:
-			target = fraction
-		_preview.set_path_erased_to(note, target)
+		# 只擦到球的位置：鼠标领先时如果连球前面那一小段也削掉，
+		# 球就会悬在缺口里，看起来像轨迹断了一截。
+		_preview.set_path_erased_to(note, progress)
 		_track_sector_erase(note, progress)
 		state["path_last_mouse"] = mouse
 
