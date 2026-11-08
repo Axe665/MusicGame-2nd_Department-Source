@@ -101,7 +101,6 @@ var _smooth_ms: float = 0.0
 var _clock_update_usec: int = 0
 var _frame_last_beat: float = -1.0
 var _beat_stalls: int = 0
-var _dense_ids: Dictionary = {}
 var _near_miss_logs: int = 0
 var _near_miss_stamp: float = 0.0
 var _near_miss_logged_stamp: float = -INF
@@ -155,6 +154,7 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	_preview.reset_path_cuts()
 	_preview.follow_app = false
 	_preview.playtest_mode = true
+	_preview.set_process(false)
 	_preview.custom_cursor_visible = true
 	_preview.show_hud = true
 	_preview.use_3d_ring = true
@@ -176,6 +176,7 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	_preview.time_beat = start_beat
 	_preview.playing = true
 	_preview.visible = true
+	_preview.prepare_playtest_frame(start_beat, 0.0)
 	# 进场 / 重开时整体淡入，避免音符和轨迹直接蹦出来。
 	modulate.a = 0.0
 	var fade := create_tween()
@@ -229,6 +230,7 @@ func _set_paused(value: bool) -> void:
 	if _finished:
 		return
 	_paused = value
+	_key_presses.clear()
 	if _pause_overlay != null:
 		_pause_overlay.visible = value
 	if _audio_available and _audio != null:
@@ -380,15 +382,6 @@ func _init_states() -> void:
 	_combo = 0
 	_max_combo = 0
 	_ordered_notes = chart.sorted_notes()
-	_dense_ids.clear()
-	for i in _ordered_notes.size():
-		var note := _ordered_notes[i]
-		for j in [i - 1, i + 1]:
-			if j < 0 or j >= _ordered_notes.size():
-				continue
-			if absf(_ordered_notes[j].beat - note.beat) <= 0.25:
-				_dense_ids[note.id] = true
-				break
 	for note in _ordered_notes:
 		_states[note.id] = {
 			"target_ms": chart.timing.beat_to_chart_ms(note.beat),
@@ -470,10 +463,11 @@ func _process(delta: float) -> void:
 	var chart_ms := _chart_ms()
 	var judge_ms := chart_ms + float(_app.playtest_offset_ms if _app != null else 0.0)
 	var beat := chart.timing.chart_ms_to_beat(chart_ms)
-	_preview.time_beat = beat
 	_preview.playing = true
+	_preview.prepare_playtest_frame(beat, delta)
 	if auto_play:
 		_auto_step(judge_ms, beat, delta)
+		_preview.prepare_playtest_input(beat, _auto_cursor)
 	_judge_all(judge_ms, beat, delta)
 	if bench_mode:
 		_bench_tick(judge_ms, beat)
@@ -996,7 +990,7 @@ func _judge_trace(note: Note, ms: float, beat: float, delta: float, mouse: Vecto
 		if note.trace_style == "slider":
 			var points := _preview.trace_screen_points(note, beat)
 			var head: Vector2 = points[0] if not points.is_empty() else mouse
-			var press := _take_key_for_point(start_ms - HIT_WINDOW_MS, start_ms + HIT_WINDOW_MS, head, TRACE_HEAD_RADIUS, start_ms)
+			var press := _take_key_for_point(start_ms - HIT_WINDOW_MS, start_ms + HIT_WINDOW_MS, head, TRACE_HEAD_RADIUS, start_ms, note.id)
 			if not press.is_empty():
 				started = true
 				_sfx.play("path", 0.94)
@@ -1195,7 +1189,7 @@ func _pulse_at(angle_degrees: float, beat: float, color: Color, label: String, w
 
 
 ## 光标贴近某个点（Path/Trace 头）。命中里挑离 target 最近的。
-func _take_key_for_point(lo: float, hi: float, point: Vector2, radius: float, target: float = NAN) -> Dictionary:
+func _take_key_for_point(lo: float, hi: float, point: Vector2, radius: float, target: float = NAN, note_id: int = -1) -> Dictionary:
 	var best_index := -1
 	var best_distance := INF
 	for i in _key_presses.size():
@@ -1206,7 +1200,9 @@ func _take_key_for_point(lo: float, hi: float, point: Vector2, radius: float, ta
 		if stamp > hi:
 			break
 		var press_mouse: Vector2 = press.get("mouse", Vector2.ZERO)
-		if press_mouse.distance_to(point) > radius:
+		var geometry: Dictionary = press.get("geometry", {})
+		var points: PackedVector2Array = geometry.get(note_id, PackedVector2Array([point]))
+		if _distance_to_polyline(press_mouse, points) > radius:
 			continue
 		var distance := absf(stamp - target) if is_finite(target) else 0.0
 		if distance < best_distance:
@@ -1219,45 +1215,14 @@ func _take_key_for_point(lo: float, hi: float, point: Vector2, radius: float, ta
 	return result
 
 
-## 密集流（相邻音符 ≤ 0.25 拍）用角度扇区区分：鼠标角度落在条带内即可。
-func _take_key_for_sector(lo: float, hi: float, angle: float, width: float, target: float = NAN) -> Dictionary:
-	var half := maxf(24.0, width * 0.5)
-	var best_index := -1
-	var best_distance := INF
-	for i in _key_presses.size():
-		var press: Dictionary = _key_presses[i]
-		var stamp := float(press.get("time", -INF))
-		if stamp < lo:
-			continue
-		if stamp > hi:
-			break
-		var press_angle := float(press.get("angle", NAN))
-		if is_nan(press_angle):
-			continue
-		if absf(JudgeMath.angle_delta(press_angle, angle)) > half:
-			continue
-		var distance := absf(stamp - target) if is_finite(target) else 0.0
-		if distance < best_distance:
-			best_distance = distance
-			best_index = i
-	if best_index < 0:
-		return {}
-	var result: Dictionary = _key_presses[best_index]
-	_key_presses.remove_at(best_index)
-	return result
-
-
-## 一组候选图形的取键（Path 头 / Anchor / Trace 头）。
-## 密集流（相邻 ≤0.25 拍）按环平面角度扇区；其余按鼠标实际位置（90px + 图形半宽）。
+## Every note uses the same screen geometry rule, regardless of chart density.
 func _take_press_for_shape(lo: float, hi: float, target: float, note: Note, points: PackedVector2Array, tolerance: float, pad: float = 0.0) -> Dictionary:
 	if _key_presses.is_empty():
 		return {}
-	if _dense_ids.has(note.id):
-		return _take_key_for_sector(lo, hi, note.angle, note.arc_width() + pad, target)
-	return _take_key_near(lo, hi, points, tolerance, target)
+	return _take_key_near(lo, hi, points, tolerance, target, note.id)
 
 
-## Tap / Hold 头：密集流走角度扇区，其余按鼠标实际位置。
+## Tap / Hold heads use their visible band plus a fixed spatial tolerance.
 func _take_press_for_note(lo: float, hi: float, note: Note, beat: float, pad: float = 0.0, extra_px: float = 0.0) -> Dictionary:
 	if _key_presses.is_empty():
 		return {}
@@ -1267,9 +1232,7 @@ func _take_press_for_note(lo: float, hi: float, note: Note, beat: float, pad: fl
 	return _take_press_for_shape(lo, hi, target, note, points, tolerance, pad)
 
 
-func _take_key_near(lo: float, hi: float, points: PackedVector2Array, tolerance: float, target: float = NAN) -> Dictionary:
-	if points.is_empty():
-		return {}
+func _take_key_near(lo: float, hi: float, points: PackedVector2Array, tolerance: float, target: float = NAN, note_id: int = -1) -> Dictionary:
 	var best := INF
 	var best_mouse := Vector2.ZERO
 	var best_index := -1
@@ -1282,7 +1245,9 @@ func _take_key_near(lo: float, hi: float, points: PackedVector2Array, tolerance:
 		if stamp > hi:
 			break
 		var press_mouse: Vector2 = press.get("mouse", Vector2.ZERO)
-		var distance := _distance_to_polyline(press_mouse, points)
+		var geometry: Dictionary = press.get("geometry", {})
+		var sampled_points: PackedVector2Array = geometry.get(note_id, points)
+		var distance := _distance_to_polyline(press_mouse, sampled_points)
 		if distance <= tolerance:
 			var time_distance := absf(stamp - target) if is_finite(target) else 0.0
 			if time_distance < best_time_distance:
@@ -1297,7 +1262,7 @@ func _take_key_near(lo: float, hi: float, points: PackedVector2Array, tolerance:
 		var picked: Dictionary = _key_presses[best_index]
 		_key_presses.remove_at(best_index)
 		return picked
-	if best < INF and _near_miss_logs < 40 and _near_miss_stamp != _near_miss_logged_stamp:
+	if best < INF and not points.is_empty() and _near_miss_logs < 40 and _near_miss_stamp != _near_miss_logged_stamp:
 		_near_miss_logs += 1
 		_near_miss_logged_stamp = _near_miss_stamp
 		var mid: Vector2 = points[points.size() / 2]
@@ -1547,6 +1512,34 @@ func _format_ms(ms: float) -> String:
 	return "%02d:%02d.%03d" % [minutes, seconds, millis]
 
 
+## Capture candidate geometry alongside the input position. A moving note or
+## camera must not change whether this press was inside before it is consumed.
+func _press_geometry(stamp: float, beat: float) -> Dictionary:
+	var geometry := {}
+	for i in range(_judge_from, _ordered_notes.size()):
+		var note := _ordered_notes[i]
+		var state: Dictionary = _states[note.id]
+		var target := float(state["target_ms"])
+		if target > stamp + HIT_WINDOW_MS:
+			break
+		if target < stamp - HIT_WINDOW_MS or bool(state["done"]):
+			continue
+		match note.type:
+			"tap":
+				geometry[note.id] = _preview.note_live_band(note, beat)
+			"hold":
+				if not bool(state["started"]):
+					geometry[note.id] = _preview.note_live_band(note, beat, HOLD_ARC_PAD)
+			"path", "anchor":
+				geometry[note.id] = PackedVector2Array([_preview.note_head_screen(note, beat)])
+			"trace":
+				if note.trace_style == "slider" and not bool(state["trace_started"]):
+					var points := _preview.trace_screen_points(note, beat)
+					if not points.is_empty():
+						geometry[note.id] = PackedVector2Array([points[0]])
+	return geometry
+
+
 func _input(event: InputEvent) -> void:
 	if not (event is InputEventKey):
 		return
@@ -1584,7 +1577,12 @@ func _input(event: InputEvent) -> void:
 				get_viewport().set_input_as_handled()
 				return
 			var key: int = event.physical_keycode if event.physical_keycode != 0 else event.keycode
-			var stamp := _chart_ms() + float(_app.playtest_offset_ms if _app != null else 0.0)
+			if _paused or not _running or _finished:
+				return
+			var chart_ms := _chart_ms()
+			var stamp := chart_ms + float(_app.playtest_offset_ms if _app != null else 0.0)
+			var beat := chart.timing.chart_ms_to_beat(chart_ms)
+			_preview.prepare_playtest_input(beat, _preview.get_local_mouse_position())
 			_key_presses.append({
 				"time": stamp,
 				"mouse": _preview.mouse_screen,
@@ -1592,6 +1590,7 @@ func _input(event: InputEvent) -> void:
 				"u": _preview.cursor_u,
 				"valid": _preview.cursor_valid,
 				"key": key,
+				"geometry": _press_geometry(stamp, beat),
 			})
 			_keys_held[key] = true
 			get_viewport().set_input_as_handled()
@@ -1609,6 +1608,7 @@ func _finish() -> void:
 	if _audio != null:
 		_audio.stop()
 	_preview.playing = false
+	_preview.set_process(true)
 	_preview.custom_cursor_visible = false
 	var lines: Array[String] = []
 	if auto_play:

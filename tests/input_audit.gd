@@ -11,6 +11,7 @@ var failed := 0
 
 
 func _ready() -> void:
+	get_tree().root.size = Vector2i(1600, 900)
 	await _run()
 	print("=== INPUT AUDIT RESULT passed=%d failed=%d ===" % [passed, failed])
 	get_tree().quit(1 if failed > 0 else 0)
@@ -119,6 +120,12 @@ func _run_case(cursor_far: bool) -> Dictionary:
 			else:
 				var note: Note = event["note"]
 				playtest._preview.mouse_screen = playtest._preview.note_head_screen(note, beat)
+			# Feed a real mouse event: key snapshots now query the viewport instead
+			# of trusting the preview's cached mouse_screen from a previous frame.
+			var motion := InputEventMouseMotion.new()
+			motion.position = playtest._preview.get_screen_transform() * playtest._preview.mouse_screen
+			motion.global_position = motion.position
+			Input.parse_input_event(motion)
 			var key_event := InputEventKey.new()
 			key_event.keycode = int(event["key"])
 			key_event.physical_keycode = int(event["key"])

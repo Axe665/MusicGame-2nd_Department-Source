@@ -456,6 +456,23 @@ func _build_3d() -> void:
 	_ring_root.add_child(_ring_mesh)
 
 
+## Playtest owns frame ordering so transforms and mouse are ready before judging.
+func prepare_playtest_frame(beat: float, delta: float) -> void:
+	time_beat = beat
+	_process(delta)
+
+
+## Event-time snapshot without advancing animation timers a second time.
+func prepare_playtest_input(beat: float, position: Vector2) -> void:
+	time_beat = beat
+	mouse_screen = position
+	mouse_inside = true
+	_update_transform(beat)
+	_update_cursor()
+	_overlay.queue_redraw()
+	_cursor_layer.queue_redraw()
+
+
 func _process(_delta: float) -> void:
 	var proc_start := Time.get_ticks_usec()
 	var chart := get_chart()
@@ -1009,6 +1026,12 @@ func _on_mouse_exited() -> void:
 func _gui_input(event: InputEvent) -> void:
 	if event is InputEventMouseMotion:
 		mouse_screen = event.position
+		if playtest_mode:
+			# Gameplay refreshes aiming once per frame or key press, not per
+			# high-polling-rate motion event.
+			_cursor_layer.queue_redraw()
+			accept_event()
+			return
 		if interactive and not playtest_mode:
 			if _drag_segment >= 0:
 				_update_drag(event.position)
