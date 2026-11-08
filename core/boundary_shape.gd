@@ -279,6 +279,95 @@ static func from_dict(data: Dictionary) -> BoundaryShape:
 	return shape
 
 
+func to_code() -> String:
+	return "shape{%s}" % _body_code()
+
+
+func _body_code() -> String:
+	var chunks: Array[String] = []
+	for seg in sorted_segments():
+		chunks.append("[%d,(%s,%s),(%s,%s),(%s,%s),(%s,%s)]" % [
+			1 if seg.gap else 0, seg.ix, seg.iy,
+			str(seg.u0), str(seg.u1), str(seg.p0.x), str(seg.p1.x), str(seg.p0.y), str(seg.p1.y)
+		])
+	return "[%s,%d,segments{%s}]" % [id, 1 if closed else 0, ",".join(chunks)]
+
+
+static func shapes_to_code(shapes: Array) -> String:
+	var chunks: Array[String] = []
+	for shape in shapes:
+		chunks.append((shape as BoundaryShape)._body_code())
+	return "shape{%s}" % ";".join(chunks)
+
+
+static func shapes_from_code(code: String) -> Array[BoundaryShape]:
+	var result: Array[BoundaryShape] = []
+	var text := code.strip_edges()
+	var open := text.find("{")
+	var close := text.rfind("}")
+	if open < 0 or close <= open:
+		return result
+	for chunk in _split_top_level(text.substr(open + 1, close - open - 1), ";"):
+		if chunk.strip_edges().is_empty():
+			continue
+		var shape := _shape_from_body(chunk.strip_edges())
+		if shape != null:
+			result.append(shape)
+	return result
+
+
+static func from_code(code: String) -> BoundaryShape:
+	var shapes := shapes_from_code(code)
+	return shapes[0] if not shapes.is_empty() else BoundaryShape.new()
+
+
+static func _shape_from_body(chunk: String) -> BoundaryShape:
+	var text := chunk.strip_edges()
+	var seg_open := text.find(",segments{")
+	if seg_open < 0:
+		return null
+	var header := text.substr(1, seg_open - 1)
+	var head_fields := header.split(",", true)
+	var shape := BoundaryShape.new()
+	if head_fields.size() > 0:
+		shape.id = head_fields[0].strip_edges()
+	if head_fields.size() > 1:
+		shape.closed = int(head_fields[1]) != 0
+	var body_start := seg_open + ",segments{".length()
+	var body_end := text.rfind("}]")
+	if body_end < body_start:
+		body_end = text.rfind("}")
+	var body := text.substr(body_start, body_end - body_start)
+	var regex := RegEx.new()
+	regex.compile("\\[\\s*(\\d+)\\s*,\\s*\\(([^,]+),([^)]+)\\)\\s*,\\s*\\(([^,]+),([^)]+)\\)\\s*,\\s*\\(([^,]+),([^)]+)\\)\\s*,\\s*\\(([^,]+),([^)]+)\\)\\s*\\]")
+	for found in regex.search_all(body):
+		shape.segments.append(BoundarySegment.new(
+			float(found.get_string(4)), float(found.get_string(5)),
+			Vector2(float(found.get_string(6)), float(found.get_string(8))),
+			Vector2(float(found.get_string(7)), float(found.get_string(9))),
+			found.get_string(2).strip_edges(), found.get_string(3).strip_edges(),
+			int(found.get_string(1)) != 0
+		))
+	return shape
+
+
+static func _split_top_level(text: String, separator: String) -> Array[String]:
+	var result: Array[String] = []
+	var start := 0
+	var depth := 0
+	for i in text.length():
+		var ch := text[i]
+		if ch == "[" or ch == "{" or ch == "(":
+			depth += 1
+		elif ch == "]" or ch == "}" or ch == ")":
+			depth -= 1
+		elif ch == separator and depth == 0:
+			result.append(text.substr(start, i - start))
+			start = i + 1
+	result.append(text.substr(start))
+	return result
+
+
 static func circle(p_id: String, radius: float, count: int = 32) -> BoundaryShape:
 	var shape := BoundaryShape.new()
 	shape.id = p_id

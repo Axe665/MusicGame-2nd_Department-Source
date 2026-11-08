@@ -77,7 +77,7 @@ func _on_tool_changed(tool: String) -> void:
 		current_tab = 2
 	elif tool == "event":
 		current_tab = 3
-	elif tool == "red":
+	elif tool == "limit":
 		current_tab = 1
 	_rebuild()
 
@@ -391,7 +391,7 @@ func _build_note_page_for(page: VBoxContainer, note: Note) -> void:
 			return
 		var delta := value - n.beat
 		n.beat = value
-		if n.type in ["hold", "path", "trace"]:
+		if n.type in ["hold", "path"]:
 			n.end_beat = maxf(n.beat + 0.25, n.end_beat + delta)
 	)
 	_note_widgets["start"] = start_edit
@@ -404,8 +404,15 @@ func _build_note_page_for(page: VBoxContainer, note: Note) -> void:
 	_note_widgets["end"] = end_edit
 	_remember_row("end", end_edit)
 	var angle_spin := _spin(common, "逻辑角度", note.angle, 0.0, 360.0, 0.5, func(value: float) -> void:
-		if _active_note != null:
-			_active_note.angle = fposmod(value, 360.0)
+		var n := _active_note
+		if n == null:
+			return
+		n.angle = fposmod(value, 360.0)
+		if n.type == "bell":
+			n.center_u = fposmod(n.angle / 360.0, 1.0)
+		elif n.type == "path":
+			n.generate_path_shape()
+			_sync_path_chain(n)
 	)
 	_note_widgets["angle"] = angle_spin
 	_remember_row("angle", angle_spin)
@@ -630,6 +637,14 @@ func _build_note_page_for(page: VBoxContainer, note: Note) -> void:
 	)
 	path_edit.add_child(axis_bar)
 	_note_widgets["path_axis_bar"] = axis_bar
+	var end_angle := _spin(path_edit, "尾部角度", note.tail_angle, 0.0, 360.0, 0.5, func(value: float) -> void:
+		var n := _active_note
+		if n != null:
+			n.tail_angle = fposmod(value, 360.0)
+			n.generate_path_shape()
+			_sync_path_chain(n)
+	)
+	_note_widgets["path_end_angle"] = end_angle
 	var part_label := _label(path_edit, "", 11, UITheme.MUTED)
 	_note_widgets["path_part_label"] = part_label
 	_label(path_edit, "右键单击 Path 尾部可在该处新建 part；各 part 可分别编辑，预览中整条链共用 part0 的星星。", 10, UITheme.MUTED)
@@ -698,6 +713,15 @@ func _build_note_page_for(page: VBoxContainer, note: Note) -> void:
 			_add_anchor_pair(_active_note)
 	}])
 	_label(anchor_body, "Anchor 只判时间；配对需同拍反向。", 11, UITheme.MUTED)
+
+	var seek_body := _note_group(page, "seek", "Seek")
+	var seek_orien := _option(seek_body, "朝向", ["里", "外"], note.seek_orien, func(index: int) -> void:
+		if _active_note != null:
+			_active_note.seek_orien = 1 if index == 1 else 0
+			_active_note.seek_pending = false
+	)
+	_note_widgets["seek_orien"] = seek_orien
+	_label(seek_body, "里 = 滚轮上滑；外 = 滚轮下滑。", 11, UITheme.MUTED)
 
 	var misc := _note_group(page, "misc", "通用")
 	var color := _spin(misc, "颜色槽", note.color, 0.0, 15.0, 1.0, func(value: float) -> void:
@@ -771,24 +795,25 @@ func _refresh_note_page() -> void:
 	_note_widgets["angle"].value = note.angle
 	_note_widgets["width"].value = note.width
 	_note_widgets["length"].value = note.length_ratio()
-	var is_plane := note.space == "plane" and note.type not in ["path", "trace"]
 	var is_bell := note.type == "bell"
-	_note_rows["end"].visible = note.type in ["hold", "path", "trace"]
-	_note_rows["angle"].visible = not is_bell and not is_plane and note.type != "path"
-	_note_rows["width"].visible = not is_bell and not is_plane and note.type != "path"
-	_note_rows["length"].visible = note.type == "tap"
-	if note.type == "tap":
-		_note_widgets["length"].tooltip_text = "到判定环的长度 %.1f°（= %.2f l，普通 Tap 固定 0.50 l）" % [note.arc_width(), note.length_ratio()]
+	_note_rows["end"].visible = note.type in ["hold", "path"]
+	_note_rows["angle"].visible = note.type in ["tap", "hold", "path", "anchor", "bell"]
+	_note_rows["width"].visible = false
+	_note_rows["length"].visible = false
 	_note_groups["common"].visible = true
 	_note_groups["misc"].visible = true
-	_note_groups["tapsize"].visible = note.type == "tap"
-	_note_groups["plane"].visible = is_plane
-	_note_groups["bell"].visible = is_bell
+	_note_widgets["color"].get_parent().visible = false
+	_note_widgets["lock"].get_parent().visible = false
+	_note_groups["tapsize"].visible = false
+	_note_groups["plane"].visible = false
+	_note_groups["bell"].visible = false
 	_note_groups["path"].visible = false
 	_note_groups["path_edit"].visible = note.type == "path"
-	_note_groups["hold"].visible = note.type == "hold"
-	_note_groups["trace"].visible = note.type == "trace"
+	_note_groups["hold"].visible = false
+	_note_groups["trace"].visible = false
+	_note_groups["seek"].visible = note.type == "seek"
 	_note_groups["anchor"].visible = note.type == "anchor"
+	_note_widgets["anchor_pair"].get_parent().visible = false
 	_note_widgets["plane_x"].value = note.plane_x
 	_note_widgets["plane_y"].value = note.plane_y
 	_note_widgets["plane_r"].value = note.plane_radius
@@ -811,12 +836,15 @@ func _refresh_note_page() -> void:
 		_note_widgets["path_axis"].value = note.path_axis
 		_note_widgets["path_axis_slider"].value = note.path_axis
 		_note_widgets["path_axis_bar"].queue_redraw()
+		_note_widgets["path_end_angle"].value = note.tail_angle
 		var relation := ""
 		if note.path_prev_id >= 0:
 			relation += " ｜ 上一段 #%d" % note.path_prev_id
 		if note.path_next_id >= 0:
 			relation += " ｜ 下一段 #%d" % note.path_next_id
 		_note_widgets["path_part_label"].text = "段落 part%d%s" % [note.path_part, relation]
+	if note.type == "seek":
+		_note_widgets["seek_orien"].selected = 1 if note.seek_orien == 1 else 0
 	if note.type == "hold":
 		_note_widgets["hold_style_label"].text = "直 Hold：扇形张开，尾部收到判定线时消失。"
 		_fill_visual_list(_note_widgets["hold_list"], note)
@@ -974,21 +1002,25 @@ func _delete_visual_point(note: Note) -> void:
 func _build_region_page(page: VBoxContainer) -> void:
 	var region: Region = _app.get_selected_region()
 	if region == null:
-		_empty("区域", "用 Red 工具（7）在画布拖拽创建红区；长度上限 4 拍。")
-		_buttons(page, [{"text": "Red 工具", "callback": func() -> void: _app.set_tool("red")}])
+		_empty("区域", "用 Limit 工具（7）在画布拖拽创建限制区；长度上限 4 拍。")
+		_buttons(page, [{"text": "Limit 工具", "callback": func() -> void: _app.set_tool("limit")}])
 		return
-	_section(page, "Red · #%d" % region.id)
+	_section(page, "Limit · #%d" % region.id)
 	_row(page, "类型", _readonly(region.kind))
 	_beat(page, "开始拍", region.start_beat, func(value: float) -> void: region.start_beat = value)
 	_beat(page, "结束拍", region.end_beat, func(value: float) -> void: region.end_beat = value)
-	_spin(page, "逻辑角度", region.angle, 0.0, 360.0, 0.5, func(value: float) -> void: region.angle = fposmod(value, 360.0))
-	_spin(page, "逻辑宽度", region.width, 0.0, 360.0, 1.0, func(value: float) -> void: region.width = value)
-	_spin(page, "极性", region.polarity, -1.0, 1.0, 2.0, func(value: float) -> void: region.polarity = int(value))
+	var angle_row := _spin(page, "逻辑角度", region.angle, 0.0, 360.0, 0.5, func(value: float) -> void: region.angle = fposmod(value, 360.0))
+	angle_row.get_parent().visible = false
+	var width_spin := _spin(page, "逻辑宽度", region.width, 0.0, 360.0, 1.0, func(value: float) -> void: region.width = value)
+	width_spin.get_parent().visible = true
+	var polarity_row := _spin(page, "极性", region.polarity, -1.0, 1.0, 2.0, func(value: float) -> void: region.polarity = int(value))
+	polarity_row.get_parent().visible = false
 	var shapes: Array[String] = [""]
 	for shape in _app.chart.sorted_shapes():
 		shapes.append(shape.id)
-	_option(page, "形状引用", shapes, maxi(0, shapes.find(region.shape)), func(index: int) -> void: region.shape = shapes[index])
-	_label(page, "时长 %.2f 拍 / 上限 4.00 拍；同刻公共角度减去红区后必须非空。" % region.duration(), 11, UITheme.MUTED)
+	var shape_option := _option(page, "形状引用", shapes, maxi(0, shapes.find(region.shape)), func(index: int) -> void: region.shape = shapes[index])
+	shape_option.get_parent().visible = false
+	_label(page, "时长 %.2f 拍 / 上限 4.00 拍；同刻公共角度减去限制区后必须非空。" % region.duration(), 11, UITheme.MUTED)
 	_buttons(page, [
 		{"text": "定位播放头", "callback": func() -> void: _app.set_playhead(region.start_beat)},
 		{"text": "删除", "callback": func() -> void: _delete_region(region)},

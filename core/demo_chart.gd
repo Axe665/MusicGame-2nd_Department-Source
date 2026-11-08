@@ -90,7 +90,7 @@ static func make_demo() -> Chart:
 	_add_tap(chart, 13.0, 315.0)
 	_add_tap(chart, 13.5, 0.0)
 	_add_tap(chart, 14.0, 45.0)
-	_add_trace(chart, 14.0, 16.0)
+	_add_seek(chart, 14.0, 0)
 	_add_anchor_pair(chart, 16.0, 0.0, "A0")
 	_add_bell(chart, 17.0, 0.25)
 	_add_bell(chart, 17.5, 0.5)
@@ -151,17 +151,11 @@ static func _add_path(
 	chart.notes.append(note)
 
 
-static func _add_trace(chart: Chart, beat: float, end_beat: float) -> void:
-	var note := Note.new("trace", beat, 0.0, 0.0)
+static func _add_seek(chart: Chart, beat: float, orien: int) -> void:
+	var note := Note.new("seek", beat, 0.0, 360.0)
 	note.id = chart.next_note_id()
-	note.end_beat = end_beat
-	note.move_px = 120.0
-	note.trace_pts = [
-		{"x": 0.26, "y": 0.62, "db": 0.0},
-		{"x": 0.38, "y": 0.48, "db": 0.5},
-		{"x": 0.56, "y": 0.44, "db": 1.0},
-		{"x": 0.72, "y": 0.34, "db": 1.5},
-	]
+	note.end_beat = beat
+	note.seek_orien = 1 if orien == 1 else 0
 	chart.notes.append(note)
 
 

@@ -5,10 +5,10 @@ const CARDS := [
 	{"type": "tap", "label": "Tap", "key": "1", "color": UITheme.CORAL},
 	{"type": "hold", "label": "Hold", "key": "2", "color": UITheme.AMBER},
 	{"type": "path", "label": "Path", "key": "3", "color": UITheme.CYAN},
-	{"type": "trace", "label": "Trace", "key": "4", "color": UITheme.MINT},
+	{"type": "seek", "label": "Seek", "key": "4", "color": UITheme.SEEK_IN},
 	{"type": "anchor", "label": "Anchor", "key": "5", "color": UITheme.VIOLET},
 	{"type": "bell", "label": "Bell", "key": "6", "color": UITheme.GOLD},
-	{"type": "red", "label": "Red", "key": "7", "color": UITheme.RED},
+	{"type": "limit", "label": "Limit", "key": "7", "color": UITheme.RED},
 ]
 
 var _app: Node = null
@@ -99,7 +99,7 @@ func _selected_type() -> String:
 	if _app == null:
 		return ""
 	if _app.selected_region_id >= 0:
-		return "red"
+		return "limit"
 	var note = _app.get_selected_note()
 	if note != null:
 		return String(note.type)
@@ -134,10 +134,16 @@ func _draw_icon(type: String, center: Vector2, r: float, color: Color) -> void:
 				star.append(center + Vector2(cos(angle), sin(angle)) * radius)
 			star.append(star[0])
 			draw_polyline(star, color, 2.5, true)
-		"trace":
-			draw_line(center + Vector2(-r * 0.8, r * 0.35), center + Vector2(r * 0.8, -r * 0.35), color, 7.0, true)
-			draw_line(center + Vector2(-r * 0.25, -r * 0.65), center + Vector2(r * 0.25, r * 0.65), UITheme.INK, 2.0, true)
-			draw_circle(center + Vector2(r * 0.7, -r * 0.3), 2.5, color)
+		"seek":
+			draw_arc(center, r * 0.9, 0.0, TAU, 28, color, 2.2, true)
+			draw_arc(center, r * 0.5, 0.0, TAU, 20, Color(color.r, color.g, color.b, 0.55), 1.5, true)
+			for i in 6:
+				var a := TAU * float(i) / 6.0
+				var dir := Vector2(cos(a), sin(a))
+				var p0 := center + dir * r * 0.64
+				var p1 := center + dir * r * 0.44
+				draw_line(p0, p1, color, 1.6, true)
+				draw_circle(p0, 1.4, color)
 		"anchor":
 			var diamond := PackedVector2Array([
 				center + Vector2(0, -r), center + Vector2(r, 0),
@@ -152,7 +158,7 @@ func _draw_icon(type: String, center: Vector2, r: float, color: Color) -> void:
 			draw_arc(center, r * 0.8, 0.0, TAU, 28, color, 2.5, true)
 			draw_circle(center, r * 0.34, color)
 			draw_circle(center, r * 0.12, UITheme.INK)
-		"red":
+		"limit":
 			draw_arc(center, r * 0.9, -PI * 0.8, PI * 0.1, 20, color, 7.0, true)
 			draw_line(center + Vector2(r * 0.3, -r * 0.9), center + Vector2(r * 0.3, r * 0.9), Color(color.r, color.g, color.b, 0.55), 1.5)
 

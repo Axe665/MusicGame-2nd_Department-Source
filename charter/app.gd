@@ -966,7 +966,7 @@ func request_audio_detect() -> void:
 func set_tool(new_tool: String) -> void:
 	tool = new_tool
 	boundary_mode = new_tool == "boundary"
-	trace_draw_mode = new_tool == "trace"
+	trace_draw_mode = false
 	tool_changed.emit(tool)
 	status_changed.emit()
 
@@ -1020,7 +1020,7 @@ func rotate_selected_notes(degrees: float) -> void:
 			point["da"] = float(point.get("da", 0.0)) + degrees
 		if note.type == "bell":
 			note.center_u = fposmod(note.center_u + degrees / 360.0, 1.0)
-		if note.type in ["trace", "path"] or note.trace_style == "slider":
+		if note.type == "path":
 			var rad := deg_to_rad(degrees)
 			for point in note.trace_pts:
 				var x := float(point.get("x", 0.0))
