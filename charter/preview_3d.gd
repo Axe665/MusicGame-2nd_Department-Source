@@ -2585,7 +2585,7 @@ func _skin() -> Dictionary:
 	return _skin_cache
 
 
-func _stroke_band(canvas: Control, points: PackedVector2Array, color: Color, width: float, alpha: float = 1.0, size_scale: float = -1.0) -> void:
+func _stroke_band(canvas: Control, points: PackedVector2Array, color: Color, width: float, alpha: float = 1.0, size_scale: float = -1.0, glow_mul: float = 1.0) -> void:
 	# 所有音符共用同一套描边/高光/发光，换肤只改参数，不改判定。
 	if points.size() < 2:
 		return
@@ -2599,7 +2599,7 @@ func _stroke_band(canvas: Control, points: PackedVector2Array, color: Color, wid
 	var w := width * k * band
 	if glow > 0.01:
 		# 柔光层很宽、对比低，关掉 AA 省下的三角形很可观，观感几乎不变。
-		canvas.draw_polyline(points, Color(color.r, color.g, color.b, 0.10 * glow * alpha), w + 18.0, false)
+		canvas.draw_polyline(points, Color(color.r, color.g, color.b, 0.10 * glow * glow_mul * alpha), w + 18.0 * glow_mul, false)
 	if shadow > 0.01:
 		var offset := PackedVector2Array()
 		for p in points:
@@ -2958,7 +2958,8 @@ func _draw_length_band(canvas: Control, chart: Chart, angle: float, width: float
 			points.append(p)
 	if points.size() < 2:
 		return Vector2(INF, INF)
-	_stroke_band(canvas, points, color, 18.0 * ns, alpha)
+	# Tap 的粉色柔光压低：保留一点氛围，但不抢白边和色带。
+	_stroke_band(canvas, points, color, 18.0 * ns, alpha, -1.0, 0.35)
 	var cap_scale := ns * float(_skin()["scale"])
 	var center_point := points[points.size() / 2]
 	# 两端圆头：让长条读成一根胶囊，而不是一段没有边界的弧。
