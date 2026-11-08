@@ -2971,9 +2971,13 @@ func _draw_length_band(canvas: Control, chart: Chart, angle: float, width: float
 func _draw_seeks(canvas: Control, chart: Chart, t: float) -> void:
 	var pre := _pre_read_beats(chart, t)
 	var center := project_design(Vector2.ZERO)
-	var edge := project_design(Vector2(1.0, 0.0))
-	# Stop at the inner edge of the judgement ring, not its centre line.
-	var ring_radius := maxf(20.0, center.distance_to(edge) - 8.0)
+	# 环半径必须从真实边界点取；project_design(1,0) 只是设计坐标 1px，不是环。
+	var ring_radius := 0.0
+	for u in [0.0, 0.25, 0.5, 0.75]:
+		var edge := project_u(u, t)
+		if _valid_point(edge):
+			ring_radius = maxf(ring_radius, center.distance_to(edge))
+	ring_radius = maxf(20.0, ring_radius)
 	# 必须把整个预读窗口都取进来：Seek 从 note.beat - pre 就开始从圆心长大。
 	for note in _notes_in_range(chart, t - pre - 2.0, t + pre + 0.5):
 		if note.type != "seek" or t < note.beat - pre or t > note.beat + 0.5:
@@ -2981,27 +2985,27 @@ func _draw_seeks(canvas: Control, chart: Chart, t: float) -> void:
 		var grow := clampf((t - (note.beat - pre)) / maxf(0.001, pre), 0.0, 1.0)
 		var fade := clampf((note.beat + 0.5 - t) / 0.5, 0.0, 1.0)
 		var color := UITheme.SEEK_IN if note.seek_orien == 0 else UITheme.SEEK_OUT
-		# WACCA 式：先在圆心浮出一小圈粗环，再一路放大到判定环。
-		var radius := lerpf(8.0, ring_radius, grow)
-		var band := clampf(radius * 0.08, 4.0, 14.0)
-		canvas.draw_arc(center, radius, 0.0, TAU, 64, Color(color.r, color.g, color.b, 0.14 * fade), band + 10.0, true)
-		canvas.draw_arc(center, radius, 0.0, TAU, 64, Color(color.r, color.g, color.b, 0.94 * fade), band, true)
-		canvas.draw_arc(center, radius, 0.0, TAU, 64, Color(1, 1, 1, 0.32 * fade), band * 0.30, true)
-		# 方向箭头只在快贴到外环时淡入，圆心阶段不抢画面。
-		var arrow_alpha := clampf((grow - 0.78) / 0.22, 0.0, 1.0) * fade
+		# WACCA 式擦键：中心一小圈实色环，随预读整体放大，判定拍刚好贴到外环。
+		var radius := lerpf(10.0, ring_radius, grow)
+		var band := clampf(ring_radius * 0.045, 5.0, 14.0) * lerpf(0.55, 1.0, grow)
+		canvas.draw_arc(center, radius, 0.0, TAU, 72, Color(color.r, color.g, color.b, 0.12 * fade), band + 12.0, true)
+		canvas.draw_arc(center, radius, 0.0, TAU, 72, Color(color.r, color.g, color.b, 0.92 * fade), band, true)
+		canvas.draw_arc(center, radius, 0.0, TAU, 72, Color(1, 1, 1, 0.30 * fade), band * 0.28, true)
+		# 方向箭头只在接近外环时淡入，圆心阶段不抢画面。
+		var arrow_alpha := clampf((grow - 0.74) / 0.26, 0.0, 1.0) * fade
 		if arrow_alpha > 0.01:
 			var inward := note.seek_orien == 0
 			var count := 8
-			var reach := band * 0.5 + 6.0
+			var reach := band * 0.5 + 7.0
 			for i in count:
 				var a := TAU * float(i) / float(count) - PI * 0.5
 				var dir := Vector2(cos(a), sin(a))
 				var base := center + dir * radius
 				var tip := base + dir * (-reach if inward else reach)
-				var side := Vector2(-dir.y, dir.x) * 4.5
+				var side := Vector2(-dir.y, dir.x) * 5.0
 				canvas.draw_colored_polygon(PackedVector2Array([
 					tip, base + side, base - side,
-				]), Color(color.r, color.g, color.b, 0.9 * arrow_alpha))
+				]), Color(color.r, color.g, color.b, 0.92 * arrow_alpha))
 
 
 func cut_trace(note: Note, from_fraction: float, to_fraction: float) -> void:
