@@ -81,6 +81,8 @@ func _initialize() -> void:
 		"test_simai_seconds_slot",
 		"test_maimai_overlap_and_off_track",
 		"test_maimai_interaction_compress",
+		"test_interaction_run_lock",
+		"test_note_pop_scale",
 		"test_maimai_hold_clamp",
 		"test_import_window_set",
 	]
@@ -2059,6 +2061,33 @@ func test_maimai_interaction_compress() -> bool:
 	for i in range(1, fast.notes.size()):
 		largest = maxf(largest, absf(JudgeMath.angle_delta(fast.notes[i - 1].angle, fast.notes[i].angle)))
 	ok(largest <= 45.01, "fast 180-degree interaction is compressed to 45 degrees (got %.1f)" % largest)
+	return true
+
+
+func test_interaction_run_lock() -> bool:
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 180.0, 4)]
+	var angles := [90.0, 0.0, 90.0, 0.0, 90.0, 0.0]
+	for i in angles.size():
+		chart.notes.append(Note.new("tap", float(i) * 0.25, angles[i], 62.0))
+	var stats := ConvertOptimizer.optimize_maimai(chart, {"tap": 6, "hold": 0, "path": 0, "bell": 0, "dropped": 0})
+	eq(int(stats.get("locked", 0)), 1, "a fast A-B-A-B run is locked as one")
+	for i in chart.notes.size():
+		var expect := 90.0 if i % 2 == 0 else 45.0
+		near(chart.notes[i].angle, expect, 0.01, "locked run note %d" % i)
+	var slow := Chart.new()
+	slow.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	for i in angles.size():
+		slow.notes.append(Note.new("tap", float(i), angles[i], 62.0))
+	ConvertOptimizer.optimize_maimai(slow, {"tap": 6, "hold": 0, "path": 0, "bell": 0, "dropped": 0})
+	near(slow.notes[1].angle, 0.0, 0.01, "a slow run keeps its 90-degree positions")
+	return true
+
+
+func test_note_pop_scale() -> bool:
+	near(Preview3D.note_pop_scale(0.0), 1.0, 0.001, "note pop starts at its own size")
+	near(Preview3D.note_pop_scale(Preview3D.NOTE_POP_SEC), Preview3D.NOTE_POP_SCALE, 0.001, "note pop reaches 1.45x")
+	near(Preview3D.note_pop_scale(1.0), Preview3D.NOTE_POP_SCALE, 0.001, "note pop clamps after its lifetime")
 	return true
 
 

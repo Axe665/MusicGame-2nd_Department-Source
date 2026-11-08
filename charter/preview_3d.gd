@@ -27,6 +27,9 @@ const BELL_SIZE_SCALE := 0.75
 const END_FADE_SEC := 0.1
 ## 松手补按窗口内的变暗程度（1 = 不变暗）。
 const HOLD_SLIP_DIM := 0.35
+## 命中后音符本体向外扩散的时长与放大倍数（osu!std 式击打光）。
+const NOTE_POP_SEC := 0.28
+const NOTE_POP_SCALE := 1.45
 
 var chart_override: Chart = null
 var follow_app: bool = true
@@ -174,6 +177,7 @@ var _red_start_beat: float = 0.0
 var _red_start_mouse: Vector2 = Vector2.ZERO
 var _pulses: Array[Dictionary] = []
 var _arc_flashes: Array[Dictionary] = []
+var _note_pops: Array[Dictionary] = []
 # 音符外观与打击特效方案（网页 Note & Hit Lab 里可对比选择）。
 var note_skin: String = "candy"
 var hit_fx_style: String = "burst"
@@ -485,6 +489,10 @@ func _process(_delta: float) -> void:
 		_arc_flashes[i]["age"] = float(_arc_flashes[i].get("age", 0.0)) + _delta
 		if float(_arc_flashes[i]["age"]) > 0.32:
 			_arc_flashes.remove_at(i)
+	for i in range(_note_pops.size() - 1, -1, -1):
+		_note_pops[i]["age"] = float(_note_pops[i].get("age", 0.0)) + _delta
+		if float(_note_pops[i]["age"]) > NOTE_POP_SEC:
+			_note_pops.remove_at(i)
 	var t := get_time_beat()
 	var time_changed := absf(t - _last_process_time) > 0.0005
 	var mesh_key := _mesh_key(chart, t)
@@ -534,7 +542,7 @@ func _process(_delta: float) -> void:
 		_update_cursor()
 	_update_cursor_trail(_delta)
 	# 场景层只在时间/几何/特效变化时重绘；鼠标移动只触发光标层。
-	var needs_overlay := time_changed or view_changed or flat_dirty or not _pulses.is_empty() or not _arc_flashes.is_empty()
+	var needs_overlay := time_changed or view_changed or flat_dirty or not _pulses.is_empty() or not _arc_flashes.is_empty() or not _note_pops.is_empty()
 	if needs_overlay:
 		_overlay.queue_redraw()
 	if mouse_moved or time_changed or view_changed or not _cursor_trail.is_empty():
@@ -921,7 +929,10 @@ static func note_is_retired(state: String) -> bool:
 
 
 func clear_note_states() -> void:
+	_note_pops.clear()
 	if note_states.is_empty():
+		if _overlay != null:
+			_overlay.queue_redraw()
 		return
 	note_states.clear()
 	note_state_beats.clear()
@@ -1698,6 +1709,7 @@ func draw_overlay(canvas: Control) -> void:
 	sec2 = Time.get_ticks_usec()
 	_perf_sections[2] += sec2 - sec_usec
 	_draw_notes(canvas, chart, t, pre)
+	_draw_note_pops(canvas)
 	sec_usec = Time.get_ticks_usec()
 	_perf_sections[3] += sec_usec - sec2
 	_draw_boundary_controls(canvas, chart)
@@ -3385,6 +3397,81 @@ func _draw_arc_flashes(canvas: Control) -> void:
 		canvas.draw_polyline(points, Color(color.r, color.g, color.b, 0.28 * alpha), 34.0, false)
 		canvas.draw_polyline(points, Color(1, 1, 1, 0.7 * alpha), 10.0 * alpha + 2.0, false)
 		canvas.draw_polyline(points, Color(color.r, color.g, color.b, 0.95 * alpha), 3.0, false)
+
+
+## 命中后留在原地的音符本体：向外放大并淡出（osu!std 击打光）。
+func add_note_pop(kind: String, note: Note, beat: float) -> void:
+	var chart := get_chart()
+	if chart == null or _overlay == null:
+		return
+	var ns := _note_scale()
+	var pop := {"kind": kind, "age": 0.0}
+	if kind == "path":
+		# 只放大环上的星头标记；下落星星和尾环继续走原来的淡出。
+		var point := _path_screen_point(chart, note, 0.0, beat)
+		if not _valid_point(point):
+			return
+		pop["point"] = point
+		pop["color"] = note.custom_color if note.has_custom_color else star_color
+		pop["base"] = ns * PATH_SIZE_SCALE * PATH_HEAD_SCALE
+	else:
+		var points := note_live_band(note, beat)
+		if points.size() < 2:
+			return
+		var center := Vector2.ZERO
+		for p in points:
+			center += p
+		center /= float(points.size())
+		pop["points"] = points
+		pop["center"] = center
+		pop["color"] = UITheme.GOLD if kind == "hold" else UITheme.PINK
+		pop["width"] = 18.0 * ns
+		pop["cap"] = 6.0 * ns * float(_skin()["scale"])
+	_note_pops.append(pop)
+	while _note_pops.size() > 24:
+		_note_pops.pop_front()
+	_overlay.queue_redraw()
+
+
+static func note_pop_scale(age: float) -> float:
+	var t := clampf(age / NOTE_POP_SEC, 0.0, 1.0)
+	return 1.0 + (NOTE_POP_SCALE - 1.0) * (1.0 - pow(1.0 - t, 2.0))
+
+
+func _draw_note_pops(canvas: Control) -> void:
+	for pop in _note_pops:
+		var age := float(pop.get("age", 0.0))
+		var t := clampf(age / NOTE_POP_SEC, 0.0, 1.0)
+		var alpha := 1.0 - t
+		if alpha <= 0.01:
+			continue
+		var pop_scale := note_pop_scale(age)
+		var color: Color = pop["color"]
+		var flash := clampf(1.0 - age / 0.08, 0.0, 1.0)
+		if String(pop.get("kind", "")) == "path":
+			var point: Vector2 = pop["point"]
+			var base := float(pop["base"])
+			_draw_path_circle(canvas, point, base * pop_scale, color, alpha)
+			canvas.draw_arc(point, 28.0 * base * pop_scale, 0.0, TAU, 30,
+				Color(color.r, color.g, color.b, 0.95 * alpha), 2.4, false)
+			if flash > 0.0:
+				canvas.draw_circle(point, 20.0 * base * pop_scale, Color(1, 1, 1, 0.45 * flash))
+			continue
+		var points: PackedVector2Array = pop["points"]
+		var center: Vector2 = pop["center"]
+		var scaled := PackedVector2Array()
+		for p in points:
+			scaled.append(center + (p - center) * pop_scale)
+		var width := float(pop["width"]) * pop_scale
+		var cap := float(pop["cap"]) * pop_scale
+		canvas.draw_polyline(scaled, Color(0, 0, 0, 0.40 * alpha), width + 5.0 * pop_scale, false)
+		canvas.draw_polyline(scaled, Color(color.r, color.g, color.b, 0.85 * alpha), width, false)
+		for endpoint in [scaled[0], scaled[-1]]:
+			canvas.draw_circle(endpoint, cap, Color(0, 0, 0, 0.45 * alpha))
+			canvas.draw_circle(endpoint, cap * 0.72, Color(color.r, color.g, color.b, 0.95 * alpha))
+		canvas.draw_circle(scaled[scaled.size() / 2], cap * 0.8, Color(1, 1, 1, 0.85 * alpha))
+		if flash > 0.0:
+			canvas.draw_polyline(scaled, Color(1, 1, 1, 0.55 * flash), width * 0.55, false)
 
 
 func _draw_pulses(canvas: Control) -> void:

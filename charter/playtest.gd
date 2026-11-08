@@ -808,6 +808,7 @@ func _judge_tap(note: Note, ms: float, beat: float) -> void:
 		var tier := _tier_for(error)
 		state["done"] = true
 		_preview.set_note_state(note.id, "hit")
+		_preview.add_note_pop("tap", note, beat)
 		_register_hit(tier)
 		_pulse_at(note.angle, beat, _tier_color(tier), tier, note.arc_width(), "tap", _timing_detail(error, tier))
 		_sfx.play(HitSfx.kind_for_note(note), randf_range(0.98, 1.02))
@@ -839,6 +840,7 @@ func _judge_hold(note: Note, ms: float, beat: float) -> void:
 			state["key"] = int(press.get("key", 0))
 			state["head_tier"] = head_tier
 			_preview.set_note_state(note.id, "holding")
+			_preview.add_note_pop("hold", note, beat)
 			_pulse_at(note.angle, beat, _tier_color(head_tier), head_tier, note.arc_width(), "hold", _timing_detail(head_error, head_tier))
 			_sfx.play("don")
 			_add_log("HOLD #%d HEAD %s" % [note.id, head_tier])
@@ -914,6 +916,7 @@ func _judge_path(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 				_sfx.play("path", randf_range(0.98, 1.02))
 				_add_log("PATH #%d HEAD %s" % [note.id, tier])
 				_preview.set_path_head_state(note.id, true, beat)
+				_preview.add_note_pop("path", note, beat)
 				state["head_judged"] = true
 			elif ms > head_ms + HIT_WINDOW_MS:
 				state["head_hit"] = false

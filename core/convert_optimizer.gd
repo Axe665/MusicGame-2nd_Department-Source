@@ -6,15 +6,20 @@ extends RefCounted
 ##   2. 星星时间重叠：前一条能缩短就缩短，缩短后把后一颗头吸到前一条尾；
 ##      缩不了就把后一条只留星头降 Tap。
 ##   3. 星星超速：压短轨迹（尾巴可能不在原按钮），保留星星本体。
-##   4. 大于 90° 的折返压成 45°；小位移保持原谱。
+##   4. 严格 A-B-A-B 交互段（≥5 颗、均速超上限）整段锁到一对 45° 位置；
+##      其余大于 45° 且快过鼠标上限的折返逐颗压成 45°。
 ##   5. 星星期间只留落在星轨上的 Tap/Hold/Bell。
 ##   6. Hold 尾巴撞到下一颗按键时缩短，不足半拍降 Tap。
 
 const RING_RADIUS := 330.0
 ## 鼠标跟轨迹的速度上限（px/s，按 330px 半径折算）。
 const MAX_TRACE_SPEED := 3600.0
-## 连打位移的速度上限：超过这个速度的 >90° 折返才压成 45°。
-const MAX_HEAD_SPEED := 3800.0
+## 连打位移的速度上限：超过这个速度的 >45° 折返才压成 45°。
+const MAX_HEAD_SPEED := 2200.0
+## 严格交替段至少这么多颗才整段锁定。
+const MIN_RUN_NOTES := 5
+## 锁定后一对位置之间固定 45°。
+const RUN_LOCK_STEP := 45.0
 ## 缩短后至少还要有这么多滑动时间，否则不如降级。
 const MIN_MOVE_MS := 120.0
 ## 压短后至少保留这么多轨迹，否则读不出“要滑”。
@@ -29,7 +34,7 @@ const MIN_SLIDE_CHORD_R := 0.6
 static func optimize_maimai(chart: Chart, counts: Dictionary) -> Dictionary:
 	var stats := {
 		"dropped": 0, "chords": 0, "snapped": 0, "shortened": 0,
-		"degraded": 0, "off_track": 0, "relaxed": 0, "rebuilt": 0, "bells_moved": 0,
+		"degraded": 0, "off_track": 0, "relaxed": 0, "locked": 0, "rebuilt": 0, "bells_moved": 0,
 	}
 	_resolve_chords(chart, counts, stats)
 	_fit_path_overlaps(chart, counts, stats)
@@ -294,6 +299,7 @@ static func _refresh_path_tails(chart: Chart) -> void:
 # ---------------------------------------------------------------- 大位移交互
 
 static func _compress_jumps(chart: Chart, stats: Dictionary) -> void:
+	var locked := _lock_interaction_runs(chart, stats)
 	var tail_paths := {}
 	for path in chart.notes:
 		if path.type == "path":
@@ -311,6 +317,10 @@ static func _compress_jumps(chart: Chart, stats: Dictionary) -> void:
 				_rotate_note(note, snap_delta)
 			previous = note
 			continue
+		# 交互段已经整段锁好，不再逐颗旋转，但后续音符仍从锁定后的位置继续算。
+		if locked.has(note.id):
+			previous = note
+			continue
 		if previous != null:
 			var previous_end := previous.tail_angle if previous.type == "path" else previous.angle
 			var previous_beat := previous.end_beat if previous.type in ["path", "hold"] else previous.beat
@@ -318,10 +328,68 @@ static func _compress_jumps(chart: Chart, stats: Dictionary) -> void:
 			var gap_ms := chart.timing.beat_to_chart_ms(note.beat) - chart.timing.beat_to_chart_ms(previous_beat)
 			var chord := 2.0 * sin(deg_to_rad(absf(delta)) * 0.5) * RING_RADIUS
 			var too_fast := gap_ms > 0.1 and chord / gap_ms * 1000.0 > MAX_HEAD_SPEED
-			if absf(delta) > 90.0 and too_fast:
+			if absf(delta) > 45.0 and too_fast:
 				_rotate_note(note, signf(delta) * 45.0 - delta)
 				stats["relaxed"] = int(stats["relaxed"]) + 1
 		previous = note
+
+
+## 严格 A-B-A-B 的两位置交互（Tap/Hold 头，Path 打断，Bell 忽略）：
+## 段够长且平均速度快过鼠标上限时，第一颗不动，第二颗朝原转向收到 45°，
+## 整段都锁到这两个位置，避免鼠标每次跨 90°/180°。
+static func _lock_interaction_runs(chart: Chart, stats: Dictionary) -> Dictionary:
+	var locked := {}
+	var ordered := chart.sorted_notes()
+	var i := 0
+	while i < ordered.size():
+		var first := ordered[i]
+		if first.type != "tap" and first.type != "hold":
+			i += 1
+			continue
+		var j := i + 1
+		while j < ordered.size() and ordered[j].type == "bell":
+			j += 1
+		if j >= ordered.size() or (ordered[j].type != "tap" and ordered[j].type != "hold"):
+			i = maxi(i + 1, j)
+			continue
+		var a_angle := first.angle
+		var b_angle := ordered[j].angle
+		var delta := absf(JudgeMath.angle_delta(a_angle, b_angle))
+		if delta <= 45.0:
+			i = j
+			continue
+		var run: Array[Note] = [first, ordered[j]]
+		var k := j + 1
+		while k < ordered.size():
+			var next := ordered[k]
+			if next.type == "bell":
+				k += 1
+				continue
+			if next.type != "tap" and next.type != "hold":
+				break
+			var expect := a_angle if run.size() % 2 == 0 else b_angle
+			if absf(JudgeMath.angle_delta(next.angle, expect)) > 1.0:
+				break
+			run.append(next)
+			k += 1
+		if run.size() >= MIN_RUN_NOTES:
+			var first_ms := chart.timing.beat_to_chart_ms(run[0].beat)
+			var last_ms := chart.timing.beat_to_chart_ms(run[-1].beat)
+			var avg_gap := (last_ms - first_ms) / float(run.size() - 1)
+			var chord := 2.0 * sin(deg_to_rad(delta) * 0.5) * RING_RADIUS
+			var speed := chord / maxf(0.001, avg_gap) * 1000.0
+			if avg_gap > 0.1 and speed > MAX_HEAD_SPEED:
+				# 180° 没有原转向：angle_delta 固定给 -180，也就是顺时针 45°。
+				var turn := JudgeMath.angle_delta(a_angle, b_angle)
+				var direction := 1.0 if turn > 0.0 else -1.0
+				var lock_b := fposmod(a_angle + direction * RUN_LOCK_STEP, 360.0)
+				for index in run.size():
+					var target := a_angle if index % 2 == 0 else lock_b
+					_rotate_note(run[index], JudgeMath.angle_delta(run[index].angle, target))
+					locked[run[index].id] = true
+				stats["locked"] = int(stats.get("locked", 0)) + 1
+		i = maxi(k, i + 1)
+	return locked
 
 
 static func _beat_key(chart: Chart, beat: float) -> int:
