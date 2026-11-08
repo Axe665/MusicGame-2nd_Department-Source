@@ -21,6 +21,7 @@ func _initialize() -> void:
 		"test_path_run_split",
 		"test_style_presets",
 		"test_position_judgement",
+		"test_press_assignment",
 		"test_timing_stats",
 		"test_nearest_u",
 		"test_pre_read",
@@ -499,7 +500,6 @@ func test_style_presets() -> bool:
 	eq(Preview3D.tier_fx_scale("PERFECT"), 1.0, "a PERFECT keeps the full hit effect")
 	ok(Preview3D.tier_fx_scale("BAD") < Preview3D.tier_fx_scale("GOOD"), "a BAD hit draws a smaller effect")
 	eq(Preview3D.tier_fx_scale("MISS"), 1.0, "a MISS keeps the full hit effect")
-	ok(Playtest.PATH_HEAD_RADIUS >= 130.0, "path head judgement is forgiving")
 	ok(Playtest.PATH_TAIL_RADIUS >= 180.0, "path tail judgement is forgiving")
 	ok(Playtest.TRACE_CONTACT_PX >= 50.0, "trace contact is forgiving")
 	ok(Playtest.BELL_COLLECT_RADIUS >= 64.0 and Playtest.BELL_COLLECT_RADIUS <= 96.0, "bell collect stays tight but forgiving")
@@ -507,8 +507,10 @@ func test_style_presets() -> bool:
 	eq(Playtest.PERFECT_MS, 65.0, "perfect window tightened")
 	eq(Playtest.GREAT_MS, 115.0, "great window tightened")
 	eq(Playtest.GOOD_MS, 170.0, "good window tightened")
-	eq(Playtest.POSITION_TOLERANCE_PX, 90.0, "position tolerance is 90px")
-	eq(Playtest.HOLD_HEAD_EXTRA_PX, 40.0, "hold head gets extra tolerance")
+	eq(Playtest.POSITION_TOLERANCE_PX, 120.0, "one head tolerance for every note type")
+	eq(Playtest.EARLY_MS, 160.0, "early presses are accepted for 160ms")
+	ok(Playtest.EARLY_MS < Playtest.HIT_WINDOW_MS, "early presses are stricter than late ones")
+	eq(Playtest.PATH_TAIL_SWEEP_EARLY_MS, 220.0, "finishing a slide early stops at the GOOD window")
 	ok(Playtest.HOLD_RELEASE_GRACE_MS >= 100.0 and Playtest.HOLD_RELEASE_GRACE_MS <= 260.0,
 		"the hold release grace is long enough to re-press")
 	ok(Playtest.hold_release_grace_alive(1000.0, 1000.0 + Playtest.HOLD_RELEASE_GRACE_MS - 1.0),
@@ -543,11 +545,37 @@ func test_position_judgement() -> bool:
 	eq(run._distance_to_polyline(Vector2(50, 30), line), 30.0, "distance to a band segment")
 	eq(run._distance_to_polyline(Vector2(130, 0), line), 30.0, "distance past the band end")
 	eq(run._distance_to_polyline(Vector2(10, 20), PackedVector2Array([Vector2(10, 0)])), 20.0, "distance to a point note")
-	# 早按不再强升 GOOD：只有 BAD 窗口内的早按才会被吃掉。
-	eq(Playtest.HIT_WINDOW_MS, Playtest.BAD_MS, "early protection uses the BAD window")
+	# 早按只认 EARLY_MS：更早的按键不进判定，避免乱按把后面的音符打掉。
+	eq(Playtest.HIT_WINDOW_MS, Playtest.BAD_MS, "late presses keep the BAD window")
 	eq(run._tier_for(-60.0), "PERFECT", "a 60ms early press is PERFECT")
-	eq(run._tier_for(-200.0), "BAD", "a 200ms early press is BAD, not upgraded")
+	eq(run._tier_for(-160.0), "GOOD", "the earliest accepted press is GOOD, never BAD")
 	eq(run._tier_for(-260.0), "MISS", "a 260ms early press is outside the window")
+	run.free()
+	return true
+
+
+## 就近分配：多个按键同时在窗口里时，选离图形最近的，而不是时间最近的。
+func test_press_assignment() -> bool:
+	var run := Playtest.new()
+	var line := PackedVector2Array([Vector2(48, 0), Vector2(52, 0)])
+	run._key_presses = [
+		{"time": 1000.0, "mouse": Vector2(0, 0)},
+		{"time": 1012.0, "mouse": Vector2(50, 0)},
+	]
+	var picked := run._take_key_near(990.0, 1020.0, line, 10.0, 1000.0)
+	eq(float(picked.get("time", -1.0)), 1012.0, "the press aimed at the shape wins over the earlier one")
+	run._key_presses = [
+		{"time": 1000.0, "angle": 20.0, "mouse": Vector2.ZERO},
+		{"time": 1012.0, "angle": 89.0, "mouse": Vector2.ZERO},
+	]
+	var sector := run._take_key_for_sector(990.0, 1020.0, 88.0, 160.0, 1000.0)
+	eq(float(sector.get("time", -1.0)), 1012.0, "the press nearest the sector centre wins")
+	run._key_presses = [
+		{"time": 1000.0, "mouse": Vector2(0, 0)},
+		{"time": 1012.0, "mouse": Vector2(100, 0)},
+	]
+	var point := run._take_key_for_point(990.0, 1020.0, Vector2(100, 0), 120.0, 1000.0)
+	eq(float(point.get("time", -1.0)), 1012.0, "the press nearest the point wins")
 	run.free()
 	return true
 
