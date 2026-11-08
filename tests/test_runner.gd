@@ -24,6 +24,7 @@ func _initialize() -> void:
 		"test_path_run_split",
 		"test_style_presets",
 		"test_position_judgement",
+		"test_press_assignment",
 		"test_timing_stats",
 		"test_nearest_u",
 		"test_pre_read",
@@ -78,6 +79,14 @@ func _initialize() -> void:
 		"test_path_tail_judge",
 		"test_slide_floor",
 		"test_bell_path_clearance",
+		"test_simai_same_head_and_chain",
+		"test_simai_touch_layers",
+		"test_simai_seconds_slot",
+		"test_maimai_overlap_and_off_track",
+		"test_maimai_interaction_compress",
+		"test_interaction_run_lock",
+		"test_note_pop_scale",
+		"test_maimai_hold_clamp",
 		"test_import_window_set",
 	]
 	for test_name in tests:
@@ -562,7 +571,9 @@ func test_style_presets() -> bool:
 	eq(Preview3D.tier_fx_scale("PERFECT"), 1.0, "a PERFECT keeps the full hit effect")
 	ok(Preview3D.tier_fx_scale("BAD") < Preview3D.tier_fx_scale("GOOD"), "a BAD hit draws a smaller effect")
 	eq(Preview3D.tier_fx_scale("MISS"), 1.0, "a MISS keeps the full hit effect")
-	ok(Playtest.PATH_HEAD_RADIUS >= 130.0, "path head judgement is forgiving")
+	var cursor := Preview3D.new()
+	near(cursor.cursor_scale, 1.0, 0.0001, "cursor scale defaults to 1x")
+	cursor.free()
 	ok(Playtest.PATH_TAIL_RADIUS >= 180.0, "path tail judgement is forgiving")
 	ok(Playtest.TRACE_CONTACT_PX >= 50.0, "trace contact is forgiving")
 	ok(Playtest.BELL_COLLECT_RADIUS >= 64.0 and Playtest.BELL_COLLECT_RADIUS <= 96.0, "bell collect stays tight but forgiving")
@@ -570,8 +581,19 @@ func test_style_presets() -> bool:
 	eq(Playtest.PERFECT_MS, 65.0, "perfect window tightened")
 	eq(Playtest.GREAT_MS, 115.0, "great window tightened")
 	eq(Playtest.GOOD_MS, 170.0, "good window tightened")
-	eq(Playtest.POSITION_TOLERANCE_PX, 90.0, "position tolerance is 90px")
-	eq(Playtest.HOLD_HEAD_EXTRA_PX, 40.0, "hold head gets extra tolerance")
+	eq(Playtest.POSITION_TOLERANCE_PX, 120.0, "one head tolerance for every note type")
+	eq(Playtest.EARLY_MS, 115.0, "early presses stop at the GREAT boundary")
+	ok(Playtest.PRESS_KEEP_MS < 100.0, "a press only lives for about one frame")
+	eq(Playtest.KEY_DEBOUNCE_MS, 50.0, "the same key is debounced for 50ms")
+	ok(Playtest.EARLY_MS < Playtest.HIT_WINDOW_MS, "early presses are stricter than late ones")
+	eq(Playtest.PATH_TAIL_SWEEP_EARLY_MS, 220.0, "finishing a slide early stops at the GOOD window")
+	ok(Playtest.HOLD_RELEASE_GRACE_MS >= 100.0 and Playtest.HOLD_RELEASE_GRACE_MS <= 260.0,
+		"the hold release grace is long enough to re-press")
+	ok(Playtest.hold_release_grace_alive(1000.0, 1000.0 + Playtest.HOLD_RELEASE_GRACE_MS - 1.0),
+		"a slip inside the grace keeps the hold alive")
+	ok(not Playtest.hold_release_grace_alive(1000.0, 1000.0 + Playtest.HOLD_RELEASE_GRACE_MS),
+		"a release past the grace ends the hold")
+	near(Preview3D.end_fade_beats(120.0), 0.2, 0.0001, "0.1s of exit fade is 0.2 beats at 120 BPM")
 	eq(Playtest.BAD_MS, 250.0, "bad tier extends to 250ms")
 	return true
 
@@ -599,11 +621,44 @@ func test_position_judgement() -> bool:
 	eq(run._distance_to_polyline(Vector2(50, 30), line), 30.0, "distance to a band segment")
 	eq(run._distance_to_polyline(Vector2(130, 0), line), 30.0, "distance past the band end")
 	eq(run._distance_to_polyline(Vector2(10, 20), PackedVector2Array([Vector2(10, 0)])), 20.0, "distance to a point note")
-	# 早按不再强升 GOOD：只有 BAD 窗口内的早按才会被吃掉。
-	eq(Playtest.HIT_WINDOW_MS, Playtest.BAD_MS, "early protection uses the BAD window")
+	# 早按只认 EARLY_MS：更早的按键不进判定，避免乱按把后面的音符打掉。
+	eq(Playtest.HIT_WINDOW_MS, Playtest.BAD_MS, "late presses keep the BAD window")
 	eq(run._tier_for(-60.0), "PERFECT", "a 60ms early press is PERFECT")
-	eq(run._tier_for(-200.0), "BAD", "a 200ms early press is BAD, not upgraded")
+	eq(run._tier_for(-115.0), "GREAT", "the earliest accepted press is GREAT")
 	eq(run._tier_for(-260.0), "MISS", "a 260ms early press is outside the window")
+	run.free()
+	return true
+
+
+## 就近分配：多个按键同时在窗口里时，选离图形最近的，而不是时间最近的。
+func test_press_assignment() -> bool:
+	var run := Playtest.new()
+	var line := PackedVector2Array([Vector2(48, 0), Vector2(52, 0)])
+	run._key_presses = [
+		{"time": 1000.0, "mouse": Vector2(0, 0)},
+		{"time": 1012.0, "mouse": Vector2(50, 0)},
+	]
+	var picked := run._take_key_near(990.0, 1020.0, line, 10.0, 1000.0)
+	eq(float(picked.get("time", -1.0)), 1012.0, "the press aimed at the shape wins over the earlier one")
+	run._key_presses = [
+		{"time": 1000.0, "angle": 20.0, "mouse": Vector2.ZERO},
+		{"time": 1012.0, "angle": 89.0, "mouse": Vector2.ZERO},
+	]
+	var sector := run._take_key_for_sector(990.0, 1020.0, 88.0, 160.0, 1000.0)
+	eq(float(sector.get("time", -1.0)), 1012.0, "the press nearest the sector centre wins")
+	run._key_presses = [
+		{"time": 1000.0, "mouse": Vector2(0, 0)},
+		{"time": 1012.0, "mouse": Vector2(100, 0)},
+	]
+	var point := run._take_key_for_point(990.0, 1020.0, Vector2(100, 0), 120.0, 1000.0)
+	eq(float(point.get("time", -1.0)), 1012.0, "the press nearest the point wins")
+	# 光标在圈心/屏幕角落时按下的键没有方向意图，密集段不该吃它。
+	run._key_presses = [{"time": 1000.0, "angle": 88.0, "valid": false}]
+	ok(run._take_key_for_sector(990.0, 1010.0, 88.0, 100.0, 1000.0).is_empty(),
+		"a press made off the ring cannot take a dense sector")
+	run._key_presses = [{"time": 1000.0, "angle": 88.0, "valid": true}]
+	ok(not run._take_key_for_sector(990.0, 1010.0, 88.0, 100.0, 1000.0).is_empty(),
+		"a press made on the ring takes the sector")
 	run.free()
 	return true
 
@@ -1300,7 +1355,7 @@ func test_trace_distance() -> bool:
 
 
 func test_simai_import() -> bool:
-	var text := "&title=Simai Test\n&artist=Tester\n&first=1\n&wholebpm=120\n&lv_1=5\n&des_1=me\n&inote_1=(120){4}\n1,2h[4:1],1-5[4:1],E1,\nE\n"
+	var text := "&title=Simai Test\n&artist=Tester\n&first=1\n&wholebpm=120\n&lv_1=5\n&des_1=me\n&inote_1=(120){4}\n1,2h[4:1],1-5[4:1],,,E1,\nE\n"
 	var path := "user://test_simai_maidata.txt"
 	var file := FileAccess.open(path, FileAccess.WRITE)
 	if file == null:
@@ -1342,8 +1397,8 @@ func test_simai_import() -> bool:
 
 
 func test_simai_osu_friendly() -> bool:
-	# 300BPM 的 1 拍 = 200ms（高于 MIN_SLIDE_MS），180° p 型星星弧长约 2.35R，
-	# 折合 2.35*330/0.2 = 3878px/s，超过 3400 的“甩尾”阈值，所以还是会被拉直。
+	# 300BPM 的 1 拍 = 200ms；180° p 型星星弧太长，超速时必须压短轨迹，
+	# 但形状仍然是 p，不再被拉成直线。
 	var text := "&title=T\n&wholebpm=120\n&lv_1=1\n&inote_1=(300){4},1p5[4:1],,,,\nE\n"
 	var path := "user://test_simai_friendly.txt"
 	var file := FileAccess.open(path, FileAccess.WRITE)
@@ -1357,6 +1412,8 @@ func test_simai_osu_friendly() -> bool:
 	if chart != null and not chart.notes.is_empty():
 		var note: Note = chart.notes[0]
 		eq(note.type, "path", "short p slide still imports")
+		ok(not ConvertOptimizer._trace_bad(note, chart), "over-fast star is compressed under the speed cap")
+		ok(ConvertOptimizer._trace_length(note.trace_pts) < 2.4, "compressed star is shorter than the full p arc")
 		var head := Vector2(float(note.trace_pts[0]["x"]), float(note.trace_pts[0]["y"]))
 		var tail := Vector2(float(note.trace_pts[-1]["x"]), float(note.trace_pts[-1]["y"]))
 		var max_deviation := 0.0
@@ -1364,7 +1421,7 @@ func test_simai_osu_friendly() -> bool:
 			var p := Vector2(float(point["x"]), float(point["y"]))
 			var q := clampf((p - head).dot(tail - head) / maxf(0.0001, (tail - head).length_squared()), 0.0, 1.0)
 			max_deviation = maxf(max_deviation, p.distance_to(head.lerp(tail, q)))
-		ok(max_deviation < 0.05, "over-fast star degrades to a straight osu-friendly path")
+		ok(max_deviation > 0.02, "compressed star keeps its p shape")
 	var loop: Array[Vector2] = [
 		Vector2(0, 0), Vector2(1, 1), Vector2(1, 0), Vector2(0, 1),
 	]
@@ -1501,13 +1558,18 @@ func test_simai_bend_shapes() -> bool:
 			for point in paths[0].trace_pts:
 				min_radius = minf(min_radius, sqrt(pow(float(point["x"]), 2) + pow(float(point["y"]), 2)))
 			ok(min_radius < 0.15, "v shape passes through the center")
-			var mid_p: Dictionary = paths[1].trace_pts[paths[1].trace_pts.size() / 2]
-			var mid_q: Dictionary = paths[2].trace_pts[paths[2].trace_pts.size() / 2]
-			var head := Vector2(float(paths[1].trace_pts[0]["x"]), float(paths[1].trace_pts[0]["y"]))
-			var tail := Vector2(float(paths[1].trace_pts[-1]["x"]), float(paths[1].trace_pts[-1]["y"]))
-			var side_p := (Vector2(float(mid_p["x"]), float(mid_p["y"])) - head).cross(tail - head)
-			var side_q := (Vector2(float(mid_q["x"]), float(mid_q["y"])) - head).cross(tail - head)
-			ok(signf(side_p) != signf(side_q), "p and q curve to opposite sides")
+			# p/q 是绕中心的旋转镜像：有向面积必须反号（不是简单的弦两侧）。
+			var area_p := 0.0
+			var area_q := 0.0
+			for i in paths[1].trace_pts.size() - 1:
+				var a := Vector2(float(paths[1].trace_pts[i]["x"]), float(paths[1].trace_pts[i]["y"]))
+				var b := Vector2(float(paths[1].trace_pts[i + 1]["x"]), float(paths[1].trace_pts[i + 1]["y"]))
+				area_p += a.cross(b)
+			for i in paths[2].trace_pts.size() - 1:
+				var a := Vector2(float(paths[2].trace_pts[i]["x"]), float(paths[2].trace_pts[i]["y"]))
+				var b := Vector2(float(paths[2].trace_pts[i + 1]["x"]), float(paths[2].trace_pts[i + 1]["y"]))
+				area_q += a.cross(b)
+			ok(signf(area_p) != signf(area_q), "p and q wind around the center in opposite directions")
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
 	return true
 
@@ -1793,7 +1855,7 @@ func test_convert_optimizer_fast_path() -> bool:
 	var chart := Chart.new()
 	chart.timing.points = [TimingPoint.new(0.0, 240.0, 4)]
 	var note := Note.new("path", 0.0, 90.0, 62.0)
-	# 0.5 拍 @240BPM = 125ms：先被"限速重建"，再被滑条底线降级，两段都要测。
+	# 0.5 拍 @240BPM = 125ms：先被“压短轨迹”，再被滑条底线降级，两段都要测。
 	note.end_beat = 0.5
 	note.wait_beat = 0.0
 	note.tail_angle = 270.0
@@ -1803,11 +1865,9 @@ func test_convert_optimizer_fast_path() -> bool:
 	chart.notes = [note]
 	var counts := {"tap": 0, "hold": 0, "path": 1, "bell": 0, "dropped": 0}
 	var stats := {"dropped": 0, "relaxed": 0, "rebuilt": 0, "degraded": 0, "bells_moved": 0}
-	ConvertOptimizer._rebuild_paths(chart, counts, stats, {})
-	eq(int(stats["rebuilt"]) + int(stats["degraded"]), 1, "fast path is rebuilt or degraded")
-	eq(note.type, "path", "rebuild keeps it a path")
-	ok(absf(JudgeMath.angle_delta(note.angle, note.tail_angle)) <= 45.01, "fast path tail is shortened to a reachable lane")
-	ok(note.trace_pts.size() >= 12, "rebuilt path is densely sampled")
+	ok(ConvertOptimizer._fit_speed(note, chart), "fast path can be shortened")
+	ok(not ConvertOptimizer._trace_bad(note, chart), "shortened trace stays under the speed cap")
+	ok(note.trace_pts.size() >= 2, "shortened path keeps samples")
 	# 125ms 仍然低于 MIN_SLIDE_MS：底线把它降级成 Hold。
 	ConvertOptimizer.enforce_slide_floor(chart, counts, stats)
 	ok(note.type != "path", "a 125ms slide is degraded by the floor")
@@ -1921,7 +1981,7 @@ func test_slide_floor() -> bool:
 	return true
 
 
-## Bell 压在同时段 Path 上时会被挪开（或者删掉），不能两个目标叠在一起。
+## Bell 压在同时段 Path 上、但不在星轨上时会被删掉：一个鼠标没法同时跟滑条又去接铃铛。
 func test_bell_path_clearance() -> bool:
 	var chart := Chart.new()
 	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
@@ -1938,10 +1998,177 @@ func test_bell_path_clearance() -> bool:
 	chart.notes = [path, bell]
 	var counts := {"tap": 0, "hold": 0, "path": 1, "bell": 1, "dropped": 0}
 	var stats := ConvertOptimizer.optimize_maimai(chart, counts)
-	var kept := chart.notes.has(bell)
-	ok(kept and int(stats.get("bells_moved", 0)) >= 1, "bell is pushed away from the path")
-	if kept:
-		ok(absf(bell.center_u - 0.0) > 0.001, "bell centre actually moved along the ring")
+	ok(not chart.notes.has(bell), "off-track bell during a slide is dropped")
+	ok(int(stats.get("off_track", 0)) >= 1, "off-track drop is reported")
+	return true
+
+
+func _import_inote(inote: String) -> Chart:
+	var text := "&title=T\n&wholebpm=120\n&first=0\n&lv_1=1\n&inote_1=" + inote + "\nE\n"
+	var path := "user://test_tmp_inote.txt"
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	if file == null:
+		return null
+	file.store_string(text)
+	file.close()
+	var chart := SimaiIO.import_maidata(path, 1)
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	return chart
+
+
+func test_simai_same_head_and_chain() -> bool:
+	var chart := _import_inote("(120){4}\n1-4[4:1]*-6[4:1],,,,,2,\n")
+	ok(chart != null, "same-head chart imports")
+	if chart != null:
+		var paths: Array[Note] = []
+		for note in chart.notes:
+			if note.type == "path":
+				paths.append(note)
+		eq(paths.size(), 1, "same-head group keeps one track")
+		if paths.size() == 1:
+			near(paths[0].tail_angle, 315.0, 0.01, "same-head keeps the tail nearest the next note")
+	var chain := _import_inote("(120){4}\n1-4q7-2[4:2],\n")
+	ok(chain != null, "chain chart imports")
+	if chain != null:
+		var paths: Array[Note] = []
+		for note in chain.notes:
+			if note.type == "path":
+				paths.append(note)
+		eq(paths.size(), 1, "chain is one path")
+		if paths.size() == 1:
+			near(paths[0].tail_angle, 45.0, 0.01, "chain ends on its final button")
+			near(paths[0].end_beat, 3.0, 0.01, "chain uses the final duration")
+	return true
+
+
+func test_simai_touch_layers() -> bool:
+	var chart := _import_inote("(120){4}\nA1,B1,C,D1,E1,\n")
+	ok(chart != null, "touch chart imports")
+	if chart == null:
+		return true
+	var bells: Array[Note] = []
+	for note in chart.notes:
+		if note.type == "bell":
+			bells.append(note)
+	eq(bells.size(), 5, "five touch zones import")
+	if bells.size() == 5:
+		near(bells[0].bell_radius, 1.0, 0.001, "A is on the outer ring")
+		near(bells[1].bell_radius, 1.0, 0.001, "B joins the outer ring for mouse sweeps")
+		near(bells[2].bell_radius, 0.0, 0.001, "C is the center")
+		near(bells[3].bell_radius, 1.0, 0.001, "D is on the outer gap")
+		near(bells[4].bell_radius, 1.0, 0.001, "E joins the outer ring for mouse sweeps")
+		near(bells[0].angle, 90.0, 0.01, "A1 sits on button 1")
+		near(bells[3].angle, 67.5, 0.01, "D1 sits between button 1 and 2")
+		var restored := Note.from_dict(bells[2].to_dict())
+		near(restored.bell_radius, 0.0, 0.001, "center bell radius roundtrips")
+	return true
+
+
+func test_simai_seconds_slot() -> bool:
+	var chart := _import_inote("(120){#0.25}1,2,3,\n")
+	ok(chart != null, "seconds slot chart imports")
+	if chart != null:
+		var taps: Array[Note] = []
+		for note in chart.notes:
+			if note.type == "tap":
+				taps.append(note)
+		eq(taps.size(), 3, "seconds slot keeps three taps")
+		if taps.size() == 3:
+			near(taps[1].beat, 0.5, 0.001, "0.25s at 120BPM is half a beat")
+			near(taps[2].beat, 1.0, 0.001, "seconds slot advances the grid")
+	return true
+
+
+func test_maimai_overlap_and_off_track() -> bool:
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	var first := Note.new("path", 0.0, 90.0, 62.0)
+	first.end_beat = 4.0
+	first.wait_beat = 1.0
+	first.space = "plane"
+	first.tail_angle = 270.0
+	first.trace_pts = _straight_trace(90.0, 270.0, 4.0, 12)
+	var second := Note.new("path", 2.0, 90.0, 62.0)
+	second.end_beat = 5.0
+	second.wait_beat = 1.0
+	second.space = "plane"
+	second.tail_angle = 270.0
+	second.trace_pts = _straight_trace(90.0, 270.0, 5.0, 12)
+	var on_track := Note.new("tap", 3.0, 270.0, 60.0)
+	var off_track := Note.new("tap", 3.5, 90.0, 60.0)
+	chart.notes = [first, second, on_track, off_track]
+	var counts := {"tap": 2, "hold": 0, "path": 2, "bell": 0, "dropped": 0}
+	var stats := ConvertOptimizer.optimize_maimai(chart, counts)
+	near(first.end_beat, 2.0, 0.001, "early slide is shortened to the next head")
+	near(JudgeMath.angle_delta(second.angle, first.tail_angle), 0.0, 0.01, "next head snaps to the previous tail")
+	ok(chart.notes.has(on_track), "tap on the slide track survives")
+	ok(not chart.notes.has(off_track), "tap off the slide track is dropped")
+	ok(int(stats["shortened"]) >= 1 and int(stats["snapped"]) >= 1, "shorten/snap are reported")
+	ok(int(stats["off_track"]) >= 1, "off-track removal is reported")
+	return true
+
+
+func test_maimai_interaction_compress() -> bool:
+	var slow := Chart.new()
+	slow.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	slow.notes = [Note.new("tap", 0.0, 90.0, 60.0), Note.new("tap", 4.0, 270.0, 60.0)]
+	ConvertOptimizer.optimize_maimai(slow, {"tap": 2, "hold": 0, "path": 0, "bell": 0, "dropped": 0})
+	near(slow.notes[1].angle, 270.0, 0.01, "slow 180-degree jump keeps its position")
+	var fast := Chart.new()
+	fast.timing.points = [TimingPoint.new(0.0, 200.0, 4)]
+	var angles := [90.0, 270.0, 90.0, 270.0]
+	for i in angles.size():
+		fast.notes.append(Note.new("tap", float(i) * 0.25, float(angles[i]), 60.0))
+	ConvertOptimizer.optimize_maimai(fast, {"tap": 4, "hold": 0, "path": 0, "bell": 0, "dropped": 0})
+	var largest := 0.0
+	for i in range(1, fast.notes.size()):
+		largest = maxf(largest, absf(JudgeMath.angle_delta(fast.notes[i - 1].angle, fast.notes[i].angle)))
+	ok(largest <= 45.01, "fast 180-degree interaction is compressed to 45 degrees (got %.1f)" % largest)
+	return true
+
+
+func test_interaction_run_lock() -> bool:
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 180.0, 4)]
+	var angles := [90.0, 0.0, 90.0, 0.0, 90.0, 0.0]
+	for i in angles.size():
+		chart.notes.append(Note.new("tap", float(i) * 0.25, angles[i], 62.0))
+	var stats := ConvertOptimizer.optimize_maimai(chart, {"tap": 6, "hold": 0, "path": 0, "bell": 0, "dropped": 0})
+	eq(int(stats.get("locked", 0)), 1, "a fast A-B-A-B run is locked as one")
+	for i in chart.notes.size():
+		var expect := 90.0 if i % 2 == 0 else 45.0
+		near(chart.notes[i].angle, expect, 0.01, "locked run note %d" % i)
+	var slow := Chart.new()
+	slow.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	for i in angles.size():
+		slow.notes.append(Note.new("tap", float(i), angles[i], 62.0))
+	ConvertOptimizer.optimize_maimai(slow, {"tap": 6, "hold": 0, "path": 0, "bell": 0, "dropped": 0})
+	near(slow.notes[1].angle, 0.0, 0.01, "a slow run keeps its 90-degree positions")
+	return true
+
+
+func test_note_pop_scale() -> bool:
+	near(Preview3D.note_pop_scale(0.0), 1.0, 0.001, "note pop starts at its own size")
+	near(Preview3D.note_pop_scale(Preview3D.NOTE_POP_SEC), Preview3D.NOTE_POP_SCALE, 0.001, "note pop reaches its full scale")
+	near(Preview3D.note_pop_scale(1.0), Preview3D.NOTE_POP_SCALE, 0.001, "note pop clamps after its lifetime")
+	return true
+
+
+func test_maimai_hold_clamp() -> bool:
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	var hold := Note.new("hold", 0.0, 90.0, 62.0)
+	hold.end_beat = 4.0
+	chart.notes = [hold, Note.new("tap", 2.0, 90.0, 60.0)]
+	ConvertOptimizer.optimize_maimai(chart, {"tap": 1, "hold": 1, "path": 0, "bell": 0, "dropped": 0})
+	near(hold.end_beat, 1.9375, 0.001, "hold is shortened just before the next press")
+	var short := Chart.new()
+	short.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	var tiny := Note.new("hold", 0.0, 90.0, 62.0)
+	tiny.end_beat = 4.0
+	short.notes = [tiny, Note.new("tap", 0.25, 90.0, 60.0)]
+	ConvertOptimizer.optimize_maimai(short, {"tap": 1, "hold": 1, "path": 0, "bell": 0, "dropped": 0})
+	eq(tiny.type, "tap", "a hold shorter than half a beat becomes a tap")
 	return true
 
 
@@ -1954,9 +2181,13 @@ func test_note_retire_state() -> bool:
 	ok(Preview3D.note_is_retired(preview.note_state(1)), "a hit note is retired")
 	preview.set_note_state(2, "holding")
 	ok(not Preview3D.note_is_retired(preview.note_state(2)), "a held note keeps its body")
+	preview.set_note_state(5, "slip")
+	ok(not Preview3D.note_is_retired(preview.note_state(5)), "a slipped hold stays on screen while dimmed")
 	preview.set_note_state(3, "miss", 12.0)
 	ok(Preview3D.note_is_retired(preview.note_state(3)), "a missed note is retired")
 	near(float(preview.note_state_beats.get(3, 0.0)), 12.0, 0.001, "the miss beat drives the hold fade")
+	preview.set_note_state(4, "hit", 20.0)
+	near(float(preview.note_state_beats.get(4, 0.0)), 20.0, 0.001, "the hit beat drives the hold exit fade")
 	preview.clear_note_states()
 	eq(preview.note_state(1), "", "clearing drops every state")
 	preview.queue_free()

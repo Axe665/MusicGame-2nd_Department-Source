@@ -10,16 +10,23 @@ const GOOD_MS := 170.0
 ## Estella 式 BAD 档：超出 GOOD 但在这一档内算 BAD（不断连、不计命中）。
 const BAD_MS := 250.0
 const HIT_WINDOW_MS := BAD_MS
+## 早按只认这么多：更早的按键不消耗音符，可以再按一次。
+## 收到 GREAT 边界，误按早一点点不会把音符判成 GOOD。
+const EARLY_MS := 115.0
+## 按键只在按下这一帧参与判定：误按不会隔半秒被后面的音符捡走。
+const PRESS_KEEP_MS := 34.0
+## 同一个键 50ms 内的重复按下只算一次（手抖双击）。
+const KEY_DEBOUNCE_MS := 50.0
 const BELL_WINDOW_MS := 300.0
 const RED_LIMIT_SEC := 0.2
-# 鼠标判定半径：非 Tap 音符统一放大，避免要求像素级瞄准。
-const PATH_HEAD_RADIUS := 138.0
 const PATH_TAIL_RADIUS := 192.0
 ## 尾判半径最多占“头到尾直线距离”的多少（短滑条要跟着缩）。
 const PATH_TAIL_RADIUS_RATIO := 0.42
 ## 尾判还要求光标滑到轨迹的多少进度，防止站在中段就提前算完成。
 ## 星尾：鼠标投影到轨迹这个比例就算完成，不再要求贴着尾点。
 const PATH_TAIL_MIN_FRACTION := 0.90
+## 扫到 90% 也不能太早完成：早于此只等，不给 BAD。
+const PATH_TAIL_SWEEP_EARLY_MS := 220.0
 ## 星尾自己的档位窗口（连续滑动有鼠标延迟，比 Tap 宽）。
 const TAIL_PERFECT_MS := 80.0
 const TAIL_GREAT_MS := 140.0
@@ -28,10 +35,11 @@ const TRACE_HEAD_RADIUS := 72.0
 const TRACE_CONTACT_PX := 56.0
 const BELL_COLLECT_RADIUS := 72.0
 ## 位置判定：鼠标到音符图形边缘外还有这么多像素也算命中。
-const POSITION_TOLERANCE_PX := 90.0
-## Hold 头比 Tap 窄，额外再放宽一点，避免擦边。
-const HOLD_HEAD_EXTRA_PX := 40.0
+## Tap / Hold 头 / Path 头 / Anchor 共用这一把尺子（再各自加上图形半径）。
+const POSITION_TOLERANCE_PX := 120.0
 const HOLD_ARC_PAD := 10.0
+## Hold 中途短暂松手不算断：这个时间内补按回来就继续按住。
+const HOLD_RELEASE_GRACE_MS := 200.0
 ## 动态 offset：至少这么多次命中才开始自动校准。
 const DYNAMIC_SAMPLE_MIN := 8
 ## 每次命中把偏移往消除偏差的方向挪这么多。
@@ -61,6 +69,8 @@ var _ui_accum: float = 0.0
 var _states: Dictionary = {}
 var _key_presses: Array[Dictionary] = []
 var _seek_presses: Array[Dictionary] = []
+## 每个键上一次按下的时间，用来吃掉手抖双击。
+var _last_press_ms: Dictionary = {}
 var _keys_held: Dictionary = {}
 var _red_states: Dictionary = {}
 
@@ -165,6 +175,7 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	_preview.star_speed = float(_app.star_speed if _app != null else 1.0)
 	_preview.note_skin = String(_app.note_skin if _app != null else "candy")
 	_preview.hit_fx_style = String(_app.hit_fx_style if _app != null else "burst")
+	_preview.cursor_scale = float(_app.cursor_scale if _app != null else 1.0)
 	# AUTO 关掉时 auto_cursor 保持 INF，等于用真实鼠标。
 	_preview.auto_cursor = Vector2.INF
 	if auto_play:
@@ -364,6 +375,7 @@ func _init_states() -> void:
 	_red_states.clear()
 	_key_presses.clear()
 	_seek_presses.clear()
+	_last_press_ms.clear()
 	_keys_held.clear()
 	_hit_count = 0
 	_miss_count = 0
@@ -495,7 +507,7 @@ func _process(delta: float) -> void:
 		_update_hud()
 	if beat > chart.duration_beats() + 2.0:
 		_finish()
-	var keep_ms := HIT_WINDOW_MS + 60.0
+	var keep_ms := PRESS_KEEP_MS
 	while not _key_presses.is_empty() and float(_key_presses[0].get("time", -INF)) < judge_ms - keep_ms:
 		_key_presses.pop_front()
 	while not _seek_presses.is_empty() and float(_seek_presses[0].get("time", -INF)) < judge_ms - keep_ms:
@@ -558,6 +570,11 @@ static func auto_press_payload(target_ms: float, point: Vector2, angle: float, k
 ## 到点了没：比判定时间早 lead_ms 就把按键推进队列。
 static func auto_due(target_ms: float, ms: float, lead_ms: float = 8.0) -> bool:
 	return ms >= target_ms - lead_ms
+
+
+## 松手后是否还在补按窗口里（在窗口内 Hold 继续，不算断）。
+static func hold_release_grace_alive(released_ms: float, now_ms: float) -> bool:
+	return now_ms - released_ms < HOLD_RELEASE_GRACE_MS
 
 
 func _auto_step(ms: float, beat: float, _delta: float) -> void:
@@ -834,14 +851,15 @@ func _judge_seek(note: Note, ms: float, beat: float) -> void:
 func _judge_tap(note: Note, ms: float, beat: float) -> void:
 	var state: Dictionary = _states[note.id]
 	var target := float(state["target_ms"])
-	if ms < target - HIT_WINDOW_MS:
+	if ms < target - EARLY_MS:
 		return
-	var press := _take_press_for_note(target - HIT_WINDOW_MS, target + HIT_WINDOW_MS, note, beat, 0.0)
+	var press := _take_press_for_note(target - EARLY_MS, target + HIT_WINDOW_MS, note, beat, 0.0)
 	if not press.is_empty():
 		var error := float(press["time"]) - target
 		var tier := _tier_for(error)
 		state["done"] = true
 		_preview.set_note_state(note.id, "hit")
+		_preview.add_note_pop("tap", note, beat)
 		_register_hit(tier)
 		_pulse_at(note.angle, beat, _tier_color(tier), tier, note.arc_width(), "tap", _timing_detail(error, tier))
 		_sfx.play(HitSfx.kind_for_note(note), randf_range(0.98, 1.02))
@@ -862,9 +880,9 @@ func _judge_hold(note: Note, ms: float, beat: float) -> void:
 	var target := float(state["target_ms"])
 	var end_ms := float(state["end_ms"])
 	if not state["started"]:
-		if ms < target - HIT_WINDOW_MS:
+		if ms < target - EARLY_MS:
 			return
-		var press := _take_press_for_note(target - HIT_WINDOW_MS, target + HIT_WINDOW_MS, note, beat, HOLD_ARC_PAD, HOLD_HEAD_EXTRA_PX)
+		var press := _take_press_for_note(target - EARLY_MS, target + HIT_WINDOW_MS, note, beat, HOLD_ARC_PAD)
 		if not press.is_empty():
 			var head_error := float(press["time"]) - target
 			var head_tier := _tier_for(head_error)
@@ -873,6 +891,7 @@ func _judge_hold(note: Note, ms: float, beat: float) -> void:
 			state["key"] = int(press.get("key", 0))
 			state["head_tier"] = head_tier
 			_preview.set_note_state(note.id, "holding")
+			_preview.add_note_pop("hold", note, beat)
 			_pulse_at(note.angle, beat, _tier_color(head_tier), head_tier, note.arc_width(), "hold", _timing_detail(head_error, head_tier))
 			_sfx.play("don")
 			_add_log("HOLD #%d HEAD %s" % [note.id, head_tier])
@@ -889,28 +908,39 @@ func _judge_hold(note: Note, ms: float, beat: float) -> void:
 	# Hold 绑定起手键：松开起手键才算断，换成另一个键点 Tap 不会误续。
 	var hold_key := int(state.get("key", 0))
 	if hold_key != 0 and not _keys_held.has(hold_key):
+		# 短暂松手不算断：补按窗口内继续按住；超时才按已按住的比例结算。
+		if not state.has("release_ms"):
+			state["release_ms"] = ms
+			# 变暗提示玩家：手松了，但还有时间按回来。
+			_preview.set_note_state(note.id, "slip")
+		var release_ms := float(state["release_ms"])
+		if hold_release_grace_alive(release_ms, ms):
+			return
 		# 最后 1/2 拍内松手算 PERFECT；更早松手按已按住的比例降级，不断连。
 		var release_window := 60000.0 / maxf(1.0, chart.timing.bpm_at(note.beat)) * 0.5
 		var held_tier := "PERFECT"
-		if ms < end_ms - release_window:
+		if release_ms < end_ms - release_window:
 			var head_ms := float(state["target_ms"])
-			var held := clampf((ms - head_ms) / maxf(1.0, end_ms - head_ms), 0.0, 1.0)
+			var held := clampf((release_ms - head_ms) / maxf(1.0, end_ms - head_ms), 0.0, 1.0)
 			held_tier = "GREAT" if held >= 0.5 else "GOOD"
 		state["done"] = true
-		_preview.set_note_state(note.id, "hit")
+		_preview.set_note_state(note.id, "hit", beat)
 		_register_hit(held_tier)
 		_pulse_at(note.angle, beat, _tier_color(held_tier), held_tier, note.arc_width(), "tap")
 		_sfx.play("hold_end")
 		# 提前松手不算时机样本，避免污染平均偏差和动态 offset。
 		if held_tier == "PERFECT":
-			_record_error(ms - end_ms, "HOLD #%d COMPLETE PERFECT" % note.id)
+			_record_error(release_ms - end_ms, "HOLD #%d COMPLETE PERFECT" % note.id)
 		else:
 			_add_log("HOLD #%d EARLY RELEASE %s" % [note.id, held_tier])
 		return
+	state.erase("release_ms")
+	if _preview.note_state(note.id) == "slip":
+		_preview.set_note_state(note.id, "holding")
 	if ms >= end_ms:
 		var tier := String(state.get("head_tier", "PERFECT"))
 		state["done"] = true
-		_preview.set_note_state(note.id, "hit")
+		_preview.set_note_state(note.id, "hit", beat)
 		_register_hit(tier)
 		_pulse_at(note.angle, beat, _tier_color(tier), tier, note.arc_width(), "tap")
 		_sfx.play("hold_end")
@@ -923,10 +953,10 @@ func _judge_path(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 	var tail_ms := float(state["end_ms"])
 	var head_point: Vector2 = _preview.note_head_screen(note, beat)
 	if not state["head_judged"]:
-		if ms >= head_ms - HIT_WINDOW_MS:
+		if ms >= head_ms - EARLY_MS:
 			# 头部：鼠标实际位置贴近判定时刻的星头（不再用角度条带兜底）。
-			var press := _take_press_for_shape(head_ms - HIT_WINDOW_MS, head_ms + HIT_WINDOW_MS, head_ms, note,
-				PackedVector2Array([head_point]), PATH_HEAD_RADIUS)
+			var press := _take_press_for_shape(head_ms - EARLY_MS, head_ms + HIT_WINDOW_MS, head_ms, note,
+				PackedVector2Array([head_point]), POSITION_TOLERANCE_PX + float(_preview.note_graphic_radius("path")))
 			if not press.is_empty():
 				var head_error := float(press["time"]) - head_ms
 				var tier := _tier_for(head_error)
@@ -937,6 +967,7 @@ func _judge_path(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 				_sfx.play("path", randf_range(0.98, 1.02))
 				_add_log("PATH #%d HEAD %s" % [note.id, tier])
 				_preview.set_path_head_state(note.id, true, beat)
+				_preview.add_note_pop("path", note, beat)
 				state["head_judged"] = true
 			elif ms > head_ms + HIT_WINDOW_MS:
 				state["head_hit"] = false
@@ -961,9 +992,10 @@ func _judge_path(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 		var tail_distance := float(tail_info.get("distance", INF))
 		var near_tail := mouse.is_finite() and tail_point.is_finite() and mouse.distance_to(tail_point) <= tail_radius
 		# 两种完成方式：
-		#   1) 鼠标沿轨迹扫到 90%（离轨迹别太远即可），不再要求贴着尾点；
+		#   1) 鼠标沿轨迹扫到 90%（离轨迹别太远即可），但最早只能到 GOOD 窗口；
 		#   2) 手已经贴到尾点，且时间在 GREAT 内（防止路过尾点就吃个早期 BAD）。
-		var swept := tail_fraction >= PATH_TAIL_MIN_FRACTION and tail_distance <= PATH_TAIL_RADIUS
+		var swept := ms >= tail_ms - PATH_TAIL_SWEEP_EARLY_MS \
+			and tail_fraction >= PATH_TAIL_MIN_FRACTION and tail_distance <= PATH_TAIL_RADIUS
 		var touched := near_tail and absf(ms - tail_ms) <= TAIL_GREAT_MS
 		if swept or touched:
 			var tier := tail_tier(ms - tail_ms)
@@ -997,13 +1029,9 @@ func _judge_path(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 		var wait := clampf(note.wait_beat, 0.0, maxf(0.0, total - 0.001))
 		var q := clampf((beat - note.beat - wait) / maxf(0.001, total - wait), 0.0, 1.0)
 		var progress := 1.0 - pow(1.0 - q, maxf(0.05, note.path_speed))
-		var target := progress
-		var info: Dictionary = _preview.path_fraction(note, mouse, beat)
-		var fraction := float(info.get("fraction", 0.0))
-		# 鼠标只允许领先当前进度一小段；避免停在远处把整条轨迹提前削光。
-		if float(info.get("distance", INF)) <= 128.0 and fraction > progress and fraction <= progress + 0.20:
-			target = fraction
-		_preview.set_path_erased_to(note, target)
+		# 只擦到球的位置：鼠标领先时如果连球前面那一小段也削掉，
+		# 球就会悬在缺口里，看起来像轨迹断了一截。
+		_preview.set_path_erased_to(note, progress)
 		_track_sector_erase(note, progress)
 		state["path_last_mouse"] = mouse
 
@@ -1041,13 +1069,13 @@ func _judge_trace(note: Note, ms: float, beat: float, delta: float, mouse: Vecto
 	var end_ms := float(_states[note.id]["end_ms"])
 	var contact := _trace_contact(note, mouse, beat)
 	if not state["trace_started"]:
-		if ms < start_ms - HIT_WINDOW_MS:
+		if ms < start_ms - EARLY_MS:
 			return
 		var started := false
 		if note.trace_style == "slider":
 			var points := _preview.trace_screen_points(note, beat)
 			var head: Vector2 = points[0] if not points.is_empty() else mouse
-			var press := _take_key_for_point(start_ms - HIT_WINDOW_MS, start_ms + HIT_WINDOW_MS, head, TRACE_HEAD_RADIUS, start_ms)
+			var press := _take_key_for_point(start_ms - EARLY_MS, start_ms + HIT_WINDOW_MS, head, TRACE_HEAD_RADIUS, start_ms)
 			if not press.is_empty():
 				started = true
 				_sfx.play("path", 0.94)
@@ -1178,11 +1206,11 @@ func _judge_bell(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 func _judge_anchor(note: Note, ms: float, beat: float) -> void:
 	var state: Dictionary = _states[note.id]
 	var target := float(state["target_ms"])
-	if ms < target - HIT_WINDOW_MS:
+	if ms < target - EARLY_MS:
 		return
 	var anchor_point := _preview.note_head_screen(note, beat)
 	var anchor_tolerance := POSITION_TOLERANCE_PX + float(_preview.note_graphic_radius(note.type))
-	var press := _take_press_for_shape(target - HIT_WINDOW_MS, target + HIT_WINDOW_MS, target, note,
+	var press := _take_press_for_shape(target - EARLY_MS, target + HIT_WINDOW_MS, target, note,
 		PackedVector2Array([anchor_point]), anchor_tolerance)
 	if not press.is_empty():
 		var anchor_error := float(press["time"]) - target
@@ -1248,7 +1276,8 @@ func _pulse_at(angle_degrees: float, beat: float, color: Color, label: String, w
 ## 光标贴近某个点（Path/Trace 头）。命中里挑离 target 最近的。
 func _take_key_for_point(lo: float, hi: float, point: Vector2, radius: float, target: float = NAN) -> Dictionary:
 	var best_index := -1
-	var best_distance := INF
+	var best_point := INF
+	var best_time := INF
 	for i in _key_presses.size():
 		var press: Dictionary = _key_presses[i]
 		var stamp := float(press.get("time", -INF))
@@ -1257,11 +1286,14 @@ func _take_key_for_point(lo: float, hi: float, point: Vector2, radius: float, ta
 		if stamp > hi:
 			break
 		var press_mouse: Vector2 = press.get("mouse", Vector2.ZERO)
-		if press_mouse.distance_to(point) > radius:
+		var distance := press_mouse.distance_to(point)
+		if distance > radius:
 			continue
-		var distance := absf(stamp - target) if is_finite(target) else 0.0
-		if distance < best_distance:
-			best_distance = distance
+		# 就近分配：先比鼠标离点多近，时间只做平手裁决。
+		var time_distance := absf(stamp - target) if is_finite(target) else 0.0
+		if distance < best_point - 0.001 or (distance <= best_point + 0.001 and time_distance < best_time):
+			best_point = distance
+			best_time = time_distance
 			best_index = i
 	if best_index < 0:
 		return {}
@@ -1274,7 +1306,8 @@ func _take_key_for_point(lo: float, hi: float, point: Vector2, radius: float, ta
 func _take_key_for_sector(lo: float, hi: float, angle: float, width: float, target: float = NAN) -> Dictionary:
 	var half := maxf(24.0, width * 0.5)
 	var best_index := -1
-	var best_distance := INF
+	var best_angle := INF
+	var best_time := INF
 	for i in _key_presses.size():
 		var press: Dictionary = _key_presses[i]
 		var stamp := float(press.get("time", -INF))
@@ -1285,11 +1318,17 @@ func _take_key_for_sector(lo: float, hi: float, angle: float, width: float, targ
 		var press_angle := float(press.get("angle", NAN))
 		if is_nan(press_angle):
 			continue
-		if absf(JudgeMath.angle_delta(press_angle, angle)) > half:
+		# 鼠标在圈心/屏幕角落时按下的键没有方向意图，不参与密集段的方向判定。
+		if not bool(press.get("valid", true)):
 			continue
-		var distance := absf(stamp - target) if is_finite(target) else 0.0
-		if distance < best_distance:
-			best_distance = distance
+		# 就近分配：先比方向差多少，时间只做平手裁决。
+		var delta := absf(JudgeMath.angle_delta(press_angle, angle))
+		if delta > half:
+			continue
+		var time_distance := absf(stamp - target) if is_finite(target) else 0.0
+		if delta < best_angle - 0.001 or (delta <= best_angle + 0.001 and time_distance < best_time):
+			best_angle = delta
+			best_time = time_distance
 			best_index = i
 	if best_index < 0:
 		return {}
@@ -1299,22 +1338,32 @@ func _take_key_for_sector(lo: float, hi: float, angle: float, width: float, targ
 
 
 ## 一组候选图形的取键（Path 头 / Anchor / Trace 头）。
-## 密集流（相邻 ≤0.25 拍）按环平面角度扇区；其余按鼠标实际位置（90px + 图形半宽）。
+## 密集流（相邻 ≤0.25 拍）只看方向：角度宽 = 稀疏段同一套（弧宽 + 容差折算），不检查半径。
 func _take_press_for_shape(lo: float, hi: float, target: float, note: Note, points: PackedVector2Array, tolerance: float, pad: float = 0.0) -> Dictionary:
 	if _key_presses.is_empty():
 		return {}
 	if _dense_ids.has(note.id):
-		return _take_key_for_sector(lo, hi, note.angle, note.arc_width() + pad, target)
+		# 图形整个落在环的缺口里时没有可判的位置，别退化成"任何角度都算"。
+		if points.is_empty():
+			return {}
+		var center: Vector2 = _preview.project_design(Vector2.ZERO)
+		var ring_radius := 1.0
+		if not points.is_empty():
+			ring_radius = maxf(1.0, center.distance_to(points[points.size() / 2]))
+		var slack := rad_to_deg(tolerance / ring_radius)
+		# 点判定（Path 头 / Anchor）没有自己的弧宽，只有容差折算出来的角度。
+		var base := 0.0 if points.size() <= 1 else note.arc_width() + pad
+		return _take_key_for_sector(lo, hi, note.angle, base + 2.0 * slack, target)
 	return _take_key_near(lo, hi, points, tolerance, target)
 
 
 ## Tap / Hold 头：密集流走角度扇区，其余按鼠标实际位置。
-func _take_press_for_note(lo: float, hi: float, note: Note, beat: float, pad: float = 0.0, extra_px: float = 0.0) -> Dictionary:
+func _take_press_for_note(lo: float, hi: float, note: Note, beat: float, pad: float = 0.0) -> Dictionary:
 	if _key_presses.is_empty():
 		return {}
 	var target := float(_states[note.id]["target_ms"]) if _states.has(note.id) else (lo + hi) * 0.5
 	var points := _preview.note_live_band(note, beat, pad)
-	var tolerance := POSITION_TOLERANCE_PX + extra_px + float(_preview.note_graphic_radius(note.type))
+	var tolerance := POSITION_TOLERANCE_PX + float(_preview.note_graphic_radius(note.type))
 	return _take_press_for_shape(lo, hi, target, note, points, tolerance, pad)
 
 
@@ -1335,8 +1384,10 @@ func _take_key_near(lo: float, hi: float, points: PackedVector2Array, tolerance:
 		var press_mouse: Vector2 = press.get("mouse", Vector2.ZERO)
 		var distance := _distance_to_polyline(press_mouse, points)
 		if distance <= tolerance:
+			# 就近分配：先比鼠标离图形多近，时间只做平手裁决。
 			var time_distance := absf(stamp - target) if is_finite(target) else 0.0
-			if time_distance < best_time_distance:
+			if distance < best - 0.001 or (distance <= best + 0.001 and time_distance < best_time_distance):
+				best = distance
 				best_time_distance = time_distance
 				best_index = i
 			continue
@@ -1644,14 +1695,18 @@ func _input(event: InputEvent) -> void:
 				return
 			var key: int = event.physical_keycode if event.physical_keycode != 0 else event.keycode
 			var stamp := _chart_ms() + float(_app.playtest_offset_ms if _app != null else 0.0)
-			_key_presses.append({
-				"time": stamp,
-				"mouse": _preview.mouse_screen,
-				"angle": _preview.screen_angle_deg(_preview.mouse_screen),
-				"u": _preview.cursor_u,
-				"valid": _preview.cursor_valid,
-				"key": key,
-			})
+			# 同一个键的手抖双击只算一次；和弦用不同键，不受影响。
+			var repeated := stamp - float(_last_press_ms.get(key, -INF)) < KEY_DEBOUNCE_MS
+			_last_press_ms[key] = stamp
+			if not repeated:
+				_key_presses.append({
+					"time": stamp,
+					"mouse": _preview.mouse_screen,
+					"angle": _preview.screen_angle_deg(_preview.mouse_screen),
+					"u": _preview.cursor_u,
+					"valid": _preview.cursor_valid,
+					"key": key,
+				})
 			_keys_held[key] = true
 			get_viewport().set_input_as_handled()
 		elif not event.pressed:

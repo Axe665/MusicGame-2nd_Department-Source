@@ -36,6 +36,8 @@ var trace_color: Color = Color(0.78, 0.86, 1.0)
 var note_skin: String = "candy"
 var hit_fx_style: String = "burst"
 var hit_sfx_style: String = "default"
+## 试玩光标大小倍率（1.0 = 默认）。
+var cursor_scale: float = 1.0
 ## 帧率上限："60" / "120" / "vsync" / "unlimited"。
 var frame_cap: String = "vsync"
 ## 局内动态校准判定偏移（默认关）。
@@ -425,6 +427,7 @@ func _load_settings() -> void:
 			dynamic_offset = bool(data.get("dynamic_offset", dynamic_offset))
 			playtest_auto = bool(data.get("playtest_auto", playtest_auto))
 			last_bias_ms = float(data.get("last_bias_ms", last_bias_ms))
+			cursor_scale = clampf(float(data.get("cursor_scale", cursor_scale)), 0.5, 2.0)
 	MediaIO.set_ffmpeg_exe(ffmpeg_path)
 	apply_frame_cap()
 
@@ -447,7 +450,7 @@ func apply_frame_cap() -> void:
 
 
 func save_settings() -> void:
-	var data := {"note_skin": note_skin, "hit_fx_style": hit_fx_style, "hit_sfx_style": hit_sfx_style, "ffmpeg": ffmpeg_path, "frame_cap": frame_cap, "playtest_offset_ms": playtest_offset_ms, "dynamic_offset": dynamic_offset, "playtest_auto": playtest_auto, "last_bias_ms": last_bias_ms}
+	var data := {"note_skin": note_skin, "hit_fx_style": hit_fx_style, "hit_sfx_style": hit_sfx_style, "ffmpeg": ffmpeg_path, "frame_cap": frame_cap, "playtest_offset_ms": playtest_offset_ms, "dynamic_offset": dynamic_offset, "playtest_auto": playtest_auto, "last_bias_ms": last_bias_ms, "cursor_scale": cursor_scale}
 	var file := FileAccess.open(SETTINGS_PATH, FileAccess.WRITE)
 	if file != null:
 		file.store_string(JSON.stringify(data, "\t"))
