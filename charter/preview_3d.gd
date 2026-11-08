@@ -30,6 +30,8 @@ const HOLD_SLIP_DIM := 0.35
 ## 命中后音符本体向外扩散的时长与放大倍数（osu!std 式击打光）。
 const NOTE_POP_SEC := 0.28
 const NOTE_POP_SCALE := 1.45
+## 音符外圈那层更大的命中光环，相对起始半径的放大倍数。
+const NOTE_HIT_RING_SCALE := 2.2
 
 var chart_override: Chart = null
 var follow_app: bool = true
@@ -3438,9 +3440,12 @@ func add_note_pop(kind: String, note: Note, beat: float) -> void:
 		if not _valid_point(point):
 			return
 		pop["point"] = point
+		pop["center"] = point
 		pop["color"] = note.custom_color if note.has_custom_color else star_color
 		var base_scale := clampf(ns * PATH_SIZE_SCALE * PATH_HEAD_SCALE, 0.2, 2.0)
-		pop["base"] = 24.0 * base_scale * float(_skin()["scale"]) * PATH_SIZE_SCALE * PATH_HEAD_SCALE
+		var base := 24.0 * base_scale * float(_skin()["scale"]) * PATH_SIZE_SCALE * PATH_HEAD_SCALE
+		pop["base"] = base
+		pop["ring_base"] = base
 	else:
 		var points := note_live_band(note, beat)
 		if points.size() < 2:
@@ -3454,6 +3459,7 @@ func add_note_pop(kind: String, note: Note, beat: float) -> void:
 		pop["center"] = center
 		pop["color"] = UITheme.GOLD if kind == "hold" else UITheme.PINK
 		pop["cap"] = 6.0 * ns * float(skin["scale"])
+		pop["ring_base"] = 16.0 * ns * float(skin["scale"])
 	_note_pops.append(pop)
 	while _note_pops.size() > 24:
 		_note_pops.pop_front()
@@ -3476,6 +3482,14 @@ func _draw_note_pops(canvas: Control) -> void:
 		var pop_scale := note_pop_scale(age)
 		var color: Color = pop["color"]
 		var flash := clampf(1.0 - age / 0.08, 0.0, 1.0)
+		# 音符外圈的大命中光环：细、淡、扩得比本体更远。
+		var ring_center: Vector2 = pop["center"]
+		var ring_t := clampf(age / NOTE_POP_SEC, 0.0, 1.0)
+		var ring_scale := 1.0 + (NOTE_HIT_RING_SCALE - 1.0) * (1.0 - pow(1.0 - ring_t, 2.0))
+		var ring_radius := float(pop["ring_base"]) * ring_scale
+		var ring_alpha := (1.0 - ring_t) * 0.55
+		canvas.draw_arc(ring_center, ring_radius, 0.0, TAU, 48, Color(star_color.r, star_color.g, star_color.b, 0.10 * ring_alpha), 7.0, true)
+		canvas.draw_arc(ring_center, ring_radius, 0.0, TAU, 48, Color(star_color.r, star_color.g, star_color.b, 0.60 * ring_alpha), 2.0, true)
 		if String(pop.get("kind", "")) == "path":
 			var point: Vector2 = pop["point"]
 			var base := float(pop["base"])
