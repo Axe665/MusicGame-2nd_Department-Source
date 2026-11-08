@@ -3,6 +3,7 @@ extends RefCounted
 
 ## 舞萌转谱的鼠标层（std 只调用 snap_heads_to_path_tails）：
 ##   1. 同刻只留一颗：星星 > Hold > Tap > Bell，同类型看谁更顺。
+##      45° 相邻的 Tap/Hold 双押保留两颗：光标停在两键中间，两只手各按一个键。
 ##   2. 星星时间重叠：前一条能缩短就缩短，缩短后把后一颗头吸到前一条尾；
 ##      缩不了就把后一条只留星头降 Tap。
 ##   3. 星星超速：压短轨迹（尾巴可能不在原按钮），保留星星本体。
@@ -24,6 +25,8 @@ const ON_TRACK_R := 0.30
 ## 滑条底线：比这更短 / 头尾弦长更小的 Path 读不出“要滑”，降级。
 const MIN_SLIDE_MS := 160.0
 const MIN_SLIDE_CHORD_R := 0.6
+## 45° 双押收紧到这个夹角：Tap 弧宽 31°，24° 让两条判定带在中间重叠。
+const CHORD_GAP := 24.0
 
 
 static func optimize_maimai(chart: Chart, counts: Dictionary) -> Dictionary:
@@ -68,11 +71,13 @@ static func _resolve_chords(chart: Chart, counts: Dictionary, stats: Dictionary)
 		if g + 1 < groups.size():
 			for candidate in groups[g + 1]:
 				next_points.append(_note_point(candidate))
+		var candidates: Array[Note] = []
+		for note in group:
+			if _priority(note) == best_priority:
+				candidates.append(note)
 		var keeper: Note = null
 		var best_score := -INF
-		for note in group:
-			if _priority(note) != best_priority:
-				continue
+		for note in candidates:
 			var score := 0.0
 			if note.type == "path":
 				score = -_distance_to_any(_note_end_point(note), next_points)
@@ -85,11 +90,35 @@ static func _resolve_chords(chart: Chart, counts: Dictionary, stats: Dictionary)
 				best_score = score
 		if keeper == null:
 			continue
+		var keepers: Array[Note] = [keeper]
+		if best_priority == 1 or best_priority == 2:  # Tap / Hold
+			# 45° 相邻双押：光标放两键中间，两颗都能在同一位置按到。
+			var partner: Note = null
+			var partner_delta := 45.01
+			for note in candidates:
+				if note == keeper:
+					continue
+				var delta := absf(JudgeMath.angle_delta(note.angle, keeper.angle))
+				if delta > 0.5 and delta < partner_delta:
+					partner = note
+					partner_delta = delta
+			if partner != null:
+				# 收紧到弧宽以内，光标停在两键中间时两条判定带都碰得到。
+				var delta := JudgeMath.angle_delta(keeper.angle, partner.angle)
+				var move := (absf(delta) - CHORD_GAP) * 0.5
+				if move > 0.0:
+					_rotate_note(keeper, signf(delta) * move)
+					_rotate_note(partner, -signf(delta) * move)
+				keepers.append(partner)
 		for note in group:
-			if note != keeper:
-				_remove_note(chart, counts, note, stats)
-				stats["chords"] = int(stats["chords"]) + 1
-		previous_end = _note_end_point(keeper)
+			if note in keepers:
+				continue
+			_remove_note(chart, counts, note, stats)
+			stats["chords"] = int(stats["chords"]) + 1
+		var end_point := Vector2.ZERO
+		for note in keepers:
+			end_point += _note_end_point(note)
+		previous_end = end_point / float(keepers.size())
 
 
 static func _priority(note: Note) -> int:
@@ -319,9 +348,23 @@ static func _compress_jumps(chart: Chart, stats: Dictionary) -> void:
 			var chord := 2.0 * sin(deg_to_rad(absf(delta)) * 0.5) * RING_RADIUS
 			var too_fast := gap_ms > 0.1 and chord / gap_ms * 1000.0 > MAX_HEAD_SPEED
 			if absf(delta) > 90.0 and too_fast:
-				_rotate_note(note, signf(delta) * 45.0 - delta)
+				var turn := signf(delta) * 45.0 - delta
+				_rotate_note(note, turn)
+				# 45° 双押是一对：只转一颗会拆成 90°，两颗一起转。
+				_rotate_same_beat_partners(chart, note, turn)
 				stats["relaxed"] = int(stats["relaxed"]) + 1
 		previous = note
+
+
+static func _rotate_same_beat_partners(chart: Chart, note: Note, delta: float) -> void:
+	if note.type != "tap" and note.type != "hold":
+		return
+	var key := _beat_key(chart, note.beat)
+	for other in chart.notes:
+		if other == note or other.type != note.type:
+			continue
+		if _beat_key(chart, other.beat) == key:
+			_rotate_note(other, delta)
 
 
 static func _beat_key(chart: Chart, beat: float) -> int:

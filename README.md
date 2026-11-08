@@ -85,7 +85,7 @@ godot --path .
 - osu!std 落道：照 Sentakki 的 8 道 45°（`_std_closest_lane` / `_std_lane_u`），流向用它的中点法（`_std_stream_direction`：同向保持、共线归零、否则取角差符号），大跳按两端道差（`_std_jump_offset`），间隔超过 1 拍重新回绝对位置
 - 星星颜色：默认使用全局星色（舞萌蓝）；有任意两条 Path 在**时间 + 盘面轨迹**上重叠时，按同色系逐级压明度区分。旧版自定义 RGB 数据（`"rgb"`）保留兼容；新 Path 界面已隐藏该入口
 - osu!std 滑条：照 Sentakki 的**程序化段链**（`core/sentakki_slide.gd`）——不跟随 osu 控制点，而是从 `Straight / Circle / V / U / Cup / Thunder / Fan` × 8 道 × 镜像的合法段表里，按剩余时长反复挑段（`min_ms × (1 + 1/velocity) < 剩余`），连续同向圆弧不合法；wait 从 1 拍开始减半，低于 0.5 拍退回 Hold；轨迹按弧长匀速采样
-- 舞萌转谱（`ConvertOptimizer`）：同刻只留一颗（星星 > Hold > Tap > Bell，同类型看谁更顺）；星星时间重叠时前一条能缩短就缩短，缩不了后一条只留星头降 Tap；缩短/截断后把后一颗头吸到前一条尾，形成一笔画；每条星星按 3600px/s 的鼠标上限压短轨迹；连打里超过 90° 且快过 3800px/s 的折返压成 45°；星星期间只留落在星轨 0.30R 内的 Tap/Hold/Bell；Hold 尾巴撞到下一颗按键时缩短，不足半拍降 Tap
+- 舞萌转谱（`ConvertOptimizer`）：同刻只留一颗（星星 > Hold > Tap > Bell，同类型看谁更顺），但 45° 相邻的 Tap/Hold 双押保留两颗——光标停在两键中间，两只手各按一个键；星星时间重叠时前一条能缩短就缩短，缩不了后一条只留星头降 Tap；缩短/截断后把后一颗头吸到前一条尾，形成一笔画；每条星星按 3600px/s 的鼠标上限压短轨迹；连打里超过 90° 且快过 3800px/s 的折返压成 45°；星星期间只留落在星轨 0.30R 内的 Tap/Hold/Bell；Hold 尾巴撞到下一颗按键时缩短，不足半拍降 Tap
 - 转谱底线（`ConvertOptimizer`）：时长 < 160ms 或头尾弦长 < 0.6R 的滑条直接降级成 Hold/Tap（这样的 Path 玩家读不出"要滑"；240BPM 的 1/8 拍滑条就落在这条线下，120–180BPM 的常规滑条不受影响）；星星期间压不在轨上的 Bell 直接删掉——一个鼠标没法同时跟滑条又去接铃铛
 - Path 尾判（试玩）：半径跟着滑条长度缩（`min(192, 0.42 × 头尾直线)`，最小 56），并且要求光标滑过 86% 以上（时机正好在 ±65ms 内时只看距离）。固定 192px 会把"刚摸到头"当成"已经到尾巴"，45° 短滑条会被判成 BAD
 - 星星出场：星头与轨迹一起从圆心长出，随预读同步放大；没有独立的星显或启动延迟，尾判与轨迹一起到位
@@ -131,7 +131,7 @@ godot --path .
 - **转谱窗口**：导入 `.osz` / `maidata.txt`，或者从「在线舞萌谱面」下载完成，都会先把来源里的**所有难度都转好并存成一个套组文件**（`user://sets/<曲名> [导入].set.json`），再**另开一个窗口**（`--open-set=<set.json> --child-window`）专门编辑它；父窗口的谱面原样不动。新窗口和普通编辑器一样，只是顶部左侧多一个「难度」下拉框，可以在套组里的所有难度之间直接切换（`<曲名> · <难度>` 会显示在标题栏）。在线谱面下载后不再在浏览器里选难度，统一在新窗口切。自动保存写到 `user://autosave_import.json`，不碰主窗口的 `autosave.json`。
 - **难度套组 `.set.json`**：一个文件装一首歌的所有难度（`{"format":"tamaki3-set","difficulties":[{"name","chart"}]}`）；`ChartIO.load_set/save_set` 读写，`文件 → 打开` 会自动识别，Ctrl+S 存回整个套组；`文件 → 新增难度（复制当前）` 加一份，`文件 → 另存为` 则把当前难度单独存成普通 `.json`。
 - **导入 `.osz`**：支持 osu!std 与 osu!taiko；circle → Tap、slider → Slide Trace/Hold、drumroll → Hold；spinner 跳过；多难度包会弹窗选择 `.osu`；导入报告列出保留/丢弃原因。
-- **导入 Simai**：支持舞萌 `maidata.txt`（`.zip` 或 `.txt`）；Tap/Hold/Slide→Path/Break→加宽 Tap/Touch→Bell 会导入；p/q=U、pp/qq=Cup、s/z=闪电、V=经过点、w=扇形中轴、`1-3q5-7` 链式拼成一条 Path、`1-4*-6` 同头多星只留尾部落点最顺的一条；Touch 按 A/B/C/D/E 真实分层（A/D 外圈、B/E 中圈、C 圆心）；双押按星星 > Hold > Tap > Bell 只留一颗。导入后只做鼠标保护：重叠星星缩短/降 Tap、超速轨迹压短、>90° 快折返压 45°、星星期间只留轨上音符、Hold 撞下一颗时缩短
+- **导入 Simai**：支持舞萌 `maidata.txt`（`.zip` 或 `.txt`）；Tap/Hold/Slide→Path/Break→加宽 Tap/Touch→Bell 会导入；p/q=U、pp/qq=Cup、s/z=闪电、V=经过点、w=扇形中轴、`1-3q5-7` 链式拼成一条 Path、`1-4*-6` 同头多星只留尾部落点最顺的一条；Touch 的 A/B/D/E 全部落外圈（C 圆心），连续铃铛沿同一个圆扫；双押按星星 > Hold > Tap > Bell 只留一颗，45° 相邻 Tap/Hold 除外。导入后只做鼠标保护：重叠星星缩短/降 Tap、超速轨迹压短、>90° 快折返压 45°、星星期间只留轨上音符、Hold 撞下一颗时缩短
 - **osu!std 混合层**：circle → 环上 Tap（连续 u）；slider 按 Sentakki 段库转成**环内平面 Path**（星头按键 + 沿轨迹移动，尾部在终点时刻判定），lazy/短 → Hold；没有 8 轨吸附，也没有全平面模式。
 - **宽度补偿**：Tap/Path 头宽按相邻角度差和时间差自动变宽（52–110°），密集流加宽、jump 收窄；这是无轨环用来吸收 osu 不可打配置的主要手段。
 - **taiko 映射**：don/kat 按 hitsound（whistle/clap = kat，finish = 大音符）分色；就近取 0/90/180/270 两车道，密集段（<0.32 拍）堆叠不甩圈；短滑条拆成拍点，长滑条（≥1.5 拍）→ Hold；spinner 跳过。
@@ -173,7 +173,7 @@ godot --headless --path . --script res://tests/test_runner.gd
 - osu!taiko 导入的 don/kat 车道、密集堆叠、短滑条拆点、长滑条鼓滚、spinner 跳过
 - Path 跳区擦除范围、擦除段不生成中段检查点、JSON / `.lbp` 保留
 - 试玩打击音资源可加载
-- Simai 导入的难度列表、offset、按钮角度、Hold/Slide 时长、同刻去重、重叠星星缩短/降 Tap、Touch 分层
+- Simai 导入的难度列表、offset、按钮角度、Hold/Slide 时长、同刻去重（45° 双押除外）、重叠星星缩短/降 Tap、Touch 外圈排布
 - 舞萌鼠标层：尾判吸附、轨迹压短、>90° 快折返压 45°、轨外音符删除、Hold 缩短
 - osu!std 的 45° 流步长、Slide wait 阶段、同刻去重/尾判吸附
 - `.osz` 多难度列表与指定难度导入

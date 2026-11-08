@@ -66,7 +66,7 @@ var has_custom_color: bool = false
 var custom_color: Color = DEFAULT_PATH_COLOR
 var lock: bool = false
 var center_u: float = 0.25
-## Bell 的径向位置（环半径 = 1.0）。A/D = 1.0，B/E = 内圈，C = 0（圆心）。
+## Bell 的径向位置（环半径 = 1.0）。Touch 全部落外圈，C = 0（圆心）。
 var bell_radius: float = 1.0
 
 

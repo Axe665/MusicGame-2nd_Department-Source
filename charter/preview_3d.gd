@@ -2159,21 +2159,23 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 		_path_runs_cache[cache_key] = runs
 	# 颜色由 _draw_paths 统一分配（自定义优先，重叠时同色系压明度）。
 	var trail_dim := dim * trail_fade * end_fade
-	var dash := Color(accent.r, accent.g, accent.b, 0.92 * trail_dim)
 	var future := Color(accent.r, accent.g, accent.b, 0.98 * trail_dim)
 	var passed := Color(accent.r, accent.g, accent.b, 0.14 * trail_dim)
 	if trail_fade > 0.001:
 		for piece in runs:
 			if piece.size() < 2:
 				continue
-			# 试玩里只有“现在该划”的那条画粗带；其余只留一条细虚线，重叠时才分得清。
+			# 试玩里只有“现在该划”的那条画粗带；其余不打虚线，只把实线压暗。
 			# 编辑器预览保持全部粗带，方便看谱。
 			if active or not playtest_mode:
 				var path_band := float(_skin()["band"])
 				var band_width := 5.0 * PATH_SIZE_SCALE * ns * path_band
 				canvas.draw_polyline(piece, Color(0, 0, 0, 0.50 * trail_dim), band_width + 4.0, false)
 				canvas.draw_polyline(piece, Color(accent.r, accent.g, accent.b, 0.95 * trail_dim), band_width, false)
-			_draw_dashed_polyline(canvas, piece, dash, 2.4 * PATH_SIZE_SCALE, 10.0 * PATH_SIZE_SCALE)
+			else:
+				# 还没轮到的星：实线 + 压暗，不再用虚线切碎轨迹。
+				canvas.draw_polyline(piece, Color(0, 0, 0, 0.35 * trail_dim), 4.0 * PATH_SIZE_SCALE * ns, false)
+				canvas.draw_polyline(piece, Color(accent.r, accent.g, accent.b, 0.92 * trail_dim), 2.6 * PATH_SIZE_SCALE * ns, false)
 			# V 形箭头链只画在“现在该划”的那条上：对向重叠的两条星都画箭头会叠成蝴蝶结。
 			if not active:
 				continue
@@ -3650,25 +3652,6 @@ func _draw_debug(canvas: Control, chart: Chart, t: float) -> void:
 		var p := project_u(u, t)
 		if _valid_point(p):
 			canvas.draw_string(mono, p + Vector2(4, -4), "%d°" % (i * 30), HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(1, 1, 1, 0.42))
-
-
-func _draw_dashed_polyline(canvas: Control, points: PackedVector2Array, color: Color, width: float, dash: float) -> void:
-	var segments := PackedVector2Array()
-	for i in points.size() - 1:
-		var a := points[i]
-		var b := points[i + 1]
-		var length := a.distance_to(b)
-		if length <= 0.01:
-			continue
-		var direction := (b - a) / length
-		var cursor := 0.0
-		while cursor < length:
-			var segment_end := minf(cursor + dash, length)
-			segments.append(a + direction * cursor)
-			segments.append(a + direction * segment_end)
-			cursor += dash * 2.0
-	if segments.size() > 1:
-		canvas.draw_multiline(segments, color, width)
 
 
 func _polyline_sample(points: PackedVector2Array, fraction: float) -> Dictionary:

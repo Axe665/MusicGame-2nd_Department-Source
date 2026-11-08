@@ -81,6 +81,7 @@ func _initialize() -> void:
 		"test_simai_seconds_slot",
 		"test_maimai_overlap_and_off_track",
 		"test_maimai_interaction_compress",
+		"test_maimai_small_angle_chord",
 		"test_maimai_hold_clamp",
 		"test_import_window_set",
 	]
@@ -1988,10 +1989,10 @@ func test_simai_touch_layers() -> bool:
 	eq(bells.size(), 5, "five touch zones import")
 	if bells.size() == 5:
 		near(bells[0].bell_radius, 1.0, 0.001, "A is on the outer ring")
-		near(bells[1].bell_radius, 0.70, 0.001, "B is on the inner ring")
+		near(bells[1].bell_radius, 1.0, 0.001, "B joins the outer ring for mouse sweeps")
 		near(bells[2].bell_radius, 0.0, 0.001, "C is the center")
 		near(bells[3].bell_radius, 1.0, 0.001, "D is on the outer gap")
-		near(bells[4].bell_radius, 0.80, 0.001, "E is on the inner gap")
+		near(bells[4].bell_radius, 1.0, 0.001, "E joins the outer ring for mouse sweeps")
 		near(bells[0].angle, 90.0, 0.01, "A1 sits on button 1")
 		near(bells[3].angle, 67.5, 0.01, "D1 sits between button 1 and 2")
 		var restored := Note.from_dict(bells[2].to_dict())
@@ -2059,6 +2060,22 @@ func test_maimai_interaction_compress() -> bool:
 	for i in range(1, fast.notes.size()):
 		largest = maxf(largest, absf(JudgeMath.angle_delta(fast.notes[i - 1].angle, fast.notes[i].angle)))
 	ok(largest <= 45.01, "fast 180-degree interaction is compressed to 45 degrees (got %.1f)" % largest)
+	return true
+
+
+func test_maimai_small_angle_chord() -> bool:
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	chart.notes = [Note.new("tap", 0.0, 90.0, 62.0), Note.new("tap", 0.0, 45.0, 62.0)]
+	ConvertOptimizer.optimize_maimai(chart, {"tap": 2, "hold": 0, "path": 0, "bell": 0, "dropped": 0})
+	eq(chart.notes.size(), 2, "45-degree adjacent taps both survive")
+	if chart.notes.size() == 2:
+		near(absf(JudgeMath.angle_delta(chart.notes[0].angle, chart.notes[1].angle)), ConvertOptimizer.CHORD_GAP, 0.01, "the pair is tightened inside the tap arc")
+	var wide := Chart.new()
+	wide.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	wide.notes = [Note.new("tap", 0.0, 90.0, 62.0), Note.new("tap", 0.0, 180.0, 62.0)]
+	ConvertOptimizer.optimize_maimai(wide, {"tap": 2, "hold": 0, "path": 0, "bell": 0, "dropped": 0})
+	eq(wide.notes.size(), 1, "90-degree chord still keeps one note")
 	return true
 
 

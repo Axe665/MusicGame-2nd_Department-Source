@@ -326,6 +326,7 @@ static func _parse_touch(body: String, beat: float) -> Note:
 		"C":
 			angle = 0.0
 			radius = 0.0
+		# 键鼠只有一只光标：A/B/D/E 全部落外圈，连续 Touch 才能沿同一个圆扫过去。
 		"A":
 			if digit < 1 or digit > 8:
 				return null
@@ -335,7 +336,7 @@ static func _parse_touch(body: String, beat: float) -> Note:
 			if digit < 1 or digit > 8:
 				return null
 			angle = SimaiSlide.button_angle(digit)
-			radius = 0.70
+			radius = 1.0
 		"D":
 			if digit < 1 or digit > 8:
 				return null
@@ -345,7 +346,7 @@ static func _parse_touch(body: String, beat: float) -> Note:
 			if digit < 1 or digit > 8:
 				return null
 			angle = fposmod(SimaiSlide.button_angle(digit) - 22.5, 360.0)
-			radius = 0.80
+			radius = 1.0
 		_:
 			return null
 	var bell := Note.new("bell", beat, angle, 45.0)
