@@ -2980,22 +2980,27 @@ func _draw_seeks(canvas: Control, chart: Chart, t: float) -> void:
 		var grow := clampf((t - (note.beat - pre)) / maxf(0.001, pre), 0.0, 1.0)
 		var fade := clampf((note.beat + 0.5 - t) / 0.5, 0.0, 1.0)
 		var color := UITheme.SEEK_IN if note.seek_orien == 0 else UITheme.SEEK_OUT
-		var radius := ring_radius * grow
-		canvas.draw_arc(center, radius, 0.0, TAU, 48, Color(color.r, color.g, color.b, 0.16 * fade), 10.0, true)
-		canvas.draw_arc(center, radius, 0.0, TAU, 48, Color(color.r, color.g, color.b, 0.95 * fade), 3.0, true)
-		var inward := note.seek_orien == 0
-		var count := 8
-		for i in count:
-			var a := TAU * float(i) / float(count) - PI * 0.5
-			var dir := Vector2(cos(a), sin(a))
-			var tip := center + dir * radius + dir * (-8.0 if inward else 8.0)
-			var base := center + dir * radius
-			var side := Vector2(-dir.y, dir.x) * 4.5
-			canvas.draw_colored_polygon(PackedVector2Array([
-				tip, base + side, base - side,
-			]), Color(color.r, color.g, color.b, 0.9 * fade))
-		var label := "SEEK IN" if inward else "SEEK OUT"
-		_draw_label(canvas, label, center + Vector2(radius + 12.0, -radius - 8.0), color)
+		# WACCA 式：先在圆心浮出一小圈粗环，再一路放大到判定环。
+		var radius := lerpf(8.0, ring_radius, grow)
+		var band := clampf(radius * 0.08, 4.0, 14.0)
+		canvas.draw_arc(center, radius, 0.0, TAU, 64, Color(color.r, color.g, color.b, 0.14 * fade), band + 10.0, true)
+		canvas.draw_arc(center, radius, 0.0, TAU, 64, Color(color.r, color.g, color.b, 0.94 * fade), band, true)
+		canvas.draw_arc(center, radius, 0.0, TAU, 64, Color(1, 1, 1, 0.32 * fade), band * 0.30, true)
+		# 方向箭头只在快贴到外环时淡入，圆心阶段不抢画面。
+		var arrow_alpha := clampf((grow - 0.78) / 0.22, 0.0, 1.0) * fade
+		if arrow_alpha > 0.01:
+			var inward := note.seek_orien == 0
+			var count := 8
+			var reach := band * 0.5 + 6.0
+			for i in count:
+				var a := TAU * float(i) / float(count) - PI * 0.5
+				var dir := Vector2(cos(a), sin(a))
+				var base := center + dir * radius
+				var tip := base + dir * (-reach if inward else reach)
+				var side := Vector2(-dir.y, dir.x) * 4.5
+				canvas.draw_colored_polygon(PackedVector2Array([
+					tip, base + side, base - side,
+				]), Color(color.r, color.g, color.b, 0.9 * arrow_alpha))
 
 
 func cut_trace(note: Note, from_fraction: float, to_fraction: float) -> void:
