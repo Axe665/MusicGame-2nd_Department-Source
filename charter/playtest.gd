@@ -32,6 +32,8 @@ const POSITION_TOLERANCE_PX := 90.0
 ## Hold 头比 Tap 窄，额外再放宽一点，避免擦边。
 const HOLD_HEAD_EXTRA_PX := 40.0
 const HOLD_ARC_PAD := 10.0
+## Hold 中途短暂松手不算断：这个时间内补按回来就继续按住。
+const HOLD_RELEASE_GRACE_MS := 120.0
 ## 动态 offset：至少这么多次命中才开始自动校准。
 const DYNAMIC_SAMPLE_MIN := 8
 ## 每次命中把偏移往消除偏差的方向挪这么多。
@@ -556,6 +558,11 @@ static func auto_due(target_ms: float, ms: float, lead_ms: float = 8.0) -> bool:
 	return ms >= target_ms - lead_ms
 
 
+## 松手后是否还在补按窗口里（在窗口内 Hold 继续，不算断）。
+static func hold_release_grace_alive(released_ms: float, now_ms: float) -> bool:
+	return now_ms - released_ms < HOLD_RELEASE_GRACE_MS
+
+
 func _auto_step(ms: float, beat: float, _delta: float) -> void:
 	if chart == null or _preview == null:
 		return
@@ -838,28 +845,35 @@ func _judge_hold(note: Note, ms: float, beat: float) -> void:
 	# Hold 绑定起手键：松开起手键才算断，换成另一个键点 Tap 不会误续。
 	var hold_key := int(state.get("key", 0))
 	if hold_key != 0 and not _keys_held.has(hold_key):
+		# 短暂松手不算断：120ms 内补按回来就继续按住；超时才按已按住的比例结算。
+		if not state.has("release_ms"):
+			state["release_ms"] = ms
+		var release_ms := float(state["release_ms"])
+		if hold_release_grace_alive(release_ms, ms):
+			return
 		# 最后 1/2 拍内松手算 PERFECT；更早松手按已按住的比例降级，不断连。
 		var release_window := 60000.0 / maxf(1.0, chart.timing.bpm_at(note.beat)) * 0.5
 		var held_tier := "PERFECT"
-		if ms < end_ms - release_window:
+		if release_ms < end_ms - release_window:
 			var head_ms := float(state["target_ms"])
-			var held := clampf((ms - head_ms) / maxf(1.0, end_ms - head_ms), 0.0, 1.0)
+			var held := clampf((release_ms - head_ms) / maxf(1.0, end_ms - head_ms), 0.0, 1.0)
 			held_tier = "GREAT" if held >= 0.5 else "GOOD"
 		state["done"] = true
-		_preview.set_note_state(note.id, "hit")
+		_preview.set_note_state(note.id, "hit", beat)
 		_register_hit(held_tier)
 		_pulse_at(note.angle, beat, _tier_color(held_tier), held_tier, note.arc_width(), "tap")
 		_sfx.play("hold_end")
 		# 提前松手不算时机样本，避免污染平均偏差和动态 offset。
 		if held_tier == "PERFECT":
-			_record_error(ms - end_ms, "HOLD #%d COMPLETE PERFECT" % note.id)
+			_record_error(release_ms - end_ms, "HOLD #%d COMPLETE PERFECT" % note.id)
 		else:
 			_add_log("HOLD #%d EARLY RELEASE %s" % [note.id, held_tier])
 		return
+	state.erase("release_ms")
 	if ms >= end_ms:
 		var tier := String(state.get("head_tier", "PERFECT"))
 		state["done"] = true
-		_preview.set_note_state(note.id, "hit")
+		_preview.set_note_state(note.id, "hit", beat)
 		_register_hit(tier)
 		_pulse_at(note.angle, beat, _tier_color(tier), tier, note.arc_width(), "tap")
 		_sfx.play("hold_end")

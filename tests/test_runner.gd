@@ -509,6 +509,13 @@ func test_style_presets() -> bool:
 	eq(Playtest.GOOD_MS, 170.0, "good window tightened")
 	eq(Playtest.POSITION_TOLERANCE_PX, 90.0, "position tolerance is 90px")
 	eq(Playtest.HOLD_HEAD_EXTRA_PX, 40.0, "hold head gets extra tolerance")
+	ok(Playtest.HOLD_RELEASE_GRACE_MS >= 80.0 and Playtest.HOLD_RELEASE_GRACE_MS <= 200.0,
+		"the hold release grace stays short")
+	ok(Playtest.hold_release_grace_alive(1000.0, 1000.0 + Playtest.HOLD_RELEASE_GRACE_MS - 1.0),
+		"a slip inside the grace keeps the hold alive")
+	ok(not Playtest.hold_release_grace_alive(1000.0, 1000.0 + Playtest.HOLD_RELEASE_GRACE_MS),
+		"a release past the grace ends the hold")
+	near(Preview3D.end_fade_beats(120.0), 0.2, 0.0001, "0.1s of exit fade is 0.2 beats at 120 BPM")
 	eq(Playtest.BAD_MS, 250.0, "bad tier extends to 250ms")
 	return true
 
@@ -1894,6 +1901,8 @@ func test_note_retire_state() -> bool:
 	preview.set_note_state(3, "miss", 12.0)
 	ok(Preview3D.note_is_retired(preview.note_state(3)), "a missed note is retired")
 	near(float(preview.note_state_beats.get(3, 0.0)), 12.0, 0.001, "the miss beat drives the hold fade")
+	preview.set_note_state(4, "hit", 20.0)
+	near(float(preview.note_state_beats.get(4, 0.0)), 20.0, 0.001, "the hit beat drives the hold exit fade")
 	preview.clear_note_states()
 	eq(preview.note_state(1), "", "clearing drops every state")
 	preview.queue_free()

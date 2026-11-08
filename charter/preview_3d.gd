@@ -22,6 +22,9 @@ const PATH_HEAD_SCALE := 0.62
 const PATH_RELAY_DIM := 0.45
 ## Bell 直径缩放（相对旧版）。
 const BELL_SIZE_SCALE := 0.75
+## 命中退场：尾判后尾巴停在判定环上再淡出的真实时长（秒）。
+## 用真实时间而不是拍数，慢歌不会拖成半秒、快歌也不会一闪就没。
+const END_FADE_SEC := 0.1
 
 var chart_override: Chart = null
 var follow_app: bool = true
@@ -2128,6 +2131,9 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 	var total := note.duration()
 	if total <= 0.001:
 		return
+	# 尾判后 0.1s 内整条轨迹（轨迹 / 进度球 / 尾环）一起淡出，不再等到 end+0.5 拍硬消失。
+	var end_span := end_fade_beats(chart.timing.bpm_at(note.beat))
+	var end_fade := clampf(1.0 - (t - note.end_beat) / end_span, 0.0, 1.0)
 	# 每条 Path 都按"顶层"完整画（箭头链 / 星头 / 尾环 / 进度球）。
 	top = true
 	# 先铺轨迹，再落星星：轨迹从生成开始淡入，星星落下的那一刻正好铺满。
@@ -2157,7 +2163,7 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 			_path_runs_cache.clear()
 		_path_runs_cache[cache_key] = runs
 	# 颜色由 _draw_paths 统一分配（自定义优先，重叠时同色系压明度）。
-	var trail_dim := dim * trail_fade
+	var trail_dim := dim * trail_fade * end_fade
 	var dash := Color(accent.r, accent.g, accent.b, 0.92 * trail_dim)
 	var future := Color(accent.r, accent.g, accent.b, 0.98 * trail_dim)
 	var passed := Color(accent.r, accent.g, accent.b, 0.14 * trail_dim)
@@ -2201,7 +2207,7 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 			var p := _path_screen_point(chart, note, rel, t, true, 1.0)
 			if _valid_point(p):
 				_draw_diamond(canvas, p, 4.5, UITheme.GOLD)
-	_draw_target_arc(canvas, note.angle, note.width, t, UITheme.CORAL, 14.0 * PATH_SIZE_SCALE, trail_fade)
+	_draw_target_arc(canvas, note.angle, note.width, t, UITheme.CORAL, 14.0 * PATH_SIZE_SCALE, trail_fade * end_fade)
 	if selected:
 		for point in note.trace_pts:
 			var node := _path_local_screen(chart, Vector2(float(point.get("x", 0.0)), float(point.get("y", 0.0))), t, 1.0)
@@ -2216,10 +2222,10 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 	# 多条星同时在场时，环先缩满的那条就是要先划完的。
 	if _valid_point(tail) and t >= note.beat - 0.15:
 		var remain := note.end_beat - t
-		if remain <= 2.0 and remain > -0.06:
+		if remain <= 2.0 and remain > -end_span:
 			var k := clampf(1.0 - remain / 2.0, 0.0, 1.0)
 			var ring_radius := lerpf(52.0, 14.0, k) * ns
-			var ring_alpha := lerpf(0.10, 0.95, k * k) * maxf(dim, 0.75) * trail_fade
+			var ring_alpha := lerpf(0.10, 0.95, k * k) * maxf(dim, 0.75) * trail_fade * end_fade
 			canvas.draw_arc(tail, ring_radius, 0.0, TAU, 40, Color(accent.r, accent.g, accent.b, ring_alpha), 2.6, false)
 			if active:
 				canvas.draw_arc(tail, ring_radius + 3.5, 0.0, TAU, 40, Color(1, 1, 1, 0.30 * ring_alpha), 1.2, false)
@@ -2251,9 +2257,10 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 	if head_alpha > 0.01 and t >= note.beat - fall and t < note.beat + wait + 0.02 and _valid_point(star_head):
 		var star_in := clampf((t - (note.beat - fall)) / maxf(0.001, fall * 0.55), 0.0, 1.0)
 		_draw_path_star(canvas, star_head, ns * PATH_SIZE_SCALE * PATH_HEAD_SCALE, accent, head_alpha * dim * star_in)
-	_draw_path_tail(canvas, tail, top, ns * PATH_SIZE_SCALE, accent, dim * trail_fade)
+	_draw_path_tail(canvas, tail, top, ns * PATH_SIZE_SCALE, accent, dim * trail_fade * end_fade)
 	# 大号发光球 + 短拖尾：当前进度点始终比星头更亮，方向一目了然。
-	if t >= note.beat and t <= note.end_beat:
+	if t >= note.beat and t <= note.end_beat + end_span:
+		var ball_dim := dim * end_fade
 		var rel := progress * total
 		for trail_index in range(4, 0, -1):
 			var trail_rel := rel - float(trail_index) * 0.035 * total
@@ -2261,15 +2268,15 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 				continue
 			var trail_point := _path_screen_point(chart, note, trail_rel, t, false)
 			if _valid_point(trail_point):
-				var fade := 0.34 * (1.0 - float(trail_index) / 5.0) * dim
+				var fade := 0.34 * (1.0 - float(trail_index) / 5.0) * ball_dim
 				canvas.draw_circle(trail_point, (18.0 - float(trail_index) * 1.6) * ns * PATH_SIZE_SCALE, Color(accent.r, accent.g, accent.b, fade))
 		var p := _path_screen_point(chart, note, rel, t, false)
 		if _valid_point(p):
-			canvas.draw_circle(p, 32.0 * ns * PATH_SIZE_SCALE, Color(accent.r, accent.g, accent.b, 0.18 * dim))
-			canvas.draw_circle(p, 19.0 * ns * PATH_SIZE_SCALE, Color(0, 0, 0, 0.58 * dim))
-			canvas.draw_circle(p, 16.0 * ns * PATH_SIZE_SCALE, Color(accent.r, accent.g, accent.b, dim))
-			canvas.draw_circle(p, 10.0 * ns * PATH_SIZE_SCALE, Color(1, 1, 1, 0.96 * dim))
-			canvas.draw_circle(p, 4.5 * ns * PATH_SIZE_SCALE, Color(UITheme.INK.r, UITheme.INK.g, UITheme.INK.b, dim))
+			canvas.draw_circle(p, 32.0 * ns * PATH_SIZE_SCALE, Color(accent.r, accent.g, accent.b, 0.18 * ball_dim))
+			canvas.draw_circle(p, 19.0 * ns * PATH_SIZE_SCALE, Color(0, 0, 0, 0.58 * ball_dim))
+			canvas.draw_circle(p, 16.0 * ns * PATH_SIZE_SCALE, Color(accent.r, accent.g, accent.b, ball_dim))
+			canvas.draw_circle(p, 10.0 * ns * PATH_SIZE_SCALE, Color(1, 1, 1, 0.96 * ball_dim))
+			canvas.draw_circle(p, 4.5 * ns * PATH_SIZE_SCALE, Color(UITheme.INK.r, UITheme.INK.g, UITheme.INK.b, ball_dim))
 
 
 func path_point(note: Note, relative_beat: float, beat: float) -> Vector2:
@@ -2684,7 +2691,9 @@ func _draw_hold_sector(canvas: Control, chart: Chart, note: Note, t: float, pre:
 	var duration := maxf(0.001, note.duration())
 	var outer_scale := clampf((t - note.beat + read) / read, 0.0, 1.0)
 	var inner_scale := clampf((t - note.beat - duration + read) / read, 0.0, 1.0)
-	if outer_scale <= 0.005 or inner_scale >= 0.995:
+	# 尾端压到环上（inner_scale 到 1）后不再返回：退化成零宽的最后一帧要留着，
+	# 让尾端光带停在环上淡出，而不是当帧消失。
+	if outer_scale <= 0.005:
 		return
 	var center := project_design(Vector2.ZERO)
 	var outer := PackedVector2Array()
@@ -2743,22 +2752,30 @@ func _draw_holds(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 	var ns := _note_scale()
 	var visible: Array[Note] = []
 	for note in _notes_in_range(chart, t - pre - 128.0, t + pre + 0.3):
-		if note.type == "hold" and t >= note.beat - pre and t <= note.end_beat + 0.3:
+		if note.type != "hold":
+			continue
+		var fade_beats := end_fade_beats(chart.timing.bpm_at(note.beat))
+		if t >= note.beat - pre and t <= note.end_beat + maxf(0.3, fade_beats):
 			visible.append(note)
 	visible.sort_custom(func(a: Note, b: Note) -> bool: return a.beat > b.beat)
 	for note in visible:
 		var state := note_state(note.id)
-		# 命中/失误的音符当帧退场；hold 头部 MISS 时整条淡出。
+		# 尾判命中后尾巴停在判定环上再淡出 0.1s，不再当帧消失。
+		# 早松手 / 头判 MISS 从判定那一拍起淡，不强行贴到环上。
+		var fade_beats := end_fade_beats(chart.timing.bpm_at(note.beat))
+		var fade := 1.0
 		if state == "hit":
-			continue
-		# 头部命中后只收起头部，长条继续表示“正在按住”。
-		var hide_head := state == "holding"
-		# 结束后 0.24 拍内渐隐，而不是瞬间消失。
-		var fade := 1.0 if t <= note.end_beat else clampf(1.0 - (t - note.end_beat) / 0.24, 0.0, 1.0)
-		if state == "miss":
-			fade *= clampf(1.0 - (t - float(note_state_beats.get(note.id, -INF))) / 0.24, 0.0, 1.0)
+			fade = clampf(1.0 - (t - float(note_state_beats.get(note.id, note.end_beat))) / fade_beats, 0.0, 1.0)
+		elif state == "miss":
+			if not note_state_beats.has(note.id):
+				continue
+			fade = clampf(1.0 - (t - float(note_state_beats[note.id])) / 0.24, 0.0, 1.0)
+		elif t > note.end_beat:
+			fade = clampf(1.0 - (t - note.end_beat) / fade_beats, 0.0, 1.0)
 		if fade <= 0.01:
 			continue
+		# 头部命中后只收起头部，长条继续表示“正在按住”；尾巴压到环上时头尾重合，也收起来。
+		var hide_head := state == "holding" or t >= note.end_beat
 		var grow_raw := clampf((t - (note.beat - pre)) / maxf(0.001, pre), 0.0, 1.0)
 		# 与 Tap 同一套接近表现：环心处只有 1/6 长，飞近时长大到 1。
 		var grow := lerpf(Note.SPAWN_LENGTH_RATIO, 1.0, grow_raw)
@@ -3316,6 +3333,11 @@ func add_hit_pulse(point: Vector2, color: Color, label: String = "HIT", kind: St
 		_pulses.pop_front()
 	if _overlay != null:
 		_overlay.queue_redraw()
+
+
+## 命中退场的淡出时长换算成拍：绘制用的是拍时间，手感按秒算。
+static func end_fade_beats(bpm: float) -> float:
+	return END_FADE_SEC * maxf(1.0, bpm) / 60.0
 
 
 ## 档位越差，爆点越小：BAD 看起来不该和 PERFECT 一样大。
