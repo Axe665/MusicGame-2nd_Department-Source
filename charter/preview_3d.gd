@@ -828,23 +828,28 @@ func _build_ribbon(points: Array[Dictionary], width: float, material: Material) 
 
 func _update_background(chart: Chart) -> void:
 	var path := String(chart.metadata.get("background", ""))
-	if path == _last_background_path:
-		return
-	_last_background_path = path
+	# 新标签页没有背景时必须清掉上一张图；不能因为缓存键也是空串就直接返回。
 	if path.is_empty():
-		_background_image.visible = false
+		_last_background_path = ""
+		if _background_image.texture != null or _background_image.visible:
+			_background_image.texture = null
+			_background_image.visible = false
 		return
 	var resolved := path
 	if not path.begins_with("res://") and not path.begins_with("user://") and not path.is_absolute_path():
 		if _app != null and not _app.chart_path.is_empty():
 			resolved = ChartIO.resolve_path(_app.chart_path, path)
+	# 用解析后的绝对路径做缓存键：不同标签页可以有相同的相对文件名。
+	if resolved == _last_background_path:
+		return
+	_last_background_path = resolved
 	var texture: Texture2D = null
 	if resolved.begins_with("res://"):
 		if ResourceLoader.exists(resolved):
 			texture = load(resolved) as Texture2D
 	else:
 		var image := Image.load_from_file(ProjectSettings.globalize_path(resolved) if resolved.begins_with("user://") else resolved)
-		if image != null and not image.is_empty():
+		if image != null and image.get_width() > 0 and image.get_height() > 0:
 			texture = ImageTexture.create_from_image(image)
 	_background_image.texture = texture
 	_background_image.visible = texture != null

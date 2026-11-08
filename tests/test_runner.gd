@@ -86,6 +86,7 @@ func _initialize() -> void:
 		"test_maimai_interaction_compress",
 		"test_interaction_run_lock",
 		"test_note_pop_scale",
+		"test_background_cache",
 		"test_maimai_hold_clamp",
 		"test_import_window_set",
 	]
@@ -2151,6 +2152,30 @@ func test_note_pop_scale() -> bool:
 	near(Preview3D.note_pop_scale(0.0), 1.0, 0.001, "note pop starts at its own size")
 	near(Preview3D.note_pop_scale(Preview3D.NOTE_POP_SEC), Preview3D.NOTE_POP_SCALE, 0.001, "note pop reaches its full scale")
 	near(Preview3D.note_pop_scale(1.0), Preview3D.NOTE_POP_SCALE, 0.001, "note pop clamps after its lifetime")
+	return true
+
+
+func test_background_cache() -> bool:
+	var preview := Preview3D.new()
+	preview._background_image = TextureRect.new()
+	preview.add_child(preview._background_image)
+	preview._background_image.texture = GradientTexture2D.new()
+	preview._background_image.visible = true
+	preview._last_background_path = "user://old.png"
+	preview._update_background(Chart.new())
+	ok(preview._background_image.texture == null, "a chart without a background clears the old texture")
+	ok(not preview._background_image.visible, "a chart without a background hides the background layer")
+	var chart := Chart.new()
+	var valid_path := "user://test_bg_valid.png"
+	var image := Image.create(8, 8, false, Image.FORMAT_RGBA8)
+	image.fill(Color.RED)
+	image.save_png(ProjectSettings.globalize_path(valid_path))
+	chart.metadata["background"] = valid_path
+	preview._update_background(chart)
+	ok(preview._background_image.texture != null, "a valid background image loads")
+	ok(preview._background_image.visible, "a valid background image is visible")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(valid_path))
+	preview.free()
 	return true
 
 
