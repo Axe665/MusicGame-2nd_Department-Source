@@ -68,6 +68,7 @@ var _ui_accum: float = 0.0
 
 var _states: Dictionary = {}
 var _key_presses: Array[Dictionary] = []
+var _seek_presses: Array[Dictionary] = []
 ## 每个键上一次按下的时间，用来吃掉手抖双击。
 var _last_press_ms: Dictionary = {}
 var _keys_held: Dictionary = {}
@@ -357,7 +358,7 @@ func _build_ui() -> void:
 	result_buttons.add_child(_results_button)
 
 	var bottom := Label.new()
-	bottom.text = "任意有效键：Tap / Hold / Anchor；Path / Bell / Trace 用鼠标定位；Red 停留 200ms 断连；[ / ] 判定偏移；F6 换音符外观；F7 换打击特效。"
+	bottom.text = "任意有效键：Tap / Hold / Anchor；Path / Bell 用鼠标定位；Seek 用滚轮上/下接住；Limit 停留 200ms 断连；[ / ] 判定偏移。"
 	bottom.add_theme_font_size_override("font_size", 11)
 	bottom.add_theme_color_override("font_color", Color(UITheme.MUTED.r, UITheme.MUTED.g, UITheme.MUTED.b, 0.8))
 	bottom.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -373,6 +374,7 @@ func _init_states() -> void:
 	_states.clear()
 	_red_states.clear()
 	_key_presses.clear()
+	_seek_presses.clear()
 	_last_press_ms.clear()
 	_keys_held.clear()
 	_hit_count = 0
@@ -508,6 +510,8 @@ func _process(delta: float) -> void:
 	var keep_ms := PRESS_KEEP_MS
 	while not _key_presses.is_empty() and float(_key_presses[0].get("time", -INF)) < judge_ms - keep_ms:
 		_key_presses.pop_front()
+	while not _seek_presses.is_empty() and float(_seek_presses[0].get("time", -INF)) < judge_ms - keep_ms:
+		_seek_presses.pop_front()
 
 
 func _chart_ms() -> float:
@@ -590,6 +594,12 @@ func _auto_step(ms: float, beat: float, _delta: float) -> void:
 
 
 func _auto_press_note(note: Note, state: Dictionary, beat: float) -> void:
+	if note.type == "seek":
+		_seek_presses.append({
+			"time": float(state["target_ms"]),
+			"orien": note.seek_orien,
+		})
+		return
 	var key := AUTO_KEY_A if _auto_key_phase % 2 == 0 else AUTO_KEY_B
 	_auto_key_phase += 1
 	if note.type == "bell":
@@ -788,6 +798,8 @@ func _judge_all(ms: float, beat: float, delta: float) -> void:
 				_judge_hold(note, ms, beat)
 			"path":
 				_judge_path(note, ms, beat, mouse)
+			"seek":
+				_judge_seek(note, ms, beat)
 			"trace":
 				_judge_trace(note, ms, beat, delta, mouse)
 			"anchor":
@@ -795,6 +807,45 @@ func _judge_all(ms: float, beat: float, delta: float) -> void:
 			"bell":
 				_judge_bell(note, ms, beat, mouse)
 	_judge_red(ms, beat, delta, mouse)
+
+
+func _judge_seek(note: Note, ms: float, beat: float) -> void:
+	var state: Dictionary = _states[note.id]
+	var target := float(state["target_ms"])
+	if ms < target - HIT_WINDOW_MS:
+		return
+	var picked := -1
+	var best := INF
+	for i in _seek_presses.size():
+		var press: Dictionary = _seek_presses[i]
+		var stamp := float(press.get("time", -INF))
+		if stamp < target - HIT_WINDOW_MS or stamp > target + HIT_WINDOW_MS:
+			continue
+		if int(press.get("orien", -1)) != note.seek_orien:
+			continue
+		var distance := absf(stamp - target)
+		if distance < best:
+			best = distance
+			picked = i
+	if picked >= 0:
+		var press: Dictionary = _seek_presses[picked]
+		_seek_presses.remove_at(picked)
+		state["done"] = true
+		_preview.set_note_state(note.id, "hit")
+		_register_hit("PERFECT")
+		var color := UITheme.SEEK_IN if note.seek_orien == 0 else UITheme.SEEK_OUT
+		_pulse_at(0.0, beat, color, "PERFECT", 360.0, "seek", "SEEK", _preview.project_design(Vector2.ZERO))
+		_sfx.play("bell", randf_range(0.98, 1.02))
+		_record_error(float(press["time"]) - target, "Seek #%d PERFECT" % note.id)
+		return
+	if ms > target + HIT_WINDOW_MS:
+		state["done"] = true
+		_preview.set_note_state(note.id, "miss")
+		_miss_count += 1
+		_add_judgement("MISS")
+		_combo = 0
+		_pulse_at(0.0, beat, UITheme.RED, "MISS", 360.0, "seek", "", _preview.project_design(Vector2.ZERO))
+		_add_log("MISS Seek #%d @ %.0fms" % [note.id, target])
 
 
 func _judge_tap(note: Note, ms: float, beat: float) -> void:
@@ -1204,8 +1255,8 @@ func _judge_red(ms: float, beat: float, delta: float, mouse: Vector2) -> void:
 				for point in polygon:
 					center += point
 				if not polygon.is_empty():
-					_preview.add_hit_pulse(center / float(polygon.size()), UITheme.RED, "RED", "tap")
-				_add_log("RED #%d BREAK @ %.0fms" % [region.id, ms])
+					_preview.add_hit_pulse(center / float(polygon.size()), UITheme.RED, "LIMIT", "tap")
+				_add_log("LIMIT #%d BREAK @ %.0fms" % [region.id, ms])
 		else:
 			state["time"] = 0.0
 			state["broken"] = false
@@ -1421,7 +1472,7 @@ func _update_top_bar(ms: float, beat: float) -> void:
 	var fx_label := String(Preview3D.hit_fx_presets().get(_preview.hit_fx_style, _preview.hit_fx_style))
 	if _style_label != null:
 		_style_label.text = "%s · %s" % [skin_label, fx_label]
-	_top_stats.text = "%sHIT %d  MISS %d  ACC %s  COMBO %d  |  BELL %d/%d  RED %d  |  BIA %+.1fms  OFF %+.0fms" % [
+	_top_stats.text = "%sHIT %d  MISS %d  ACC %s  COMBO %d  |  BELL %d/%d  LIMIT %d  |  BIA %+.1fms  OFF %+.0fms" % [
 		"[AUTO] " if auto_play else "",
 		_hit_count,
 		_miss_count,
@@ -1599,6 +1650,14 @@ func _format_ms(ms: float) -> String:
 
 
 func _input(event: InputEvent) -> void:
+	if event is InputEventMouseButton and event.pressed and (event.button_index == MOUSE_BUTTON_WHEEL_UP or event.button_index == MOUSE_BUTTON_WHEEL_DOWN):
+		var stamp := _chart_ms() + float(_app.playtest_offset_ms if _app != null else 0.0)
+		_seek_presses.append({
+			"time": stamp,
+			"orien": 0 if event.button_index == MOUSE_BUTTON_WHEEL_UP else 1,
+		})
+		get_viewport().set_input_as_handled()
+		return
 	if not (event is InputEventKey):
 		return
 	if event.pressed and event.echo:
@@ -1683,7 +1742,7 @@ func _finish() -> void:
 		int(_tier_counts.get("MISS", 0)),
 	])
 	lines.append("Bell 收集：%d / %d" % [_bell_hits, _bell_total])
-	lines.append("Red 断连：%d 次" % _red_breaks)
+	lines.append("Limit 断连：%d 次" % _red_breaks)
 	var average_error := _mean_error()
 	# AUTO 的“误差”恒为 0，不能让它把动态 offset 带偏。
 	if not auto_play:

@@ -1,7 +1,7 @@
 class_name Note
 extends RefCounted
 
-const TYPES := ["tap", "hold", "path", "trace", "anchor", "bell"]
+const TYPES := ["tap", "hold", "path", "seek", "anchor", "bell"]
 
 ## 本作把"长度"统一到 l 上：l = 旧版 tap 与判定环重合时的条带长度，
 ## 也就是 note.width 这个角度（默认 60°）画出来的弧长。
@@ -66,6 +66,10 @@ var has_custom_color: bool = false
 var custom_color: Color = DEFAULT_PATH_COLOR
 var lock: bool = false
 var center_u: float = 0.25
+## Seek: 0 = inward (wheel up), 1 = outward (wheel down).
+var seek_orien: int = 0
+## Transient editor state: freshly placed Seek waiting for W/S orientation.
+var seek_pending: bool = false
 ## Bell 的径向位置（环半径 = 1.0）。Touch 全部落外圈，C = 0（圆心）。
 var bell_radius: float = 1.0
 
@@ -401,6 +405,8 @@ func to_dict() -> Dictionary:
 			if path_part > 0 and path_head_local.is_finite():
 				data["head_x"] = snappedf(path_head_local.x, 0.0001)
 				data["head_y"] = snappedf(path_head_local.y, 0.0001)
+		"seek":
+			data["orien"] = 1 if seek_orien == 1 else 0
 		"trace":
 			data["end_beat"] = snappedf(end_beat, 0.001)
 			if wait_beat > 0.0:
@@ -470,6 +476,11 @@ static func from_dict(raw: Dictionary) -> Note:
 		note.trace_pts = _points_from_array(raw.get("trace", []))
 		if note.type == "trace" and not raw.has("space") and note.trace_style != "slider":
 			note._migrate_legacy_trace_points()
+	if note.type == "seek":
+		note.seek_orien = 1 if int(raw.get("orien", 0)) == 1 else 0
+		note.angle = 0.0
+		note.width = 360.0
+		note.end_beat = note.beat
 	if note.type == "path":
 		if raw.has("centrifuge"):
 			note.path_centrifuge = clampf(float(raw.get("centrifuge", 0.72)), 0.0, 1.0)
@@ -525,6 +536,135 @@ static func _points_to_dict(points: Array[Dictionary]) -> Array[Dictionary]:
 	var result: Array[Dictionary] = []
 	for point in points:
 		result.append(point.duplicate())
+	return result
+
+
+static func _code_num(value: float) -> String:
+	return str(snappedf(value, 0.001))
+
+
+## Compact v1 chart code for one note. Path chains are serialized as one line by
+## ChartIO; this produces a single-part line when called directly.
+func to_code() -> String:
+	var b := _code_num(beat)
+	var a := _code_num(angle)
+	match type:
+		"tap":
+			return "[%d]tap(%s,%s)" % [id, b, a]
+		"hold":
+			return "[%d]hold(%s,%s,%s)" % [id, b, _code_num(end_beat), a]
+		"seek":
+			return "[%d]seek(%s,%d)" % [id, b, 1 if seek_orien == 1 else 0]
+		"anchor":
+			return "[%d]anchor(%s,%s,%s)" % [id, b, a, pair_id]
+		"bell":
+			return "[%d]bell(%s,%s)" % [id, b, a]
+		"path":
+			return "[%d]path{(part%d,%s,%s,%s,%s,%s,%s)}" % [
+				id, path_part, b, a, _code_num(end_beat), _code_num(tail_angle),
+				_code_num(path_centrifuge), _code_num(path_axis)
+			]
+	return ""
+
+
+static func from_code(code: String) -> Note:
+	var text := code.strip_edges()
+	if not text.begins_with("["):
+		return null
+	var close := text.find("]")
+	if close <= 1:
+		return null
+	var id := int(text.substr(1, close - 1))
+	var rest := text.substr(close + 1)
+	var open := rest.find("(")
+	if open < 0:
+		return null
+	var kind := rest.substr(0, open).strip_edges()
+	var body := rest.substr(open + 1)
+	if body.ends_with(")"):
+		body = body.substr(0, body.length() - 1)
+	var parts := body.split(",", true)
+	var note := Note.new(kind, 0.0, 0.0, 60.0)
+	note.id = id
+	match kind:
+		"tap":
+			note.beat = float(parts[0]) if parts.size() > 0 else 0.0
+			note.angle = float(parts[1]) if parts.size() > 1 else 0.0
+		"hold":
+			note.beat = float(parts[0]) if parts.size() > 0 else 0.0
+			note.end_beat = float(parts[1]) if parts.size() > 1 else note.beat
+			note.angle = float(parts[2]) if parts.size() > 2 else 0.0
+		"seek":
+			note.beat = float(parts[0]) if parts.size() > 0 else 0.0
+			note.end_beat = note.beat
+			note.seek_orien = 1 if parts.size() > 1 and int(parts[1]) == 1 else 0
+			note.angle = 0.0
+			note.width = 360.0
+		"anchor":
+			note.beat = float(parts[0]) if parts.size() > 0 else 0.0
+			note.angle = float(parts[1]) if parts.size() > 1 else 0.0
+			note.pair_id = parts[2].strip_edges() if parts.size() > 2 else ""
+			note.width = 0.0
+		"bell":
+			note.beat = float(parts[0]) if parts.size() > 0 else 0.0
+			note.angle = float(parts[1]) if parts.size() > 1 else 0.0
+			note.center_u = fposmod(note.angle / 360.0, 1.0)
+			note.radius = 26.0
+			note.width = 0.0
+		_:
+			return null
+	return note
+
+
+## Parse a Path chain line into part notes. The root keeps `[id]`; subsequent
+## parts receive deterministic ids derived from the root id.
+static func path_parts_from_code(code: String) -> Array[Note]:
+	var result: Array[Note] = []
+	var text := code.strip_edges()
+	var close := text.find("]")
+	if close <= 1:
+		return result
+	var root_id := int(text.substr(1, close - 1))
+	var open := text.find("{")
+	var end := text.rfind("}")
+	if open < 0 or end <= open:
+		return result
+	var body := text.substr(open + 1, end - open - 1)
+	var segments := body.split(";", true)
+	var previous: Note = null
+	for index in segments.size():
+		var segment := segments[index].strip_edges()
+		if segment.begins_with("("):
+			segment = segment.substr(1)
+		if segment.ends_with(")"):
+			segment = segment.substr(0, segment.length() - 1)
+		var fields := segment.split(",", true)
+		if fields.size() < 7:
+			continue
+		# fields[0] is `partN`; the remaining seven are the actual values.
+		var number := int(fields[0].replace("part", ""))
+		var note := Note.new("path", float(fields[1]), float(fields[2]), 60.0)
+		note.id = root_id if index == 0 else root_id + 1000 * index
+		note.path_part = number
+		note.end_beat = float(fields[3])
+		note.tail_angle = float(fields[4])
+		note.path_centrifuge = clampf(float(fields[5]), 0.0, 1.0)
+		note.path_axis = clampf(float(fields[6]), -2.0, 2.0)
+		note.path_controls_set = true
+		note.width = 60.0
+		note.tail_width = 45.0
+		note.tolerance = 0.24
+		note.samples_per_beat = 4.0
+		if previous != null:
+			note.path_prev_id = previous.id
+			note.path_head_local = previous.path_tail_local()
+			note.angle = rad_to_deg(atan2(note.path_head_local.y, note.path_head_local.x))
+			previous.path_next_id = note.id
+		else:
+			note.path_part = 0
+		note.generate_path_shape()
+		result.append(note)
+		previous = note
 	return result
 
 

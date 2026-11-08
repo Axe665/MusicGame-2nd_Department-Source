@@ -16,6 +16,9 @@ func _initialize() -> void:
 		"test_path_axis_centrifuge",
 		"test_demo_path_migration",
 		"test_legacy_path_chart_migration",
+		"test_seek_and_limit_code",
+		"test_compact_chart_code",
+		"test_path_chain_code",
 		"test_path_erase_overlap",
 		"test_path_erase_merge",
 		"test_path_run_split",
@@ -411,13 +414,18 @@ func test_demo_path_migration() -> bool:
 func test_legacy_path_chart_migration() -> bool:
 	var chart := DemoChart.make_demo()
 	var data := ChartIO.chart_to_dict(chart)
-	for raw in data.get("notes", []):
-		if raw.get("type") == "path":
-			raw.erase("centrifuge")
-			raw.erase("axis")
-			raw.erase("trace")
-			raw["visual"] = [{"db": 0.5, "da": 12.0}]
+	var notes_data: Array = []
+	notes_data.assign(data.get("notes", []))
+	for i in notes_data.size():
+		if notes_data[i] is String and String(notes_data[i]).contains("path{"):
+			notes_data[i] = {
+				"id": 999, "type": "path", "beat": 8.0, "end_beat": 12.0,
+				"angle": 0.0, "tail_angle": 180.0, "width": 120.0,
+				"tail_width": 120.0, "tolerance": 0.24, "samples": 4.0,
+				"visual": [{"db": 0.5, "da": 12.0}],
+			}
 			break
+	data["notes"] = notes_data
 	var loaded := ChartIO.chart_from_dict(data)
 	var migrated := false
 	for note in loaded.notes:
@@ -429,6 +437,61 @@ func test_legacy_path_chart_migration() -> bool:
 		eq(note.visual_pts.size(), 0, "legacy chart path drops old visual points")
 		break
 	ok(migrated, "legacy chart path found after migration")
+	return true
+
+
+func test_seek_and_limit_code() -> bool:
+	var seek := Note.new("seek", 3.5, 0.0, 360.0)
+	seek.id = 7
+	seek.seek_orien = 1
+	eq(seek.to_code(), "[7]seek(3.5,1)", "seek code")
+	var restored := Note.from_code(seek.to_code())
+	eq(restored.type, "seek", "seek code type")
+	eq(restored.seek_orien, 1, "seek code orientation")
+	near(restored.beat, 3.5, 0.001, "seek code beat")
+	ok(Note.TYPES.has("seek"), "seek is a note type")
+	ok(not Note.TYPES.has("trace"), "trace is removed")
+	var region := Region.from_dict({"id": 1, "kind": "red", "start_beat": 1.0, "end_beat": 2.0})
+	eq(region.kind, "limit", "legacy red region becomes limit")
+	eq(String(region.to_dict()["kind"]), "limit", "limit region kind serialized")
+	var limit := Region.from_code("[4]red(1.0,2.0,90.0)")
+	ok(limit != null, "limit code parses")
+	if limit != null:
+		eq(limit.kind, "limit", "limit code kind")
+		near(limit.width, 90.0, 0.001, "limit code width")
+		eq(limit.to_code(), "[4]red(1.0,2.0,90.0)", "limit code roundtrip")
+	return true
+
+
+func test_compact_chart_code() -> bool:
+	var chart := DemoChart.make_demo()
+	var data := ChartIO.chart_to_dict(chart)
+	var notes: Array = data["notes"]
+	var shapes: Variant = data["shapes"]
+	ok(notes.size() > 0 and notes[0] is String, "notes are compact code strings")
+	ok(shapes is String, "shapes are one compact code block")
+	ok(String(notes[0]).begins_with("["), "note code starts with id")
+	ok(String(shapes).begins_with("shape{"), "shape code starts with shape")
+	var loaded := ChartIO.from_json(ChartIO.to_json(chart))
+	ok(loaded != null, "compact code chart loads")
+	if loaded != null:
+		eq(loaded.notes.size(), chart.notes.size(), "compact code note count")
+		eq(loaded.shapes.size(), chart.shapes.size(), "compact code shape count")
+		for note in loaded.notes:
+			ok(note.type != "trace", "compact chart has no trace")
+	return true
+
+
+func test_path_chain_code() -> bool:
+	var code := "[1]path{(part0,1.0,0.0,2.0,180.0,0.7,0.5);(part1,2.0,0.0,3.0,90.0,0.6,-0.5)}"
+	var parts := Note.path_parts_from_code(code)
+	eq(parts.size(), 2, "path chain parts")
+	if parts.size() == 2:
+		eq(parts[0].path_part, 0, "path root part 0")
+		eq(parts[1].path_part, 1, "path child part 1")
+		eq(parts[0].path_next_id, parts[1].id, "path root next link")
+		eq(parts[1].path_prev_id, parts[0].id, "path child previous link")
+		near(parts[1].path_head_point().distance_to(parts[0].path_tail_local()), 0.0, 0.001, "path chain head meets tail")
 	return true
 
 

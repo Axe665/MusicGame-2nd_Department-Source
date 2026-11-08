@@ -6,7 +6,9 @@ Godot 4.7.2 实现的《Tamaki₃》谱面编辑器纵向切片。设计依据�
 - `环 GameDesign/新版图文文档_修订版/Tamaki₃ 玩法 v6.1—修订图文版.docx`（正文 v6.2）
 - `环 GameDesign/Path设计图/` 的原始 SVG/PNG 视觉参考
 
-首版目标是“能写、能看、能打”：三栏编辑器、u×时间画布、分段边界、六类音符、Red、3D 预览、F5 二值试玩、JSON 存档，以及一套可被文档算例证伪的 `core/` 数学层。
+首版目标是“能写、能看、能打”：三栏编辑器、u×时间画布、分段边界、Seek、Limit、3D 预览、F5 二值试玩、紧凑代码谱面，以及一套可被文档算例证伪的 `core/` 数学层。
+
+> **合并基线**：本项目是本地 Seek / Limit / 紧凑谱面改动与 GitHub `Axe665/MusicGame-2nd_Department-Source` 的 `d6c82bb` 合并后的版本。
 
 ## 运行
 
@@ -14,7 +16,7 @@ Godot 4.7.2 实现的《Tamaki₃》谱面编辑器纵向切片。设计依据�
 godot --path .
 ```
 
-或用 Godot 4.7.2 打开 `project.godot` 后按 F6/F5。首次启动会载入 `charts/demo.json`（32 个音符、2 个 BoundaryEvent、2 个 Red、RingState 关键帧），并自动生成 `audio/demo_click.wav` 的示例音频。
+或用 Godot 4.7.2 打开 `project.godot` 后按 F6/F5。首次启动会载入 `charts/demo.json`（35 个音符、2 个 BoundaryEvent、2 个 Limit、RingState 关键帧），并自动生成 `audio/demo_click.wav` 的示例音频。
 
 - 空格：播放/暂停；Shift+空格：从头播放；Ctrl+空格：循环
 - F5：从播放头试玩；Shift+F5：从头试玩
@@ -24,11 +26,11 @@ godot --path .
 - 试玩中 F8：AUTO 自动演示开关（也可以勾「试玩设置 → AUTO 自动演示」，或启动加 `--auto`）
 - Ctrl+S：保存；Ctrl+Shift+S：另存为；Ctrl+O：打开；Ctrl+N：新建
 - Ctrl+Z / Ctrl+Y：撤销 / 重做（200 步）
-- 1–7：Tap / Hold / Path / Trace / Anchor / Bell / Red（Tap 与"大小 Tap"已合并成一张卡，长度在检查器里调）
+- 1–7：Tap / Hold / Path / Seek / Anchor / Bell / Limit（Tap 与"大小 Tap"已合并成一张卡，长度在检查器里调）
 - B：边界编辑；E：事件；H：HUD；Delete：删除选中
 - 右键单击音符 / 红区 / 事件：直接删除；右键按住拖动仍是框选
 - 右键拖拽：框选音符；随后左键松开结束选择（结束动作不会放置音符）
-- 预览窗：拖动边界控制点；双击分段拆分；Trace 工具在预览窗拖拽绘制擦带
+- 预览窗：拖动边界控制点；双击分段拆分；Seek 在画布点选时间放置，再按 W/S 选择朝里/朝外
 - 文件 →「导入歌曲 / 识别 BPM…」：选音频后自动识别基准 BPM 与 offset，弹窗确认后写入“时间”页
 - 画布右上角「从上往下」：关闭后整个写谱区上下翻转（时间向上流动）
 
@@ -90,22 +92,22 @@ godot --path .
 - Path 尾判（试玩）：半径跟着滑条长度缩（`min(192, 0.42 × 头尾直线)`，最小 56），并且要求光标滑过 86% 以上（时机正好在 ±65ms 内时只看距离）。固定 192px 会把"刚摸到头"当成"已经到尾巴"，45° 短滑条会被判成 BAD
 - 星星出场：星头与轨迹一起从圆心长出，随预读同步放大；没有独立的星显或启动延迟，尾判与轨迹一起到位
 - Path 旧数据兼容：擦除区间、旧视觉点等字段仍可读取；新 Path 编辑界面不再显示这些旧控件
-- Trace 表现：宽笔刷 + 流动高光 + 星头/尾环同色，去掉中心虚线；鼠标向前跳区时跳过的轨迹从画面削掉且不累计移动距离
+- Seek 表现：从圆心向外扩大的圆环，到达内圆环时判定；环上一圈均匀小箭头，朝里为冷蓝、朝外为暖橙；滚轮上滑=朝里、下滑=朝外；只有 PERFECT/MISS；编辑器放置时先显示横跨 0–360° 的白线，按 W/S 后显示箭头与方向色
 - 时间：beat↔毫秒分段积分、BPM 变化、offset、固定预读 D、拍号分子 1–16
 - 边界：分段曲线 l/s/si/so/b、闭合/缺口、局部 BoundaryEvent、restore/hold、控制点拖动、双击拆分、圆/椭圆/竖椭圆/切一刀预设；按本次要求限制为**简单凸轮廓**，自交/非凸/星形/折返/局部半径过激会被拒绝
-- 音符：Tap / Hold / Path / Trace / Anchor / Bell、可视节点、Trace 二维点、Path 头尾、Hold 仅判头部
-- 区域：Red 时间/角度/宽度、4 拍上限、同刻公共角度减红区校验；预览中 Red 是填充扇区 + 高亮外弧 + RED 标签，进入前会显示淡色 RED IN
-- 音符视觉：Tap 为可变角宽的切向宽条；Hold 为琥珀色六边形头 + 长体；Path 为珊瑚五角星头 + 琥珀圆环尾 + 灰色厚轨迹 + 青色虚线中轴/方向箭头（part 衔接处头尾为蓝色）；Trace 为宽幅薄荷色擦带 + 中心虚线 + 方向箭头 + 起止端点 + 已擦过进度；Anchor 为紫色菱形；Bell 为金币；Red 为红色扇区
+- 音符：Tap / Hold / Path / Seek / Anchor / Bell、Path 头尾、Hold 仅判头部；Seek 仅有朝向 `orien`（0 朝里 / 1 朝外）
+- 区域：Limit 时间/角度/宽度、4 拍上限、同刻公共角度减限制区校验；预览中 Limit 是填充扇区 + 高亮外弧 + LIMIT 标签，进入前会显示淡色 LIMIT IN
+- 音符视觉：Tap 为可变角宽的切向宽条；Hold 为琥珀色六边形头 + 长体；Path 为珊瑚五角星头 + 琥珀圆环尾 + 灰色厚轨迹 + 青色虚线中轴/方向箭头（part 衔接处头尾为蓝色）；Seek 为扩散圆环 + 朝内/朝外箭头；Anchor 为紫色菱形；Bell 为金币；Limit 为红色扇区
 - 类型卡：检查器上方七张浅色切角卡（黑色背板、黄色选中态）图标 + 标签 + 快捷键，点击即切工具
 - 时间页：基准 BPM、offset、固定预读、BPM 点列表（双击跳转）、选中点的起始拍/BPM/拍号、Tap Tempo、播放头加 BPM、删除、播放头设为起始拍
 - 自动调时：导入歌曲后自动识别基准 BPM 与首拍 offset（三频带起始包络 → 自相关 → 梳状相位 → 拍点跟踪 + 原始采样攻击对齐），结果以弹窗给出，可 `×2` / `÷2` 处理半/倍速、手改后「应用」或「只取 BPM」；分析在后台线程跑，不卡 UI，结果按音频路径缓存
 - 纵轴：左列保留**连续拍号**（1、2、3、4、5…），并显示小节线、竖线与 30° 特殊角度参考线；分音网格、右列分音选择器、顶栏 SNAP 和视图页“分音”已隐藏，音符吸附使用当前小节线与竖线的交点
 - 写入方向：画布右上角「从上往下」开关，关闭后时间轴上下翻转（后出现的音符在上），翻转状态随谱面存进 `editor.flow_down`
 - Path/Hold 编辑：弧线 Path 与 Hold 选中后可在预览中拖动青色体节点；五角星 Path 不含可拖节点
-- 格式：File 菜单可导入 osu!std/taiko `.osz`、导出 `.lbp` v2；导入报告用对话框显示
+- 格式：File 菜单可导入 osu!std/taiko `.osz`、导出 `.lbp` v2；导入报告用对话框显示；谱面 notes/shapes 采用紧凑代码：`[id]tap(beat,angle)`、`[id]hold(beat,end,angle)`、`[id]path{(part0,beat,angle,end,end_angle,centrifuge,axis);...}`、`[id]seek(beat,orien)`、`[id]anchor(beat,angle,pair_id)`、`[id]bell(beat,angle)`、`[id]red(beat,end_beat,width)` 与单块无缩进 `shape{[id,closed,segments{...}];...}`；`timing` 位于 `notes` 之前
 - Path 造型：选中 Path 后在检查器“路径造型”切换弧线/五角星；五角星在环内画出五条弦，头尾圆环仍落在环上，中段判定仍走头尾弦
 - 预览：默认开启 3D 环网格；环、八边形舞台、八束光、刻度、外圈、投影阴影全部走 GPU 网格；相机投影 tilt/zoom/ellipse/rotation + 鼠标倾斜/视差；固定预读 P(u,q,t)、单光标最近点、HUD 60° 弧、误差刻度、视频层；视图页可关闭“3D 环网格”回退到投影环线
-- Red 表现与绘制：填充红色扇区、亮色外弧、扇区斜纹、RED/RED IN 标签；Red 工具在预览中横向拖角度、纵向拖时长（最多 4 拍）；Trace 表现：宽幅薄荷擦带、双层边线、虚线中轴、连续箭头、起止端点、已擦进度与高亮擦头
+- Limit 表现与绘制：填充红色扇区、亮色外弧、扇区斜纹、LIMIT/LIMIT IN 标签；Limit 工具在预览中横向拖角度、纵向拖时长（最多 4 拍）；Seek 表现：扩散圆环、方向箭头、朝里冷蓝/朝外暖橙、PERFECT/MISS 双档
 - 媒体：原生 WAV/OGG/MP3 音频、Ogg Theora 视频；FLAC/M4A/AAC/OPUS/WebM/MP4 音频与 MP4/WebM/MOV/MKV/AVI 视频通过 ffmpeg 自动转码到 `user://media/` 后预览
 - 预览光标：判定环内整片和环外缓冲都可吸附到最近的 u，放置音符不必精确压在环线上
 - 视觉：石墨黑 + 安全黄 UI、浅色切角音符卡、深空径向渐变、终末地式分段圆环（白色开口弧 + 琥珀细环 + 凹槽刻度 + 暗色外圈，不再使用八角外框/八束光）、圆盘刻度/十字准星、音符投影；试玩时环放大到屏幕短边约 86–88%，环外整片仍可判定；音符保留珊瑚/琥珀/青/薄荷/紫/金/红语义色
@@ -156,7 +158,7 @@ godot --headless --path . --import
 godot --headless --path . --script res://tests/test_runner.gd
 ```
 
-当前结果：**442 passed, 0 failed**。测试覆盖：
+当前结果：**596 passed, 0 failed**。测试覆盖：
 
 - 120 BPM / 变速 / offset 的时间换算与反解
 - 新建谱面 BPM 三位小数/一位小数取整与 offset 三位小数规范化
