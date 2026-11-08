@@ -28,8 +28,9 @@ const END_FADE_SEC := 0.1
 ## 松手补按窗口内的变暗程度（1 = 不变暗）。
 const HOLD_SLIP_DIM := 0.35
 ## 命中后音符整体放大淡出的时长与最终倍数（osu!std 式击打光）。
+## 从音符落在环上的实际大小起步，不再额外放大基座。
 const NOTE_POP_SEC := 0.28
-const NOTE_POP_SCALE := 2.2
+const NOTE_POP_SCALE := 1.5
 
 var chart_override: Chart = null
 var follow_app: bool = true
