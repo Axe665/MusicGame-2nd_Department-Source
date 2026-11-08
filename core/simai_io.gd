@@ -1,8 +1,9 @@
 class_name SimaiIO
 extends RefCounted
 
-## Simai (maidata.txt) import. Supports the common tap/hold/slide/break/touch
-## subset; V/wifi/p/q shapes are approximated as arcs and reported.
+## Simai (maidata.txt) import. Supports tap/hold/slide/break/touch,
+## p/q/pp/qq/s/z/V/w shapes, chains, same-head slides and EACH.
+## The layout pass in ConvertOptimizer removes one-mouse conflicts.
 
 static var last_error: String = ""
 static var last_report: String = ""
@@ -63,8 +64,6 @@ static func import_maidata(path: String, difficulty_index: int = 0) -> Chart:
 	chart.timing.points = [TimingPoint.new(0.0, base_bpm, 4)]
 	var counts := {"tap": 0, "hold": 0, "path": 0, "bell": 0, "dropped": 0}
 	_parse_notes(inote, chart, counts)
-	_remove_chords(chart, counts)
-	_resolve_path_overlaps(chart, counts)
 	var base_dropped := int(counts["dropped"])
 	var stats := ConvertOptimizer.optimize_maimai(chart, counts)
 	chart.notes.sort_custom(func(a: Note, b: Note) -> bool: return a.beat < b.beat)
@@ -73,12 +72,13 @@ static func import_maidata(path: String, difficulty_index: int = 0) -> Chart:
 	for note in chart.notes:
 		final[note.type] = int(final.get(note.type, 0)) + 1
 	var audio_note := "音频：未找到 track.*" if chart.audio_path.is_empty() else "音频：%s" % chart.audio_path.get_file()
-	last_report = "Simai 导入 Lv.%s：Tap %d，Hold %d，Slide→Path %d，Touch→Bell %d，跳过 %d（结构 %d + 优化 %d）。\nBPM %.1f，offset %.0fms，%s。\n优化：调整 %d，重建星星 %d，降级 %d。" % [
+	last_report = "Simai 导入 Lv.%s：Tap %d，Hold %d，Slide→Path %d，Touch→Bell %d，跳过 %d（解析 %d + 优化 %d）。\nBPM %.1f，offset %.0fms，%s。\n优化：同刻去重 %d，尾判吸附 %d，缩短星星 %d，降级 %d，轨外删除 %d。" % [
 		String(meta.get("lv_%d" % difficulty_index, "?")),
 		final["tap"], final["hold"], final["path"], final["bell"], counts["dropped"],
-		base_dropped, stats["dropped"],
+		base_dropped, stats.get("dropped", 0),
 		base_bpm, chart.offset_ms, audio_note,
-		stats["relaxed"], stats["rebuilt"], stats["degraded"],
+		stats.get("chords", 0), stats.get("snapped", 0), stats.get("shortened", 0),
+		stats.get("degraded", 0), stats.get("off_track", 0),
 	]
 	return chart
 
@@ -130,13 +130,11 @@ static func _parse_notes(inote: String, chart: Chart, counts: Dictionary) -> voi
 	var slot := 1.0
 	var bpm := chart.timing.bpm_at(0.0)
 	var tokens := inote.replace("\r", "").split(",")
-	var previous_angle := 0.0
 	for raw in tokens:
 		var token := String(raw).strip_edges()
 		token = token.split("||")[0].strip_edges()
 		if token == "E":
 			break
-		var had_directive := false
 		while token.begins_with("("):
 			var close := token.find(")")
 			if close < 0:
@@ -145,70 +143,26 @@ static func _parse_notes(inote: String, chart: Chart, counts: Dictionary) -> voi
 			if absf(chart.timing.bpm_at(beat) - bpm) > 0.001:
 				chart.timing.points.append(TimingPoint.new(beat, bpm, 4))
 			token = token.substr(close + 1).strip_edges()
-			had_directive = true
 		while token.begins_with("{"):
 			var close := token.find("}")
 			if close < 0:
 				break
 			var inner := token.substr(1, close - 1).strip_edges()
 			if inner.begins_with("#"):
-				slot = maxf(0.01, float(inner.substr(1)))
+				# {#0.35} 是秒，不是拍。
+				slot = maxf(0.01, float(inner.substr(1))) * bpm / 60.0
 			else:
 				slot = 4.0 / maxf(0.01, float(inner))
 			token = token.substr(close + 1).strip_edges()
-			had_directive = true
 		if token.is_empty():
-			# 只有指令的 token 仍然占一个空格；之前不推进会让整张谱提前 4 拍。
 			beat += slot
 			continue
-		if token.contains("*"):
-			var branches := token.split("*")
-			var head := String(branches[0]).strip_edges().substr(0, 1)
-			var best: Note = null
-			for i in branches.size():
-				var part := String(branches[i]).strip_edges()
-				if i > 0 and not part.begins_with(head):
-					part = head + part
-				var branch := _parse_note(part, beat, bpm)
-				if branch != null and (best == null or branch.duration() > best.duration()):
-					best = branch
-				elif branch != null:
-					counts["dropped"] += 1
-			if best != null:
-				best.id = chart.next_note_id()
-				chart.notes.append(best)
-				previous_angle = best.angle
-				match best.type:
-					"tap": counts["tap"] += 1
-					"hold": counts["hold"] += 1
-					"path": counts["path"] += 1
-					"bell": counts["bell"] += 1
-			beat += slot
-			continue
-		var pieces := token.split("/")
-		var parsed_at_beat: Array[Note] = []
-		for piece in pieces:
-			var note := _parse_note(String(piece).strip_edges(), beat, bpm)
-			if note == null:
-				counts["dropped"] += 1
-				continue
-			parsed_at_beat.append(note)
-		if parsed_at_beat.size() > 1:
-			# 只保留与上一个 note 流向更连续的一侧。
-			var keeper := parsed_at_beat[0]
-			var best := absf(_short_delta(previous_angle, keeper.angle))
-			for i in range(1, parsed_at_beat.size()):
-				var candidate := parsed_at_beat[i]
-				var distance := absf(_short_delta(previous_angle, candidate.angle))
-				if distance < best:
-					best = distance
-					keeper = candidate
-			parsed_at_beat = [keeper]
-			counts["dropped"] += pieces.size() - 1
-		for note in parsed_at_beat:
+		var parsed := _parse_token(token, beat, bpm, chart)
+		if parsed.is_empty():
+			counts["dropped"] += 1
+		for note in parsed:
 			note.id = chart.next_note_id()
 			chart.notes.append(note)
-			previous_angle = note.angle
 			match note.type:
 				"tap": counts["tap"] += 1
 				"hold": counts["hold"] += 1
@@ -217,266 +171,280 @@ static func _parse_notes(inote: String, chart: Chart, counts: Dictionary) -> voi
 		beat += slot
 
 
-static func _parse_note(token: String, beat: float, bpm: float) -> Note:
-	if token.is_empty():
+## 一个逗号里的内容：EACH 用 / 分隔，同头多星用 * 分隔。
+static func _parse_token(token: String, beat: float, bpm: float, chart: Chart) -> Array[Note]:
+	var result: Array[Note] = []
+	for piece in _split_outside(token, "/"):
+		var part := String(piece).strip_edges()
+		if part.is_empty():
+			continue
+		result.append_array(_parse_star_group(part, beat, bpm, chart))
+	return result
+
+
+static func _parse_star_group(token: String, beat: float, bpm: float, chart: Chart) -> Array[Note]:
+	var parts := _split_outside(token, "*")
+	if parts.size() <= 1:
+		var note := _parse_single(token, beat, bpm, chart, -1)
+		return [note] if note != null else []
+	var head := _head_button(String(parts[0]))
+	if head < 1 or head > 8:
+		return []
+	var result: Array[Note] = []
+	for i in parts.size():
+		var part := String(parts[i]).strip_edges()
+		if part.is_empty():
+			continue
+		var note := _parse_single(part, beat, bpm, chart, head)
+		if note != null:
+			result.append(note)
+	return result
+
+
+static func _parse_single(token: String, beat: float, bpm: float, chart: Chart, shared_head: int) -> Note:
+	var body := token
+	var timing := ""
+	var open := token.rfind("[")
+	if open >= 0:
+		var close := token.find("]", open)
+		if close > open:
+			timing = token.substr(open, close - open + 1)
+			body = token.substr(0, open) + token.substr(close + 1)
+	body = body.replace("x", "").replace("f", "").strip_edges()
+	if body.is_empty():
 		return null
-	var first := token.substr(0, 1)
+	var first := body.substr(0, 1)
 	if first in ["A", "B", "C", "D", "E"]:
-		# 触摸区 → Bell；中心 C 没有环上角度，跳过。
-		var digit := 0
-		if token.length() > 1 and token.substr(1, 1).is_valid_int():
-			digit = int(token.substr(1, 1))
-		if first == "C" or digit == 0:
-			return null
-		var bell := Note.new("bell", beat, fposmod(_button_angle(digit), 360.0), 45.0)
-		bell.center_u = fposmod(_button_angle(digit), 360.0) / 360.0
-		bell.radius = 50.0
-		bell.end_beat = beat
-		return bell
-	if not first.is_valid_int():
+		return _parse_touch(body, beat)
+	var head := shared_head if shared_head > 0 else _digit_at(body, 0)
+	if head < 1 or head > 8:
 		return null
-	var start_button := int(first)
-	if start_button < 1 or start_button > 8:
-		return null
-	var start_angle := _button_angle(start_button)
-	var duration := _duration_beats(token, bpm)
-	var is_slide := false
-	for mark in ["-", "^", "<", ">", "v", "p", "q", "s", "z", "V", "w"]:
-		if token.find(mark) > 0:
-			is_slide = true
-			break
-	if is_slide:
-		var end_button := _end_button(token)
-		if end_button < 1 or end_button > 8 or end_button == start_button:
-			return null
-		var delta := _short_delta(start_angle, _button_angle(end_button))
-		if token.find(">") > 0:
-			delta = -absf(delta)
-		elif token.find("<") > 0:
-			delta = absf(delta)
-		var note := Note.new("path", beat, fposmod(start_angle, 360.0), 62.0)
-		# 舞萌星星按下星头后先原地等 1 拍（与 BPM 相关），[a:b] 只是之后的滑动时间。
-		note.wait_beat = 1.0
-		note.end_beat = beat + note.wait_beat + maxf(0.25, duration)
-		note.tail_angle = fposmod(start_angle + delta, 360.0)
-		note.tail_width = 52.0
-		note.tolerance = 0.24
-		note.samples_per_beat = 4.0
-		note.space = "plane"
-		var mid_angle := NAN
-		if token.contains("V") or token.contains("v") or token.contains("w") or token.contains("p") or token.contains("q") or token.contains("s") or token.contains("z"):
-			var digits := ""
-			for ch in token.split("[")[0]:
-				if ch.is_valid_int():
-					digits += ch
-			var turn := int(digits.substr(1, 1)) if digits.length() >= 3 else 0
-			if turn > 0:
-				mid_angle = _button_angle(turn)
-		note.trace_pts = _plane_slide_points(
-			start_angle, delta, note.wait_beat,
-			note.end_beat - note.beat, _slide_shape(token), mid_angle, bpm
-		)
-		return note
-	if token.find("h") >= 0:
-		var hold := Note.new("hold", beat, fposmod(start_angle, 360.0), 62.0)
-		hold.end_beat = beat + maxf(0.25, duration)
+	var rest := body
+	if rest.begins_with(str(head)):
+		rest = rest.substr(1)
+	# Hold：h 出现在按钮后，且去掉 h 后没有形状字符。
+	if rest.contains("h") and not _has_shape(rest.replace("h", "")):
+		var hold_time := _parse_timing(timing, bpm)
+		var hold := Note.new("hold", beat, SimaiSlide.button_angle(head), 62.0)
+		hold.end_beat = beat + maxf(0.25, float(hold_time["move"]))
 		hold.hold = true
 		hold.hold_style = "straight"
+		if body.contains("b"):
+			hold.width = 72.0
 		return hold
-	var tap := Note.new("tap", beat, fposmod(start_angle, 360.0), 62.0)
-	if token.find("b") >= 0:
-		tap.width = 72.0
-	return tap
+	var segments := _parse_segments(rest, head, bpm)
+	if segments.is_empty():
+		var tap := Note.new("tap", beat, SimaiSlide.button_angle(head), 62.0)
+		if body.contains("b"):
+			tap.width = 72.0
+		return tap
+	var timing_data := _parse_timing(timing, bpm)
+	var wait := maxf(0.0, float(timing_data["wait"]))
+	var move := maxf(0.0, float(timing_data["move"]))
+	# 链式星星自带每段时长时，用它们的和。
+	var explicit := 0.0
+	for segment in segments:
+		explicit += float(segment.get("time", 0.0))
+	if explicit > move:
+		move = explicit
+	var points := SimaiSlide.build(head, segments)
+	if points.size() < 2:
+		return null
+	var note := Note.new("path", beat, SimaiSlide.button_angle(head), 62.0)
+	note.wait_beat = wait
+	note.end_beat = beat + wait + move
+	note.tail_angle = SimaiSlide.button_angle(int(segments[-1]["end"]))
+	note.tail_width = 52.0
+	note.tolerance = 0.24
+	note.samples_per_beat = 4.0
+	note.space = "plane"
+	note.trace_pts = _trace_from_points(points, wait, move)
+	if body.contains("b"):
+		note.tail_width = 72.0
+	return note
 
 
-static func _slide_shape(token: String) -> String:
-	var body := token.split("[")[0]
-	for shape in ["pp", "qq", "V", "v", "p", "q", "s", "z", "w", "^", "<", ">"]:
-		if body.contains(shape):
-			return shape
-	return "-"
-
-
-static func _plane_slide_points(head_angle: float, delta: float, wait: float, total: float, shape: String, mid_angle: float = NAN, bpm: float = 120.0) -> Array[Dictionary]:
-	var head := Vector2(cos(deg_to_rad(head_angle)), sin(deg_to_rad(head_angle)))
-	var tail := Vector2(cos(deg_to_rad(head_angle + delta)), sin(deg_to_rad(head_angle + delta)))
-	var samples: Array[Vector2] = []
-	match shape:
-		"-", "w":
-			samples = _straight_samples(head, tail, 32)
-		"v":
-			# v 型：用二次曲线绕过中心，保留 V 形但不做硬折角。
-			samples = _bezier_samples(head, Vector2.ZERO, tail, 40)
-		"V":
-			if is_nan(mid_angle):
-				samples = _straight_samples(head, tail, 32)
+## 形状链：1-4q7-2 / 1V35 / 1w5 / 1pp5……
+static func _parse_segments(text: String, head: int, bpm: float) -> Array[Dictionary]:
+	var segments: Array[Dictionary] = []
+	var i := 0
+	var current := head
+	while i < text.length():
+		var shape := ""
+		var pair := text.substr(i, 2)
+		if pair in ["pp", "qq"]:
+			shape = pair
+			i += 2
+		else:
+			var ch := text.substr(i, 1)
+			if ch in ["-", "^", "<", ">", "v", "p", "q", "s", "z", "V", "w"]:
+				shape = ch
+				i += 1
 			else:
-				var middle := Vector2(cos(deg_to_rad(mid_angle)), sin(deg_to_rad(mid_angle)))
-				samples = _chaikin(_polyline_samples([head, middle, tail], 18), 2)
-		"p", "q", "pp", "qq":
-			# p/q 绕屏幕中心向两侧弯；pp/qq 弯得更外，接近 Sentakki 的 U/Cup。
-			var chord := tail - head
-			var normal := Vector2(-chord.y, chord.x).normalized()
-			var side := 1.0 if shape in ["p", "pp"] else -1.0
-			var offset_scale := 0.55 if shape in ["p", "q"] else 0.78
-			var control := (head + tail) * 0.5 + normal * side * maxf(0.25, chord.length() * offset_scale)
-			samples = _bezier_samples(head, control, tail, 34)
-		"s", "z":
-			var chord := tail - head
-			var normal := Vector2(-chord.y, chord.x).normalized()
-			var side := 1.0 if shape == "s" else -1.0
-			var a := Vector2(cos(deg_to_rad(head_angle + delta * 0.33)), sin(deg_to_rad(head_angle + delta * 0.33))) * 0.82 + normal * 0.16 * side
-			var b := Vector2(cos(deg_to_rad(head_angle + delta * 0.66)), sin(deg_to_rad(head_angle + delta * 0.66))) * 0.82 - normal * 0.16 * side
-			samples = _chaikin(_polyline_samples([head, a, b, tail], 12), 2)
+				i += 1
+				continue
+		var segment_time := 0.0
+		if i < text.length() and text.substr(i, 1) == "[":
+			var close := text.find("]", i)
+			if close > i:
+				var bracket := text.substr(i, close - i + 1)
+				segment_time = float(_parse_timing(bracket, bpm)["move"])
+				i = close + 1
+		if shape == "V":
+			if i + 1 >= text.length():
+				break
+			var via := int(text.substr(i, 1))
+			var end := int(text.substr(i + 1, 1))
+			if end < 1 or end > 8:
+				break
+			i += 2
+			segments.append({"shape": shape, "end": end, "via": via, "time": segment_time})
+			current = end
+		else:
+			if i >= text.length():
+				break
+			var end_text := text.substr(i, 1)
+			if not end_text.is_valid_int():
+				break
+			var end := int(end_text)
+			if end < 1 or end > 8:
+				break
+			i += 1
+			segments.append({"shape": shape, "end": end, "time": segment_time})
+			current = end
+	return segments
+
+
+static func _parse_touch(body: String, beat: float) -> Note:
+	var group := body.substr(0, 1)
+	var digit := 0
+	if body.length() > 1 and body.substr(1, 1).is_valid_int():
+		digit = int(body.substr(1, 1))
+	var angle := 0.0
+	var radius := 0.0
+	match group:
+		"C":
+			angle = 0.0
+			radius = 0.0
+		"A":
+			if digit < 1 or digit > 8:
+				return null
+			angle = SimaiSlide.button_angle(digit)
+			radius = 1.0
+		"B":
+			if digit < 1 or digit > 8:
+				return null
+			angle = SimaiSlide.button_angle(digit)
+			radius = 0.70
+		"D":
+			if digit < 1 or digit > 8:
+				return null
+			angle = fposmod(SimaiSlide.button_angle(digit) - 22.5, 360.0)
+			radius = 1.0
+		"E":
+			if digit < 1 or digit > 8:
+				return null
+			angle = fposmod(SimaiSlide.button_angle(digit) - 22.5, 360.0)
+			radius = 0.80
 		_:
-			# ^ < >：沿环内侧的弧线，最后收进 0.72R。
-			var count := 36
-			for i in count + 1:
-				var q := float(i) / float(count)
-				var angle := head_angle + delta * q
-				var radius := 1.0 - 0.06 * sin(PI * q)
-				samples.append(Vector2(cos(deg_to_rad(angle)), sin(deg_to_rad(angle))) * radius)
-	if samples.is_empty():
-		samples = _straight_samples(head, tail, 32)
-	# 任何形状都不能越出环内平面。
-	for i in samples.size():
-		if samples[i].length() > 1.0:
-			samples[i] = samples[i].normalized()
-	# osu 可读性保护：自交/打结的星星会让人猜不到轨迹，退化成直线。
-	if _polyline_self_intersects(samples):
-		samples = _straight_samples(head, tail, 32)
-	# osu 手感保护：极短时间内的超长星星会变成无法跟上的甩尾，直接退化为直线。
-	var raw_length := 0.0
-	for i in range(1, samples.size()):
-		raw_length += samples[i].distance_to(samples[i - 1])
-	var seconds := maxf(0.05, maxf(0.001, total - wait) * 60.0 / maxf(1.0, bpm))
-	if raw_length * 330.0 / seconds > 3400.0:
-		samples = _straight_samples(head, tail, 32)
-	# 按轨迹长度分配时间：滑动速度恒定，不因折线/弧线改变。
-	var distances: Array[float] = [0.0]
-	for i in range(1, samples.size()):
-		distances.append(distances[-1] + samples[i].distance_to(samples[i - 1]))
-	var length := maxf(0.001, distances[-1])
-	var move := maxf(0.001, total - wait)
-	var result: Array[Dictionary] = [{"x": head.x, "y": head.y, "db": 0.0}]
-	if wait > 0.0:
-		result.append({"x": head.x, "y": head.y, "db": wait})
-	for i in range(1, samples.size()):
-		result.append({
-			"x": samples[i].x,
-			"y": samples[i].y,
-			"db": wait + move * distances[i] / length,
-		})
-	return result
+			return null
+	var bell := Note.new("bell", beat, angle, 45.0)
+	bell.center_u = fposmod(angle, 360.0) / 360.0
+	bell.bell_radius = radius
+	bell.radius = 50.0
+	bell.end_beat = beat
+	return bell
 
 
-static func _polyline_self_intersects(points: Array[Vector2]) -> bool:
-	if points.size() < 4:
-		return false
-	for i in points.size() - 1:
-		var a := points[i]
-		var b := points[i + 1]
-		for j in range(i + 2, points.size() - 1):
-			var hit = Geometry2D.segment_intersects_segment(a, b, points[j], points[j + 1])
-			if hit != null:
-				return true
-	return false
-
-
-static func _chaikin(points: Array[Vector2], iterations: int) -> Array[Vector2]:
-	if points.size() < 3:
-		return points
-	var result := points
-	for _iteration in iterations:
-		var smoothed: Array[Vector2] = [result[0]]
-		for i in range(1, result.size() - 1):
-			smoothed.append(result[i - 1].lerp(result[i], 0.25))
-			smoothed.append(result[i - 1].lerp(result[i], 0.75))
-		smoothed.append(result[-1])
-		result = smoothed
-	return result
-
-
-static func _straight_samples(from: Vector2, to: Vector2, count: int) -> Array[Vector2]:
-	var result: Array[Vector2] = []
-	for i in count + 1:
-		result.append(from.lerp(to, float(i) / float(count)))
-	return result
-
-
-static func _polyline_samples(points: Array[Vector2], per_segment: int) -> Array[Vector2]:
-	var result: Array[Vector2] = []
-	for i in points.size() - 1:
-		for k in per_segment:
-			result.append(points[i].lerp(points[i + 1], float(k) / float(per_segment)))
-	result.append(points[-1])
-	return result
-
-
-static func _bezier_samples(from: Vector2, control: Vector2, to: Vector2, count: int) -> Array[Vector2]:
-	var result: Array[Vector2] = []
-	for i in count + 1:
-		var q := float(i) / float(count)
-		var inverse := 1.0 - q
-		result.append(from * inverse * inverse + control * 2.0 * inverse * q + to * q * q)
-	return result
-
-
-static func _duration_beats(token: String, bpm: float) -> float:
-	var open := token.find("[")
-	var close := token.find("]")
-	if open < 0 or close < open:
-		return 0.0
-	var inner := token.substr(open + 1, close - open - 1)
-	if inner.begins_with("#") and inner.count("#") == 1 and not inner.contains(":"):
-		return maxf(0.0, float(inner.substr(1))) * bpm / 60.0
+## [x:y] = x 分音符 y 个；[#0.5] = 秒；[a#b:c] = 用 a BPM；
+## [w##m] = w 秒后开始、再滑 m；[w##a#b:c] = w 秒后按 a BPM 滑。
+static func _parse_timing(bracket: String, chart_bpm: float) -> Dictionary:
+	if bracket.is_empty():
+		return {"wait": 1.0, "move": 1.0}
+	var inner := bracket.trim_prefix("[").trim_suffix("]")
+	if inner.is_empty():
+		return {"wait": 1.0, "move": 1.0}
 	var parts := inner.split("#")
-	var timing := parts[-1]
-	if timing.contains(":"):
-		var pieces := timing.split(":")
+	if parts.size() >= 3:
+		var wait_seconds := float(parts[0]) if not parts[0].is_empty() else 0.0
+		var wait := wait_seconds * chart_bpm / 60.0 if wait_seconds > 0.0 else 1.0
+		var move_bpm := chart_bpm
+		if parts.size() >= 4 and not parts[-2].is_empty():
+			move_bpm = float(parts[-2])
+		elif parts.size() == 3 and not parts[1].is_empty():
+			move_bpm = float(parts[1])
+		return {"wait": wait, "move": _beat_span(parts[-1], move_bpm, chart_bpm)}
+	if parts.size() == 2:
+		if parts[0].is_empty():
+			return {"wait": 1.0, "move": _beat_span(parts[1], chart_bpm, chart_bpm)}
+		var move_bpm := maxf(1.0, float(parts[0]))
+		return {"wait": chart_bpm / move_bpm, "move": _beat_span(parts[1], move_bpm, chart_bpm)}
+	return {"wait": 1.0, "move": _beat_span(inner, chart_bpm, chart_bpm)}
+
+
+## 统一换成谱面拍数：x:y 按 move_bpm 折算，纯数字是秒。
+static func _beat_span(spec: String, move_bpm: float, chart_bpm: float) -> float:
+	if spec.contains(":"):
+		var pieces := spec.split(":")
 		var division := maxf(0.01, float(pieces[0]))
-		var count := float(pieces[1])
-		return 4.0 * count / division
-	return maxf(0.0, float(timing)) * bpm / 60.0
+		var count := float(pieces[1]) if pieces.size() > 1 else 1.0
+		return 4.0 * count / division * chart_bpm / maxf(1.0, move_bpm)
+	return maxf(0.0, float(spec)) * chart_bpm / 60.0
 
 
-static func _end_button(token: String) -> int:
-	var end := token.find("[")
-	var head := token if end < 0 else token.substr(0, end)
-	head = head.replace("x", "").replace("b", "").replace("f", "")
-	for i in range(head.length() - 1, 0, -1):
-		var c := head.substr(i, 1)
-		if c.is_valid_int():
-			return int(c)
-	return 0
+## 按弧长匀速分配时间；开头留出 wait 拍原地不动。
+static func _trace_from_points(points: Array[Vector2], wait: float, move: float) -> Array[Dictionary]:
+	var result: Array[Dictionary] = []
+	if points.is_empty():
+		return result
+	var distances: Array[float] = [0.0]
+	var total := 0.0
+	for i in range(1, points.size()):
+		total += points[i].distance_to(points[i - 1])
+		distances.append(total)
+	total = maxf(0.0001, total)
+	var safe_move := maxf(0.001, move)
+	result.append({"x": points[0].x, "y": points[0].y, "db": 0.0})
+	if wait > 0.0:
+		result.append({"x": points[0].x, "y": points[0].y, "db": wait})
+	for i in range(1, points.size()):
+		result.append({"x": points[i].x, "y": points[i].y, "db": wait + safe_move * distances[i] / total})
+	return result
 
 
-static func _button_angle(button: int) -> float:
-	# maimai 1 在正上方，顺时针编号；设计坐标 y 向上。
-	return fposmod(90.0 - float(button - 1) * 45.0, 360.0)
+static func _split_outside(text: String, separator: String) -> Array[String]:
+	var result: Array[String] = []
+	var depth := 0
+	var start := 0
+	for i in text.length():
+		var ch := text.substr(i, 1)
+		if ch == "[":
+			depth += 1
+		elif ch == "]":
+			depth = maxi(0, depth - 1)
+		elif ch == separator and depth == 0:
+			result.append(text.substr(start, i - start))
+			start = i + 1
+	result.append(text.substr(start))
+	return result
 
 
-static func _short_delta(from_angle: float, to_angle: float) -> float:
-	return fposmod(to_angle - from_angle + 180.0, 360.0) - 180.0
+static func _head_button(token: String) -> int:
+	var digit := _digit_at(token, 0)
+	return digit if digit >= 1 and digit <= 8 else 0
 
 
-static func _remove_chords(chart: Chart, counts: Dictionary) -> void:
-	var by_beat := {}
-	for note in chart.notes:
-		var key := snappedf(note.beat, 0.001)
-		if not by_beat.has(key):
-			by_beat[key] = []
-		by_beat[key].append(note)
-	for key in by_beat.keys():
-		var group: Array = by_beat[key]
-		if group.size() <= 1:
-			continue
-		group.sort_custom(func(a: Note, b: Note) -> bool: return a.id < b.id)
-		var keep: Note = group[0]
-		for i in range(1, group.size()):
-			var note: Note = group[i]
-			chart.notes.erase(note)
-			counts["dropped"] += 1
+static func _digit_at(text: String, index: int) -> int:
+	if index < text.length() and text.substr(index, 1).is_valid_int():
+		return int(text.substr(index, 1))
+	return -1
+
+
+static func _has_shape(text: String) -> bool:
+	for ch in text:
+		if ch in ["-", "^", "<", ">", "v", "p", "q", "s", "z", "V", "w"]:
+			return true
+	return false
 
 
 ## 同一个 zip（路径 + 大小 + 修改时间）固定落到同一个目录，重复导入直接复用。
@@ -550,26 +518,14 @@ static func _extract_assets(path: String, chart: Chart) -> void:
 			break
 
 
-static func _resolve_path_overlaps(chart: Chart, counts: Dictionary) -> void:
-	# Path 尾拍与其他目标同刻且角度不重合时，删掉另一侧，保证单手可打。
-	var remove: Array[Note] = []
-	for path in chart.notes:
-		if path.type != "path" or remove.has(path):
-			continue
-		for other in chart.notes:
-			if other == path or remove.has(other):
-				continue
-			if not other.type in ["tap", "hold", "path"]:
-				continue
-			if absf(other.beat - path.end_beat) > 0.001:
-				continue
-			if other.type == "path":
-				if other.duration() >= path.duration():
-					remove.append(path)
-				else:
-					remove.append(other)
-			else:
-				remove.append(other)
-	for note in remove:
-		chart.notes.erase(note)
-		counts["dropped"] += 1
+static func _polyline_self_intersects(points: Array[Vector2]) -> bool:
+	if points.size() < 4:
+		return false
+	for i in points.size() - 1:
+		var a := points[i]
+		var b := points[i + 1]
+		for j in range(i + 2, points.size() - 1):
+			var hit = Geometry2D.segment_intersects_segment(a, b, points[j], points[j + 1])
+			if hit != null:
+				return true
+	return false

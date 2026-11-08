@@ -3854,7 +3854,7 @@ func _bell_screen_raw(note: Note, beat: float) -> Dictionary:
 	if bool(data.get("gap", false)):
 		return {}
 	var design: Vector2 = data.point
-	var center := project_design(design)
+	var center := project_design(design * clampf(note.bell_radius, 0.0, 1.0))
 	if not _valid_point(center):
 		return {}
 	return {"center": center, "radius": _design_radius_to_screen(design, note.radius)}

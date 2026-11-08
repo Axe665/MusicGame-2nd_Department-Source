@@ -76,6 +76,12 @@ func _initialize() -> void:
 		"test_path_tail_judge",
 		"test_slide_floor",
 		"test_bell_path_clearance",
+		"test_simai_same_head_and_chain",
+		"test_simai_touch_layers",
+		"test_simai_seconds_slot",
+		"test_maimai_overlap_and_off_track",
+		"test_maimai_interaction_compress",
+		"test_maimai_hold_clamp",
 		"test_import_window_set",
 	]
 	for test_name in tests:
@@ -1284,7 +1290,7 @@ func test_trace_distance() -> bool:
 
 
 func test_simai_import() -> bool:
-	var text := "&title=Simai Test\n&artist=Tester\n&first=1\n&wholebpm=120\n&lv_1=5\n&des_1=me\n&inote_1=(120){4}\n1,2h[4:1],1-5[4:1],E1,\nE\n"
+	var text := "&title=Simai Test\n&artist=Tester\n&first=1\n&wholebpm=120\n&lv_1=5\n&des_1=me\n&inote_1=(120){4}\n1,2h[4:1],1-5[4:1],,,E1,\nE\n"
 	var path := "user://test_simai_maidata.txt"
 	var file := FileAccess.open(path, FileAccess.WRITE)
 	if file == null:
@@ -1326,8 +1332,8 @@ func test_simai_import() -> bool:
 
 
 func test_simai_osu_friendly() -> bool:
-	# 300BPM 的 1 拍 = 200ms（高于 MIN_SLIDE_MS），180° p 型星星弧长约 2.35R，
-	# 折合 2.35*330/0.2 = 3878px/s，超过 3400 的“甩尾”阈值，所以还是会被拉直。
+	# 300BPM 的 1 拍 = 200ms；180° p 型星星弧太长，超速时必须压短轨迹，
+	# 但形状仍然是 p，不再被拉成直线。
 	var text := "&title=T\n&wholebpm=120\n&lv_1=1\n&inote_1=(300){4},1p5[4:1],,,,\nE\n"
 	var path := "user://test_simai_friendly.txt"
 	var file := FileAccess.open(path, FileAccess.WRITE)
@@ -1341,6 +1347,8 @@ func test_simai_osu_friendly() -> bool:
 	if chart != null and not chart.notes.is_empty():
 		var note: Note = chart.notes[0]
 		eq(note.type, "path", "short p slide still imports")
+		ok(not ConvertOptimizer._trace_bad(note, chart), "over-fast star is compressed under the speed cap")
+		ok(ConvertOptimizer._trace_length(note.trace_pts) < 2.4, "compressed star is shorter than the full p arc")
 		var head := Vector2(float(note.trace_pts[0]["x"]), float(note.trace_pts[0]["y"]))
 		var tail := Vector2(float(note.trace_pts[-1]["x"]), float(note.trace_pts[-1]["y"]))
 		var max_deviation := 0.0
@@ -1348,7 +1356,7 @@ func test_simai_osu_friendly() -> bool:
 			var p := Vector2(float(point["x"]), float(point["y"]))
 			var q := clampf((p - head).dot(tail - head) / maxf(0.0001, (tail - head).length_squared()), 0.0, 1.0)
 			max_deviation = maxf(max_deviation, p.distance_to(head.lerp(tail, q)))
-		ok(max_deviation < 0.05, "over-fast star degrades to a straight osu-friendly path")
+		ok(max_deviation > 0.02, "compressed star keeps its p shape")
 	var loop: Array[Vector2] = [
 		Vector2(0, 0), Vector2(1, 1), Vector2(1, 0), Vector2(0, 1),
 	]
@@ -1485,13 +1493,18 @@ func test_simai_bend_shapes() -> bool:
 			for point in paths[0].trace_pts:
 				min_radius = minf(min_radius, sqrt(pow(float(point["x"]), 2) + pow(float(point["y"]), 2)))
 			ok(min_radius < 0.15, "v shape passes through the center")
-			var mid_p: Dictionary = paths[1].trace_pts[paths[1].trace_pts.size() / 2]
-			var mid_q: Dictionary = paths[2].trace_pts[paths[2].trace_pts.size() / 2]
-			var head := Vector2(float(paths[1].trace_pts[0]["x"]), float(paths[1].trace_pts[0]["y"]))
-			var tail := Vector2(float(paths[1].trace_pts[-1]["x"]), float(paths[1].trace_pts[-1]["y"]))
-			var side_p := (Vector2(float(mid_p["x"]), float(mid_p["y"])) - head).cross(tail - head)
-			var side_q := (Vector2(float(mid_q["x"]), float(mid_q["y"])) - head).cross(tail - head)
-			ok(signf(side_p) != signf(side_q), "p and q curve to opposite sides")
+			# p/q 是绕中心的旋转镜像：有向面积必须反号（不是简单的弦两侧）。
+			var area_p := 0.0
+			var area_q := 0.0
+			for i in paths[1].trace_pts.size() - 1:
+				var a := Vector2(float(paths[1].trace_pts[i]["x"]), float(paths[1].trace_pts[i]["y"]))
+				var b := Vector2(float(paths[1].trace_pts[i + 1]["x"]), float(paths[1].trace_pts[i + 1]["y"]))
+				area_p += a.cross(b)
+			for i in paths[2].trace_pts.size() - 1:
+				var a := Vector2(float(paths[2].trace_pts[i]["x"]), float(paths[2].trace_pts[i]["y"]))
+				var b := Vector2(float(paths[2].trace_pts[i + 1]["x"]), float(paths[2].trace_pts[i + 1]["y"]))
+				area_q += a.cross(b)
+			ok(signf(area_p) != signf(area_q), "p and q wind around the center in opposite directions")
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
 	return true
 
@@ -1777,7 +1790,7 @@ func test_convert_optimizer_fast_path() -> bool:
 	var chart := Chart.new()
 	chart.timing.points = [TimingPoint.new(0.0, 240.0, 4)]
 	var note := Note.new("path", 0.0, 90.0, 62.0)
-	# 0.5 拍 @240BPM = 125ms：先被"限速重建"，再被滑条底线降级，两段都要测。
+	# 0.5 拍 @240BPM = 125ms：先被“压短轨迹”，再被滑条底线降级，两段都要测。
 	note.end_beat = 0.5
 	note.wait_beat = 0.0
 	note.tail_angle = 270.0
@@ -1787,11 +1800,9 @@ func test_convert_optimizer_fast_path() -> bool:
 	chart.notes = [note]
 	var counts := {"tap": 0, "hold": 0, "path": 1, "bell": 0, "dropped": 0}
 	var stats := {"dropped": 0, "relaxed": 0, "rebuilt": 0, "degraded": 0, "bells_moved": 0}
-	ConvertOptimizer._rebuild_paths(chart, counts, stats, {})
-	eq(int(stats["rebuilt"]) + int(stats["degraded"]), 1, "fast path is rebuilt or degraded")
-	eq(note.type, "path", "rebuild keeps it a path")
-	ok(absf(JudgeMath.angle_delta(note.angle, note.tail_angle)) <= 45.01, "fast path tail is shortened to a reachable lane")
-	ok(note.trace_pts.size() >= 12, "rebuilt path is densely sampled")
+	ok(ConvertOptimizer._fit_speed(note, chart), "fast path can be shortened")
+	ok(not ConvertOptimizer._trace_bad(note, chart), "shortened trace stays under the speed cap")
+	ok(note.trace_pts.size() >= 2, "shortened path keeps samples")
 	# 125ms 仍然低于 MIN_SLIDE_MS：底线把它降级成 Hold。
 	ConvertOptimizer.enforce_slide_floor(chart, counts, stats)
 	ok(note.type != "path", "a 125ms slide is degraded by the floor")
@@ -1905,7 +1916,7 @@ func test_slide_floor() -> bool:
 	return true
 
 
-## Bell 压在同时段 Path 上时会被挪开（或者删掉），不能两个目标叠在一起。
+## Bell 压在同时段 Path 上、但不在星轨上时会被删掉：一个鼠标没法同时跟滑条又去接铃铛。
 func test_bell_path_clearance() -> bool:
 	var chart := Chart.new()
 	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
@@ -1922,10 +1933,150 @@ func test_bell_path_clearance() -> bool:
 	chart.notes = [path, bell]
 	var counts := {"tap": 0, "hold": 0, "path": 1, "bell": 1, "dropped": 0}
 	var stats := ConvertOptimizer.optimize_maimai(chart, counts)
-	var kept := chart.notes.has(bell)
-	ok(kept and int(stats.get("bells_moved", 0)) >= 1, "bell is pushed away from the path")
-	if kept:
-		ok(absf(bell.center_u - 0.0) > 0.001, "bell centre actually moved along the ring")
+	ok(not chart.notes.has(bell), "off-track bell during a slide is dropped")
+	ok(int(stats.get("off_track", 0)) >= 1, "off-track drop is reported")
+	return true
+
+
+func _import_inote(inote: String) -> Chart:
+	var text := "&title=T\n&wholebpm=120\n&first=0\n&lv_1=1\n&inote_1=" + inote + "\nE\n"
+	var path := "user://test_tmp_inote.txt"
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	if file == null:
+		return null
+	file.store_string(text)
+	file.close()
+	var chart := SimaiIO.import_maidata(path, 1)
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	return chart
+
+
+func test_simai_same_head_and_chain() -> bool:
+	var chart := _import_inote("(120){4}\n1-4[4:1]*-6[4:1],,,,,2,\n")
+	ok(chart != null, "same-head chart imports")
+	if chart != null:
+		var paths: Array[Note] = []
+		for note in chart.notes:
+			if note.type == "path":
+				paths.append(note)
+		eq(paths.size(), 1, "same-head group keeps one track")
+		if paths.size() == 1:
+			near(paths[0].tail_angle, 315.0, 0.01, "same-head keeps the tail nearest the next note")
+	var chain := _import_inote("(120){4}\n1-4q7-2[4:2],\n")
+	ok(chain != null, "chain chart imports")
+	if chain != null:
+		var paths: Array[Note] = []
+		for note in chain.notes:
+			if note.type == "path":
+				paths.append(note)
+		eq(paths.size(), 1, "chain is one path")
+		if paths.size() == 1:
+			near(paths[0].tail_angle, 45.0, 0.01, "chain ends on its final button")
+			near(paths[0].end_beat, 3.0, 0.01, "chain uses the final duration")
+	return true
+
+
+func test_simai_touch_layers() -> bool:
+	var chart := _import_inote("(120){4}\nA1,B1,C,D1,E1,\n")
+	ok(chart != null, "touch chart imports")
+	if chart == null:
+		return true
+	var bells: Array[Note] = []
+	for note in chart.notes:
+		if note.type == "bell":
+			bells.append(note)
+	eq(bells.size(), 5, "five touch zones import")
+	if bells.size() == 5:
+		near(bells[0].bell_radius, 1.0, 0.001, "A is on the outer ring")
+		near(bells[1].bell_radius, 0.70, 0.001, "B is on the inner ring")
+		near(bells[2].bell_radius, 0.0, 0.001, "C is the center")
+		near(bells[3].bell_radius, 1.0, 0.001, "D is on the outer gap")
+		near(bells[4].bell_radius, 0.80, 0.001, "E is on the inner gap")
+		near(bells[0].angle, 90.0, 0.01, "A1 sits on button 1")
+		near(bells[3].angle, 67.5, 0.01, "D1 sits between button 1 and 2")
+		var restored := Note.from_dict(bells[2].to_dict())
+		near(restored.bell_radius, 0.0, 0.001, "center bell radius roundtrips")
+	return true
+
+
+func test_simai_seconds_slot() -> bool:
+	var chart := _import_inote("(120){#0.25}1,2,3,\n")
+	ok(chart != null, "seconds slot chart imports")
+	if chart != null:
+		var taps: Array[Note] = []
+		for note in chart.notes:
+			if note.type == "tap":
+				taps.append(note)
+		eq(taps.size(), 3, "seconds slot keeps three taps")
+		if taps.size() == 3:
+			near(taps[1].beat, 0.5, 0.001, "0.25s at 120BPM is half a beat")
+			near(taps[2].beat, 1.0, 0.001, "seconds slot advances the grid")
+	return true
+
+
+func test_maimai_overlap_and_off_track() -> bool:
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	var first := Note.new("path", 0.0, 90.0, 62.0)
+	first.end_beat = 4.0
+	first.wait_beat = 1.0
+	first.space = "plane"
+	first.tail_angle = 270.0
+	first.trace_pts = _straight_trace(90.0, 270.0, 4.0, 12)
+	var second := Note.new("path", 2.0, 90.0, 62.0)
+	second.end_beat = 5.0
+	second.wait_beat = 1.0
+	second.space = "plane"
+	second.tail_angle = 270.0
+	second.trace_pts = _straight_trace(90.0, 270.0, 5.0, 12)
+	var on_track := Note.new("tap", 3.0, 270.0, 60.0)
+	var off_track := Note.new("tap", 3.5, 90.0, 60.0)
+	chart.notes = [first, second, on_track, off_track]
+	var counts := {"tap": 2, "hold": 0, "path": 2, "bell": 0, "dropped": 0}
+	var stats := ConvertOptimizer.optimize_maimai(chart, counts)
+	near(first.end_beat, 2.0, 0.001, "early slide is shortened to the next head")
+	near(JudgeMath.angle_delta(second.angle, first.tail_angle), 0.0, 0.01, "next head snaps to the previous tail")
+	ok(chart.notes.has(on_track), "tap on the slide track survives")
+	ok(not chart.notes.has(off_track), "tap off the slide track is dropped")
+	ok(int(stats["shortened"]) >= 1 and int(stats["snapped"]) >= 1, "shorten/snap are reported")
+	ok(int(stats["off_track"]) >= 1, "off-track removal is reported")
+	return true
+
+
+func test_maimai_interaction_compress() -> bool:
+	var slow := Chart.new()
+	slow.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	slow.notes = [Note.new("tap", 0.0, 90.0, 60.0), Note.new("tap", 4.0, 270.0, 60.0)]
+	ConvertOptimizer.optimize_maimai(slow, {"tap": 2, "hold": 0, "path": 0, "bell": 0, "dropped": 0})
+	near(slow.notes[1].angle, 270.0, 0.01, "slow 180-degree jump keeps its position")
+	var fast := Chart.new()
+	fast.timing.points = [TimingPoint.new(0.0, 200.0, 4)]
+	var angles := [90.0, 270.0, 90.0, 270.0]
+	for i in angles.size():
+		fast.notes.append(Note.new("tap", float(i) * 0.25, float(angles[i]), 60.0))
+	ConvertOptimizer.optimize_maimai(fast, {"tap": 4, "hold": 0, "path": 0, "bell": 0, "dropped": 0})
+	var largest := 0.0
+	for i in range(1, fast.notes.size()):
+		largest = maxf(largest, absf(JudgeMath.angle_delta(fast.notes[i - 1].angle, fast.notes[i].angle)))
+	ok(largest <= 45.01, "fast 180-degree interaction is compressed to 45 degrees (got %.1f)" % largest)
+	return true
+
+
+func test_maimai_hold_clamp() -> bool:
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	var hold := Note.new("hold", 0.0, 90.0, 62.0)
+	hold.end_beat = 4.0
+	chart.notes = [hold, Note.new("tap", 2.0, 90.0, 60.0)]
+	ConvertOptimizer.optimize_maimai(chart, {"tap": 1, "hold": 1, "path": 0, "bell": 0, "dropped": 0})
+	near(hold.end_beat, 1.9375, 0.001, "hold is shortened just before the next press")
+	var short := Chart.new()
+	short.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	var tiny := Note.new("hold", 0.0, 90.0, 62.0)
+	tiny.end_beat = 4.0
+	short.notes = [tiny, Note.new("tap", 0.25, 90.0, 60.0)]
+	ConvertOptimizer.optimize_maimai(short, {"tap": 1, "hold": 1, "path": 0, "bell": 0, "dropped": 0})
+	eq(tiny.type, "tap", "a hold shorter than half a beat becomes a tap")
 	return true
 
 

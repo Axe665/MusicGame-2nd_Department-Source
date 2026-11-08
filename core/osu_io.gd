@@ -219,12 +219,13 @@ static func parse_osu(text: String, source_name: String = "") -> Dictionary:
 	objects_raw.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return float(a["time"]) < float(b["time"]))
 	if mode == 0:
 		var std_counts := _convert_std_continuous(objects_raw, chart, timing_raw, slider_multiplier, circle_radius, difficulty)
-		var stats := ConvertOptimizer.optimize_osu(chart, std_counts)
+		var deduped := _dedupe_std_simultaneous(chart, std_counts)
+		var snapped := ConvertOptimizer.snap_heads_to_path_tails(chart)
 		var shift := _shift_chart_to_zero(chart)
 		chart.refresh_ids()
 		report.append("保留：Tap %d，Path %d，Hold %d；跳过：spinner %d，无效 %d" % [std_counts["tap"], std_counts["path"], std_counts["hold"], std_counts["spinner"], std_counts["invalid"]])
 		report.append("Sentakki 转换：circle → 环上 Tap；slider → 段库 Path；lazy/短 → Hold；流向按相邻中点，大跳按两端道差，Path 直接推进到相对终点道。")
-		report.append("鼠标优化：调整 %d，删除 %d。" % [stats["relaxed"], stats["dropped"]])
+		report.append("同刻去重：删除 %d 个；尾判撞头判：吸附 %d 个（鼠标只有一只）。" % [deduped, snapped])
 		if shift > 0.001:
 			report.append("已整体平移 %.2f 拍，使最早 note 落在 beat 0；offset 调整为 %.0f ms。" % [shift, chart.offset_ms])
 		if int(std_counts["spinner"]) > 0:
@@ -338,6 +339,50 @@ static func _shift_chart_to_zero(chart: Chart) -> float:
 	return delta
 
 
+## 鼠标只有一只：同一毫秒的多个 Sentakki 音符只留一个。
+## 优先级 Path > Hold > Tap；同优先级取离上一颗（含 Path 尾巴）最近的那颗。
+static func _dedupe_std_simultaneous(chart: Chart, counts: Dictionary) -> int:
+	var ordered := chart.sorted_notes()
+	var kept: Array[Note] = []
+	var dropped := 0
+	var i := 0
+	while i < ordered.size():
+		var group: Array[Note] = [ordered[i]]
+		var group_ms := chart.timing.beat_to_chart_ms(ordered[i].beat)
+		var j := i + 1
+		while j < ordered.size() and absf(chart.timing.beat_to_chart_ms(ordered[j].beat) - group_ms) < 1.0:
+			group.append(ordered[j])
+			j += 1
+		var best: Note = group[0]
+		var best_score := _std_dedupe_score(best, kept)
+		for k in range(1, group.size()):
+			var score := _std_dedupe_score(group[k], kept)
+			if score > best_score:
+				best = group[k]
+				best_score = score
+		kept.append(best)
+		for note in group:
+			if note == best:
+				continue
+			chart.notes.erase(note)
+			if counts.has(note.type):
+				counts[note.type] = maxi(0, int(counts[note.type]) - 1)
+			dropped += 1
+		i = j
+	return dropped
+
+
+static func _std_dedupe_score(note: Note, kept: Array[Note]) -> float:
+	var priority := 3.0 if note.type == "path" else (2.0 if note.type == "hold" else 1.0)
+	var distance := 0.0
+	if not kept.is_empty():
+		var previous: Note = kept[-1]
+		var previous_angle := previous.tail_angle if previous.type == "path" else previous.angle
+		distance = absf(JudgeMath.angle_delta(previous_angle, note.angle))
+	# 优先级远大于角度差：同刻先保星星，其次再比谁更顺。
+	return priority * 1000.0 - distance
+
+
 static func _convert_std_continuous(objects_raw: Array, chart: Chart, timing_raw: Array[Dictionary], slider_multiplier: float, circle_radius: float, difficulty: Dictionary) -> Dictionary:
 	var counts := {"tap": 0, "path": 0, "hold": 0, "spinner": 0, "invalid": 0}
 	var play: Array[Dictionary] = []
@@ -426,21 +471,12 @@ static func _convert_std_continuous(objects_raw: Array, chart: Chart, timing_raw
 					counts["path"] += 1
 					is_path = true
 			if not is_path:
-				var hold_duration := maxf(0.25, duration_beats)
-				end_beat = beat + hold_duration
-				var clamped := false
-				if i + 1 < play.size() and end_beat > float(play[i + 1]["beat"]) - 0.0625:
-					end_beat = float(play[i + 1]["beat"]) - 0.0625
-					clamped = true
-				if clamped and end_beat - beat < 0.5:
-					note = Note.new("tap", beat, u, 60.0)
-					end_beat = beat
-					counts["tap"] += 1
-				else:
-					note = Note.new("hold", beat, u, 60.0)
-					note.end_beat = end_beat
-					note.hold_style = "straight"
-					counts["hold"] += 1
+				# Sentakki 的 Hold 用滑条完整时长，不夹到下一颗音符。
+				end_beat = beat + duration_beats
+				note = Note.new("hold", beat, u, 60.0)
+				note.end_beat = end_beat
+				note.hold_style = "straight"
+				counts["hold"] += 1
 		if note == null:
 			note = Note.new("tap", beat, u, 60.0)
 			end_beat = beat
