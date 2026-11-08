@@ -2985,55 +2985,22 @@ func _draw_seeks(canvas: Control, chart: Chart, t: float) -> void:
 		var grow := clampf((t - (note.beat - pre)) / maxf(0.001, pre), 0.0, 1.0)
 		var fade := clampf((note.beat + 0.5 - t) / 0.5, 0.0, 1.0)
 		var color := UITheme.SEEK_IN if note.seek_orien == 0 else UITheme.SEEK_OUT
-		var shaft := clampf(ring_radius * 0.10, 16.0, 36.0)
-		# WACCA 式擦键：中心一小圈实色环，随预读整体放大，判定拍刚好贴到外环。
-		var radius := lerpf(maxf(34.0, shaft * 1.35), ring_radius, grow)
-		var band := clampf(ring_radius * 0.05, 6.0, 14.0)
-		canvas.draw_arc(center, radius, 0.0, TAU, 72, Color(color.r, color.g, color.b, 0.12 * fade), band + 12.0, true)
-		canvas.draw_arc(center, radius, 0.0, TAU, 72, Color(color.r, color.g, color.b, 0.92 * fade), band, true)
-		canvas.draw_arc(center, radius, 0.0, TAU, 72, Color(1, 1, 1, 0.30 * fade), band * 0.28, true)
-		# 中心大箭头从出现的第一帧就在，直接告诉玩家滚轮往哪边滚。
-		_draw_seek_direction(canvas, center, note.seek_orien == 0, color, fade, shaft)
-		# 环上的小箭头只在接近外环时淡入，保留擦键的方向感。
-		var arrow_alpha := clampf((grow - 0.70) / 0.30, 0.0, 1.0) * fade
-		if arrow_alpha > 0.01:
-			var inward := note.seek_orien == 0
-			var count := 8
-			var reach := band * 0.5 + 7.0
-			for i in count:
-				var a := TAU * float(i) / float(count) - PI * 0.5
-				var dir := Vector2(cos(a), sin(a))
-				var base := center + dir * radius
-				var tip := base + dir * (-reach if inward else reach)
-				var side := Vector2(-dir.y, dir.x) * 5.0
-				canvas.draw_colored_polygon(PackedVector2Array([
-					tip, base + side, base - side,
-				]), Color(color.r, color.g, color.b, 0.92 * arrow_alpha))
-
-
-## 环心的大号滚轮方向：上 = 朝里，下 = 朝外；箭头带轻微上下浮动。
-func _draw_seek_direction(canvas: Control, center: Vector2, inward: bool, color: Color, alpha: float, shaft: float) -> void:
-	if alpha <= 0.01:
-		return
-	var dir := -1.0 if inward else 1.0
-	var bob := sin(Time.get_ticks_msec() / 1000.0 * 5.0) * 2.0 * dir
-	var c := center + Vector2(0.0, bob)
-	var half := shaft * 0.5
-	var head := shaft * 0.55
-	var width := clampf(shaft * 0.22, 4.0, 8.0)
-	var tail := c - Vector2(0.0, dir * half)
-	var neck := c + Vector2(0.0, dir * half)
-	var tip := c + Vector2(0.0, dir * (half + head))
-	var back := shaft * 1.20
-	canvas.draw_circle(c, back, Color(0, 0, 0, 0.42 * alpha))
-	canvas.draw_arc(c, back, 0.0, TAU, 40, Color(color.r, color.g, color.b, 0.55 * alpha), 2.0, true)
-	canvas.draw_line(tail, neck, Color(0, 0, 0, 0.65 * alpha), width + 5.0, true)
-	canvas.draw_line(tail, neck, Color(color.r, color.g, color.b, 0.96 * alpha), width, true)
-	var side := width * 2.2
-	canvas.draw_colored_polygon(PackedVector2Array([
-		tip, Vector2(c.x - side, neck.y), Vector2(c.x + side, neck.y),
-	]), Color(color.r, color.g, color.b, 0.96 * alpha))
-	canvas.draw_polyline(PackedVector2Array([tail, neck]), Color(1, 1, 1, 0.35 * alpha), maxf(1.0, width * 0.28), true)
+		var radius := ring_radius * grow
+		canvas.draw_arc(center, radius, 0.0, TAU, 48, Color(color.r, color.g, color.b, 0.16 * fade), 10.0, true)
+		canvas.draw_arc(center, radius, 0.0, TAU, 48, Color(color.r, color.g, color.b, 0.95 * fade), 3.0, true)
+		var inward := note.seek_orien == 0
+		var count := 8
+		for i in count:
+			var a := TAU * float(i) / float(count) - PI * 0.5
+			var dir := Vector2(cos(a), sin(a))
+			var tip := center + dir * radius + dir * (-8.0 if inward else 8.0)
+			var base := center + dir * radius
+			var side := Vector2(-dir.y, dir.x) * 4.5
+			canvas.draw_colored_polygon(PackedVector2Array([
+				tip, base + side, base - side,
+			]), Color(color.r, color.g, color.b, 0.9 * fade))
+		var label := "SEEK IN" if inward else "SEEK OUT"
+		_draw_label(canvas, label, center + Vector2(radius + 12.0, -radius - 8.0), color)
 
 
 func cut_trace(note: Note, from_fraction: float, to_fraction: float) -> void:
