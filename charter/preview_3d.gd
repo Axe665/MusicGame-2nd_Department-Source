@@ -27,11 +27,9 @@ const BELL_SIZE_SCALE := 0.75
 const END_FADE_SEC := 0.1
 ## 松手补按窗口内的变暗程度（1 = 不变暗）。
 const HOLD_SLIP_DIM := 0.35
-## 命中后音符本体向外扩散的时长与放大倍数（osu!std 式击打光）。
+## 命中后音符整体放大淡出的时长与最终倍数（osu!std 式击打光）。
 const NOTE_POP_SEC := 0.28
-const NOTE_POP_SCALE := 1.45
-## 音符外圈那层更大的命中光环，相对起始半径的放大倍数。
-const NOTE_HIT_RING_SCALE := 2.2
+const NOTE_POP_SCALE := 2.2
 
 var chart_override: Chart = null
 var follow_app: bool = true
@@ -3401,33 +3399,7 @@ func _draw_arc_flashes(canvas: Control) -> void:
 		canvas.draw_polyline(points, Color(color.r, color.g, color.b, 0.95 * alpha), 3.0, false)
 
 
-## 把一条带子（中心线 + 半径）转成闭合轮廓，扩散时画细线而不是实心带。
-func _band_outline(points: PackedVector2Array, half: float) -> PackedVector2Array:
-	var left := PackedVector2Array()
-	var right := PackedVector2Array()
-	for i in points.size():
-		var tangent: Vector2
-		if i == 0:
-			tangent = points[1] - points[0]
-		elif i == points.size() - 1:
-			tangent = points[i] - points[i - 1]
-		else:
-			tangent = points[i + 1] - points[i - 1]
-		if tangent.length_squared() < 0.0001:
-			continue
-		var normal := Vector2(-tangent.y, tangent.x).normalized()
-		left.append(points[i] + normal * half)
-		right.append(points[i] - normal * half)
-	var outline := PackedVector2Array()
-	outline.append_array(left)
-	for i in range(right.size() - 1, -1, -1):
-		outline.append(right[i])
-	if outline.size() > 1:
-		outline.append(outline[0])
-	return outline
-
-
-## 命中后留在原地的音符本体：轮廓向外放大并淡出（osu!std 击打光）。
+## 命中后留在原地的音符本体：整体放大到数倍并淡出（osu!std 击打光）。
 func add_note_pop(kind: String, note: Note, beat: float) -> void:
 	var chart := get_chart()
 	if chart == null:
@@ -3440,12 +3412,10 @@ func add_note_pop(kind: String, note: Note, beat: float) -> void:
 		if not _valid_point(point):
 			return
 		pop["point"] = point
-		pop["center"] = point
 		pop["color"] = note.custom_color if note.has_custom_color else star_color
 		var base_scale := clampf(ns * PATH_SIZE_SCALE * PATH_HEAD_SCALE, 0.2, 2.0)
-		var base := 24.0 * base_scale * float(_skin()["scale"]) * PATH_SIZE_SCALE * PATH_HEAD_SCALE
-		pop["base"] = base
-		pop["ring_base"] = base
+		pop["base"] = base_scale * float(_skin()["scale"]) * PATH_SIZE_SCALE * PATH_HEAD_SCALE
+		pop["arc_base"] = ns * PATH_SIZE_SCALE * PATH_HEAD_SCALE
 	else:
 		var points := note_live_band(note, beat)
 		if points.size() < 2:
@@ -3455,11 +3425,11 @@ func add_note_pop(kind: String, note: Note, beat: float) -> void:
 			center += p
 		center /= float(points.size())
 		var skin := _skin()
-		pop["outline"] = _band_outline(points, 9.0 * ns * float(skin["scale"]) * float(skin["band"]))
+		pop["points"] = points
 		pop["center"] = center
 		pop["color"] = UITheme.GOLD if kind == "hold" else UITheme.PINK
+		pop["width"] = 18.0 * ns * float(skin["scale"]) * float(skin["band"])
 		pop["cap"] = 6.0 * ns * float(skin["scale"])
-		pop["ring_base"] = 16.0 * ns * float(skin["scale"])
 	_note_pops.append(pop)
 	while _note_pops.size() > 24:
 		_note_pops.pop_front()
@@ -3482,36 +3452,41 @@ func _draw_note_pops(canvas: Control) -> void:
 		var pop_scale := note_pop_scale(age)
 		var color: Color = pop["color"]
 		var flash := clampf(1.0 - age / 0.08, 0.0, 1.0)
-		# 音符外圈的大命中光环：细、淡、扩得比本体更远。
-		var ring_center: Vector2 = pop["center"]
-		var ring_t := clampf(age / NOTE_POP_SEC, 0.0, 1.0)
-		var ring_scale := 1.0 + (NOTE_HIT_RING_SCALE - 1.0) * (1.0 - pow(1.0 - ring_t, 2.0))
-		var ring_radius := float(pop["ring_base"]) * ring_scale
-		var ring_alpha := (1.0 - ring_t) * 0.55
-		canvas.draw_arc(ring_center, ring_radius, 0.0, TAU, 48, Color(star_color.r, star_color.g, star_color.b, 0.10 * ring_alpha), 7.0, true)
-		canvas.draw_arc(ring_center, ring_radius, 0.0, TAU, 48, Color(star_color.r, star_color.g, star_color.b, 0.60 * ring_alpha), 2.0, true)
 		if String(pop.get("kind", "")) == "path":
+			# 星头落点标记整体放大：软光 + 黑底 + 白环 + 颜色外弧。
 			var point: Vector2 = pop["point"]
-			var base := float(pop["base"])
-			var ring := base * pop_scale
-			canvas.draw_arc(point, ring, 0.0, TAU, 40, Color(color.r, color.g, color.b, 0.16 * alpha), 6.0, true)
-			canvas.draw_arc(point, ring, 0.0, TAU, 40, Color(color.r, color.g, color.b, 0.90 * alpha), 2.2, true)
+			var s := float(pop["base"]) * pop_scale
+			canvas.draw_circle(point, 31.0 * s, Color(color.r, color.g, color.b, 0.16 * alpha))
+			canvas.draw_circle(point, 24.0 * s, Color(0, 0, 0, 0.30 * alpha))
+			canvas.draw_arc(point, 24.0 * s, 0.0, TAU, 30, Color(1, 1, 1, 0.30 * alpha), 2.0, true)
+			canvas.draw_arc(point, 28.0 * float(pop["arc_base"]) * pop_scale, 0.0, TAU, 30,
+				Color(color.r, color.g, color.b, 0.95 * alpha), 2.4, true)
 			if flash > 0.0:
-				canvas.draw_arc(point, ring, 0.0, TAU, 40, Color(1, 1, 1, 0.55 * flash), 1.4, true)
-			canvas.draw_circle(point, maxf(2.0, base * 0.12 * pop_scale), Color(color.r, color.g, color.b, 0.90 * alpha))
+				canvas.draw_circle(point, 16.0 * s, Color(1, 1, 1, 0.35 * flash))
 			continue
-		var outline: PackedVector2Array = pop["outline"]
+		# Tap / Hold 头：把整条音符（带体 + 两端圆头 + 中心点）一起放大淡出。
+		var points: PackedVector2Array = pop["points"]
 		var center: Vector2 = pop["center"]
 		var scaled := PackedVector2Array()
-		for p in outline:
+		for p in points:
 			scaled.append(center + (p - center) * pop_scale)
 		if scaled.size() < 2:
 			continue
-		canvas.draw_polyline(scaled, Color(color.r, color.g, color.b, 0.16 * alpha), 6.0, true)
-		canvas.draw_polyline(scaled, Color(color.r, color.g, color.b, 0.88 * alpha), 2.2, true)
+		var width := float(pop["width"]) * pop_scale
+		var cap := float(pop["cap"]) * pop_scale
+		canvas.draw_polyline(scaled, Color(0, 0, 0, 0.55 * alpha), width + 5.0 * pop_scale, true)
+		canvas.draw_polyline(scaled, Color(1, 1, 1, 0.92 * alpha), width, true)
+		canvas.draw_polyline(scaled, Color(color.r, color.g, color.b, 0.94 * alpha), maxf(3.0, width * 0.62), true)
+		for endpoint in [scaled[0], scaled[-1]]:
+			canvas.draw_circle(endpoint, cap * 2.0, Color(0, 0, 0, 0.66 * alpha))
+			canvas.draw_circle(endpoint, cap * 1.58, Color(1, 1, 1, 0.94 * alpha))
+			canvas.draw_circle(endpoint, cap, Color(color.r, color.g, color.b, 0.95 * alpha))
+		var middle := scaled[scaled.size() / 2]
+		canvas.draw_circle(middle, cap * 1.33, Color(0, 0, 0, 0.55 * alpha))
+		canvas.draw_circle(middle, cap, Color(1, 1, 1, 0.96 * alpha))
+		canvas.draw_circle(middle, cap * 0.5, color)
 		if flash > 0.0:
-			canvas.draw_polyline(scaled, Color(1, 1, 1, 0.55 * flash), 1.4, true)
-		canvas.draw_circle(center, float(pop["cap"]) * pop_scale, Color(color.r, color.g, color.b, 0.90 * alpha))
+			canvas.draw_polyline(scaled, Color(1, 1, 1, 0.50 * flash), maxf(2.0, width * 0.30), true)
 
 
 func _draw_pulses(canvas: Control) -> void:
