@@ -358,7 +358,7 @@ func _build_ui() -> void:
 	result_buttons.add_child(_results_button)
 
 	var bottom := Label.new()
-	bottom.text = "任意有效键：Tap / Hold / Anchor；Path / Bell 用鼠标定位；Seek 用滚轮上/下接住；Limit 停留 200ms 断连；[ / ] 判定偏移。"
+	bottom.text = "任意有效键：Tap / Hold / Anchor；Path / Bell 用鼠标定位；Seek：滚轮↑=内 / ↓=外（青↑ / 橙↓）；Limit 停留 200ms 断连；[ / ] 判定偏移。"
 	bottom.add_theme_font_size_override("font_size", 11)
 	bottom.add_theme_color_override("font_color", Color(UITheme.MUTED.r, UITheme.MUTED.g, UITheme.MUTED.b, 0.8))
 	bottom.mouse_filter = Control.MOUSE_FILTER_IGNORE
