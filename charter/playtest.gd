@@ -11,7 +11,12 @@ const GOOD_MS := 170.0
 const BAD_MS := 250.0
 const HIT_WINDOW_MS := BAD_MS
 ## 早按只认这么多：更早的按键不消耗音符，可以再按一次。
-const EARLY_MS := 160.0
+## 收到 GREAT 边界，误按早一点点不会把音符判成 GOOD。
+const EARLY_MS := 115.0
+## 按键只在按下这一帧参与判定：误按不会隔半秒被后面的音符捡走。
+const PRESS_KEEP_MS := 34.0
+## 同一个键 50ms 内的重复按下只算一次（手抖双击）。
+const KEY_DEBOUNCE_MS := 50.0
 const BELL_WINDOW_MS := 300.0
 const RED_LIMIT_SEC := 0.2
 const PATH_TAIL_RADIUS := 192.0
@@ -63,6 +68,8 @@ var _ui_accum: float = 0.0
 
 var _states: Dictionary = {}
 var _key_presses: Array[Dictionary] = []
+## 每个键上一次按下的时间，用来吃掉手抖双击。
+var _last_press_ms: Dictionary = {}
 var _keys_held: Dictionary = {}
 var _red_states: Dictionary = {}
 
@@ -365,6 +372,7 @@ func _init_states() -> void:
 	_states.clear()
 	_red_states.clear()
 	_key_presses.clear()
+	_last_press_ms.clear()
 	_keys_held.clear()
 	_hit_count = 0
 	_miss_count = 0
@@ -496,7 +504,7 @@ func _process(delta: float) -> void:
 		_update_hud()
 	if beat > chart.duration_beats() + 2.0:
 		_finish()
-	var keep_ms := HIT_WINDOW_MS + 60.0
+	var keep_ms := PRESS_KEEP_MS
 	while not _key_presses.is_empty() and float(_key_presses[0].get("time", -INF)) < judge_ms - keep_ms:
 		_key_presses.pop_front()
 
@@ -1259,6 +1267,9 @@ func _take_key_for_sector(lo: float, hi: float, angle: float, width: float, targ
 		var press_angle := float(press.get("angle", NAN))
 		if is_nan(press_angle):
 			continue
+		# 鼠标在圈心/屏幕角落时按下的键没有方向意图，不参与密集段的方向判定。
+		if not bool(press.get("valid", true)):
+			continue
 		# 就近分配：先比方向差多少，时间只做平手裁决。
 		var delta := absf(JudgeMath.angle_delta(press_angle, angle))
 		if delta > half:
@@ -1625,14 +1636,18 @@ func _input(event: InputEvent) -> void:
 				return
 			var key: int = event.physical_keycode if event.physical_keycode != 0 else event.keycode
 			var stamp := _chart_ms() + float(_app.playtest_offset_ms if _app != null else 0.0)
-			_key_presses.append({
-				"time": stamp,
-				"mouse": _preview.mouse_screen,
-				"angle": _preview.screen_angle_deg(_preview.mouse_screen),
-				"u": _preview.cursor_u,
-				"valid": _preview.cursor_valid,
-				"key": key,
-			})
+			# 同一个键的手抖双击只算一次；和弦用不同键，不受影响。
+			var repeated := stamp - float(_last_press_ms.get(key, -INF)) < KEY_DEBOUNCE_MS
+			_last_press_ms[key] = stamp
+			if not repeated:
+				_key_presses.append({
+					"time": stamp,
+					"mouse": _preview.mouse_screen,
+					"angle": _preview.screen_angle_deg(_preview.mouse_screen),
+					"u": _preview.cursor_u,
+					"valid": _preview.cursor_valid,
+					"key": key,
+				})
 			_keys_held[key] = true
 			get_viewport().set_input_as_handled()
 		elif not event.pressed:

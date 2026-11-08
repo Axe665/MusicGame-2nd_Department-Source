@@ -508,7 +508,9 @@ func test_style_presets() -> bool:
 	eq(Playtest.GREAT_MS, 115.0, "great window tightened")
 	eq(Playtest.GOOD_MS, 170.0, "good window tightened")
 	eq(Playtest.POSITION_TOLERANCE_PX, 120.0, "one head tolerance for every note type")
-	eq(Playtest.EARLY_MS, 160.0, "early presses are accepted for 160ms")
+	eq(Playtest.EARLY_MS, 115.0, "early presses stop at the GREAT boundary")
+	ok(Playtest.PRESS_KEEP_MS < 100.0, "a press only lives for about one frame")
+	eq(Playtest.KEY_DEBOUNCE_MS, 50.0, "the same key is debounced for 50ms")
 	ok(Playtest.EARLY_MS < Playtest.HIT_WINDOW_MS, "early presses are stricter than late ones")
 	eq(Playtest.PATH_TAIL_SWEEP_EARLY_MS, 220.0, "finishing a slide early stops at the GOOD window")
 	ok(Playtest.HOLD_RELEASE_GRACE_MS >= 100.0 and Playtest.HOLD_RELEASE_GRACE_MS <= 260.0,
@@ -548,7 +550,7 @@ func test_position_judgement() -> bool:
 	# 早按只认 EARLY_MS：更早的按键不进判定，避免乱按把后面的音符打掉。
 	eq(Playtest.HIT_WINDOW_MS, Playtest.BAD_MS, "late presses keep the BAD window")
 	eq(run._tier_for(-60.0), "PERFECT", "a 60ms early press is PERFECT")
-	eq(run._tier_for(-160.0), "GOOD", "the earliest accepted press is GOOD, never BAD")
+	eq(run._tier_for(-115.0), "GREAT", "the earliest accepted press is GREAT")
 	eq(run._tier_for(-260.0), "MISS", "a 260ms early press is outside the window")
 	run.free()
 	return true
@@ -576,6 +578,13 @@ func test_press_assignment() -> bool:
 	]
 	var point := run._take_key_for_point(990.0, 1020.0, Vector2(100, 0), 120.0, 1000.0)
 	eq(float(point.get("time", -1.0)), 1012.0, "the press nearest the point wins")
+	# 光标在圈心/屏幕角落时按下的键没有方向意图，密集段不该吃它。
+	run._key_presses = [{"time": 1000.0, "angle": 88.0, "valid": false}]
+	ok(run._take_key_for_sector(990.0, 1010.0, 88.0, 100.0, 1000.0).is_empty(),
+		"a press made off the ring cannot take a dense sector")
+	run._key_presses = [{"time": 1000.0, "angle": 88.0, "valid": true}]
+	ok(not run._take_key_for_sector(990.0, 1010.0, 88.0, 100.0, 1000.0).is_empty(),
+		"a press made on the ring takes the sector")
 	run.free()
 	return true
 
