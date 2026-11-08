@@ -2974,7 +2974,8 @@ func _draw_seeks(canvas: Control, chart: Chart, t: float) -> void:
 	var edge := project_design(Vector2(1.0, 0.0))
 	# Stop at the inner edge of the judgement ring, not its centre line.
 	var ring_radius := maxf(20.0, center.distance_to(edge) - 8.0)
-	for note in _notes_in_range(chart, t - pre - 2.0, t + 1.0):
+	# 必须把整个预读窗口都取进来：Seek 从 note.beat - pre 就开始从圆心长大。
+	for note in _notes_in_range(chart, t - pre - 2.0, t + pre + 0.5):
 		if note.type != "seek" or t < note.beat - pre or t > note.beat + 0.5:
 			continue
 		var grow := clampf((t - (note.beat - pre)) / maxf(0.001, pre), 0.0, 1.0)
