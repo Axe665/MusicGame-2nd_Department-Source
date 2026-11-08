@@ -509,8 +509,8 @@ func test_style_presets() -> bool:
 	eq(Playtest.GOOD_MS, 170.0, "good window tightened")
 	eq(Playtest.POSITION_TOLERANCE_PX, 90.0, "position tolerance is 90px")
 	eq(Playtest.HOLD_HEAD_EXTRA_PX, 40.0, "hold head gets extra tolerance")
-	ok(Playtest.HOLD_RELEASE_GRACE_MS >= 80.0 and Playtest.HOLD_RELEASE_GRACE_MS <= 200.0,
-		"the hold release grace stays short")
+	ok(Playtest.HOLD_RELEASE_GRACE_MS >= 100.0 and Playtest.HOLD_RELEASE_GRACE_MS <= 260.0,
+		"the hold release grace is long enough to re-press")
 	ok(Playtest.hold_release_grace_alive(1000.0, 1000.0 + Playtest.HOLD_RELEASE_GRACE_MS - 1.0),
 		"a slip inside the grace keeps the hold alive")
 	ok(not Playtest.hold_release_grace_alive(1000.0, 1000.0 + Playtest.HOLD_RELEASE_GRACE_MS),
@@ -1898,6 +1898,8 @@ func test_note_retire_state() -> bool:
 	ok(Preview3D.note_is_retired(preview.note_state(1)), "a hit note is retired")
 	preview.set_note_state(2, "holding")
 	ok(not Preview3D.note_is_retired(preview.note_state(2)), "a held note keeps its body")
+	preview.set_note_state(5, "slip")
+	ok(not Preview3D.note_is_retired(preview.note_state(5)), "a slipped hold stays on screen while dimmed")
 	preview.set_note_state(3, "miss", 12.0)
 	ok(Preview3D.note_is_retired(preview.note_state(3)), "a missed note is retired")
 	near(float(preview.note_state_beats.get(3, 0.0)), 12.0, 0.001, "the miss beat drives the hold fade")

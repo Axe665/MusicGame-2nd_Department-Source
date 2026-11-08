@@ -33,7 +33,7 @@ const POSITION_TOLERANCE_PX := 90.0
 const HOLD_HEAD_EXTRA_PX := 40.0
 const HOLD_ARC_PAD := 10.0
 ## Hold 中途短暂松手不算断：这个时间内补按回来就继续按住。
-const HOLD_RELEASE_GRACE_MS := 120.0
+const HOLD_RELEASE_GRACE_MS := 200.0
 ## 动态 offset：至少这么多次命中才开始自动校准。
 const DYNAMIC_SAMPLE_MIN := 8
 ## 每次命中把偏移往消除偏差的方向挪这么多。
@@ -845,9 +845,11 @@ func _judge_hold(note: Note, ms: float, beat: float) -> void:
 	# Hold 绑定起手键：松开起手键才算断，换成另一个键点 Tap 不会误续。
 	var hold_key := int(state.get("key", 0))
 	if hold_key != 0 and not _keys_held.has(hold_key):
-		# 短暂松手不算断：120ms 内补按回来就继续按住；超时才按已按住的比例结算。
+		# 短暂松手不算断：补按窗口内继续按住；超时才按已按住的比例结算。
 		if not state.has("release_ms"):
 			state["release_ms"] = ms
+			# 变暗提示玩家：手松了，但还有时间按回来。
+			_preview.set_note_state(note.id, "slip")
 		var release_ms := float(state["release_ms"])
 		if hold_release_grace_alive(release_ms, ms):
 			return
@@ -870,6 +872,8 @@ func _judge_hold(note: Note, ms: float, beat: float) -> void:
 			_add_log("HOLD #%d EARLY RELEASE %s" % [note.id, held_tier])
 		return
 	state.erase("release_ms")
+	if _preview.note_state(note.id) == "slip":
+		_preview.set_note_state(note.id, "holding")
 	if ms >= end_ms:
 		var tier := String(state.get("head_tier", "PERFECT"))
 		state["done"] = true

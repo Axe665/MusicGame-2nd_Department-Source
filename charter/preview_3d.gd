@@ -25,6 +25,8 @@ const BELL_SIZE_SCALE := 0.75
 ## 命中退场：尾判后尾巴停在判定环上再淡出的真实时长（秒）。
 ## 用真实时间而不是拍数，慢歌不会拖成半秒、快歌也不会一闪就没。
 const END_FADE_SEC := 0.1
+## 松手补按窗口内的变暗程度（1 = 不变暗）。
+const HOLD_SLIP_DIM := 0.35
 
 var chart_override: Chart = null
 var follow_app: bool = true
@@ -2772,10 +2774,13 @@ func _draw_holds(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 			fade = clampf(1.0 - (t - float(note_state_beats[note.id])) / 0.24, 0.0, 1.0)
 		elif t > note.end_beat:
 			fade = clampf(1.0 - (t - note.end_beat) / fade_beats, 0.0, 1.0)
+		# 松手补按窗口内整条变暗：明确告诉玩家“手松了”，但没有断。
+		if state == "slip":
+			fade *= HOLD_SLIP_DIM
 		if fade <= 0.01:
 			continue
 		# 头部命中后只收起头部，长条继续表示“正在按住”；尾巴压到环上时头尾重合，也收起来。
-		var hide_head := state == "holding" or t >= note.end_beat
+		var hide_head := state == "holding" or state == "slip" or t >= note.end_beat
 		var grow_raw := clampf((t - (note.beat - pre)) / maxf(0.001, pre), 0.0, 1.0)
 		# 与 Tap 同一套接近表现：环心处只有 1/6 长，飞近时长大到 1。
 		var grow := lerpf(Note.SPAWN_LENGTH_RATIO, 1.0, grow_raw)
