@@ -1999,16 +1999,17 @@ func _draw_paths(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 		else:
 			colors[note] = base.darkened(0.18 * float(shade % 4))
 			shade += 1
-	# 接力高亮：同一时间窗里已经到场的多条星，只有尾判定最早的那条（或几条同时到点）
-	# 保持全亮，其余压暗，避免几条同亮度抢注意力。
+	# 接力高亮：还没划完的星里，只有尾判定最早的那条（或几条同时到点）保持全亮。
+	# 未来星只要还在预读期就已经整条可见，所以也要参与压暗，否则屏幕上会有
+	# 2–3 条同样亮的轨迹，看不出该先划哪条。
 	var active_end := INF
 	for note in visible:
-		if t < note.beat - 0.05 or t > note.end_beat:
+		if t > note.end_beat:
 			continue
 		active_end = minf(active_end, note.end_beat)
 	var active_list: Array = []
 	for note in visible:
-		if t < note.beat - 0.05 or t > note.end_beat:
+		if t > note.end_beat:
 			continue
 		if note.end_beat <= active_end + 0.05:
 			active_list.append(note)
@@ -2018,12 +2019,7 @@ func _draw_paths(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 		order.erase(note)
 		order.append(note)
 	for note in order:
-		var dim := 1.0
-		if not active_list.has(note) and t >= note.beat - 0.05 and t <= note.end_beat:
-			for active in active_list:
-				if _paths_time_overlap(active, note):
-					dim = PATH_RELAY_DIM
-					break
+		var dim := 1.0 if active_list.has(note) else PATH_RELAY_DIM
 		_draw_one_path(canvas, chart, note, t, pre, true, visible.size(), colors[note], dim, active_list.has(note))
 	if _drawing_path and _path_points.size() > 1:
 		var preview := PackedVector2Array()
@@ -2035,11 +2031,6 @@ func _draw_paths(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 			canvas.draw_polyline(preview, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.75), 3.0, false)
 			for p in preview:
 				canvas.draw_circle(p, 2.5, UITheme.CYAN)
-
-
-## 两条星的时间窗重叠（1 拍错位链、叠拍）就算“同时在场”，与轨迹位置无关。
-static func _paths_time_overlap(a: Note, b: Note) -> bool:
-	return not (a.end_beat < b.beat - 0.25 or b.end_beat < a.beat - 0.25)
 
 
 func _build_path_chain_note(root: Note, chain: Array[Note]) -> Note:
@@ -2181,7 +2172,9 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 			canvas.draw_polyline(piece, Color(0, 0, 0, 0.50 * trail_dim), band_width + 4.0, false)
 			canvas.draw_polyline(piece, Color(accent.r, accent.g, accent.b, 0.95 * trail_dim), band_width, false)
 			_draw_dashed_polyline(canvas, piece, dash, 2.4 * PATH_SIZE_SCALE, 10.0 * PATH_SIZE_SCALE)
-			# V 形箭头链：约每 52px 一个，最多 10 个，避免糊成一片。
+			# V 形箭头链只画在“现在该划”的那条上：对向重叠的两条星都画箭头会叠成蝴蝶结。
+			if not active:
+				continue
 			var piece_length := 0.0
 			for i in piece.size() - 1:
 				piece_length += piece[i].distance_to(piece[i + 1])
@@ -2250,7 +2243,9 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 		_draw_path_circle(canvas, ring_head, ns * PATH_SIZE_SCALE * PATH_HEAD_SCALE, accent, head_fade, ring_mul)
 		# 重叠 Path 用不同明度的外环区分星头。
 		canvas.draw_arc(ring_head, 28.0 * ns * PATH_SIZE_SCALE * PATH_HEAD_SCALE * ring_mul, 0.0, TAU, 30, Color(accent.r, accent.g, accent.b, 0.95 * head_fade), 2.4, false)
-		canvas.draw_string(UITheme.mono_font(), ring_head + Vector2(14, -13), "#%d" % note.id, HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(accent.r, accent.g, accent.b, 0.9 * head_fade))
+		# 音符编号只在编辑器和调试叠层里显示，试玩时不添乱。
+		if not playtest_mode or show_debug:
+			canvas.draw_string(UITheme.mono_font(), ring_head + Vector2(14, -13), "#%d" % note.id, HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(accent.r, accent.g, accent.b, 0.9 * head_fade))
 		# 头部的白色箭头指向轨迹内侧，进一步区分头和尾。
 		var ahead := _path_screen_point(chart, note, minf(total, maxf(0.05, total * 0.08)), t, true, 1.0)
 		if _valid_point(ahead):
