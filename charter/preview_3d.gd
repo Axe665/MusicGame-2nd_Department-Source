@@ -1063,7 +1063,7 @@ func _on_left_press(event: InputEventMouseButton) -> void:
 		if segment_index >= 0:
 			_app.select_segment(segment_index)
 			return
-	if _app.tool == "red":
+	if _app.tool == "limit":
 		if not cursor_valid:
 			return
 		var chart := get_chart()
@@ -1681,7 +1681,7 @@ func draw_overlay(canvas: Control) -> void:
 	_draw_red_regions(canvas, chart, t)
 	# 图层顺序：滑条底带 → Path → Hold → Tap/Anchor/Bell，命中目标始终在上层。
 	var sec_usec := Time.get_ticks_usec()
-	_draw_traces(canvas, chart, t)
+	_draw_seeks(canvas, chart, t)
 	var sec2 := Time.get_ticks_usec()
 	_perf_sections[0] += sec2 - sec_usec
 	_draw_paths(canvas, chart, t, pre)
@@ -1873,7 +1873,7 @@ func _draw_red_regions(canvas: Control, chart: Chart, t: float) -> void:
 				canvas.draw_line(p0, p1, Color(1.0, 0.42, 0.34, 0.26 if active else 0.05), 1.0, false)
 		var label_point := _arc_point_scaled(region.angle, t, 0.86)
 		if _valid_point(label_point):
-			_draw_badge(canvas, "RED" if active else "RED IN", label_point + Vector2(0, -4), UITheme.RED)
+			_draw_badge(canvas, "LIMIT" if active else "LIMIT IN", label_point + Vector2(0, -4), UITheme.RED)
 
 
 ## 红区的可见多边形（外弧 + 内弧），判定和绘制共用同一份几何。
@@ -2838,7 +2838,7 @@ func _draw_notes(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 	# 试玩里音符留到判定出来为止（MISS 窗口最长 0.3s），编辑器预览仍只多留 0.3 拍。
 	var tail_beats := 2.0 if playtest_mode else 0.3
 	for note in _notes_in_range(chart, t - pre - 0.1, t + pre + 0.1):
-		if note.type in ["path", "hold", "trace"]:
+		if note.type in ["path", "hold", "trace", "seek"]:
 			continue
 		if t >= note.beat - pre and t <= note.beat + tail_beats:
 			visible.append(note)
@@ -2930,23 +2930,34 @@ func _draw_length_band(canvas: Control, chart: Chart, angle: float, width: float
 	return center_point
 
 
-func _draw_traces(canvas: Control, chart: Chart, t: float) -> void:
+func _draw_seeks(canvas: Control, chart: Chart, t: float) -> void:
 	var pre := _pre_read_beats(chart, t)
-	var visible: Array[Note] = []
-	for note in _notes_in_range(chart, t - pre - 128.0, t + pre + 0.5):
-		if note.type != "trace":
+	var center := project_design(Vector2.ZERO)
+	var edge := project_design(Vector2(1.0, 0.0))
+	# Stop at the inner edge of the judgement ring, not its centre line.
+	var ring_radius := maxf(20.0, center.distance_to(edge) - 8.0)
+	for note in _notes_in_range(chart, t - pre - 2.0, t + 1.0):
+		if note.type != "seek" or t < note.beat - pre or t > note.beat + 0.5:
 			continue
-		if t >= note.beat - pre and t <= note.end_beat + 0.5:
-			visible.append(note)
-	visible.sort_custom(func(a: Note, b: Note) -> bool: return a.beat > b.beat)
-	for note in visible:
 		var grow := clampf((t - (note.beat - pre)) / maxf(0.001, pre), 0.0, 1.0)
-		_draw_trace(canvas, chart, note, t, grow)
-	if _drawing_trace and _trace_points.size() > 1:
-		var temp := PackedVector2Array()
-		for p in _trace_points:
-			temp.append(p)
-		canvas.draw_polyline(temp, Color(UITheme.CORAL.r, UITheme.CORAL.g, UITheme.CORAL.b, 0.7), 3.0, false)
+		var fade := clampf((note.beat + 0.5 - t) / 0.5, 0.0, 1.0)
+		var color := UITheme.SEEK_IN if note.seek_orien == 0 else UITheme.SEEK_OUT
+		var radius := ring_radius * grow
+		canvas.draw_arc(center, radius, 0.0, TAU, 48, Color(color.r, color.g, color.b, 0.16 * fade), 10.0, true)
+		canvas.draw_arc(center, radius, 0.0, TAU, 48, Color(color.r, color.g, color.b, 0.95 * fade), 3.0, true)
+		var inward := note.seek_orien == 0
+		var count := 8
+		for i in count:
+			var a := TAU * float(i) / float(count) - PI * 0.5
+			var dir := Vector2(cos(a), sin(a))
+			var tip := center + dir * radius + dir * (-8.0 if inward else 8.0)
+			var base := center + dir * radius
+			var side := Vector2(-dir.y, dir.x) * 4.5
+			canvas.draw_colored_polygon(PackedVector2Array([
+				tip, base + side, base - side,
+			]), Color(color.r, color.g, color.b, 0.9 * fade))
+		var label := "SEEK IN" if inward else "SEEK OUT"
+		_draw_label(canvas, label, center + Vector2(radius + 12.0, -radius - 8.0), color)
 
 
 func cut_trace(note: Note, from_fraction: float, to_fraction: float) -> void:

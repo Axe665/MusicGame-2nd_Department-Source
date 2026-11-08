@@ -271,10 +271,10 @@ func _build_ui() -> void:
 		["显示/隐藏 HUD", 20], ["调试叠层", 21], ["波形", 22], ["从上往下写入", 25], ["-", 0], ["边界状态轨", 23], ["时间 / BPM (F6)", 24],
 	]))
 	brand_row.add_child(_menu("插入", [
-		["Tap", 30], ["Hold", 31], ["Path", 32], ["Trace", 33], ["Anchor", 34], ["Bell", 35], ["Red", 36], ["-", 0], ["BoundaryEvent", 37], ["RingState 关键帧", 38],
+		["Tap", 30], ["Hold", 31], ["Path", 32], ["Seek", 33], ["Anchor", 34], ["Bell", 35], ["Limit", 36], ["-", 0], ["BoundaryEvent", 37], ["RingState 关键帧", 38],
 	]))
 	brand_row.add_child(_menu("事件", [
-		["新建 BoundaryEvent", 40], ["新建 Red", 41],
+		["新建 BoundaryEvent", 40], ["新建 Limit", 41],
 	]))
 	brand_row.add_child(_menu("试玩", [
 		["从播放头试玩（F5）", 50], ["从头试玩（Shift+F5）", 51],
@@ -1139,10 +1139,10 @@ func _set_tool(tool: String) -> void:
 	_sync_tools()
 	if tool == "boundary":
 		_show_toast("边界模式：在预览中拖动控制点；双击分段拆分。", "info")
-	elif tool == "trace":
-		_show_toast("Trace：在预览窗拖拽绘制二维擦带。", "info")
-	elif tool == "red":
-		_show_toast("Red：在预览窗按住横向拖角度、纵向拖时长（最多 4 拍）。", "info")
+	elif tool == "seek":
+		_show_toast("Seek：在画布点选时间放置，再用 W/S 选择朝里/朝外。", "info")
+	elif tool == "limit":
+		_show_toast("Limit：在画布按住横向拖角度、纵向拖时长（最多 4 拍）。", "info")
 
 
 func _toggle_play() -> void:
@@ -1253,8 +1253,8 @@ func _build_sfx_events() -> void:
 				_add_sfx_event(note.beat, "anchor", 1.0)
 			"bell":
 				_add_sfx_event(note.beat, "bell")
-			"trace":
-				_add_sfx_event(note.beat, "trace")
+			"seek":
+				_add_sfx_event(note.beat, "bell")
 	_sfx_events.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return float(a["beat"]) < float(b["beat"]))
 
 
@@ -1688,7 +1688,7 @@ func _on_menu(id: int) -> void:
 		24:
 			_inspector.current_tab = 5
 		30, 31, 32, 33, 34, 35, 36:
-			_set_tool(["tap", "hold", "path", "trace", "anchor", "bell", "red"][id - 30])
+			_set_tool(["tap", "hold", "path", "seek", "anchor", "bell", "limit"][id - 30])
 		37:
 			_inspector._add_event()
 		38:
@@ -1696,7 +1696,7 @@ func _on_menu(id: int) -> void:
 		40:
 			_inspector._add_event()
 		41:
-			_set_tool("red")
+			_set_tool("limit")
 		50:
 			_open_playtest_setup(false)
 		51:
@@ -1789,6 +1789,7 @@ func _build_playtest_dialog() -> void:
 	_playtest_trace_color.custom_minimum_size = Vector2(0, 26)
 	_playtest_trace_color.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	trace_row.add_child(_playtest_trace_color)
+	trace_row.visible = false
 	add_child(_playtest_dialog)
 	_playtest_dialog.confirmed.connect(_begin_playtest_with_settings)
 
@@ -1893,6 +1894,10 @@ func _input(event: InputEvent) -> void:
 			typing = true
 		if typing and event.keycode != KEY_F5 and event.keycode != KEY_F6:
 			return
+		if _canvas != null and _canvas.has_pending_seek() and event.keycode in [KEY_W, KEY_S]:
+			_canvas.set_pending_seek_orientation(0 if event.keycode == KEY_W else 1)
+			accept_event()
+			return
 		# While a numeric editor (SpinBox or its inner LineEdit) has focus, let
 		# 1–7 reach the field instead of switching the note tool. Returning
 		# without accept_event is important: GUI input still receives the digit.
@@ -1946,7 +1951,7 @@ func _input(event: InputEvent) -> void:
 				_update_status()
 				accept_event()
 			KEY_1, KEY_2, KEY_3, KEY_4, KEY_5, KEY_6, KEY_7:
-				_set_tool(["tap", "hold", "path", "trace", "anchor", "bell", "red"][event.keycode - KEY_1])
+				_set_tool(["tap", "hold", "path", "seek", "anchor", "bell", "limit"][event.keycode - KEY_1])
 				accept_event()
 			KEY_B:
 				_set_tool("boundary")

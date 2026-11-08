@@ -11,9 +11,7 @@ static func chart_to_dict(chart: Chart) -> Dictionary:
 	var timing_points: Array[Dictionary] = []
 	for point in chart.timing.points:
 		timing_points.append(point.to_dict())
-	var shape_list: Array[Dictionary] = []
-	for shape in chart.sorted_shapes():
-		shape_list.append(shape.to_dict())
+	var shape_code := BoundaryShape.shapes_to_code(chart.sorted_shapes())
 	var event_list: Array[Dictionary] = []
 	for event in chart.events:
 		event_list.append(event.to_dict())
@@ -25,20 +23,34 @@ static func chart_to_dict(chart: Chart) -> Dictionary:
 	for state in chart.view_states:
 		view_list.append(state.to_dict())
 	view_list.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return float(a["beat"]) < float(b["beat"]))
-	var region_list: Array[Dictionary] = []
+	var region_rows: Array[Dictionary] = []
 	for region in chart.regions:
-		region_list.append(region.to_dict())
-	region_list.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
-		if float(a["start_beat"]) == float(b["start_beat"]):
-			return int(a["id"]) < int(b["id"])
-		return float(a["start_beat"]) < float(b["start_beat"]))
-	var note_list: Array[Dictionary] = []
-	for note in chart.notes:
-		note_list.append(note.to_dict())
-	note_list.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		region_rows.append({"beat": region.start_beat, "id": region.id, "code": region.to_code()})
+	region_rows.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
 		if float(a["beat"]) == float(b["beat"]):
 			return int(a["id"]) < int(b["id"])
 		return float(a["beat"]) < float(b["beat"]))
+	var region_list: Array[String] = []
+	for row in region_rows:
+		region_list.append(String(row["code"]))
+	var by_id := {}
+	for note in chart.notes:
+		by_id[note.id] = note
+	var note_entries: Array[Dictionary] = []
+	for note in chart.notes:
+		if note.type == "path" and note.path_prev_id >= 0 and by_id.has(note.path_prev_id):
+			continue
+		var code: String = _note_code(note, by_id)
+		if code.is_empty():
+			continue
+		note_entries.append({"beat": note.beat, "id": note.id, "code": code})
+	note_entries.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		if float(a["beat"]) == float(b["beat"]):
+			return int(a["id"]) < int(b["id"])
+		return float(a["beat"]) < float(b["beat"]))
+	var note_list: Array[String] = []
+	for entry in note_entries:
+		note_list.append(String(entry["code"]))
 	var meta := {}
 	for key in ["title", "artist", "creator", "version", "tags", "license", "background"]:
 		meta[key] = String(chart.metadata.get(key, ""))
@@ -56,15 +68,15 @@ static func chart_to_dict(chart: Chart) -> Dictionary:
 			"difficulty": chart.difficulty,
 		},
 		"metadata": meta,
+		"default_shape": chart.default_shape_id,
+		"shapes": shape_code,
+		"events": event_list,
+		"view_states": view_list,
+		"regions": region_list,
 		"timing": {
 			"offset_ms": snappedf(chart.offset_ms, 0.001),
 			"points": timing_points,
 		},
-		"default_shape": chart.default_shape_id,
-		"shapes": shape_list,
-		"events": event_list,
-		"view_states": view_list,
-		"regions": region_list,
 		"notes": note_list,
 		"editor": {
 			"snap": int(chart.editor.get("snap", 4)),
@@ -74,6 +86,29 @@ static func chart_to_dict(chart: Chart) -> Dictionary:
 			"flow_down": bool(chart.editor.get("flow_down", true)),
 		},
 	}
+
+
+static func _note_code(note: Note, by_id: Dictionary) -> String:
+	if note.type != "path" or note.path_next_id < 0:
+		return note.to_code()
+	var chain: Array[Note] = []
+	var cursor: Note = note
+	var guard := 0
+	while cursor != null and guard < 64:
+		chain.append(cursor)
+		if cursor.path_next_id < 0 or not by_id.has(cursor.path_next_id):
+			break
+		cursor = by_id[cursor.path_next_id]
+		guard += 1
+	var segments: Array[String] = []
+	for i in chain.size():
+		var part := chain[i]
+		segments.append("(part%d,%s,%s,%s,%s,%s,%s)" % [
+			part.path_part, Note._code_num(part.beat), Note._code_num(part.angle),
+			Note._code_num(part.end_beat), Note._code_num(part.tail_angle),
+			Note._code_num(part.path_centrifuge), Note._code_num(part.path_axis)
+		])
+	return "[%d]path{%s}" % [note.id, ";".join(segments)]
 
 
 static func chart_from_dict(data: Dictionary) -> Chart:
@@ -109,9 +144,15 @@ static func chart_from_dict(data: Dictionary) -> Chart:
 	chart.default_shape_id = String(data.get("default_shape", "S0"))
 	chart.shapes.clear()
 	var shapes_raw: Variant = data.get("shapes", [])
-	if shapes_raw is Array:
+	if shapes_raw is String:
+		for shape in BoundaryShape.shapes_from_code(shapes_raw):
+			chart.shapes[shape.id] = shape
+	elif shapes_raw is Array:
 		for raw in shapes_raw:
-			if raw is Dictionary:
+			if raw is String:
+				for shape in BoundaryShape.shapes_from_code(raw):
+					chart.shapes[shape.id] = shape
+			elif raw is Dictionary:
 				var shape := BoundaryShape.from_dict(raw)
 				chart.shapes[shape.id] = shape
 	elif shapes_raw is Dictionary:
@@ -136,10 +177,25 @@ static func chart_from_dict(data: Dictionary) -> Chart:
 	chart.regions.clear()
 	for raw in data.get("regions", []):
 		if raw is Dictionary:
-			chart.regions.append(Region.from_dict(raw))
+			var region := Region.from_dict(raw)
+			if region.kind == "red":
+				region.kind = "limit"
+			chart.regions.append(region)
+		elif raw is String:
+			var region := Region.from_code(raw)
+			if region != null:
+				chart.regions.append(region)
 	chart.notes.clear()
 	for raw in data.get("notes", []):
-		if raw is Dictionary:
+		if raw is String:
+			var code: String = raw.strip_edges()
+			if code.contains("path{"):
+				chart.notes.append_array(Note.path_parts_from_code(code))
+			else:
+				var parsed := Note.from_code(code)
+				if parsed != null:
+					chart.notes.append(parsed)
+		elif raw is Dictionary and String(raw.get("type", "")) != "trace":
 			chart.notes.append(Note.from_dict(raw))
 	# Normalize legacy Path JSON to the new centrifuge/axis representation on
 	# every chart load, not just for the bundled demo.
@@ -153,7 +209,7 @@ static func chart_from_dict(data: Dictionary) -> Chart:
 
 
 static func to_json(chart: Chart) -> String:
-	return JSON.stringify(chart_to_dict(chart), "\t", true) + "\n"
+	return JSON.stringify(chart_to_dict(chart), "\t", false) + "\n"
 
 
 static func from_json(text: String) -> Chart:

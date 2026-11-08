@@ -9,7 +9,7 @@ const TOP_MARGIN := 24.0
 const BOTTOM_MARGIN := 12.0
 const RIGHT_MARGIN := 58.0
 const WAVE_WIDTH := 24.0
-const NOTE_TOOLS := ["tap", "hold", "path", "trace", "anchor", "bell"]
+const NOTE_TOOLS := ["tap", "hold", "path", "seek", "anchor", "bell"]
 const PATH_HIT_RADIUS := 12.0
 const PATH_CHAIN_BLUE := Color("#4D8DFF")
 const DIVISION_WIDTH := 42.0
@@ -222,7 +222,7 @@ func paste_clipboard(mirror: bool = false) -> bool:
 		var copy := Note.from_dict(note.to_dict())
 		copy.id = chart.next_note_id()
 		copy.beat = maxf(0.0, note.beat + delta)
-		if copy.type in ["hold", "path", "trace"]:
+		if copy.type in ["hold", "path"]:
 			copy.end_beat = maxf(copy.beat + 0.25, note.end_beat + delta)
 		if mirror:
 			copy.mirror_u()
@@ -291,7 +291,7 @@ func _rebuild_ghost() -> void:
 		var copy := Note.from_dict(note.to_dict())
 		copy.id = -1 - ghosts.size()
 		copy.beat = maxf(0.0, note.beat + delta)
-		if copy.type in ["hold", "path", "trace"]:
+		if copy.type in ["hold", "path"]:
 			copy.end_beat = maxf(copy.beat + 0.25, note.end_beat + delta)
 		ghosts.append(copy)
 	_ghost_layer.ghost_notes = ghosts
@@ -347,6 +347,10 @@ func _on_selection_changed() -> void:
 
 
 func _on_tool_changed(_tool: String) -> void:
+	if _app != null and _app.chart != null:
+		for item in _app.chart.notes:
+			if item.type == "seek" and item.seek_pending:
+				item.seek_pending = false
 	if _pending_hold != null or _pending_path != null:
 		_cancel_pending()
 	else:
@@ -631,7 +635,7 @@ func _draw_regions(plot: Rect2) -> void:
 	if chart == null:
 		return
 	for region in chart.regions:
-		var color := UITheme.RED if region.kind == "red" else UITheme.GOLD
+		var color := UITheme.RED if region.kind == "limit" else UITheme.GOLD
 		var y0 := _beat_to_y(region.start_beat)
 		var y1 := _beat_to_y(region.end_beat)
 		var top := minf(y0, y1)
@@ -644,7 +648,7 @@ func _draw_regions(plot: Rect2) -> void:
 			var rect := Rect2(Vector2(x0, top), Vector2(maxf(2.0, x1 - x0), height))
 			draw_rect(rect, Color(color.r, color.g, color.b, 0.16))
 			draw_rect(rect, Color(color.r, color.g, color.b, 0.55), false, 1.0)
-			draw_string(UITheme.mono_font(), Vector2(x0 + 4, top + 12), "RED %d" % region.id, HORIZONTAL_ALIGNMENT_LEFT, -1, 9, color)
+			draw_string(UITheme.mono_font(), Vector2(x0 + 4, top + 12), "LIMIT %d" % region.id, HORIZONTAL_ALIGNMENT_LEFT, -1, 9, color)
 		if _is_region_selected(region.id):
 			draw_rect(Rect2(Vector2(_u_to_x(0.0), top), Vector2(plot.size.x, height)), Color(1, 1, 1, 0.35), false, 1.0)
 
@@ -682,7 +686,7 @@ func _draw_notes(plot: Rect2) -> void:
 	if _drag_mode != "" or _drag_width_note != null:
 		# 拖拽时音符会临时改变 beat，直接全量绘制，避免二分索引顺序失效。
 		for note in chart.notes:
-			var note_end := note.end_beat if note.type in ["hold", "path", "trace"] else note.beat
+			var note_end := note.end_beat if note.type in ["hold", "path"] else note.beat
 			if note.beat <= last_beat and note_end >= first_beat:
 				_draw_note(note, plot)
 	else:
@@ -693,7 +697,7 @@ func _draw_notes(plot: Rect2) -> void:
 			_sorted_notes.sort_custom(func(a: Note, b: Note) -> bool: return a.beat < b.beat)
 			_sorted_max_duration = 0.0
 			for note in _sorted_notes:
-				if note.type in ["hold", "path", "trace"]:
+				if note.type in ["hold", "path"]:
 					_sorted_max_duration = maxf(_sorted_max_duration, note.end_beat - note.beat)
 			_sorted_dirty = false
 		var search_start := first_beat - _sorted_max_duration
@@ -709,7 +713,7 @@ func _draw_notes(plot: Rect2) -> void:
 			var note := _sorted_notes[i]
 			if note.beat > last_beat:
 				break
-			var note_end := note.end_beat if note.type in ["hold", "path", "trace"] else note.beat
+			var note_end := note.end_beat if note.type in ["hold", "path"] else note.beat
 			if note_end < first_beat:
 				continue
 			_draw_note(note, plot)
@@ -727,8 +731,8 @@ func _draw_note(note: Note, plot: Rect2) -> void:
 			_draw_hold(note)
 		"path":
 			_draw_path(note)
-		"trace":
-			_draw_trace(note, plot)
+		"seek":
+			_draw_seek(note)
 		"anchor":
 			_draw_anchor(note)
 		"bell":
@@ -894,6 +898,36 @@ func _draw_donut(point: Vector2, radius: float, color: Color) -> void:
 	draw_circle(point, radius * 0.48, UITheme.BG)
 
 
+func _draw_seek(note: Note) -> void:
+	var y := _beat_to_y(note.beat)
+	var selected := _is_note_selected(note.id)
+	var x0 := _u_to_x(0.0)
+	var x1 := _u_to_x(1.0)
+	var color := UITheme.INK
+	if not note.seek_pending:
+		color = UITheme.SEEK_IN if note.seek_orien == 0 else UITheme.SEEK_OUT
+	var width := 3.0 if selected else 1.6
+	draw_line(Vector2(x0, y), Vector2(x1, y), Color(color.r, color.g, color.b, 0.95), width, true)
+	if selected:
+		draw_line(Vector2(x0, y), Vector2(x1, y), Color(1, 1, 1, 0.25), width + 2.0, true)
+	if note.seek_pending:
+		return
+	# Inward arrows sit below the line; outward arrows sit above it and are
+	# deliberately small so they do not compete with the line itself.
+	var direction := 1.0 if note.seek_orien == 0 else -1.0
+	var count := 12
+	for i in range(1, count):
+		var x := lerpf(x0, x1, float(i) / float(count))
+		var tip := Vector2(x, y + 4.5 * direction)
+		draw_colored_polygon(PackedVector2Array([
+			tip,
+			Vector2(x - 2.5, y + 1.2 * direction),
+			Vector2(x + 2.5, y + 1.2 * direction),
+		]), color)
+	if _show_type_label(note):
+		_draw_type_label("SEEK IN" if note.seek_orien == 0 else "SEEK OUT", Vector2(x0 + 6.0, y - 6.0), color)
+
+
 func _draw_trace(note: Note, _plot: Rect2) -> void:
 	var y0 := _beat_to_y(note.beat)
 	var y1 := _beat_to_y(note.end_beat)
@@ -1038,10 +1072,10 @@ func _draw_legend(plot: Rect2) -> void:
 		{"type": "tap", "label": "Tap", "color": UITheme.CORAL},
 		{"type": "hold", "label": "Hold", "color": UITheme.AMBER},
 		{"type": "path", "label": "Path", "color": UITheme.CYAN},
-		{"type": "trace", "label": "Trace", "color": UITheme.MINT},
+		{"type": "seek", "label": "Seek", "color": UITheme.SEEK_IN},
 		{"type": "anchor", "label": "Anchor", "color": UITheme.VIOLET},
 		{"type": "bell", "label": "Bell", "color": UITheme.GOLD},
-		{"type": "red", "label": "Red", "color": UITheme.RED},
+		{"type": "limit", "label": "Limit", "color": UITheme.RED},
 	]
 	var x := plot.position.x + 4.0
 	for entry in entries:
@@ -1055,15 +1089,15 @@ func _draw_legend(plot: Rect2) -> void:
 				_draw_hexagon(p, 4.0, color)
 			"path":
 				_draw_star(p, 5.0, color)
-			"trace":
-				draw_line(p + Vector2(-4, 3), p + Vector2(4, -3), color, 3.0, true)
-				draw_line(p + Vector2(-3, -3), p + Vector2(3, 3), UITheme.INK, 1.0, true)
+			"seek":
+				draw_arc(p, 4.0, 0.0, TAU, 18, color, 1.6, true)
+				draw_arc(p, 2.2, 0.0, TAU, 14, Color(color.r, color.g, color.b, 0.6), 1.0, true)
 			"anchor":
 				_draw_diamond(p, 4.0, color)
 			"bell":
 				draw_arc(p, 4.0, 0.0, TAU, 16, color, 1.5, true)
 				draw_circle(p, 1.5, color)
-			"red":
+			"limit":
 				draw_arc(p, 4.0, -PI * 0.8, PI * 0.2, 12, color, 3.0, true)
 		draw_string(UITheme.mono_font(), Vector2(x + 9, y + 4), String(entry["label"]), HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(1, 1, 1, 0.48))
 		x += 88.0
@@ -1098,7 +1132,7 @@ func _gui_input(event: InputEvent) -> void:
 			_drag_notes_update(event.position, event)
 		elif _drag_mode == "width":
 			_drag_width_update(event.position)
-		elif _drag_mode == "red":
+		elif _drag_mode == "limit":
 			_drag_red_update(event.position, event)
 		elif _drag_mode == "hold_end":
 			_drag_hold_update(event.position, event)
@@ -1264,12 +1298,12 @@ func _snap_dragged_notes(bypass: bool) -> void:
 		if absf(beat_delta) <= 0.000001 and absf(angle_delta) <= 0.001:
 			continue
 		note.beat = snapped.x
-		if note.type in ["hold", "path", "trace"]:
+		if note.type in ["hold", "path"]:
 			note.end_beat = maxf(note.beat + 0.25, note.end_beat + beat_delta)
 		if note.type == "bell":
 			note.angle = fposmod(snapped.y * 360.0, 360.0)
 			note.center_u = snapped.y
-		elif note.type != "trace":
+		elif note.type not in ["trace", "seek"]:
 			note.angle = fposmod(note.angle + angle_delta, 360.0)
 			if note.type == "path":
 				note.tail_angle = fposmod(note.tail_angle + angle_delta, 360.0)
@@ -1292,7 +1326,7 @@ func _on_left_press(event: InputEventMouseButton) -> void:
 			_app.begin_edit()
 			for note in _app.get_selected_notes():
 				note.beat = beat
-				if note.type in ["hold", "path", "trace"]:
+				if note.type in ["hold", "path"]:
 					note.end_beat = maxf(note.end_beat, note.beat + 0.25)
 			_app.finish_edit()
 		else:
@@ -1333,9 +1367,9 @@ func _on_left_press(event: InputEventMouseButton) -> void:
 			_create_hold(beat, u)
 		"path":
 			_place_path(beat, u)
-		"trace":
-			_create_trace_at(beat)
-		"red":
+		"seek":
+			_create_seek_at(beat)
+		"limit":
 			_begin_red(beat, u)
 		"boundary":
 			notice.emit("边界形状在左侧预览中拖拽控制点；双击分段可拆分。", "info")
@@ -1348,7 +1382,7 @@ func _on_left_release(event: InputEventMouseButton) -> void:
 		return
 	if _drag_mode == "note":
 		_snap_dragged_notes(event.alt_pressed)
-	if _drag_mode in ["note", "width", "red", "hold_end"]:
+	if _drag_mode in ["note", "width", "limit", "hold_end"]:
 		_app.finish_edit()
 	if _drag_mode == "marquee":
 		_finish_marquee()
@@ -1438,6 +1472,9 @@ func _hit_test(pos: Vector2) -> Dictionary:
 			# The whole drawn Path is selectable, not just its head/tail or
 			# the column at the start angle.
 			if _path_body_hit(note, pos):
+				return {"kind": "note", "id": note.id, "part": "body"}
+		if note.type == "seek":
+			if absf(pos.y - _beat_to_y(note.beat)) <= 8.0:
 				return {"kind": "note", "id": note.id, "part": "body"}
 		if note.type == "hold" or note.type == "trace":
 			var y0 := _beat_to_y(note.beat)
@@ -1742,29 +1779,48 @@ func _place_path(beat: float, u: float) -> void:
 		_pending_path_parent = null
 
 
-func _create_trace_at(beat: float) -> void:
+func _create_seek_at(beat: float) -> void:
 	var chart: Chart = _app.chart
 	if chart == null:
 		return
-	var note := Note.new("trace", beat, 0.0, 0.0)
+	for item in chart.notes:
+		if item.type == "seek" and item.seek_pending:
+			item.seek_pending = false
+	var note := Note.new("seek", beat, 0.0, 360.0)
 	note.id = chart.next_note_id()
-	note.end_beat = beat + 2.0
-	note.move_px = 120.0
-	note.space = "plane"
-	# x/y 是“环半径 = 1.0”的设计坐标：从环内左下扫到右中。
-	note.trace_pts = [
-		{"x": -0.72, "y": 0.36, "db": 0.0},
-		{"x": -0.20, "y": 0.04, "db": 0.67},
-		{"x": 0.24, "y": -0.12, "db": 1.34},
-		{"x": 0.70, "y": -0.32, "db": 2.0},
-	]
+	note.end_beat = beat
+	note.seek_orien = 0
+	note.seek_pending = true
 	_app.begin_edit()
 	chart.notes.append(note)
 	_app.finish_edit()
 	_app.select_note(note.id)
-	if not _trace_hint_shown:
-		_trace_hint_shown = true
-		notice.emit("Trace 已创建；在预览窗拖拽可重画二维擦带。", "info")
+	notice.emit("Seek：按 W 朝里 / S 朝外；放置期间 W/S 快捷键被屏蔽。", "info")
+
+
+func has_pending_seek() -> bool:
+	if _app == null or _app.chart == null:
+		return false
+	for item in _app.chart.notes:
+		if item.type == "seek" and item.seek_pending:
+			return true
+	return false
+
+
+func set_pending_seek_orientation(orien: int) -> void:
+	if _app == null or _app.chart == null:
+		return
+	for item in _app.chart.notes:
+		if item.type == "seek" and item.seek_pending:
+			_app.begin_edit()
+			item.seek_orien = 1 if orien == 1 else 0
+			item.seek_pending = false
+			_app.finish_edit()
+			_app.select_note(item.id)
+			queue_redraw()
+			if _overlay != null:
+				_overlay.queue_redraw()
+			return
 
 
 func _begin_red(beat: float, u: float) -> void:
@@ -1776,7 +1832,7 @@ func _begin_red(beat: float, u: float) -> void:
 	region.width = 30.0
 	_app.begin_edit()
 	chart.regions.append(region)
-	_drag_mode = "red"
+	_drag_mode = "limit"
 	_drag_start_beat = beat
 	_drag_start_u = u
 	_drag_region = region
@@ -1856,6 +1912,10 @@ func _note_in_marquee(note: Note) -> bool:
 			if previous.is_finite() and _segment_hits_marquee(previous, point):
 				return true
 			previous = point
+	if note.type == "seek":
+		var seek_y := _beat_to_y(note.beat)
+		if _marquee.intersects(Rect2(Vector2(_u_to_x(0.0), seek_y - 4.0), Vector2(_u_to_x(1.0) - _u_to_x(0.0), 8.0))):
+			return true
 	if note.type == "hold" or note.type == "trace":
 		var y0 := _beat_to_y(note.beat)
 		var y1 := _beat_to_y(note.end_beat)

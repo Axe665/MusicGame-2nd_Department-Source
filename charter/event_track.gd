@@ -83,7 +83,7 @@ func _draw() -> void:
 		draw_rect(rect, Color(UITheme.RED.r, UITheme.RED.g, UITheme.RED.b, 0.42 if selected else 0.28))
 		draw_rect(rect, UITheme.RED if selected else Color(UITheme.RED.r, UITheme.RED.g, UITheme.RED.b, 0.55), false, 1.0)
 		if x1 - x0 > 30.0:
-			draw_string(UITheme.mono_font(), Vector2(x0 + 3, 25), "RED", HORIZONTAL_ALIGNMENT_LEFT, -1, 8, Color(1, 1, 1, 0.75))
+			draw_string(UITheme.mono_font(), Vector2(x0 + 3, 25), "LIMIT", HORIZONTAL_ALIGNMENT_LEFT, -1, 8, Color(1, 1, 1, 0.75))
 	var playhead_x := _beat_to_x(_app.playhead_beat)
 	draw_line(Vector2(playhead_x, 0), Vector2(playhead_x, size.y), Color(UITheme.CORAL.r, UITheme.CORAL.g, UITheme.CORAL.b, 0.9), 1.5)
 	if chart.events.is_empty() and chart.regions.is_empty():

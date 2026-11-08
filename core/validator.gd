@@ -117,8 +117,8 @@ static func _check_view_states(chart: Chart, issues: Array[Dictionary]) -> void:
 
 static func _check_regions(chart: Chart, issues: Array[Dictionary]) -> void:
 	for region in chart.regions:
-		if region.kind != "red":
-			_add(issues, "error", "区域 %d 的类型非法（只支持 red）" % region.id, "region:%d" % region.id)
+		if region.kind != "limit":
+			_add(issues, "error", "区域 %d 的类型非法（只支持 limit）" % region.id, "region:%d" % region.id)
 		if region.end_beat <= region.start_beat + EPS:
 			_add(issues, "error", "红区 %d 的结束拍必须晚于开始拍" % region.id, "region:%d" % region.id)
 		if region.duration() > 4.0 + EPS:
@@ -139,7 +139,7 @@ static func _check_notes(chart: Chart, issues: Array[Dictionary]) -> void:
 			_add(issues, "error", "音符 %d 的类型 %s 未知" % [note.id, note.type], "note:%d" % note.id)
 		if note.width < 0.0 or note.width > 360.0:
 			_add(issues, "error", "音符 %d 的宽度越界" % note.id, "note:%d" % note.id)
-		if note.space == "plane" and note.type not in ["path", "trace"]:
+		if note.space == "plane" and note.type != "path":
 			if note.plane_x < 0.0 or note.plane_x > 1.0 or note.plane_y < 0.0 or note.plane_y > 1.0:
 				_add(issues, "error", "平面音符 %d 的位置越出舞台安全区" % note.id, "note:%d" % note.id)
 			if note.plane_radius <= 0.0 or note.plane_radius > 0.3:
@@ -237,4 +237,4 @@ static func _check_playability(chart: Chart, issues: Array[Dictionary]) -> void:
 			continue
 		var safe := JudgeMath.subtract(common, JudgeMath.red_intervals(chart.regions, beat))
 		if JudgeMath.total_length(safe) <= 0.001:
-			_add(issues, "error", "第 %s 拍减去红区后没有安全落脚点" % chart.timing.format_beat(beat), "beat:%.3f" % beat)
+			_add(issues, "error", "第 %s 拍减去 Limit 区后没有安全落脚点" % chart.timing.format_beat(beat), "beat:%.3f" % beat)
