@@ -828,23 +828,28 @@ func _build_ribbon(points: Array[Dictionary], width: float, material: Material) 
 
 func _update_background(chart: Chart) -> void:
 	var path := String(chart.metadata.get("background", ""))
-	if path == _last_background_path:
-		return
-	_last_background_path = path
+	# 新标签页没有背景时必须清掉上一张图；不能因为缓存键也是空串就直接返回。
 	if path.is_empty():
-		_background_image.visible = false
+		_last_background_path = ""
+		if _background_image.texture != null or _background_image.visible:
+			_background_image.texture = null
+			_background_image.visible = false
 		return
 	var resolved := path
 	if not path.begins_with("res://") and not path.begins_with("user://") and not path.is_absolute_path():
 		if _app != null and not _app.chart_path.is_empty():
 			resolved = ChartIO.resolve_path(_app.chart_path, path)
+	# 用解析后的绝对路径做缓存键：不同标签页可以有相同的相对文件名。
+	if resolved == _last_background_path:
+		return
+	_last_background_path = resolved
 	var texture: Texture2D = null
 	if resolved.begins_with("res://"):
 		if ResourceLoader.exists(resolved):
 			texture = load(resolved) as Texture2D
 	else:
 		var image := Image.load_from_file(ProjectSettings.globalize_path(resolved) if resolved.begins_with("user://") else resolved)
-		if image != null and not image.is_empty():
+		if image != null and image.get_width() > 0 and image.get_height() > 0:
 			texture = ImageTexture.create_from_image(image)
 	_background_image.texture = texture
 	_background_image.visible = texture != null
@@ -2580,7 +2585,7 @@ func _skin() -> Dictionary:
 	return _skin_cache
 
 
-func _stroke_band(canvas: Control, points: PackedVector2Array, color: Color, width: float, alpha: float = 1.0, size_scale: float = -1.0) -> void:
+func _stroke_band(canvas: Control, points: PackedVector2Array, color: Color, width: float, alpha: float = 1.0, size_scale: float = -1.0, glow_mul: float = 1.0) -> void:
 	# 所有音符共用同一套描边/高光/发光，换肤只改参数，不改判定。
 	if points.size() < 2:
 		return
@@ -2594,7 +2599,7 @@ func _stroke_band(canvas: Control, points: PackedVector2Array, color: Color, wid
 	var w := width * k * band
 	if glow > 0.01:
 		# 柔光层很宽、对比低，关掉 AA 省下的三角形很可观，观感几乎不变。
-		canvas.draw_polyline(points, Color(color.r, color.g, color.b, 0.10 * glow * alpha), w + 18.0, false)
+		canvas.draw_polyline(points, Color(color.r, color.g, color.b, 0.10 * glow * glow_mul * alpha), w + 18.0 * glow_mul, false)
 	if shadow > 0.01:
 		var offset := PackedVector2Array()
 		for p in points:
@@ -2953,7 +2958,8 @@ func _draw_length_band(canvas: Control, chart: Chart, angle: float, width: float
 			points.append(p)
 	if points.size() < 2:
 		return Vector2(INF, INF)
-	_stroke_band(canvas, points, color, 18.0 * ns, alpha)
+	# Tap 的粉色柔光压低：保留一点氛围，但不抢白边和色带。
+	_stroke_band(canvas, points, color, 18.0 * ns, alpha, -1.0, 0.35)
 	var cap_scale := ns * float(_skin()["scale"])
 	var center_point := points[points.size() / 2]
 	# 两端圆头：让长条读成一根胶囊，而不是一段没有边界的弧。
@@ -2971,10 +2977,15 @@ func _draw_length_band(canvas: Control, chart: Chart, angle: float, width: float
 func _draw_seeks(canvas: Control, chart: Chart, t: float) -> void:
 	var pre := _pre_read_beats(chart, t)
 	var center := project_design(Vector2.ZERO)
-	var edge := project_design(Vector2(1.0, 0.0))
-	# Stop at the inner edge of the judgement ring, not its centre line.
-	var ring_radius := maxf(20.0, center.distance_to(edge) - 8.0)
-	for note in _notes_in_range(chart, t - pre - 2.0, t + 1.0):
+	# 环半径必须从真实边界点取；project_design(1,0) 只是设计坐标 1px，不是环。
+	var ring_radius := 0.0
+	for u in [0.0, 0.25, 0.5, 0.75]:
+		var edge := project_u(u, t)
+		if _valid_point(edge):
+			ring_radius = maxf(ring_radius, center.distance_to(edge))
+	ring_radius = maxf(20.0, ring_radius)
+	# 必须把整个预读窗口都取进来：Seek 从 note.beat - pre 就开始从圆心长大。
+	for note in _notes_in_range(chart, t - pre - 2.0, t + pre + 0.5):
 		if note.type != "seek" or t < note.beat - pre or t > note.beat + 0.5:
 			continue
 		var grow := clampf((t - (note.beat - pre)) / maxf(0.001, pre), 0.0, 1.0)
