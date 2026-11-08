@@ -3399,10 +3399,36 @@ func _draw_arc_flashes(canvas: Control) -> void:
 		canvas.draw_polyline(points, Color(color.r, color.g, color.b, 0.95 * alpha), 3.0, false)
 
 
-## 命中后留在原地的音符本体：向外放大并淡出（osu!std 击打光）。
+## 把一条带子（中心线 + 半径）转成闭合轮廓，扩散时画细线而不是实心带。
+func _band_outline(points: PackedVector2Array, half: float) -> PackedVector2Array:
+	var left := PackedVector2Array()
+	var right := PackedVector2Array()
+	for i in points.size():
+		var tangent: Vector2
+		if i == 0:
+			tangent = points[1] - points[0]
+		elif i == points.size() - 1:
+			tangent = points[i] - points[i - 1]
+		else:
+			tangent = points[i + 1] - points[i - 1]
+		if tangent.length_squared() < 0.0001:
+			continue
+		var normal := Vector2(-tangent.y, tangent.x).normalized()
+		left.append(points[i] + normal * half)
+		right.append(points[i] - normal * half)
+	var outline := PackedVector2Array()
+	outline.append_array(left)
+	for i in range(right.size() - 1, -1, -1):
+		outline.append(right[i])
+	if outline.size() > 1:
+		outline.append(outline[0])
+	return outline
+
+
+## 命中后留在原地的音符本体：轮廓向外放大并淡出（osu!std 击打光）。
 func add_note_pop(kind: String, note: Note, beat: float) -> void:
 	var chart := get_chart()
-	if chart == null or _overlay == null:
+	if chart == null:
 		return
 	var ns := _note_scale()
 	var pop := {"kind": kind, "age": 0.0}
@@ -3413,7 +3439,8 @@ func add_note_pop(kind: String, note: Note, beat: float) -> void:
 			return
 		pop["point"] = point
 		pop["color"] = note.custom_color if note.has_custom_color else star_color
-		pop["base"] = ns * PATH_SIZE_SCALE * PATH_HEAD_SCALE
+		var base_scale := clampf(ns * PATH_SIZE_SCALE * PATH_HEAD_SCALE, 0.2, 2.0)
+		pop["base"] = 24.0 * base_scale * float(_skin()["scale"]) * PATH_SIZE_SCALE * PATH_HEAD_SCALE
 	else:
 		var points := note_live_band(note, beat)
 		if points.size() < 2:
@@ -3422,15 +3449,16 @@ func add_note_pop(kind: String, note: Note, beat: float) -> void:
 		for p in points:
 			center += p
 		center /= float(points.size())
-		pop["points"] = points
+		var skin := _skin()
+		pop["outline"] = _band_outline(points, 9.0 * ns * float(skin["scale"]) * float(skin["band"]))
 		pop["center"] = center
 		pop["color"] = UITheme.GOLD if kind == "hold" else UITheme.PINK
-		pop["width"] = 18.0 * ns
-		pop["cap"] = 6.0 * ns * float(_skin()["scale"])
+		pop["cap"] = 6.0 * ns * float(skin["scale"])
 	_note_pops.append(pop)
 	while _note_pops.size() > 24:
 		_note_pops.pop_front()
-	_overlay.queue_redraw()
+	if _overlay != null:
+		_overlay.queue_redraw()
 
 
 static func note_pop_scale(age: float) -> float:
@@ -3451,27 +3479,25 @@ func _draw_note_pops(canvas: Control) -> void:
 		if String(pop.get("kind", "")) == "path":
 			var point: Vector2 = pop["point"]
 			var base := float(pop["base"])
-			_draw_path_circle(canvas, point, base * pop_scale, color, alpha)
-			canvas.draw_arc(point, 28.0 * base * pop_scale, 0.0, TAU, 30,
-				Color(color.r, color.g, color.b, 0.95 * alpha), 2.4, false)
+			var ring := base * pop_scale
+			canvas.draw_arc(point, ring, 0.0, TAU, 40, Color(color.r, color.g, color.b, 0.16 * alpha), 6.0, true)
+			canvas.draw_arc(point, ring, 0.0, TAU, 40, Color(color.r, color.g, color.b, 0.90 * alpha), 2.2, true)
 			if flash > 0.0:
-				canvas.draw_circle(point, 20.0 * base * pop_scale, Color(1, 1, 1, 0.45 * flash))
+				canvas.draw_arc(point, ring, 0.0, TAU, 40, Color(1, 1, 1, 0.55 * flash), 1.4, true)
+			canvas.draw_circle(point, maxf(2.0, base * 0.12 * pop_scale), Color(color.r, color.g, color.b, 0.90 * alpha))
 			continue
-		var points: PackedVector2Array = pop["points"]
+		var outline: PackedVector2Array = pop["outline"]
 		var center: Vector2 = pop["center"]
 		var scaled := PackedVector2Array()
-		for p in points:
+		for p in outline:
 			scaled.append(center + (p - center) * pop_scale)
-		var width := float(pop["width"]) * pop_scale
-		var cap := float(pop["cap"]) * pop_scale
-		canvas.draw_polyline(scaled, Color(0, 0, 0, 0.40 * alpha), width + 5.0 * pop_scale, false)
-		canvas.draw_polyline(scaled, Color(color.r, color.g, color.b, 0.85 * alpha), width, false)
-		for endpoint in [scaled[0], scaled[-1]]:
-			canvas.draw_circle(endpoint, cap, Color(0, 0, 0, 0.45 * alpha))
-			canvas.draw_circle(endpoint, cap * 0.72, Color(color.r, color.g, color.b, 0.95 * alpha))
-		canvas.draw_circle(scaled[scaled.size() / 2], cap * 0.8, Color(1, 1, 1, 0.85 * alpha))
+		if scaled.size() < 2:
+			continue
+		canvas.draw_polyline(scaled, Color(color.r, color.g, color.b, 0.16 * alpha), 6.0, true)
+		canvas.draw_polyline(scaled, Color(color.r, color.g, color.b, 0.88 * alpha), 2.2, true)
 		if flash > 0.0:
-			canvas.draw_polyline(scaled, Color(1, 1, 1, 0.55 * flash), width * 0.55, false)
+			canvas.draw_polyline(scaled, Color(1, 1, 1, 0.55 * flash), 1.4, true)
+		canvas.draw_circle(center, float(pop["cap"]) * pop_scale, Color(color.r, color.g, color.b, 0.90 * alpha))
 
 
 func _draw_pulses(canvas: Control) -> void:

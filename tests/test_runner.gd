@@ -2088,6 +2088,13 @@ func test_note_pop_scale() -> bool:
 	near(Preview3D.note_pop_scale(0.0), 1.0, 0.001, "note pop starts at its own size")
 	near(Preview3D.note_pop_scale(Preview3D.NOTE_POP_SEC), Preview3D.NOTE_POP_SCALE, 0.001, "note pop reaches 1.45x")
 	near(Preview3D.note_pop_scale(1.0), Preview3D.NOTE_POP_SCALE, 0.001, "note pop clamps after its lifetime")
+	var preview := Preview3D.new()
+	var line := PackedVector2Array([Vector2(0, 0), Vector2(50, 0), Vector2(100, 0)])
+	var outline := preview._band_outline(line, 10.0)
+	eq(outline.size(), 7, "band outline is a closed loop")
+	near(absf(outline[0].y), 10.0, 0.01, "band outline is offset by half the band width")
+	near(outline[-1].distance_to(outline[0]), 0.0, 0.01, "band outline closes back to its first point")
+	preview.free()
 	return true
 
 
