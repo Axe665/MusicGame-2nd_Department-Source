@@ -783,19 +783,17 @@ func _draw_hold(note: Note) -> void:
 	var straight := note.visual_pts.is_empty()
 	if straight:
 		# 制谱器里直长条画成实心矩形：宽 = 判定弧宽，长 = 拍长。
-		var plot := _plot_rect()
-		var half := note.arc_width() * 0.5
-		var x0 := _u_to_x(fposmod(note.angle - half, 360.0) / 360.0)
-		var x1 := _u_to_x(fposmod(note.angle + half, 360.0) / 360.0)
-		if x1 < x0:
-			x1 = plot.end.x
-			x0 = plot.position.x
-		var rect := Rect2(
-			Vector2(x0, minf(y0, y1)),
-			Vector2(maxf(2.0, x1 - x0), maxf(2.0, absf(y1 - y0)))
-		)
-		draw_rect(rect, Color(color.r, color.g, color.b, 0.32))
-		draw_rect(rect, Color(color.r, color.g, color.b, 0.95), false, 1.5)
+		# 弧宽跨过 0°/360° 接缝时拆成两段画（以前“x1<x0 就铺满整行”会让压接缝的 Hold 变成满屏长条）。
+		var top := minf(y0, y1)
+		var height := maxf(2.0, absf(y1 - y0))
+		for span in _u_intervals(note.angle, note.arc_width()):
+			var x0 := _u_to_x(span.x)
+			var x1 := _u_to_x(span.y)
+			if x1 - x0 < 1.0:
+				continue
+			var rect := Rect2(Vector2(x0, top), Vector2(x1 - x0, height))
+			draw_rect(rect, Color(color.r, color.g, color.b, 0.32))
+			draw_rect(rect, Color(color.r, color.g, color.b, 0.95), false, 1.5)
 	else:
 		var body := PackedVector2Array([Vector2(x, y0)])
 		for point in note.visual_pts:

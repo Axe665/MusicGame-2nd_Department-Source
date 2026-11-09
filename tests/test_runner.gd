@@ -89,6 +89,11 @@ func _initialize() -> void:
 		"test_background_cache",
 		"test_maimai_hold_clamp",
 		"test_import_window_set",
+		"test_bpm_change_approach",
+		"test_osu_std_filter",
+		"test_path_slide_start",
+		"test_hold_seam_interval",
+		"test_judge_scatter",
 	]
 	for test_name in tests:
 		if call(test_name) != true:
@@ -2315,4 +2320,113 @@ func test_import_window_set() -> bool:
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(out_dir).path_join(file_name))
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(out_dir))
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	return true
+
+## 变 BPM：音符的“起飞拍号”按毫秒反推，不能跟着当前 BPM 走。
+## 旧实现用 bpm_at(t) 现算预读拍数，跨 BPM 段时音符会晚落地/忽然消失再出现。
+func test_bpm_change_approach() -> bool:
+	var chart := Chart.new()
+	# 前 8 拍 60BPM，之后 240BPM。
+	chart.timing.points = [TimingPoint.new(0.0, 60.0, 4), TimingPoint.new(8.0, 240.0, 4)]
+	near(chart.timing.beat_to_chart_ms(8.0), 8000.0, 0.5, "beat 8 sits at 8000 ms")
+	near(chart.timing.beat_to_chart_ms(9.0), 8250.0, 0.5, "beat 9 sits at 8250 ms")
+	# 9 拍处的音符、预读 1000ms → 起飞拍号 7.25（7250ms），落在慢速段里。
+	near(chart.timing.spawn_beat(9.0, 1000.0), 7.25, 0.01, "spawn beat is derived from milliseconds")
+	# 在 7.5 拍（7500ms）时应该已经飞了 25%：(7500-7250)/1000。
+	near(chart.timing.approach(9.0, 7.5, 1000.0), 0.25, 0.01, "approach follows milliseconds, not the current BPM")
+	# 旧实现会在 8.0 拍（8000ms）才让音符出现，且一出现就是 75%。
+	var at_change := chart.timing.approach(9.0, 8.0, 1000.0)
+	ok(at_change > 0.5, "the note is already mid-flight when the BPM change hits")
+	# 端点与单调性。
+	near(chart.timing.approach(9.0, 7.25, 1000.0), 0.0, 0.001, "approach starts at the spawn beat")
+	near(chart.timing.approach(9.0, 9.0, 1000.0), 1.0, 0.001, "approach ends on the note beat")
+	var previous := -999.0
+	for i in range(0, 200):
+		var beat := 5.0 + float(i) * 0.02
+		var spawn := chart.timing.spawn_beat(12.0, 1000.0)
+		ok(is_equal_approx(spawn, spawn), "spawn beat is stable for a fixed note")
+		if i == 0:
+			previous = spawn
+	# 同一音符的起飞点与时间无关；不同音符之间单调递增。
+	var a := chart.timing.spawn_beat(9.0, 1000.0)
+	var b := chart.timing.spawn_beat(10.0, 1000.0)
+	ok(b > a, "later notes spawn later")
+	# 慢速段里的音符：预读 1000ms = 1 拍，起飞点就是 beat-1。
+	near(chart.timing.spawn_beat(4.0, 1000.0), 3.0, 0.001, "slow section keeps a one-beat pre-read")
+	# 不含 BPM 变化时，和旧公式等价。
+	var flat := Chart.new()
+	flat.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	near(flat.timing.spawn_beat(10.0, 1000.0), 8.0, 0.001, "flat BPM keeps the old two-beat pre-read")
+	return true
+## 在线 osu!：只列 osu!std，链接 / 纯 ID 能被识别成直接下载。
+func test_osu_std_filter() -> bool:
+	var only_taps := {"title": "A", "artist": "a", "id": 1, "beatmaps": [{"mode_int": 0}, {"mode_int": 0}]}
+	var taiko_only := {"title": "B", "artist": "b", "id": 2, "beatmaps": [{"mode_int": 1}, {"mode_int": 3}]}
+	var mixed := {"title": "C", "artist": "c", "id": 3, "beatmaps": [{"mode_int": 1}, {"mode_int": 0}]}
+	eq(ChartBrowser.osu_std_count(only_taps), 2, "std count on a std set")
+	eq(ChartBrowser.osu_std_count(taiko_only), 0, "taiko/mania sets have no std difficulty")
+	eq(ChartBrowser.osu_std_count(mixed), 1, "mixed set counts only the std difficulty")
+
+	var set_link := ChartBrowser.parse_osu_input("https://osu.ppy.sh/beatmapsets/2356114#osu/5073664")
+	eq(String(set_link.get("kind", "")), "set", "beatmapset link is a set download")
+	eq(int(set_link.get("id", 0)), 2356114, "beatmapset id parsed")
+	var map_link := ChartBrowser.parse_osu_input("https://osu.ppy.sh/beatmaps/5073664")
+	eq(String(map_link.get("kind", "")), "beatmap", "beatmap link needs resolving")
+	eq(int(map_link.get("id", 0)), 5073664, "beatmap id parsed")
+	var short_link := ChartBrowser.parse_osu_input("https://osu.ppy.sh/s/2356114")
+	eq(int(short_link.get("id", 0)), 2356114, "short /s/ link parsed")
+	var bare := ChartBrowser.parse_osu_input("5073664")
+	eq(String(bare.get("kind", "")), "set", "bare number is tried as a set id")
+	eq(int(bare.get("id", 0)), 5073664, "bare number parsed")
+	ok(ChartBrowser.parse_osu_input("camellia").is_empty(), "plain text stays a search query")
+	ok(ChartBrowser.parse_osu_input("").is_empty(), "empty input is a no-op")
+	return true
+## “起划”音效的时刻 = 星星开始沿轨迹移动的拍（note.beat + wait），不是头部接住的时刻。
+func test_path_slide_start() -> bool:
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	var note := Note.new("path", 4.0, 90.0, 62.0)
+	note.end_beat = 6.0
+	note.wait_beat = 0.5
+	near(Playtest.slide_start_ms(chart, note, 0.0), 2250.0, 0.5, "slide starts at beat + wait")
+	near(Playtest.slide_start_ms(chart, note, 30.0), 2280.0, 0.5, "judgement offset shifts the cue")
+	ok(Playtest.slide_start_ms(chart, note, 0.0) > chart.timing.beat_to_chart_ms(note.beat), "cue is after the head beat")
+	note.wait_beat = 0.0
+	near(Playtest.slide_start_ms(chart, note, 0.0), 2000.0, 0.5, "no wait means the cue lands on the beat")
+	note.wait_beat = 99.0
+	near(Playtest.slide_start_ms(chart, note, 0.0), 2999.5, 6.0, "wait is clamped inside the note")
+	return true
+## 编辑器时间轴上“角度 = x”的映射：弧宽压在 0°/360° 接缝时必须拆成两段，
+## 否则画 Hold / Tap 时会退化成满屏长条（之前 Hold 就是这么坏的）。
+func test_hold_seam_interval() -> bool:
+	var centered := JudgeMath.interval(0.0, 60.0)
+	eq(centered.size(), 2, "hold centered on the seam splits in two")
+	near(JudgeMath.total_length(centered), 60.0, 0.001, "split hold keeps its width")
+	var left_edge := JudgeMath.interval(350.0, 80.0)
+	eq(left_edge.size(), 2, "hold crossing the seam splits in two")
+	near(JudgeMath.total_length(left_edge), 80.0, 0.001, "split hold keeps its width at 350deg")
+	var normal := JudgeMath.interval(90.0, 60.0)
+	eq(normal.size(), 1, "a hold away from the seam stays one piece")
+	near(normal[0].x, 60.0, 0.001, "normal hold start")
+	near(normal[0].y, 120.0, 0.001, "normal hold end")
+	var full := JudgeMath.interval(0.0, 360.0)
+	eq(full.size(), 1, "a full circle stays one span")
+	near(JudgeMath.total_length(full), 360.0, 0.001, "full circle covers the ring")
+	return true
+## 结算页散布图：只收合法样本，等级颜色互不相同。
+func test_judge_scatter() -> bool:
+	var chart := JudgeScatter.new()
+	chart.set_hits([
+		{"offset": -30.0, "tier": "GREAT"},
+		{"offset": 20.0, "tier": "PERFECT"},
+		{"offset": 900.0, "tier": "BAD"},
+		"junk",
+	])
+	eq(chart.hits.size(), 3, "only dictionary samples are kept")
+	ok(JudgeScatter.tier_color("PERFECT") != JudgeScatter.tier_color("GREAT"), "perfect/great colours differ")
+	ok(JudgeScatter.tier_color("GREAT") != JudgeScatter.tier_color("GOOD"), "great/good colours differ")
+	ok(JudgeScatter.tier_color("BAD") != JudgeScatter.tier_color("MISS"), "bad/miss colours differ")
+	chart.set_hits([])
+	eq(chart.hits.size(), 0, "clearing the plot works")
+	chart.free()
 	return true

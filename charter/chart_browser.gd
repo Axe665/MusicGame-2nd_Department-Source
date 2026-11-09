@@ -28,8 +28,20 @@ var _specs: Dictionary = {}
 ## 这里建一张 "11213" → spec 的映射，避免新谱面查不到文件列表。
 var _spec_lookup: Dictionary = {}
 
+## osu! 在线谱面：搜索走 osu.direct 镜像，下载先试 sayobot 再去视频版，
+## 拿到的 .osz 和本地导入完全同一条转谱管线。
+const OSU_SEARCH_URL := "https://osu.direct/api/v2/search?query=%s&mode=0&amount=25"
+const OSU_DOWNLOAD_URLS := [
+	"https://dl.sayobot.cn/beatmaps/download/novideo/%d",
+	"https://osu.direct/api/d/%d",
+]
+## 只做 osu! 时的模式：独立窗口“在线 osu! 谱面”，只列 osu!std 谱面。
+var osu_only: bool = false
+var _osu_items: Array = []
+var _osu_query := ""
+
 func _ready() -> void:
-	title = "在线舞萌谱面"
+	title = "在线 osu! 谱面" if osu_only else "在线舞萌谱面"
 	ok_button_text = "下载并导入"
 	min_size = Vector2i(760, 560)
 	_entries = _load_json("res://charts/adx_search.json")
@@ -43,7 +55,13 @@ func _ready() -> void:
 	_diff_dialog.add_child(_diff_list)
 	_diff_dialog.confirmed.connect(_import_chosen_difficulty)
 	add_child(_diff_dialog)
-	_refresh()
+	if osu_only:
+		# 独立窗口：只要 osu!std，舞萌的筛选器全部藏起来。
+		_source.visible = false
+		_version.visible = false
+		_genre.visible = false
+		_search.placeholder_text = "搜索 osu!std 谱面；也可粘贴谱面链接或 ID 直接下载"
+	await _refresh()
 	confirmed.connect(_download_selected)
 
 func _load_json(path: String) -> Variant:
@@ -71,14 +89,14 @@ func _build() -> void:
 	_source = OptionButton.new()
 	_source.add_item("adxdls")
 	_source.add_item("majdata")
-	_source.item_selected.connect(func(_i: int) -> void: _refresh())
+	_source.item_selected.connect(_on_filter_changed)
 	row.add_child(_source)
 	_version = OptionButton.new()
 	_genre = OptionButton.new()
 	row.add_child(_version)
 	row.add_child(_genre)
-	_version.item_selected.connect(func(_i: int) -> void: _refresh())
-	_genre.item_selected.connect(func(_i: int) -> void: _refresh())
+	_version.item_selected.connect(_on_filter_changed)
+	_genre.item_selected.connect(_on_filter_changed)
 	_list = ItemList.new()
 	_list.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_list.custom_minimum_size = Vector2(0, 380)
@@ -105,8 +123,24 @@ func _build() -> void:
 	for g in genres.keys():
 		_genre.add_item(String(g))
 
+func _on_filter_changed(_index: int) -> void:
+	await _refresh()
+
+
+## 这个对话窗是不是 osu! 模式（独立窗口）。
+func osu_mode() -> bool:
+	return osu_only
+
+
 func _refresh() -> void:
 	_list.clear()
+	var osu_mode := self.osu_mode()
+	_version.visible = not osu_mode
+	_genre.visible = not osu_mode
+	if osu_mode():
+		# 搜索是协程：由信号（下拉框 / 防抖计时器）驱动，await 链由引擎保持。
+		await _refresh_osu()
+		return
 	if _source != null and _source.selected == 1:
 		_refresh_majdata()
 		return
@@ -134,6 +168,12 @@ func _refresh() -> void:
 func _download_selected() -> void:
 	var sel := _list.get_selected_items()
 	if sel.is_empty():
+		return
+	if osu_mode():
+		var meta: Variant = _list.get_item_metadata(sel[0])
+		var target: Dictionary = meta if meta is Dictionary else {"kind": "set", "id": int(meta)}
+		_show_download_progress()
+		await _download_osu(target)
 		return
 	var slug := String(_list.get_item_metadata(sel[0]))
 	_show_download_progress()
@@ -179,6 +219,33 @@ func _download_selected() -> void:
 	# 不在浏览器里选难度：交给新开的制谱窗口（顶部有难度下拉）。
 	source_ready.emit(maidata)
 	hide()
+
+## osu! 这条线用 Godot 自带的 HTTPRequest：osu.direct / sayobot 都支持，
+## 而且 curl + OS.create_process 在参数里带空格（user:// 路径含项目名）时会静默失败。
+func _http_get(url: String, label: String = "", timeout_sec: float = 40.0) -> PackedByteArray:
+	var http := HTTPRequest.new()
+	http.timeout = timeout_sec
+	add_child(http)
+	if not label.is_empty():
+		_status.text = "%s…" % label
+	var err := http.request(url)
+	if err != OK:
+		_status.text = "%s  启动失败" % label
+		http.queue_free()
+		return PackedByteArray()
+	var result: Array = await http.request_completed
+	http.queue_free()
+	if result.size() < 4:
+		return PackedByteArray()
+	var code := int(result[1])
+	var body: PackedByteArray = result[3]
+	if int(result[0]) != HTTPRequest.RESULT_SUCCESS or code != 200 or body.is_empty():
+		_status.text = "%s  失败（code=%d）" % [label, code]
+		return PackedByteArray()
+	if not label.is_empty():
+		_status.text = "%s  完成（%.1f KB）" % [label, float(body.size()) / 1024.0]
+	return body
+
 
 func _fetch_bytes(url: String, label: String = "") -> PackedByteArray:
 	# 统一用 curl：adxdls 和 majdata 都可能让 Godot HTTPRequest 卡住。
@@ -312,6 +379,173 @@ func _update_progress(label: String, size: int, total: int, started: int, done: 
 func _end_progress() -> void:
 	_progress.visible = false
 	_progress.value = 0.0
+
+
+## ── osu! 在线谱面 ──────────────────────────────────────────────────────
+## 搜索：osu.direct 的 v2 search 直接返回 beatmapset 列表（含每个难度）。
+## 下载：sayobot 的 novideo 版最省流量，失败再退回 osu.direct 的完整包。
+func _refresh_osu() -> void:
+	var query := _search.text.strip_edges()
+	if query.is_empty():
+		_status.text = "osu!：输入曲名 / 作者 / 谱师搜索（镜像：osu.direct + sayobot）"
+		return
+	if query == _osu_query and not _osu_items.is_empty():
+		_fill_osu_list()
+		return
+	var direct := parse_osu_input(query)
+	if not direct.is_empty():
+		_osu_items = []
+		_list.clear()
+		var kind_text := "谱面包" if String(direct.get("kind", "set")) == "set" else "单谱面（自动找所属谱面包）"
+		_list.add_item("直接下载 %s #%d —— 回车开始" % [kind_text, int(direct.get("id", 0))])
+		_list.set_item_metadata(0, direct)
+		_osu_query = query
+		_status.text = "osu!：识别为%s #%d，回车下载" % [kind_text, int(direct.get("id", 0))]
+		return
+	_osu_query = query
+	_status.text = "osu!：正在搜索「%s」…" % query
+	var bytes := await _http_get(OSU_SEARCH_URL % query.uri_encode(), "搜索 osu!")
+	if bytes.is_empty():
+		_status.text = "osu!：搜索失败（网络不通或镜像超时）"
+		return
+	var parsed: Variant = JSON.parse_string(bytes.get_string_from_utf8())
+	if not parsed is Array:
+		_status.text = "osu!：搜索返回异常"
+		return
+	_osu_items = parsed
+	_fill_osu_list()
+
+
+## 一个谱面包里有几个 osu!std 难度（taiko / mania / catch 不算）。
+static func osu_std_count(entry: Dictionary) -> int:
+	var count := 0
+	for map in entry.get("beatmaps", []):
+		if map is Dictionary and int((map as Dictionary).get("mode_int", 0)) == 0:
+			count += 1
+	return count
+
+
+func _fill_osu_list() -> void:
+	_list.clear()
+	for item in _osu_items:
+		if not item is Dictionary:
+			continue
+		var entry: Dictionary = item
+		# 只收带 osu!std 难度的谱面包（taiko / mania / catch 不出现）。
+		var std_count := osu_std_count(entry)
+		if std_count <= 0:
+			continue
+		_list.add_item("%s — %s  [%d 个 std 难度]" % [
+			String(entry.get("title", "")),
+			String(entry.get("artist", "")),
+			std_count,
+		])
+		_list.set_item_metadata(_list.item_count - 1, {"kind": "set", "id": int(entry.get("id", 0))})
+	_status.text = "osu!：%d 个结果（回车下载整包，导入后在新标签页里切换难度）" % _osu_items.size()
+
+
+func _download_osu(entry: Dictionary) -> void:
+	var set_id := int(entry.get("id", 0))
+	var kind := String(entry.get("kind", "set"))
+	if set_id <= 0:
+		return
+	if kind == "beatmap":
+		var resolved := await _resolve_set_id(set_id)
+		if resolved <= 0:
+			_hide_download_progress()
+			_status.text = "osu!：解析谱面 #%d 失败（不在服上？）" % set_id
+			return
+		set_id = resolved
+	# 数字既可能是谱面包 id，也可能是谱面 id：先按谱面包试，失败再解析一次。
+	var candidates: Array = [set_id]
+	var target_path := ""
+	for attempt in 2:
+		for guess in candidates:
+			target_path = await _download_osz(guess)
+			if not target_path.is_empty():
+				_hide_download_progress()
+				_status.text = "osu!：下载完成，开始转谱"
+				source_ready.emit(target_path)
+				hide()
+				return
+		if kind == "set":
+			var fallback := await _resolve_set_id(set_id)
+			if fallback > 0 and fallback != set_id:
+				candidates = [fallback]
+				continue
+		break
+	_hide_download_progress()
+	_status.text = "osu!：下载失败（两个镜像都没拿到）"
+
+
+## 试所有镜像下载一个谱面包，成功返回本地 .osz 路径。
+func _download_osz(set_id: int) -> String:
+	var folder := "user://imports/osu_%d/" % set_id
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(folder))
+	var target := folder + "chart.osz"
+	_status.text = "osu!：正在下载谱面包 #%d…" % set_id
+	for url_template in OSU_DOWNLOAD_URLS:
+		var bytes := await _http_get(String(url_template) % set_id, "下载 osu! 谱面", 120.0)
+		if bytes.size() < 2048:
+			continue
+		var file := FileAccess.open(target, FileAccess.WRITE)
+		if file == null:
+			continue
+		file.store_buffer(bytes)
+		file.close()
+		return target
+	return ""
+
+
+## 谱面 id → 谱面包 id：osu.ppy.sh 的 .osu 文本里带 BeatmapSetID，不需要 OAuth。
+func _resolve_set_id(beatmap_id: int) -> int:
+	if beatmap_id <= 0:
+		return 0
+	var body := await _http_get("https://osu.ppy.sh/osu/%d" % beatmap_id, "解析谱面 #%d" % beatmap_id, 30.0)
+	if body.is_empty():
+		return 0
+	var text := body.get_string_from_utf8()
+	var idx := text.find("BeatmapSetID:")
+	if idx < 0:
+		return 0
+	var rest := text.substr(idx + 13, 24).strip_edges()
+	var line := rest.split("\n")[0].strip_edges()
+	return int(line) if line.is_valid_int() else 0
+
+
+## 搜索框里的链接 / 纯 ID：识别成“直接下载”。
+##   https://osu.ppy.sh/beatmapsets/2356114#osu/5073664  → 谱面包 2356114
+##   https://osu.ppy.sh/beatmaps/5073664                  → 单谱面 5073664
+##   1234567                                              → 先当谱面包
+static func parse_osu_input(text_in: String) -> Dictionary:
+	var value := text_in.strip_edges()
+	if value.is_empty():
+		return {}
+	if value.is_valid_int() and value.length() >= 3:
+		return {"kind": "set", "id": int(value)}
+	var lower := value.to_lower()
+	if lower.contains("osu.ppy.sh") or lower.contains("osu.direct") or lower.contains("sayobot") or lower.contains("beatmapsets/") or lower.contains("beatmaps/"):
+		var set_id := _regex_int(value, "beatmapsets[/#](\\d+)")
+		if set_id > 0:
+			return {"kind": "set", "id": set_id}
+		var s_id := _regex_int(value, "/s/(\\d+)")
+		if s_id > 0:
+			return {"kind": "set", "id": s_id}
+		var map_id := _regex_int(value, "beatmaps/(\\d+)")
+		if map_id > 0:
+			return {"kind": "beatmap", "id": map_id}
+	return {}
+
+
+static func _regex_int(text_in: String, pattern: String) -> int:
+	var re := RegEx.new()
+	if re.compile(pattern) != OK:
+		return 0
+	var found := re.search(text_in)
+	if found == null:
+		return 0
+	var raw := found.get_string(1)
+	return int(raw) if raw.is_valid_int() else 0
 
 
 func _refresh_majdata() -> void:
