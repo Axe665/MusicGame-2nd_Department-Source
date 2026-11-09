@@ -3,10 +3,10 @@ extends RefCounted
 
 ## Geometry is stored in ring-radius units. Parameters map confirmed distance
 ## back to the note's relative beat, so erasure and drawing use the same curve.
-const CHECKPOINT_SPACING := 0.14
+const CHECKPOINT_SPACING := 0.28
 const CONTACT_RADIUS := 0.13
 const REQUIRED_COVERAGE := 0.90
-const MAX_SKIPPED_DISTANCE := 0.18
+const MAX_SKIPPED_DISTANCE := CHECKPOINT_SPACING + 0.04
 
 var points := PackedVector2Array()
 var parameters := PackedFloat32Array()
@@ -74,7 +74,7 @@ func configure(source: PackedVector2Array, source_parameters := PackedFloat32Arr
 	if length <= 0.000001:
 		return
 	contact_radius = minf(CONTACT_RADIUS, length * 0.12)
-	var spacing := maxf(length / 2048.0, minf(CHECKPOINT_SPACING, length / 8.0))
+	var spacing := maxf(length / 2048.0, minf(CHECKPOINT_SPACING, length / 4.0))
 	var targets: Array[float] = [0.0, length * REQUIRED_COVERAGE, length]
 	var corners: Array[float] = [0.0, length]
 	var d := spacing
