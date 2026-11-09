@@ -22,9 +22,10 @@ const RED_LIMIT_SEC := 0.2
 const PATH_TAIL_RADIUS := 192.0
 ## 尾判半径最多占“头到尾直线距离”的多少（短滑条要跟着缩）。
 const PATH_TAIL_RADIUS_RATIO := 0.42
-## 尾判还要求光标滑到轨迹的多少进度，防止站在中段就提前算完成。
-## 星尾：鼠标投影到轨迹这个比例就算完成，不再要求贴着尾点。
-const PATH_TAIL_MIN_FRACTION := 0.90
+const PathTracker = preload("res://core/path_progress.gd")
+## 必须按顺序经过至少 90% 的轨迹长度，才允许结算星尾。
+const PATH_TAIL_MIN_FRACTION := PathTracker.REQUIRED_COVERAGE
+const PATH_INPUT_CAPACITY := 2048
 ## 扫到 90% 也不能太早完成：早于此只等，不给 BAD。
 const PATH_TAIL_SWEEP_EARLY_MS := 220.0
 ## 星尾自己的档位窗口（连续滑动有鼠标延迟，比 Tap 宽）。
@@ -88,16 +89,15 @@ var _auto_origin_ms: float = 0.0
 var _offset_dirty: bool = false
 ## 自动基准模式：不进音频、按谱面自动出判定，用于无人值守测帧率。
 var bench_mode: bool = false
-## AUTO 自动演示：把「完美演奏」合成成真实输入（按键 / 鼠标位置），
-## 走的是同一条判定管线，所以打击特效、音效、连击、结算都和真人一样。
+## AUTO 自动演示合成按键和轨迹采样，共用命中、特效、音效和结算逻辑。
 var auto_play: bool = false
 var _auto_index: int = 0
 var _auto_cursor: Vector2 = Vector2.ZERO
 var _auto_hold_keys: Dictionary = {}   # note_id -> {"key": int, "end_ms": float}
 var _auto_key_phase: int = 0
-## 环分区擦除：每颗活跃星星当前所在分区与停留帧数。
-var _sector_now: Dictionary = {}
-var _sector_frames: Dictionary = {}
+## One bounded batch is shared by all active paths; consuming one never steals
+## a real movement from another path that overlaps it.
+var _path_motion_samples: Array[Dictionary] = []
 const AUTO_LEAD_MS := 8.0              # 比判定时间早这么多就按下（吃掉帧量化误差）
 const AUTO_RELEASE_MS := 60.0          # Hold 尾判之后再松手，避免被判成提前松开
 const AUTO_PREVIEW_MS := 900.0         # 光标提前多久开始预判下一个要点
@@ -188,6 +188,8 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	_preview.time_beat = start_beat
 	_preview.playing = true
 	_preview.visible = true
+	_preview.set_process(false)
+	_preview.prepare_playtest_frame(start_beat, 0.0)
 	# 进场 / 重开时整体淡入，避免音符和轨迹直接蹦出来。
 	modulate.a = 0.0
 	var fade := create_tween()
@@ -241,6 +243,8 @@ func _set_paused(value: bool) -> void:
 	if _finished:
 		return
 	_paused = value
+	_key_presses.clear()
+	_reset_path_motion()
 	if _pause_overlay != null:
 		_pause_overlay.visible = value
 	if _audio_available and _audio != null:
@@ -414,7 +418,9 @@ func _init_states() -> void:
 			"tail_judged": false,
 			"head_hit": false,
 			"tail_hit": false,
-			"path_last_mouse": Vector2.ZERO,
+			"path_tracker": PathTracker.for_note(note) if note.type == "path" else null,
+			"path_finish_ms": INF,
+			"path_auto_index": 0,
 			"trace_started": false,
 			"trace_distance": 0.0,
 			"trace_last": Vector2.ZERO,
@@ -429,8 +435,7 @@ func _init_states() -> void:
 	_auto_index = 0
 	_auto_cursor = Vector2.ZERO
 	_auto_hold_keys.clear()
-	_sector_now.clear()
-	_sector_frames.clear()
+	_path_motion_samples.clear()
 	for region in chart.regions:
 		_red_states[region.id] = {"time": 0.0, "broken": false}
 
@@ -484,11 +489,14 @@ func _process(delta: float) -> void:
 	var chart_ms := _chart_ms()
 	var judge_ms := chart_ms + float(_app.playtest_offset_ms if _app != null else 0.0)
 	var beat := chart.timing.chart_ms_to_beat(chart_ms)
-	_preview.time_beat = beat
 	_preview.playing = true
+	_preview.prepare_playtest_frame(beat, delta)
 	if auto_play:
 		_auto_step(judge_ms, beat, delta)
+		_preview.mouse_screen = _auto_cursor
+		_preview._update_cursor()
 	_judge_all(judge_ms, beat, delta)
+	_path_motion_samples.clear()
 	if bench_mode:
 		_bench_tick(judge_ms, beat)
 		_bench_mouse(beat)
@@ -548,7 +556,7 @@ func _chart_ms() -> float:
 
 
 ## ── AUTO 自动演示 ────────────────────────────────────────────────────────
-## 把「完美演奏」翻译成真实输入，判定管线完全不知道这是 AUTO：
+## 把「完美演奏」翻译成按键与轨迹采样，共用空间及时间判定：
 ##   · Tap / Anchor / Path 头 / Trace 头 → 判定时间塞一次按键
 ##   · Hold → 判定时按下、尾判之后再松
 ##   · Path / Trace → 合成光标贴着轨迹走，轨迹按进度擦除
@@ -745,6 +753,7 @@ func _inside_red(point: Vector2, beat: float) -> bool:
 
 func _toggle_auto() -> void:
 	auto_play = not auto_play
+	_reset_path_motion()
 	if _preview != null:
 		_preview.auto_cursor = Vector2.INF if not auto_play else _preview.mouse_screen
 	if not auto_play:
@@ -978,30 +987,22 @@ func _judge_path(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 				_add_log("PATH #%d HEAD MISS" % note.id)
 				_preview.set_path_head_state(note.id, false, beat)
 				state["head_judged"] = true
-	if not state["tail_judged"] and ms >= tail_ms - HIT_WINDOW_MS:
+	var tracker: PathProgress = state["path_tracker"]
+	if not state["tail_judged"]:
 		var tail_point: Vector2 = _preview.path_point(note, note.duration(), beat)
-		# 尾判半径跟着滑条长度缩：45° 的短滑条头尾只隔 0.48R（≈330px），
-		# 固定 192px 会让“刚摸到头”就被当成“已经滑到尾巴”，直接判成 BAD。
 		var chord := PATH_TAIL_RADIUS
 		var start_point: Vector2 = _preview.path_point(note, 0.0, beat)
 		if start_point.is_finite() and tail_point.is_finite():
 			chord = start_point.distance_to(tail_point)
 		var tail_radius := clampf(minf(PATH_TAIL_RADIUS, chord * PATH_TAIL_RADIUS_RATIO), 56.0, PATH_TAIL_RADIUS)
-		var tail_info: Dictionary = _preview.path_fraction(note, mouse, beat)
-		var tail_fraction := float(tail_info.get("fraction", 0.0))
-		var tail_distance := float(tail_info.get("distance", INF))
-		var near_tail := mouse.is_finite() and tail_point.is_finite() and mouse.distance_to(tail_point) <= tail_radius
-		# 两种完成方式：
-		#   1) 鼠标沿轨迹扫到 90%（离轨迹别太远即可），但最早只能到 GOOD 窗口；
-		#   2) 手已经贴到尾点，且时间在 GREAT 内（防止路过尾点就吃个早期 BAD）。
-		var swept := ms >= tail_ms - PATH_TAIL_SWEEP_EARLY_MS \
-			and tail_fraction >= PATH_TAIL_MIN_FRACTION and tail_distance <= PATH_TAIL_RADIUS
-		var touched := near_tail and absf(ms - tail_ms) <= TAIL_GREAT_MS
-		if swept or touched:
-			var tier := tail_tier(ms - tail_ms)
+		_update_path_progress(note, state, tracker, ms, beat, mouse, tail_radius)
+		var finish_ms := float(state["path_finish_ms"])
+		if is_finite(finish_ms):
+			var tail_error := finish_ms - tail_ms
+			var tier := tail_tier(tail_error)
 			state["tail_hit"] = true
 			_register_hit(tier)
-			_pulse_at(note.tail_angle, beat, _tier_color(tier), tier, note.tail_width, "path", _timing_detail(ms - tail_ms, tier))
+			_pulse_at(note.tail_angle, beat, _tier_color(tier), tier, note.tail_width, "path", _timing_detail(tail_error, tier))
 			_sfx.play("tail", randf_range(0.98, 1.02))
 			_add_log("PATH #%d TAIL %s" % [note.id, tier])
 			state["tail_judged"] = true
@@ -1021,46 +1022,65 @@ func _judge_path(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 		var status_color := UITheme.MINT if status == "FULL" else (UITheme.AMBER if status == "FRAY" else UITheme.RED)
 		_pulse_at(note.tail_angle, beat, status_color, status, note.tail_width, "path")
 		state["done"] = true
-	if ms < head_ms or ms > tail_ms:
+	# The guide ball follows music time; confirmed input alone erases arrows.
+	_preview.set_path_erased_to(note, tracker.fraction)
+
+
+func _update_path_progress(note: Note, state: Dictionary, tracker: PathProgress, ms: float, beat: float, mouse: Vector2, tail_radius: float) -> void:
+	var start_ms := chart.timing.beat_to_chart_ms(note.beat + clampf(note.wait_beat, 0.0, note.duration()))
+	var tail_ms := float(state["end_ms"])
+	if ms < start_ms - HIT_WINDOW_MS or tracker.points.size() < 2:
 		return
-	# 中段只看“滑到了没有”：不逐点扣分；轨迹按时间进度连续消失。
-	if bool(state.get("head_hit", false)):
-		var total := note.duration()
-		var wait := clampf(note.wait_beat, 0.0, maxf(0.0, total - 0.001))
-		var q := clampf((beat - note.beat - wait) / maxf(0.001, total - wait), 0.0, 1.0)
+	var projected := _preview.path_judgement_points(tracker.points, beat)
+	var radius := tracker.contact_radius * _preview.path_judgement_scale()
+	if auto_play:
+		# AUTO feeds each path separately through the same checkpoint tracker.
+		var total := maxf(0.001, note.duration())
+		var wait := clampf(note.wait_beat, 0.0, total - 0.001)
+		var q := clampf((beat - note.beat - wait) / (total - wait), 0.0, 1.0)
 		var progress := 1.0 - pow(1.0 - q, maxf(0.05, note.path_speed))
-		# 只擦到球的位置：鼠标领先时如果连球前面那一小段也削掉，
-		# 球就会悬在缺口里，看起来像轨迹断了一截。
-		_preview.set_path_erased_to(note, progress)
-		_track_sector_erase(note, progress)
-		state["path_last_mouse"] = mouse
+		var finishing := ms >= tail_ms - 40.0
+		var guard := PATH_TAIL_MIN_FRACTION - tracker.contact_radius / tracker.length - 0.03
+		var index := int(state["path_auto_index"])
+		while ms >= start_ms and index < projected.size():
+			if not finishing and (float(tracker.parameters[index]) > progress or float(tracker.distances[index]) / tracker.length >= guard):
+				break
+			_feed_path_sample(state, tracker, projected[index], ms, projected, radius, start_ms, tail_radius)
+			index += 1
+		state["path_auto_index"] = index
+	else:
+		for sample in _path_motion_samples:
+			if bool(sample.get("break", false)):
+				tracker.reset_motion()
+			var sample_ms := float(sample["time"])
+			if sample_ms <= ms:
+				_feed_path_sample(state, tracker, sample["point"], sample_ms, projected, radius, start_ms, tail_radius)
+		# A stationary cursor supplies contact without skipping unchecked regions.
+		_feed_path_sample(state, tracker, mouse, ms, projected, radius, start_ms, tail_radius)
 
 
-## 星星扫到哪个 45° 分区，就把该分区里所有「已经开始」的星星中段擦掉。
-## 停留 2 帧才算进入，避免正好压在分区边界时来回抖。
-func _track_sector_erase(note: Note, progress: float) -> void:
-	if _preview == null:
+func _feed_path_sample(state: Dictionary, tracker: PathProgress, point: Vector2, ms: float, projected: PackedVector2Array, radius: float, start_ms: float, tail_radius: float) -> void:
+	tracker.feed(point, ms, projected, radius, start_ms)
+	if is_finite(float(state["path_finish_ms"])):
 		return
-	var local := note.path_local_at(note.duration() * clampf(progress, 0.0, 1.0))
-	if local.length_squared() <= 0.000001:
-		return
-	var angle := fposmod(rad_to_deg(atan2(local.y, local.x)), 360.0)
-	var sector := _preview.ring_sector(angle)
-	if int(_sector_now.get(note.id, -1)) != sector:
-		_sector_now[note.id] = sector
-		_sector_frames[note.id] = 0
-		return
-	var frames := int(_sector_frames.get(note.id, 0)) + 1
-	_sector_frames[note.id] = frames
-	if frames != 2:
-		return
-	for other in _ordered_notes:
-		if other.type != "path" or other == note:
-			continue
-		var other_state: Dictionary = _states.get(other.id, {})
-		if not bool(other_state.get("head_hit", false)) or bool(other_state.get("tail_judged", false)):
-			continue
-		_preview.cut_path_sector(other, sector)
+	var tail_ms := float(state["end_ms"])
+	state["path_finish_ms"] = tracker.finish_contact(tail_ms - PATH_TAIL_SWEEP_EARLY_MS, tail_ms + HIT_WINDOW_MS, tail_radius)
+
+
+func _reset_path_motion() -> void:
+	_path_motion_samples.clear()
+	for state in _states.values():
+		var tracker: PathProgress = state.get("path_tracker")
+		if tracker != null:
+			tracker.reset_motion()
+
+
+func _queue_path_motion(point: Vector2, ms: float) -> void:
+	var discontinuity := _path_motion_samples.size() >= PATH_INPUT_CAPACITY
+	if discontinuity:
+		# Bound stalled-frame memory without joining across discarded movements.
+		_path_motion_samples.clear()
+	_path_motion_samples.append({"point": point, "time": ms, "break": discontinuity})
 
 
 func _judge_trace(note: Note, ms: float, beat: float, delta: float, mouse: Vector2) -> void:
@@ -1650,6 +1670,11 @@ func _format_ms(ms: float) -> String:
 
 
 func _input(event: InputEvent) -> void:
+	if event is InputEventMouseMotion:
+		if _running and not _paused and not _finished and not auto_play:
+			var point: Vector2 = _preview.get_global_transform_with_canvas().affine_inverse() * event.position
+			_queue_path_motion(point, _chart_ms() + float(_app.playtest_offset_ms if _app != null else 0.0))
+		return
 	if event is InputEventMouseButton and event.pressed and (event.button_index == MOUSE_BUTTON_WHEEL_UP or event.button_index == MOUSE_BUTTON_WHEEL_DOWN):
 		var stamp := _chart_ms() + float(_app.playtest_offset_ms if _app != null else 0.0)
 		_seek_presses.append({
@@ -1693,6 +1718,8 @@ func _input(event: InputEvent) -> void:
 				_update_top_bar(now_ms, chart.timing.chart_ms_to_beat(now_ms))
 				get_viewport().set_input_as_handled()
 				return
+			if not _running or _paused or _finished:
+				return
 			var key: int = event.physical_keycode if event.physical_keycode != 0 else event.keycode
 			var stamp := _chart_ms() + float(_app.playtest_offset_ms if _app != null else 0.0)
 			# 同一个键的手抖双击只算一次；和弦用不同键，不受影响。
@@ -1723,6 +1750,7 @@ func _finish() -> void:
 	if _audio != null:
 		_audio.stop()
 	_preview.playing = false
+	_preview.set_process(true)
 	_preview.custom_cursor_visible = false
 	var lines: Array[String] = []
 	if auto_play:

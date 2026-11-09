@@ -468,6 +468,13 @@ func _build_3d() -> void:
 	_ring_root.add_child(_ring_mesh)
 
 
+## The playtest advances geometry once before judgement, using the same camera
+## and beat that the overlay will draw for this frame.
+func prepare_playtest_frame(beat: float, delta: float) -> void:
+	time_beat = beat
+	_process(delta)
+
+
 func _process(_delta: float) -> void:
 	var proc_start := Time.get_ticks_usec()
 	var chart := get_chart()
@@ -1033,6 +1040,10 @@ func _on_mouse_exited() -> void:
 func _gui_input(event: InputEvent) -> void:
 	if event is InputEventMouseMotion:
 		mouse_screen = event.position
+		if playtest_mode:
+			_cursor_layer.queue_redraw()
+			accept_event()
+			return
 		if interactive and not playtest_mode:
 			if _drag_segment >= 0:
 				_update_drag(event.position)
@@ -2394,6 +2405,21 @@ static func merge_erase_ranges(ranges: Array, from_fraction: float, to_fraction:
 		else:
 			merged[-1]["to"] = maxf(float(merged[-1].get("to", 0.0)), float(item.get("to", 0.0)))
 	return merged
+
+
+func path_judgement_points(local_points: PackedVector2Array, beat: float) -> PackedVector2Array:
+	var projected := PackedVector2Array()
+	var chart := get_chart()
+	if chart == null:
+		return projected
+	for point in local_points:
+		projected.append(_path_local_screen(chart, point, beat))
+	return projected
+
+
+func path_judgement_scale() -> float:
+	# Input tolerance follows the visible ring size, independently of cursor art.
+	return maxf(1.0, _avg_radius_cache)
 
 
 func set_path_erased_to(note: Note, fraction: float) -> void:
