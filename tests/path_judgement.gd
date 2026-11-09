@@ -163,6 +163,24 @@ func _test_playtest() -> void:
 	root.add_child(run)
 	await process_frame
 	_reset(run, chart)
+	check(not run._preview.show_path_judgement, "judgement regions are hidden by default")
+	var display := InputEventKey.new()
+	display.keycode = KEY_F10
+	display.pressed = true
+	run._input(display)
+	check(run._preview.show_path_judgement and run._path_judgement_toggle.button_pressed, "F10 enables regions and synchronizes the pause switch")
+	var debug := run._preview.path_judgement_debug(note, 2.0)
+	var live: PathProgress = run._states[1]["path_tracker"]
+	check(debug["points"] == run._preview.path_judgement_points(live.points, 2.0), "visible regions use the exact live judgement coordinates")
+	check(absf(float(debug["radius"]) - live.contact_radius * run._preview.path_judgement_scale()) < 0.001, "visible radii match actual contact tolerance")
+	check(debug["mandatory"] == live.mandatory and int(debug["required"]) == live.required_index, "overlay marks the live mandatory and completion checkpoints")
+	run._path_judgement_toggle.button_pressed = false
+	check(not run._preview.show_path_judgement, "pause switch can disable judgement regions")
+	run._set_paused(true)
+	run._input(display)
+	check(run._preview.show_path_judgement, "F10 remains usable while paused")
+	run._set_paused(false)
+	run._set_path_judgement_visible(false)
 	var head := run._preview.path_point(note, 0.0, 2.0)
 	var tail := run._preview.path_point(note, 4.0, 2.0)
 	_at(run, 1000.0, head)

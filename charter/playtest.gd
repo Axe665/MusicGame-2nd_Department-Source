@@ -136,6 +136,7 @@ var _timing_chart: TimingChart
 var _bias_label: Label
 ## 暂停菜单（ESC）。
 var _pause_overlay: Control = null
+var _path_judgement_toggle: CheckButton
 var _paused: bool = false
 var _pause_usec: int = 0
 
@@ -172,6 +173,7 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	_preview.reset_path_cuts()
 	_preview.follow_app = false
 	_preview.playtest_mode = true
+	_preview.path_judgement_states = _states
 	_preview.custom_cursor_visible = true
 	_preview.show_hud = true
 	_preview.use_3d_ring = true
@@ -228,6 +230,11 @@ func _build_pause_overlay() -> void:
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	UITheme.style_section(title)
 	box.add_child(title)
+	_path_judgement_toggle = CheckButton.new()
+	_path_judgement_toggle.text = "显示 Path 判定区域（F10）"
+	_path_judgement_toggle.focus_mode = Control.FOCUS_NONE
+	_path_judgement_toggle.toggled.connect(_set_path_judgement_visible)
+	box.add_child(_path_judgement_toggle)
 	_add_pause_button(box, "继续游玩", func() -> void: _set_paused(false))
 	_add_pause_button(box, "重新开始", func() -> void:
 		_set_paused(false)
@@ -244,6 +251,12 @@ func _add_pause_button(parent: VBoxContainer, text: String, callback: Callable) 
 	button.focus_mode = Control.FOCUS_NONE
 	button.pressed.connect(callback)
 	parent.add_child(button)
+
+
+func _set_path_judgement_visible(value: bool) -> void:
+	_preview.set_path_judgement_visible(value)
+	_path_judgement_toggle.set_pressed_no_signal(value)
+	_write_path_input_log({"kind": "judgement_overlay", "enabled": value})
 
 
 func _set_paused(value: bool) -> void:
@@ -369,7 +382,7 @@ func _build_ui() -> void:
 	result_buttons.add_child(_results_button)
 
 	var bottom := Label.new()
-	bottom.text = "任意有效键：Tap / Hold / Anchor；Path / Bell 用鼠标定位；Seek 用滚轮上/下接住；Limit 停留 200ms 断连；[ / ] 判定偏移；F9 Path 日志。"
+	bottom.text = "任意有效键：Tap / Hold / Anchor；Path / Bell 用鼠标定位；Seek 用滚轮上/下接住；Limit 停留 200ms 断连；[ / ] 判定偏移；F9 日志 / F10 判定区域。"
 	bottom.add_theme_font_size_override("font_size", 11)
 	bottom.add_theme_color_override("font_color", Color(UITheme.MUTED.r, UITheme.MUTED.g, UITheme.MUTED.b, 0.8))
 	bottom.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -1804,6 +1817,10 @@ func _input(event: InputEvent) -> void:
 					_open_path_input_log()
 				else:
 					_close_path_input_log()
+				get_viewport().set_input_as_handled()
+				return
+			if event.keycode == KEY_F10:
+				_set_path_judgement_visible(not _preview.show_path_judgement)
 				get_viewport().set_input_as_handled()
 				return
 			if event.keycode == KEY_BRACKETLEFT or event.keycode == KEY_BRACKETRIGHT:

@@ -40,6 +40,9 @@ var interactive: bool = true
 var playtest_mode: bool = false
 var show_hud: bool = true
 var show_debug: bool = false
+## Dedicated input overlay: geometry and progress come from live playtest states.
+var show_path_judgement := false
+var path_judgement_states: Dictionary = {}
 var flow_scale: float = 1.0
 var star_speed: float = 1.0
 ## 星星主色（全局单色系，可在试玩设置里改）。
@@ -1726,6 +1729,8 @@ func draw_overlay(canvas: Control) -> void:
 	sec2 = Time.get_ticks_usec()
 	_perf_sections[2] += sec2 - sec_usec
 	_draw_notes(canvas, chart, t, pre)
+	if show_path_judgement:
+		_draw_path_judgement(canvas, chart, t, pre)
 	_draw_note_pops(canvas)
 	sec_usec = Time.get_ticks_usec()
 	_perf_sections[3] += sec_usec - sec2
@@ -2420,6 +2425,67 @@ func path_judgement_points(local_points: PackedVector2Array, beat: float) -> Pac
 func path_judgement_scale() -> float:
 	# Input tolerance follows the visible ring size, independently of cursor art.
 	return maxf(1.0, _avg_radius_cache)
+
+
+func path_judgement_debug(note: Note, beat: float) -> Dictionary:
+	var state: Dictionary = path_judgement_states.get(note.id, {})
+	var tracker: PathProgress = state.get("path_tracker")
+	if tracker == null:
+		return {}
+	return {"points": path_judgement_points(tracker.points, beat),
+		"radius": tracker.contact_radius * path_judgement_scale(),
+		"next": tracker.next_index, "mandatory": tracker.mandatory,
+		"required": tracker.required_index, "coverage": tracker.coverage,
+		"missed": bool(state.get("tail_judged", false)) and not bool(state.get("tail_hit", false))}
+
+
+func set_path_judgement_visible(value: bool) -> void:
+	show_path_judgement = value
+	if _overlay != null:
+		_overlay.queue_redraw()
+
+
+func _draw_path_judgement(canvas: Control, chart: Chart, beat: float, pre: float) -> void:
+	var font := UITheme.mono_font()
+	var confirmed := Color(0.25, 1.0, 0.55)
+	var pending := Color(0.25, 0.65, 1.0)
+	var current := Color(1.0, 0.65, 0.15)
+	var failed := Color(1.0, 0.25, 0.3)
+	for note in chart.notes:
+		if note.type != "path" or note.beat > beat + pre or beat > note.end_beat + 0.8:
+			continue
+		var data := path_judgement_debug(note, beat)
+		if data.is_empty():
+			continue
+		var points: PackedVector2Array = data["points"]
+		var radius := float(data["radius"])
+		var next := int(data["next"])
+		var corners: PackedByteArray = data["mandatory"]
+		for i in points.size():
+			var point := points[i]
+			if not _valid_point(point):
+				continue
+			var color := confirmed if i < next else pending
+			if i == next:
+				color = failed if bool(data["missed"]) else current
+			canvas.draw_circle(point, radius, Color(color, 0.045))
+			canvas.draw_arc(point, radius, 0.0, TAU, 40, Color(color, 0.85), 2.4 if i == next else 1.0, true)
+			if corners[i] != 0:
+				canvas.draw_rect(Rect2(point - Vector2(5, 5), Vector2(10, 10)), color, false, 1.5)
+			if i == int(data["required"]):
+				canvas.draw_arc(point, radius + 3.0, 0.0, TAU, 40, Color(1, 1, 1, 0.65), 1.0, true)
+			var label := str(i + 1)
+			var offset := Vector2(-font.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, 12).x * 0.5, 4)
+			canvas.draw_string_outline(font, point + offset, label, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, 3, Color(0, 0, 0, 0.9))
+			canvas.draw_string(font, point + offset, label, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, color)
+		if not points.is_empty() and _valid_point(points[0]):
+			var label := "#%d  %.0f%%  %d/%d" % [note.id, float(data["coverage"]) * 100.0, mini(next + 1, points.size()), points.size()]
+			var position := points[0] + Vector2(12, -radius - 12)
+			canvas.draw_string_outline(font, position, label, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, 4, Color(0, 0, 0, 0.9))
+			canvas.draw_string(font, position, label, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, Color.WHITE)
+	var legend := "F10 判定区域：绿色已通过 / 橙色下一块 / 蓝色待通过 / 方框为必经点 / 白圈为90%位置"
+	canvas.draw_string_outline(UITheme.FONT_REGULAR, Vector2(24, 72), legend, HORIZONTAL_ALIGNMENT_LEFT, -1, 14, 4, Color.BLACK)
+	canvas.draw_string(UITheme.FONT_REGULAR, Vector2(24, 72), legend, HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color.WHITE)
 
 
 func set_path_erased_to(note: Note, fraction: float) -> void:
