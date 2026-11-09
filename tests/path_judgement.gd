@@ -19,6 +19,7 @@ func check(condition: bool, label: String) -> void:
 
 func _run() -> void:
 	_test_tracker()
+	_test_forgiving_corridor()
 	root.size = Vector2i(1600, 900)
 	var app := root.get_node_or_null("App")
 	if app != null:
@@ -44,7 +45,7 @@ func _test_tracker() -> void:
 	_feed(straight, Vector2.ZERO, 1000.0)
 	_feed(straight, Vector2.RIGHT, 2000.0)
 	check(straight.coverage > 0.99, "one fast movement crosses all straight checkpoints")
-	check(absf(straight.finish_contact(1700.0, 2250.0, 0.025) - 1875.0) < 0.1,
+	check(straight.finish_contact(1700.0, 2250.0, 0.025) >= 1950.0 and straight.finish_contact(1700.0, 2250.0, 0.025) <= 2000.0,
 		"finish uses interpolated contact time, rather than rendered frame time")
 	check(not is_finite(straight.finish_contact(2100.0, 2250.0, 0.025)), "leaving before the window cannot cause a later hit")
 	_feed(straight, Vector2.RIGHT, 2200.0)
@@ -64,7 +65,7 @@ func _test_tracker() -> void:
 	var retrace := _tracker([Vector2.ZERO, Vector2.RIGHT, Vector2(0.2, 0)])
 	_feed(retrace, Vector2.ZERO, 0.0)
 	_feed(retrace, Vector2(2, 0), 100.0)
-	check(retrace.coverage < 0.8, "one outward sweep cannot also clear an earlier return intersection")
+	check(retrace.progress < 0.95 and not retrace.body_ready(), "one outward sweep cannot also clear an earlier return intersection")
 	_feed(retrace, Vector2(0.2, 0), 200.0)
 	check(retrace.coverage > 0.99, "actual return movement clears a retraced path")
 
@@ -97,14 +98,14 @@ func _test_tracker() -> void:
 	uneven.configure(PackedVector2Array([Vector2.ZERO, Vector2(0.01, 0), Vector2.RIGHT]), PackedFloat32Array([0.0, 0.8, 1.0]))
 	_feed(uneven, Vector2.ZERO, 0.0)
 	_feed(uneven, Vector2(0.5, 0), 100.0)
-	check(uneven.fraction > 0.8 and uneven.coverage < 0.6, "erasure maps arc coverage back to authored beat parameters")
-	check(uneven.points.size() >= 5 and uneven.points.size() <= 7, "short routes use a sparse geometric grid despite uneven authored times")
+	check(uneven.fraction > 0.8 and uneven.progress <= 0.51, "erasure maps arc progress back to authored beat parameters")
+	check(uneven.gates.size() <= 6, "short routes use few ordered regions despite fine corridor geometry")
 	var sparse_long := _tracker([Vector2.ZERO, Vector2(2, 0)])
-	check(sparse_long.points.size() <= 10, "a two-radius straight route has at most ten regions including special points")
+	check(sparse_long.gates.size() <= 6, "a two-radius straight route has only a few mandatory regions")
 	check(uneven.points[0] == Vector2.ZERO and uneven.points[-1] == Vector2.RIGHT,
 		"sparser regions preserve both endpoints")
-	check(absf(float(uneven.distances[uneven.required_index]) / uneven.length - 0.9) < 0.0001,
-		"sparser regions retain the exact 90-percent completion checkpoint")
+	check(absf(float(uneven.distances[uneven.required_index]) / uneven.length - 0.8) < 0.0001,
+		"corridor retains an 80-percent coverage marker")
 	var invalid := _tracker([Vector2.ZERO, Vector2.INF, Vector2.RIGHT])
 	check(invalid.points.is_empty(), "invalid geometry cannot be joined across a gap")
 	var zero := _tracker([Vector2.ZERO, Vector2.ZERO])
@@ -117,14 +118,15 @@ func _test_tracker() -> void:
 	check(Tracker.circle_interval(Vector2(-1, 1), Vector2(1, 1), Vector2.ZERO, 1.0).x == 0.5, "tangent contact is accepted")
 	var missed := _tracker([Vector2.ZERO, Vector2.RIGHT])
 	_feed(missed, Vector2.ZERO, 0.0)
+	_feed(missed, Vector2(0.3, 0), 80.0)
 	missed.reset_motion()
-	_feed(missed, Vector2(0.5, 0), 100.0)
-	check(missed.coverage >= 0.49, "one missed ordinary checkpoint can recover at its immediate neighbour")
+	_feed(missed, Vector2(0.45, 0), 100.0)
+	check(missed.progress >= 0.44, "a small missing section can rejoin without returning to an old point")
 	var corner := _tracker([Vector2.ZERO, Vector2(0, 0.14), Vector2(1, 0.14)])
 	_feed(corner, Vector2.ZERO, 0.0)
 	corner.reset_motion()
 	_feed(corner, Vector2(0.14, 0.14), 100.0)
-	check(corner.coverage < 0.1, "lookahead cannot skip a direction-changing corner")
+	check(corner.progress < 0.5, "a rounded small corner cannot skip the remaining route")
 
 
 func _chart() -> Chart:
@@ -141,6 +143,72 @@ func _chart() -> Chart:
 	note.tail_angle = 180.0
 	chart.notes.append(note)
 	return chart
+
+
+func _wide_feed(tracker: PathProgress, point: Vector2, ms: float, start_ms := 0.0) -> void:
+	tracker.feed(point, ms, tracker.points, tracker.contact_radius, start_ms)
+
+
+func _test_forgiving_corridor() -> void:
+	var wide := _tracker([Vector2.ZERO, Vector2(2, 0)])
+	for i in 21:
+		_wide_feed(wide, Vector2(float(i) / 10.0, 0.18), float(i * 50))
+	check(wide.body_ready() and wide.coverage > 0.9, "a naturally offset stroke inside the wide corridor completes")
+	var outside := _tracker([Vector2.ZERO, Vector2(2, 0)])
+	for i in 21:
+		_wide_feed(outside, Vector2(float(i) / 10.0, 0.5), float(i * 50))
+	check(outside.coverage == 0.0, "unrelated parallel movement outside the corridor gets no credit")
+	var rounded := _tracker([Vector2.ZERO, Vector2(0, 1), Vector2.ONE, Vector2.RIGHT])
+	var stroke := [Vector2.ZERO, Vector2(0, 0.6), Vector2(0.15, 0.85), Vector2(0.85, 0.85), Vector2(1, 0.6), Vector2.RIGHT]
+	for i in stroke.size():
+		_wide_feed(rounded, stroke[i], float(i * 100))
+	check(rounded.body_ready(), "rounded U turns pass without touching exact vertices")
+	var shortcut := _tracker([Vector2.ZERO, Vector2(0, 1), Vector2.ONE, Vector2.RIGHT])
+	_wide_feed(shortcut, Vector2.ZERO, 0.0)
+	_wide_feed(shortcut, Vector2.RIGHT, 100.0)
+	check(not shortcut.body_ready(), "wide corridor still rejects skipping the whole U")
+	var rejoin := _tracker([Vector2.ZERO, Vector2(3, 0)])
+	_wide_feed(rejoin, Vector2.ZERO, 0.0)
+	_wide_feed(rejoin, Vector2(0.9, 0), 100.0)
+	_wide_feed(rejoin, Vector2(0.9, 0.6), 140.0)
+	_wide_feed(rejoin, Vector2(1.2, 0.6), 180.0)
+	_wide_feed(rejoin, Vector2(1.2, 0.05), 220.0)
+	_wide_feed(rejoin, Vector2(3, 0.05), 500.0)
+	check(rejoin.body_ready(), "briefly leaving and rejoining ahead does not freeze progress")
+	var repeat := _tracker([Vector2.ZERO, Vector2(3, 0)])
+	_wide_feed(repeat, Vector2.ZERO, 0.0)
+	_wide_feed(repeat, Vector2(0.5, 0), 100.0)
+	var once := repeat.coverage
+	for i in 20:
+		_wide_feed(repeat, Vector2(0.1 if i % 2 == 0 else 0.5, 0), 200.0 + float(i * 10))
+	check(absf(repeat.coverage - once) < 0.0001, "repeating the same part cannot inflate actual coverage")
+	var early := _tracker([Vector2.ZERO, Vector2.RIGHT])
+	_wide_feed(early, Vector2.ZERO, 1000.0)
+	_wide_feed(early, Vector2.RIGHT, 1800.0)
+	check(not is_finite(early.finish_contact(1780, 2250, 0.18, 2000)), "early arrival waits instead of forcing a GOOD")
+	_wide_feed(early, Vector2.RIGHT, 2000.0)
+	var completed := early.finish_contact(1780, 2250, 0.18, 2000)
+	check(completed >= 1920 and completed <= 2000, "remaining at the tail earns a real contact in the perfect window")
+	var left := _tracker([Vector2.ZERO, Vector2.RIGHT])
+	_wide_feed(left, Vector2.ZERO, 1000.0)
+	_wide_feed(left, Vector2.RIGHT, 1800.0)
+	left.finish_contact(1780, 2250, 0.18, 2000)
+	_wide_feed(left, Vector2(1, 1), 1850.0)
+	check(left.finish_contact(1780, 2250, 0.18, 2000) < 1920, "leaving early cannot fabricate a perfect tail")
+	var tiny_turn := _tracker([Vector2.ZERO, Vector2(0.8, 0), Vector2(0.7, 0)])
+	_wide_feed(tiny_turn, Vector2.ZERO, 0.0)
+	_wide_feed(tiny_turn, Vector2(0.8, 0), 1000.0)
+	check(tiny_turn.body_ready() and is_finite(tiny_turn.finish_contact(900, 1100, tiny_turn.contact_radius)),
+		"entering a short final turn's end region does not require exact endpoint projection")
+	# Approximate local coordinates reconstructed from the real #289 play log,
+	# sampled every 200ms. This deliberately includes inward cutting and a wait.
+	var recorded := _tracker([Vector2(1,0),Vector2(0.96,0.28),Vector2(0.85,0.53),Vector2(0.67,0.74),Vector2(0.43,0.9),Vector2(0.17,0.98),Vector2(-0.11,0.99),Vector2(-0.38,0.92),Vector2(-0.62,0.78),Vector2(-0.81,0.58),Vector2(-0.94,0.33),Vector2(-0.95,0.31),Vector2(-1,0.06),Vector2(-1,0)])
+	recorded.confirm_head()
+	var human := [Vector2(1.098,0.003),Vector2(1.097,0.195),Vector2(0.62,0.769),Vector2(-0.127,0.809),Vector2(-0.706,0.732),Vector2(-0.862,0.268)]
+	var times := [0.0,201.1,409.2,629.6,835.7,1050.2]
+	for i in human.size():
+		_wide_feed(recorded, human[i], times[i], 240.0)
+	check(recorded.progress > 0.85 and recorded.body_ready(), "recorded inward-cutting arc can progress past the old 36-percent stall")
 
 
 func _reset(run: Playtest, chart: Chart) -> void:

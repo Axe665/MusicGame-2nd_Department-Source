@@ -2436,6 +2436,9 @@ func path_judgement_debug(note: Note, beat: float) -> Dictionary:
 		"radius": tracker.contact_radius * path_judgement_scale(),
 		"next": tracker.next_index, "mandatory": tracker.mandatory,
 		"required": tracker.required_index, "coverage": tracker.coverage,
+		"progress": tracker.progress, "covered": tracker.covered, "gates": tracker.gates,
+		"gate_radii": tracker.gate_radii, "next_gate": tracker.next_gate,
+		"tail_radius": float(state.get("path_tail_radius", 0.0)),
 		"missed": bool(state.get("tail_judged", false)) and not bool(state.get("tail_hit", false))}
 
 
@@ -2459,33 +2462,63 @@ func _draw_path_judgement(canvas: Control, chart: Chart, beat: float, pre: float
 			continue
 		var points: PackedVector2Array = data["points"]
 		var radius := float(data["radius"])
-		var next := int(data["next"])
-		var corners: PackedByteArray = data["mandatory"]
-		for i in points.size():
-			var point := points[i]
+		var next := int(data["next_gate"])
+		var gates: PackedInt32Array = data["gates"]
+		var radii: PackedFloat32Array = data["gate_radii"]
+		var covered: PackedByteArray = data["covered"]
+		# Draw only valid segments, so boundary gaps never become fake corridors.
+		var run := PackedVector2Array()
+		var run_covered := false
+		for i in points.size() - 1:
+			if not _valid_point(points[i]) or not _valid_point(points[i + 1]):
+				_draw_path_corridor_run(canvas, run, radius, confirmed if run_covered else pending)
+				run.clear()
+				continue
+			var is_covered := covered[i] != 0
+			if not run.is_empty() and run_covered != is_covered:
+				_draw_path_corridor_run(canvas, run, radius, confirmed if run_covered else pending)
+				run.clear()
+			if run.is_empty():
+				run.append(points[i])
+				run_covered = is_covered
+			run.append(points[i + 1])
+		_draw_path_corridor_run(canvas, run, radius, confirmed if run_covered else pending)
+		for i in gates.size():
+			var point := points[gates[i]]
 			if not _valid_point(point):
 				continue
+			var gate_radius := float(radii[i]) * path_judgement_scale()
 			var color := confirmed if i < next else pending
 			if i == next:
 				color = failed if bool(data["missed"]) else current
-			canvas.draw_circle(point, radius, Color(color, 0.045))
-			canvas.draw_arc(point, radius, 0.0, TAU, 40, Color(color, 0.85), 2.4 if i == next else 1.0, true)
-			if corners[i] != 0:
-				canvas.draw_rect(Rect2(point - Vector2(5, 5), Vector2(10, 10)), color, false, 1.5)
-			if i == int(data["required"]):
-				canvas.draw_arc(point, radius + 3.0, 0.0, TAU, 40, Color(1, 1, 1, 0.65), 1.0, true)
+			canvas.draw_circle(point, gate_radius, Color(color, 0.045))
+			canvas.draw_arc(point, gate_radius, 0.0, TAU, 40, Color(color, 0.85), 2.4 if i == next else 1.0, true)
 			var label := str(i + 1)
 			var offset := Vector2(-font.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, 12).x * 0.5, 4)
 			canvas.draw_string_outline(font, point + offset, label, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, 3, Color(0, 0, 0, 0.9))
 			canvas.draw_string(font, point + offset, label, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, color)
 		if not points.is_empty() and _valid_point(points[0]):
-			var label := "#%d  %.0f%%  %d/%d" % [note.id, float(data["coverage"]) * 100.0, mini(next + 1, points.size()), points.size()]
+			var label := "#%d  覆盖%.0f%% / 进度%.0f%%  区域%d/%d" % [note.id, float(data["coverage"]) * 100.0, float(data["progress"]) * 100.0, mini(next + 1, gates.size()), gates.size()]
 			var position := points[0] + Vector2(12, -radius - 12)
-			canvas.draw_string_outline(font, position, label, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, 4, Color(0, 0, 0, 0.9))
-			canvas.draw_string(font, position, label, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, Color.WHITE)
-	var legend := "F10 判定区域：绿色已通过 / 橙色下一块 / 蓝色待通过 / 方框为必经点 / 白圈为90%位置"
+			canvas.draw_string_outline(UITheme.FONT_REGULAR, position, label, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, 4, Color(0, 0, 0, 0.9))
+			canvas.draw_string(UITheme.FONT_REGULAR, position, label, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, Color.WHITE)
+		if not points.is_empty() and _valid_point(points[-1]) and float(data["tail_radius"]) > 0.0:
+			canvas.draw_arc(points[-1], float(data["tail_radius"]), 0.0, TAU, 48, Color(1, 1, 1, 0.35), 1.0, true)
+	var legend := "F10：蓝色为宽走廊 / 绿色为实际覆盖 / 橙色为下一关键区域 / 白圈为尾区（需先完成身体）"
 	canvas.draw_string_outline(UITheme.FONT_REGULAR, Vector2(24, 72), legend, HORIZONTAL_ALIGNMENT_LEFT, -1, 14, 4, Color.BLACK)
 	canvas.draw_string(UITheme.FONT_REGULAR, Vector2(24, 72), legend, HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color.WHITE)
+
+
+func _draw_path_corridor_run(canvas: Control, run: PackedVector2Array, radius: float, color: Color) -> void:
+	if run.size() < 2:
+		return
+	# Rounded outlines avoid miter spikes that would falsely imply extra area
+	# at sharp corners. Outlines also preserve holes in a closed loop.
+	for outline in Geometry2D.offset_polyline(run, radius, Geometry2D.JOIN_ROUND, Geometry2D.END_ROUND):
+		if outline.size() >= 2:
+			outline.append(outline[0])
+			canvas.draw_polyline(outline, Color(color, 0.45), 1.4, true)
+	canvas.draw_polyline(run, Color(color, 0.65), 1.0, true)
 
 
 func set_path_erased_to(note: Note, fraction: float) -> void:

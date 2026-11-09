@@ -23,11 +23,11 @@ const PATH_TAIL_RADIUS := 192.0
 ## 尾判半径最多占“头到尾直线距离”的多少（短滑条要跟着缩）。
 const PATH_TAIL_RADIUS_RATIO := 0.42
 const PathTracker = preload("res://core/path_progress.gd")
-## 必须按顺序经过至少 90% 的轨迹长度，才允许结算星尾。
+## 实际覆盖至少 80%，并按顺序通过主要区域，才取得尾判资格。
 const PATH_TAIL_MIN_FRACTION := PathTracker.REQUIRED_COVERAGE
 const PATH_INPUT_CAPACITY := 2048
 const PATH_LOG_LIMIT_BYTES := 4 * 1024 * 1024
-## 扫到 90% 也不能太早完成：早于此只等，不给 BAD。
+## 尾区最早接受的接触时间；早到后停留可等到 PERFECT 窗口。
 const PATH_TAIL_SWEEP_EARLY_MS := 220.0
 ## 星尾自己的档位窗口（连续滑动有鼠标延迟，比 Tap 宽）。
 const TAIL_PERFECT_MS := 80.0
@@ -1018,11 +1018,17 @@ func _judge_path(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 		if start_point.is_finite() and tail_point.is_finite():
 			chord = start_point.distance_to(tail_point)
 		var tail_radius := clampf(minf(PATH_TAIL_RADIUS, chord * PATH_TAIL_RADIUS_RATIO), 56.0, PATH_TAIL_RADIUS)
+		state["path_tail_radius"] = tail_radius
 		_update_path_progress(note, state, tracker, ms, beat, mouse, tail_radius)
 		var finish_ms := float(state["path_finish_ms"])
 		if is_finite(finish_ms):
 			var tail_error := finish_ms - tail_ms
 			var tier := tail_tier(tail_error)
+			var quality := tracker.quality_tier()
+			if quality == "GOOD" and tier in ["PERFECT", "GREAT"]:
+				tier = "GOOD"
+			elif quality == "GREAT" and tier == "PERFECT":
+				tier = "GREAT"
 			state["tail_hit"] = true
 			_register_hit(tier)
 			_pulse_at(note.tail_angle, beat, _tier_color(tier), tier, note.tail_width, "path", _timing_detail(tail_error, tier))
@@ -1055,7 +1061,8 @@ func _update_path_progress(note: Note, state: Dictionary, tracker: PathProgress,
 	# Samples carry scoring-adjusted timestamps. Transform the visual start into
 	# that same clock; a negative offset must not discard the start of a slide.
 	var offset_ms := float(_app.playtest_offset_ms if _app != null else 0.0)
-	var start_ms := chart.timing.beat_to_chart_ms(note.beat + clampf(note.wait_beat, 0.0, note.duration())) + offset_ms
+	var head_start := chart.timing.beat_to_chart_ms(note.beat) + offset_ms
+	var start_ms := maxf(head_start, chart.timing.beat_to_chart_ms(note.beat + clampf(note.wait_beat, 0.0, note.duration())) + offset_ms - 120.0)
 	var tail_ms := float(state["end_ms"])
 	if ms < start_ms - HIT_WINDOW_MS or tracker.points.size() < 2:
 		return
@@ -1089,11 +1096,11 @@ func _update_path_progress(note: Note, state: Dictionary, tracker: PathProgress,
 
 
 func _feed_path_sample(state: Dictionary, tracker: PathProgress, point: Vector2, ms: float, projected: PackedVector2Array, radius: float, start_ms: float, tail_radius: float) -> void:
-	tracker.feed(point, ms, projected, radius, start_ms)
+	tracker.feed(point, ms, projected, radius, start_ms, radius / tracker.contact_radius)
 	if is_finite(float(state["path_finish_ms"])):
 		return
 	var tail_ms := float(state["end_ms"])
-	state["path_finish_ms"] = tracker.finish_contact(tail_ms - PATH_TAIL_SWEEP_EARLY_MS, tail_ms + HIT_WINDOW_MS, tail_radius)
+	state["path_finish_ms"] = tracker.finish_contact(tail_ms - PATH_TAIL_SWEEP_EARLY_MS, tail_ms + HIT_WINDOW_MS, tail_radius, tail_ms, TAIL_PERFECT_MS)
 
 
 func _reset_path_motion() -> void:
@@ -1123,7 +1130,7 @@ func _open_path_input_log() -> void:
 	_path_input_log = FileAccess.open(_path_input_log_path, FileAccess.WRITE)
 	if _path_input_log == null:
 		return
-	_write_path_input_log({"kind": "session", "schema": 1, "chart": chart_path,
+	_write_path_input_log({"kind": "session", "schema": 2, "chart": chart_path,
 		"title": chart.metadata.get("title", ""), "difficulty": chart.metadata.get("version", ""),
 		"offset_ms": float(_app.playtest_offset_ms if _app != null else 0.0),
 		"preview_size": _path_log_point(_preview.size), "start_beat": start_beat, "auto": auto_play})
@@ -1165,17 +1172,22 @@ func _record_path_input_frame(note: Note, state: Dictionary, tracker: PathProgre
 		for point in tracker.points:
 			geometry.append(_path_log_point(point))
 		_write_path_input_log({"kind": "geometry", "note": note.id, "beat": note.beat,
-			"end_beat": note.end_beat, "wait": note.wait_beat, "points": geometry})
-	var next := mini(tracker.next_index, projected.size() - 1)
+			"end_beat": note.end_beat, "wait": note.wait_beat, "points": geometry,
+			"gates": Array(tracker.gates), "contact_radius": tracker.contact_radius})
+	var gate := mini(tracker.next_gate, tracker.gates.size() - 1)
+	var next := int(tracker.gates[gate]) if gate >= 0 else -1
 	var target := projected[next] if next >= 0 else Vector2.INF
+	var target_radius := float(tracker.gate_radii[gate]) * _preview.path_judgement_scale() if gate >= 0 else radius
 	var distance := mouse.distance_to(target)
-	var reason := "before_body_start" if ms < start_ms else ("outside_next" if distance > radius else "contact")
+	var reason := "before_body_start" if ms < start_ms else ("approaching_region" if distance > target_radius else "inside_region")
 	var record := {"kind": "frame", "note": note.id, "time_ms": snappedf(ms, 0.01),
 		"beat": beat, "start_ms": start_ms, "offset_ms": float(_app.playtest_offset_ms if _app != null else 0.0),
-		"head_hit": state["head_hit"], "coverage": tracker.coverage, "next": tracker.next_index,
+		"head_hit": state["head_hit"], "coverage": tracker.coverage, "progress": tracker.progress,
+		"next": tracker.next_index, "next_gate": tracker.next_gate, "gate_count": tracker.gates.size(), "body_ready": tracker.body_ready(),
 		"count": projected.size(), "cursor": _path_log_point(mouse), "target": _path_log_point(target),
 		"distance": snappedf(distance, 0.01) if is_finite(distance) else -1.0,
-		"radius": radius, "reason": reason, "sample_count": _path_motion_samples.size()}
+		"radius": radius, "target_radius": target_radius, "target_index": next,
+		"reason": reason, "sample_count": _path_motion_samples.size()}
 	if not _path_motion_samples.is_empty():
 		var first: Dictionary = _path_motion_samples[0]
 		var last: Dictionary = _path_motion_samples[-1]
