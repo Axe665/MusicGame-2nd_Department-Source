@@ -6,10 +6,12 @@ extends RefCounted
 const CHECKPOINT_SPACING := 0.14
 const CONTACT_RADIUS := 0.13
 const REQUIRED_COVERAGE := 0.90
+const MAX_SKIPPED_DISTANCE := 0.18
 
 var points := PackedVector2Array()
 var parameters := PackedFloat32Array()
 var distances := PackedFloat32Array()
+var mandatory := PackedByteArray()
 var length := 0.0
 var contact_radius := CONTACT_RADIUS
 var next_index := 0
@@ -53,6 +55,7 @@ func configure(source: PackedVector2Array, source_parameters := PackedFloat32Arr
 	points.clear()
 	parameters.clear()
 	distances.clear()
+	mandatory.clear()
 	length = 0.0
 	next_index = 0
 	required_index = 0
@@ -73,6 +76,7 @@ func configure(source: PackedVector2Array, source_parameters := PackedFloat32Arr
 	contact_radius = minf(CONTACT_RADIUS, length * 0.12)
 	var spacing := maxf(length / 2048.0, minf(CHECKPOINT_SPACING, length / 8.0))
 	var targets: Array[float] = [0.0, length * REQUIRED_COVERAGE, length]
+	var corners: Array[float] = [0.0, length]
 	var d := spacing
 	while d < length:
 		targets.append(d)
@@ -83,6 +87,7 @@ func configure(source: PackedVector2Array, source_parameters := PackedFloat32Arr
 		var b := source[i + 1] - source[i]
 		if a.length_squared() > 0.000001 and b.length_squared() > 0.000001 and a.normalized().dot(b.normalized()) < 0.8:
 			targets.append(float(cumulative[i]))
+			corners.append(float(cumulative[i]))
 	targets.sort()
 	var edge := 0
 	for target in targets:
@@ -94,12 +99,26 @@ func configure(source: PackedVector2Array, source_parameters := PackedFloat32Arr
 		var t := 0.0 if span <= 0.000001 else clampf((target - float(cumulative[edge])) / span, 0.0, 1.0)
 		points.append(source[edge].lerp(source[edge + 1], t))
 		distances.append(target)
+		var is_corner := false
+		for corner in corners:
+			if absf(corner - target) < 0.00001:
+				is_corner = true
+				break
+		mandatory.append(1 if is_corner else 0)
 		if source_parameters.size() == source.size():
 			parameters.append(lerpf(source_parameters[edge], source_parameters[edge + 1], t))
 		else:
 			parameters.append(target / length)
 		if target < length * REQUIRED_COVERAGE - 0.00001:
 			required_index = points.size()
+
+
+## The head uses its own, wider hit area. Accepting it also confirms the first
+## body checkpoint, without inventing movement through the rest of the curve.
+func confirm_head() -> void:
+	if next_index == 0 and points.size() >= 2:
+		next_index = 1
+		fraction = float(parameters[0])
 
 
 func reset_motion() -> void:
@@ -137,7 +156,18 @@ func feed(point: Vector2, ms: float, projected: PackedVector2Array, radius: floa
 		var interval := circle_interval(from, point, projected[next_index], radius)
 		var hit_t := maxf(order_t, interval.x)
 		if interval.y < hit_t or not is_finite(hit_t):
-			break
+			# Recover at one immediately adjacent ordinary checkpoint. Never skip
+			# the head, a geometric corner, or an arbitrarily long missing section.
+			var neighbour := next_index + 1
+			if mandatory[next_index] != 0 or neighbour >= projected.size() or float(distances[neighbour] - distances[next_index]) > MAX_SKIPPED_DISTANCE:
+				break
+			interval = circle_interval(from, point, projected[neighbour], radius)
+			hit_t = maxf(order_t, interval.x)
+			if interval.y < hit_t or not is_finite(hit_t):
+				break
+			if next_index == required_index:
+				_finish_min_t = hit_t
+			next_index = neighbour
 		order_t = hit_t
 		if next_index == required_index:
 			_finish_min_t = hit_t

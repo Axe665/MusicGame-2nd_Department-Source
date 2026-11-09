@@ -26,6 +26,7 @@ const PathTracker = preload("res://core/path_progress.gd")
 ## 必须按顺序经过至少 90% 的轨迹长度，才允许结算星尾。
 const PATH_TAIL_MIN_FRACTION := PathTracker.REQUIRED_COVERAGE
 const PATH_INPUT_CAPACITY := 2048
+const PATH_LOG_LIMIT_BYTES := 4 * 1024 * 1024
 ## 扫到 90% 也不能太早完成：早于此只等，不给 BAD。
 const PATH_TAIL_SWEEP_EARLY_MS := 220.0
 ## 星尾自己的档位窗口（连续滑动有鼠标延迟，比 Tap 宽）。
@@ -98,6 +99,10 @@ var _auto_key_phase: int = 0
 ## One bounded batch is shared by all active paths; consuming one never steals
 ## a real movement from another path that overlaps it.
 var _path_motion_samples: Array[Dictionary] = []
+## Diagnostic capture for the current input investigation; F9 toggles capture.
+var path_input_logging := true
+var _path_input_log: FileAccess
+var _path_input_log_path := ""
 const AUTO_LEAD_MS := 8.0              # 比判定时间早这么多就按下（吃掉帧量化误差）
 const AUTO_RELEASE_MS := 60.0          # Hold 尾判之后再松手，避免被判成提前松开
 const AUTO_PREVIEW_MS := 900.0         # 光标提前多久开始预判下一个要点
@@ -154,6 +159,7 @@ func _sync_sfx_style() -> void:
 
 
 func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
+	_close_path_input_log()
 	chart = p_chart
 	start_beat = p_start_beat
 	chart_path = p_chart_path
@@ -196,6 +202,7 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	fade.tween_property(self, "modulate:a", 1.0, 0.2).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
 	_start_audio()
 	_running = true
+	_open_path_input_log()
 	Input.set_mouse_mode(Input.MOUSE_MODE_HIDDEN)
 
 
@@ -362,7 +369,7 @@ func _build_ui() -> void:
 	result_buttons.add_child(_results_button)
 
 	var bottom := Label.new()
-	bottom.text = "任意有效键：Tap / Hold / Anchor；Path / Bell 用鼠标定位；Seek 用滚轮上/下接住；Limit 停留 200ms 断连；[ / ] 判定偏移。"
+	bottom.text = "任意有效键：Tap / Hold / Anchor；Path / Bell 用鼠标定位；Seek 用滚轮上/下接住；Limit 停留 200ms 断连；[ / ] 判定偏移；F9 Path 日志。"
 	bottom.add_theme_font_size_override("font_size", 11)
 	bottom.add_theme_color_override("font_color", Color(UITheme.MUTED.r, UITheme.MUTED.g, UITheme.MUTED.b, 0.8))
 	bottom.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -958,6 +965,7 @@ func _judge_hold(note: Note, ms: float, beat: float) -> void:
 
 func _judge_path(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 	var state: Dictionary = _states[note.id]
+	var tracker: PathProgress = state["path_tracker"]
 	var head_ms := float(state["target_ms"])
 	var tail_ms := float(state["end_ms"])
 	var head_point: Vector2 = _preview.note_head_screen(note, beat)
@@ -970,6 +978,9 @@ func _judge_path(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 				var head_error := float(press["time"]) - head_ms
 				var tier := _tier_for(head_error)
 				state["head_hit"] = true
+				tracker.confirm_head()
+				_write_path_input_log({"kind": "head", "note": note.id, "time_ms": ms,
+					"error_ms": head_error, "mouse": _path_log_point(press.get("mouse", Vector2.INF))})
 				_register_hit(tier)
 				# 星头用实际的星头屏幕位置，平面星星（V / 折线）也能炸在正确的位置。
 				_pulse_at(note.angle, beat, _tier_color(tier), tier, note.arc_width(), "path", _timing_detail(head_error, tier), head_point)
@@ -987,7 +998,6 @@ func _judge_path(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 				_add_log("PATH #%d HEAD MISS" % note.id)
 				_preview.set_path_head_state(note.id, false, beat)
 				state["head_judged"] = true
-	var tracker: PathProgress = state["path_tracker"]
 	if not state["tail_judged"]:
 		var tail_point: Vector2 = _preview.path_point(note, note.duration(), beat)
 		var chord := PATH_TAIL_RADIUS
@@ -1006,6 +1016,7 @@ func _judge_path(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 			_sfx.play("tail", randf_range(0.98, 1.02))
 			_add_log("PATH #%d TAIL %s" % [note.id, tier])
 			state["tail_judged"] = true
+			_write_path_input_log({"kind": "tail", "note": note.id, "tier": tier, "error_ms": tail_error, "coverage": tracker.coverage})
 		elif ms > tail_ms + HIT_WINDOW_MS:
 			state["tail_hit"] = false
 			_miss_count += 1
@@ -1014,6 +1025,7 @@ func _judge_path(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 			_pulse_at(note.tail_angle, beat, UITheme.RED, "MISS", note.tail_width)
 			_add_log("PATH #%d TAIL MISS" % note.id)
 			state["tail_judged"] = true
+			_write_path_input_log({"kind": "tail", "note": note.id, "tier": "MISS", "coverage": tracker.coverage, "next": tracker.next_index})
 	if state["tail_judged"] and not state["done"]:
 		var head_ok := bool(state["head_hit"])
 		var tail_ok := bool(state["tail_hit"])
@@ -1027,7 +1039,10 @@ func _judge_path(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 
 
 func _update_path_progress(note: Note, state: Dictionary, tracker: PathProgress, ms: float, beat: float, mouse: Vector2, tail_radius: float) -> void:
-	var start_ms := chart.timing.beat_to_chart_ms(note.beat + clampf(note.wait_beat, 0.0, note.duration()))
+	# Samples carry scoring-adjusted timestamps. Transform the visual start into
+	# that same clock; a negative offset must not discard the start of a slide.
+	var offset_ms := float(_app.playtest_offset_ms if _app != null else 0.0)
+	var start_ms := chart.timing.beat_to_chart_ms(note.beat + clampf(note.wait_beat, 0.0, note.duration())) + offset_ms
 	var tail_ms := float(state["end_ms"])
 	if ms < start_ms - HIT_WINDOW_MS or tracker.points.size() < 2:
 		return
@@ -1057,6 +1072,7 @@ func _update_path_progress(note: Note, state: Dictionary, tracker: PathProgress,
 				_feed_path_sample(state, tracker, sample["point"], sample_ms, projected, radius, start_ms, tail_radius)
 		# A stationary cursor supplies contact without skipping unchecked regions.
 		_feed_path_sample(state, tracker, mouse, ms, projected, radius, start_ms, tail_radius)
+	_record_path_input_frame(note, state, tracker, ms, beat, mouse, start_ms, projected, radius)
 
 
 func _feed_path_sample(state: Dictionary, tracker: PathProgress, point: Vector2, ms: float, projected: PackedVector2Array, radius: float, start_ms: float, tail_radius: float) -> void:
@@ -1068,6 +1084,7 @@ func _feed_path_sample(state: Dictionary, tracker: PathProgress, point: Vector2,
 
 
 func _reset_path_motion() -> void:
+	_write_path_input_log({"kind": "motion_reset", "paused": _paused, "auto": auto_play})
 	_path_motion_samples.clear()
 	for state in _states.values():
 		var tracker: PathProgress = state.get("path_tracker")
@@ -1081,6 +1098,77 @@ func _queue_path_motion(point: Vector2, ms: float) -> void:
 		# Bound stalled-frame memory without joining across discarded movements.
 		_path_motion_samples.clear()
 	_path_motion_samples.append({"point": point, "time": ms, "break": discontinuity})
+
+
+func _open_path_input_log() -> void:
+	if not path_input_logging or chart == null:
+		return
+	_close_path_input_log()
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path("user://logs"))
+	var stamp := Time.get_datetime_string_from_system().replace(":", "-")
+	_path_input_log_path = "user://logs/path_input_%s_%d.jsonl" % [stamp, Time.get_ticks_usec()]
+	_path_input_log = FileAccess.open(_path_input_log_path, FileAccess.WRITE)
+	if _path_input_log == null:
+		return
+	_write_path_input_log({"kind": "session", "schema": 1, "chart": chart_path,
+		"title": chart.metadata.get("title", ""), "difficulty": chart.metadata.get("version", ""),
+		"offset_ms": float(_app.playtest_offset_ms if _app != null else 0.0),
+		"preview_size": _path_log_point(_preview.size), "start_beat": start_beat, "auto": auto_play})
+	print("[path-input-log] ", ProjectSettings.globalize_path(_path_input_log_path))
+
+
+func _write_path_input_log(record: Dictionary) -> void:
+	if _path_input_log == null:
+		return
+	_path_input_log.store_line(JSON.stringify(record))
+	if _path_input_log.get_position() >= PATH_LOG_LIMIT_BYTES:
+		_path_input_log.store_line(JSON.stringify({"kind": "capture_limit", "bytes": PATH_LOG_LIMIT_BYTES}))
+		_path_input_log.close()
+		_path_input_log = null
+	else:
+		_path_input_log.flush()
+
+
+func _close_path_input_log() -> void:
+	if _path_input_log == null:
+		return
+	_write_path_input_log({"kind": "session_end", "hits": _hit_count, "misses": _miss_count})
+	if _path_input_log != null:
+		_path_input_log.close()
+		_path_input_log = null
+
+
+static func _path_log_point(point: Vector2) -> Array:
+	return [snappedf(point.x, 0.01), snappedf(point.y, 0.01)] if point.is_finite() else []
+
+
+func _record_path_input_frame(note: Note, state: Dictionary, tracker: PathProgress, ms: float, beat: float, mouse: Vector2, start_ms: float, projected: PackedVector2Array, radius: float) -> void:
+	if _path_input_log == null or ms < float(state.get("path_log_next_ms", -INF)):
+		return
+	state["path_log_next_ms"] = ms + 200.0
+	if not bool(state.get("path_log_geometry", false)):
+		state["path_log_geometry"] = true
+		var geometry: Array = []
+		for point in tracker.points:
+			geometry.append(_path_log_point(point))
+		_write_path_input_log({"kind": "geometry", "note": note.id, "beat": note.beat,
+			"end_beat": note.end_beat, "wait": note.wait_beat, "points": geometry})
+	var next := mini(tracker.next_index, projected.size() - 1)
+	var target := projected[next] if next >= 0 else Vector2.INF
+	var distance := mouse.distance_to(target)
+	var reason := "before_body_start" if ms < start_ms else ("outside_next" if distance > radius else "contact")
+	var record := {"kind": "frame", "note": note.id, "time_ms": snappedf(ms, 0.01),
+		"beat": beat, "start_ms": start_ms, "offset_ms": float(_app.playtest_offset_ms if _app != null else 0.0),
+		"head_hit": state["head_hit"], "coverage": tracker.coverage, "next": tracker.next_index,
+		"count": projected.size(), "cursor": _path_log_point(mouse), "target": _path_log_point(target),
+		"distance": snappedf(distance, 0.01) if is_finite(distance) else -1.0,
+		"radius": radius, "reason": reason, "sample_count": _path_motion_samples.size()}
+	if not _path_motion_samples.is_empty():
+		var first: Dictionary = _path_motion_samples[0]
+		var last: Dictionary = _path_motion_samples[-1]
+		record["sample_from"] = {"time": first["time"], "point": _path_log_point(first["point"])}
+		record["sample_to"] = {"time": last["time"], "point": _path_log_point(last["point"])}
+	_write_path_input_log(record)
 
 
 func _judge_trace(note: Note, ms: float, beat: float, delta: float, mouse: Vector2) -> void:
@@ -1710,6 +1798,14 @@ func _input(event: InputEvent) -> void:
 				_toggle_auto()
 				get_viewport().set_input_as_handled()
 				return
+			if event.keycode == KEY_F9:
+				path_input_logging = not path_input_logging
+				if path_input_logging:
+					_open_path_input_log()
+				else:
+					_close_path_input_log()
+				get_viewport().set_input_as_handled()
+				return
 			if event.keycode == KEY_BRACKETLEFT or event.keycode == KEY_BRACKETRIGHT:
 				var delta := 5.0 if event.keycode == KEY_BRACKETRIGHT else -5.0
 				if _app != null:
@@ -1746,6 +1842,7 @@ func _finish() -> void:
 	if _finished:
 		return
 	_finished = true
+	_close_path_input_log()
 	_running = false
 	if _audio != null:
 		_audio.stop()
@@ -1821,6 +1918,7 @@ func _retry() -> void:
 
 
 func _exit() -> void:
+	_close_path_input_log()
 	if _audio != null:
 		_audio.stop()
 	_flush_offset()
@@ -1831,6 +1929,7 @@ func _exit() -> void:
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_PREDELETE or what == NOTIFICATION_WM_CLOSE_REQUEST:
+		_close_path_input_log()
 		Input.set_use_accumulated_input(true)
 		Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
 	elif what == NOTIFICATION_APPLICATION_FOCUS_OUT:

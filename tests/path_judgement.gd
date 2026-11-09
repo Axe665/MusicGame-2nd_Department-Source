@@ -24,6 +24,7 @@ func _run() -> void:
 	if app != null:
 		app.playtest_offset_ms = 0.0
 	await _test_playtest()
+	await _test_real_motion()
 	print("Path judgement: %d passed, %d failed" % [passed, failed])
 	quit(1 if failed else 0)
 
@@ -108,6 +109,16 @@ func _test_tracker() -> void:
 	short_path.feed(Vector2(0.1, 0), 100.0, short_path.points, short_path.contact_radius, 0.0)
 	check(short_path.coverage > 0.99, "short paths still accept a fast ordered movement")
 	check(Tracker.circle_interval(Vector2(-1, 1), Vector2(1, 1), Vector2.ZERO, 1.0).x == 0.5, "tangent contact is accepted")
+	var missed := _tracker([Vector2.ZERO, Vector2.RIGHT])
+	_feed(missed, Vector2.ZERO, 0.0)
+	missed.reset_motion()
+	_feed(missed, Vector2(0.25, 0), 100.0)
+	check(missed.coverage >= 0.24, "one missed ordinary checkpoint can recover at its immediate neighbour")
+	var corner := _tracker([Vector2.ZERO, Vector2(0, 0.14), Vector2(1, 0.14)])
+	_feed(corner, Vector2.ZERO, 0.0)
+	corner.reset_motion()
+	_feed(corner, Vector2(0.14, 0.14), 100.0)
+	check(corner.coverage < 0.1, "lookahead cannot skip a direction-changing corner")
 
 
 func _chart() -> Chart:
@@ -137,8 +148,8 @@ func _reset(run: Playtest, chart: Chart) -> void:
 		state["head_hit"] = true
 
 
-func _at(run: Playtest, ms: float, point: Vector2) -> void:
-	var beat := run.chart.timing.chart_ms_to_beat(ms)
+func _at(run: Playtest, ms: float, point: Vector2, visual_ms := -INF) -> void:
+	var beat := run.chart.timing.chart_ms_to_beat(visual_ms if is_finite(visual_ms) else ms)
 	run._preview.prepare_playtest_frame(beat, 0.0)
 	run._judge_path(run.chart.notes[0], ms, beat, point)
 	run._path_motion_samples.clear()
@@ -148,6 +159,7 @@ func _test_playtest() -> void:
 	var chart := _chart()
 	var note := chart.notes[0]
 	var run := Playtest.new()
+	run.path_input_logging = false
 	root.add_child(run)
 	await process_frame
 	_reset(run, chart)
@@ -240,5 +252,109 @@ func _test_playtest() -> void:
 	tracker = run._states[1]["path_tracker"]
 	check(tracker.coverage == 0.0 and run._preview.path_cuts.is_empty(), "restart resets judgement and visual progress")
 	check(not run._preview.is_processing(), "preview geometry is advanced by the playtest once per frame")
+	var short_chart := _chart()
+	var short_note := short_chart.notes[0]
+	short_note.end_beat = 2.4
+	short_note.generate_path_shape()
+	_reset(run, short_chart)
+	var app := root.get_node_or_null("App")
+	if app != null:
+		app.playtest_offset_ms = -49.0
+	for i in 21:
+		var visual_ms := 1000.0 + float(i) * 10.0
+		var beat := visual_ms / 500.0
+		var point := run._preview.path_point(short_note, beat - short_note.beat, beat)
+		_at(run, visual_ms - 49.0, point, visual_ms)
+	check(bool(run._states[1]["tail_hit"]), "negative scoring offset cannot delay spatial tracking past a short path's head")
+	if app != null:
+		app.playtest_offset_ms = 0.0
+	_reset(run, short_chart)
+	run._states[1]["head_judged"] = false
+	run._states[1]["head_hit"] = false
+	var off_center_head := run._preview.path_point(short_note, short_note.duration() * 0.12, short_note.beat)
+	run._key_presses.append(Playtest.auto_press_payload(1000.0, off_center_head, short_note.angle, KEY_A))
+	_at(run, 1000.0, off_center_head)
+	check(bool(run._states[1]["head_hit"]), "head accepts its normal hit-area tolerance")
+	tracker = run._states[1]["path_tracker"]
+	check(tracker.next_index > 1, "accepted off-centre head does not leave the body blocked at checkpoint zero")
+	run.path_input_logging = true
+	_reset(run, short_chart)
+	var log_path := run._path_input_log_path
+	_at(run, 1000.0, run._preview.path_point(short_note, 0.0, 2.0))
+	run._close_path_input_log()
+	var lines := FileAccess.get_file_as_string(log_path).strip_edges().split("\n")
+	var kinds: Array[String] = []
+	var frame: Dictionary = {}
+	for line in lines:
+		var record: Dictionary = JSON.parse_string(line)
+		kinds.append(String(record.get("kind", "")))
+		if record.get("kind") == "frame":
+			frame = record
+	check(kinds.has("session") and kinds.has("geometry") and kinds.has("frame") and kinds.has("session_end"), "play log preserves metadata, geometry, contact and a closed session")
+	check(frame.has("target") and frame.has("cursor") and frame.has("radius") and frame.has("coverage"), "play log contains evidence needed to distinguish coordinate and checkpoint failures")
+	check(run._path_input_log == null, "closing capture releases its file handle")
+	var toggle := InputEventKey.new()
+	toggle.keycode = KEY_F9
+	toggle.pressed = true
+	run._input(toggle)
+	check(not run.path_input_logging, "F9 disables diagnostic capture")
+	run._input(toggle)
+	check(run.path_input_logging and run._path_input_log != null, "F9 can restart diagnostic capture during play")
 	run.queue_free()
 	await process_frame
+
+
+## Real Input.parse_input_event delivery, including viewport stretch and GUI
+## input, instead of calling _input or assigning the cached cursor directly.
+func _test_real_motion() -> void:
+	var app := root.get_node("App")
+	app.playtest_offset_ms = -49.0
+	var chart := _chart()
+	var note := chart.notes[0]
+	var run := Playtest.new()
+	run.path_input_logging = false
+	run.bench_mode = true
+	root.add_child(run)
+	await process_frame
+	run.setup(chart, 0.0, "")
+	run.set_process(false)
+	run._preview.mouse_tilt = false
+	var received := 0
+	var max_error := 0.0
+	for i in 25:
+		var visual_ms := 1000.0 + 2000.0 * float(i) / 24.0
+		var beat := visual_ms / 500.0
+		run._preview.prepare_playtest_frame(beat, 0.0)
+		var wanted := run._preview.path_point(note, beat - note.beat, beat)
+		var motion := InputEventMouseMotion.new()
+		motion.position = run._preview.get_screen_transform() * wanted
+		motion.global_position = motion.position
+		run._last_chart_ms = -INF
+		run._clock_update_usec = 0
+		run._start_usec = Time.get_ticks_usec() - int(visual_ms * 1000.0)
+		Input.parse_input_event(motion)
+		await process_frame
+		if i == 0:
+			var press := InputEventKey.new()
+			press.keycode = KEY_A
+			press.physical_keycode = KEY_A
+			press.pressed = true
+			Input.parse_input_event(press)
+		var now := run._chart_ms()
+		for sample in run._path_motion_samples:
+			received += 1
+			max_error = maxf(max_error, (sample["point"] as Vector2).distance_to(wanted))
+		run._judge_path(note, now - 49.0, now / 500.0, run._preview.get_local_mouse_position())
+		run._path_motion_samples.clear()
+	check(received >= 25, "real mouse events reach the Path input buffer")
+	check(max_error < 0.05, "real viewport input matches displayed path coordinates")
+	check(bool(run._states[1]["head_hit"]), "real key input hits the Path head")
+	check(bool(run._states[1]["tail_hit"]), "real mouse input completes the body with negative scoring offset")
+	var release := InputEventKey.new()
+	release.keycode = KEY_A
+	release.physical_keycode = KEY_A
+	release.pressed = false
+	Input.parse_input_event(release)
+	run.queue_free()
+	await process_frame
+	app.playtest_offset_ms = 0.0
