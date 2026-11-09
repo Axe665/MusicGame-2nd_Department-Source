@@ -40,6 +40,9 @@ var interactive: bool = true
 var playtest_mode: bool = false
 var show_hud: bool = true
 var show_debug: bool = false
+## Dedicated input overlay: geometry and progress come from live playtest states.
+var show_path_judgement := false
+var path_judgement_states: Dictionary = {}
 var flow_scale: float = 1.0
 var star_speed: float = 1.0
 ## 星星主色（全局单色系，可在试玩设置里改）。
@@ -466,6 +469,13 @@ func _build_3d() -> void:
 	_ring_root.add_child(_glow_mesh)
 	_ring_mesh = MeshInstance3D.new()
 	_ring_root.add_child(_ring_mesh)
+
+
+## The playtest advances geometry once before judgement, using the same camera
+## and beat that the overlay will draw for this frame.
+func prepare_playtest_frame(beat: float, delta: float) -> void:
+	time_beat = beat
+	_process(delta)
 
 
 func _process(_delta: float) -> void:
@@ -1033,6 +1043,10 @@ func _on_mouse_exited() -> void:
 func _gui_input(event: InputEvent) -> void:
 	if event is InputEventMouseMotion:
 		mouse_screen = event.position
+		if playtest_mode:
+			_cursor_layer.queue_redraw()
+			accept_event()
+			return
 		if interactive and not playtest_mode:
 			if _drag_segment >= 0:
 				_update_drag(event.position)
@@ -1715,6 +1729,8 @@ func draw_overlay(canvas: Control) -> void:
 	sec2 = Time.get_ticks_usec()
 	_perf_sections[2] += sec2 - sec_usec
 	_draw_notes(canvas, chart, t, pre)
+	if show_path_judgement:
+		_draw_path_judgement(canvas, chart, t, pre)
 	_draw_note_pops(canvas)
 	sec_usec = Time.get_ticks_usec()
 	_perf_sections[3] += sec_usec - sec2
@@ -2394,6 +2410,115 @@ static func merge_erase_ranges(ranges: Array, from_fraction: float, to_fraction:
 		else:
 			merged[-1]["to"] = maxf(float(merged[-1].get("to", 0.0)), float(item.get("to", 0.0)))
 	return merged
+
+
+func path_judgement_points(local_points: PackedVector2Array, beat: float) -> PackedVector2Array:
+	var projected := PackedVector2Array()
+	var chart := get_chart()
+	if chart == null:
+		return projected
+	for point in local_points:
+		projected.append(_path_local_screen(chart, point, beat))
+	return projected
+
+
+func path_judgement_scale() -> float:
+	# Input tolerance follows the visible ring size, independently of cursor art.
+	return maxf(1.0, _avg_radius_cache)
+
+
+func path_judgement_debug(note: Note, beat: float) -> Dictionary:
+	var state: Dictionary = path_judgement_states.get(note.id, {})
+	var tracker: PathProgress = state.get("path_tracker")
+	if tracker == null:
+		return {}
+	return {"points": path_judgement_points(tracker.points, beat),
+		"radius": tracker.contact_radius * path_judgement_scale(),
+		"next": tracker.next_index, "mandatory": tracker.mandatory,
+		"required": tracker.required_index, "coverage": tracker.coverage,
+		"progress": tracker.progress, "covered": tracker.covered, "gates": tracker.gates,
+		"gate_radii": tracker.gate_radii, "next_gate": tracker.next_gate,
+		"tail_radius": float(state.get("path_tail_radius", 0.0)),
+		"missed": bool(state.get("tail_judged", false)) and not bool(state.get("tail_hit", false))}
+
+
+func set_path_judgement_visible(value: bool) -> void:
+	show_path_judgement = value
+	if _overlay != null:
+		_overlay.queue_redraw()
+
+
+func _draw_path_judgement(canvas: Control, chart: Chart, beat: float, pre: float) -> void:
+	var font := UITheme.mono_font()
+	var confirmed := Color(0.25, 1.0, 0.55)
+	var pending := Color(0.25, 0.65, 1.0)
+	var current := Color(1.0, 0.65, 0.15)
+	var failed := Color(1.0, 0.25, 0.3)
+	for note in chart.notes:
+		if note.type != "path" or note.beat > beat + pre or beat > note.end_beat + 0.8:
+			continue
+		var data := path_judgement_debug(note, beat)
+		if data.is_empty():
+			continue
+		var points: PackedVector2Array = data["points"]
+		var radius := float(data["radius"])
+		var next := int(data["next_gate"])
+		var gates: PackedInt32Array = data["gates"]
+		var radii: PackedFloat32Array = data["gate_radii"]
+		var covered: PackedByteArray = data["covered"]
+		# Draw only valid segments, so boundary gaps never become fake corridors.
+		var run := PackedVector2Array()
+		var run_covered := false
+		for i in points.size() - 1:
+			if not _valid_point(points[i]) or not _valid_point(points[i + 1]):
+				_draw_path_corridor_run(canvas, run, radius, confirmed if run_covered else pending)
+				run.clear()
+				continue
+			var is_covered := covered[i] != 0
+			if not run.is_empty() and run_covered != is_covered:
+				_draw_path_corridor_run(canvas, run, radius, confirmed if run_covered else pending)
+				run.clear()
+			if run.is_empty():
+				run.append(points[i])
+				run_covered = is_covered
+			run.append(points[i + 1])
+		_draw_path_corridor_run(canvas, run, radius, confirmed if run_covered else pending)
+		for i in gates.size():
+			var point := points[gates[i]]
+			if not _valid_point(point):
+				continue
+			var gate_radius := float(radii[i]) * path_judgement_scale()
+			var color := confirmed if i < next else pending
+			if i == next:
+				color = failed if bool(data["missed"]) else current
+			canvas.draw_circle(point, gate_radius, Color(color, 0.045))
+			canvas.draw_arc(point, gate_radius, 0.0, TAU, 40, Color(color, 0.85), 2.4 if i == next else 1.0, true)
+			var label := str(i + 1)
+			var offset := Vector2(-font.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, 12).x * 0.5, 4)
+			canvas.draw_string_outline(font, point + offset, label, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, 3, Color(0, 0, 0, 0.9))
+			canvas.draw_string(font, point + offset, label, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, color)
+		if not points.is_empty() and _valid_point(points[0]):
+			var label := "#%d  覆盖%.0f%% / 进度%.0f%%  区域%d/%d" % [note.id, float(data["coverage"]) * 100.0, float(data["progress"]) * 100.0, mini(next + 1, gates.size()), gates.size()]
+			var position := points[0] + Vector2(12, -radius - 12)
+			canvas.draw_string_outline(UITheme.FONT_REGULAR, position, label, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, 4, Color(0, 0, 0, 0.9))
+			canvas.draw_string(UITheme.FONT_REGULAR, position, label, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, Color.WHITE)
+		if not points.is_empty() and _valid_point(points[-1]) and float(data["tail_radius"]) > 0.0:
+			canvas.draw_arc(points[-1], float(data["tail_radius"]), 0.0, TAU, 48, Color(1, 1, 1, 0.35), 1.0, true)
+	var legend := "F10：蓝色为宽走廊 / 绿色为实际覆盖 / 橙色为下一关键区域 / 白圈为尾区（需先完成身体）"
+	canvas.draw_string_outline(UITheme.FONT_REGULAR, Vector2(24, 72), legend, HORIZONTAL_ALIGNMENT_LEFT, -1, 14, 4, Color.BLACK)
+	canvas.draw_string(UITheme.FONT_REGULAR, Vector2(24, 72), legend, HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color.WHITE)
+
+
+func _draw_path_corridor_run(canvas: Control, run: PackedVector2Array, radius: float, color: Color) -> void:
+	if run.size() < 2:
+		return
+	# Rounded outlines avoid miter spikes that would falsely imply extra area
+	# at sharp corners. Outlines also preserve holes in a closed loop.
+	for outline in Geometry2D.offset_polyline(run, radius, Geometry2D.JOIN_ROUND, Geometry2D.END_ROUND):
+		if outline.size() >= 2:
+			outline.append(outline[0])
+			canvas.draw_polyline(outline, Color(color, 0.45), 1.4, true)
+	canvas.draw_polyline(run, Color(color, 0.65), 1.0, true)
 
 
 func set_path_erased_to(note: Note, fraction: float) -> void:
