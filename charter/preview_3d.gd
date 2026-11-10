@@ -2322,7 +2322,7 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 		var star_head := project_design(Vector2.ZERO).lerp(ring_head, fall_progress)
 		# 离圆心越远，星头越大：飞到环上时回到 1.0。
 		# 下落星星全程都要能看清：从圆心出发时也不再缩到 0.2。
-		var star_grow := _radial_scale(star_head, 0.55, 1.0, t)
+		var star_grow := _radial_scale(star_head, 0.8, 1.0, t)
 		_draw_path_star(canvas, star_head, ns * PATH_SIZE_SCALE * PATH_HEAD_SCALE * star_grow, accent, head_alpha * dim * star_in)
 	_draw_path_tail(canvas, tail, top, ns * PATH_SIZE_SCALE, accent, dim * trail_fade * end_fade)
 	# 大号发光球 + 短拖尾：当前进度点始终比星头更亮，方向一目了然。
@@ -2785,9 +2785,9 @@ func _draw_path_star(canvas: Control, point: Vector2, scale: float, color: Color
 	if not _valid_point(point):
 		return
 	var s := clampf(scale, 0.2, 2.0) * float(_skin()["scale"]) * PATH_SIZE_SCALE * PATH_HEAD_SCALE
-	canvas.draw_circle(point, 26.0 * s, Color(color.r, color.g, color.b, 0.18 * alpha))
-	canvas.draw_circle(point, 16.0 * s, Color(color.r, color.g, color.b, 0.10 * alpha))
-	_draw_star_filled(canvas, point, 18.0 * s, Color(color.r, color.g, color.b, alpha))
+	canvas.draw_circle(point, 32.0 * s, Color(color.r, color.g, color.b, 0.18 * alpha))
+	canvas.draw_circle(point, 20.0 * s, Color(color.r, color.g, color.b, 0.10 * alpha))
+	_draw_star_filled(canvas, point, 22.0 * s, Color(color.r, color.g, color.b, alpha))
 
 
 func _draw_star_filled(canvas: Control, point: Vector2, radius: float, color: Color) -> void:
