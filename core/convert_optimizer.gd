@@ -7,6 +7,7 @@ extends RefCounted
 ##      缩不了就把后一条只留星头降 Tap。
 ##   3. 星星超速：压短轨迹（尾巴可能不在原按钮），保留星星本体。
 ##   4. 严格 A-B-A-B 交互段（≥5 颗、均速超上限）整段锁到一对 45° 位置；
+##      ≤45° 的快速交替（≥4 颗）整段收到第一颗角度，形成叠键；
 ##      其余大于 45° 且快过鼠标上限的折返逐颗压成 45°。
 ##   5. 星星期间只留落在星轨上的 Tap/Hold/Bell。
 ##   6. Hold 尾巴撞到下一颗按键时缩短，不足半拍降 Tap。
@@ -34,7 +35,7 @@ const MIN_SLIDE_CHORD_R := 0.6
 static func optimize_maimai(chart: Chart, counts: Dictionary) -> Dictionary:
 	var stats := {
 		"dropped": 0, "chords": 0, "snapped": 0, "shortened": 0,
-		"degraded": 0, "off_track": 0, "relaxed": 0, "locked": 0, "rebuilt": 0, "bells_moved": 0,
+		"degraded": 0, "off_track": 0, "relaxed": 0, "locked": 0, "stacked": 0, "rebuilt": 0, "bells_moved": 0,
 	}
 	_resolve_chords(chart, counts, stats)
 	_fit_path_overlaps(chart, counts, stats)
@@ -337,6 +338,9 @@ static func _compress_jumps(chart: Chart, stats: Dictionary) -> void:
 ## 严格 A-B-A-B 的两位置交互（Tap/Hold 头，Path 打断，Bell 忽略）：
 ## 段够长且平均速度快过鼠标上限时，第一颗不动，第二颗朝原转向收到 45°，
 ## 整段都锁到这两个位置，避免鼠标每次跨 90°/180°。
+## 小角度（≤45°）的快速交替不锁 45°，而是整段收到第一颗的角度，
+## 形成「叠键」（前后两下位置重叠的同点连打），连 228px 的抖动都不需要。
+## 只收 Tap；Hold 头保持原位置，符合「tap 优化」的范围。
 static func _lock_interaction_runs(chart: Chart, stats: Dictionary) -> Dictionary:
 	var locked := {}
 	var ordered := chart.sorted_notes()
@@ -355,7 +359,12 @@ static func _lock_interaction_runs(chart: Chart, stats: Dictionary) -> Dictionar
 		var a_angle := first.angle
 		var b_angle := ordered[j].angle
 		var delta := absf(JudgeMath.angle_delta(a_angle, b_angle))
-		if delta <= 45.0:
+		if delta <= 0.5:
+			i = j
+			continue
+		# 小角度里只有 Tap-Tap 才收叠键；Tap/Hold 混合段保持原位置。
+		var stack := delta <= 45.0 and first.type == "tap" and ordered[j].type == "tap"
+		if delta <= 45.0 and not stack:
 			i = j
 			continue
 		var run: Array[Note] = [first, ordered[j]]
@@ -367,27 +376,37 @@ static func _lock_interaction_runs(chart: Chart, stats: Dictionary) -> Dictionar
 				continue
 			if next.type != "tap" and next.type != "hold":
 				break
+			# 叠键只收 Tap；遇到 Hold 头就在它前面截断，让前面的 Tap 段仍能叠。
+			if stack and next.type != "tap":
+				break
 			var expect := a_angle if run.size() % 2 == 0 else b_angle
 			if absf(JudgeMath.angle_delta(next.angle, expect)) > 1.0:
 				break
 			run.append(next)
 			k += 1
-		if run.size() >= MIN_RUN_NOTES:
+		var min_run := 4 if stack else MIN_RUN_NOTES
+		if run.size() >= min_run:
 			var first_ms := chart.timing.beat_to_chart_ms(run[0].beat)
 			var last_ms := chart.timing.beat_to_chart_ms(run[-1].beat)
 			var avg_gap := (last_ms - first_ms) / float(run.size() - 1)
 			var chord := 2.0 * sin(deg_to_rad(delta) * 0.5) * RING_RADIUS
 			var speed := chord / maxf(0.001, avg_gap) * 1000.0
 			if avg_gap > 0.1 and speed > MAX_HEAD_SPEED:
-				# 180° 没有原转向：angle_delta 固定给 -180，也就是顺时针 45°。
-				var turn := JudgeMath.angle_delta(a_angle, b_angle)
-				var direction := 1.0 if turn > 0.0 else -1.0
-				var lock_b := fposmod(a_angle + direction * RUN_LOCK_STEP, 360.0)
-				for index in run.size():
-					var target := a_angle if index % 2 == 0 else lock_b
-					_rotate_note(run[index], JudgeMath.angle_delta(run[index].angle, target))
-					locked[run[index].id] = true
-				stats["locked"] = int(stats.get("locked", 0)) + 1
+				if stack:
+					for note in run:
+						_rotate_note(note, JudgeMath.angle_delta(note.angle, a_angle))
+						locked[note.id] = true
+					stats["stacked"] = int(stats.get("stacked", 0)) + 1
+				else:
+					# 180° 没有原转向：angle_delta 固定给 -180，也就是顺时针 45°。
+					var turn := JudgeMath.angle_delta(a_angle, b_angle)
+					var direction := 1.0 if turn > 0.0 else -1.0
+					var lock_b := fposmod(a_angle + direction * RUN_LOCK_STEP, 360.0)
+					for index in run.size():
+						var target := a_angle if index % 2 == 0 else lock_b
+						_rotate_note(run[index], JudgeMath.angle_delta(run[index].angle, target))
+						locked[run[index].id] = true
+					stats["locked"] = int(stats.get("locked", 0)) + 1
 		i = maxi(k, i + 1)
 	return locked
 

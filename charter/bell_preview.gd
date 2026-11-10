@@ -2,7 +2,7 @@ extends Control
 
 ## 检查器里的金键形状预览：长度跟着「弧宽」变，只做视觉参考，不参与判定。
 
-var arc_width := 45.0
+var arc_width := Note.BELL_MAX_WIDTH
 
 
 func _ready() -> void:
@@ -11,7 +11,7 @@ func _ready() -> void:
 
 
 func set_arc_width(value: float) -> void:
-	value = clampf(value, 6.0, 180.0)
+	value = clampf(value, Note.BELL_MIN_WIDTH, Note.BELL_MAX_WIDTH)
 	if is_equal_approx(arc_width, value):
 		return
 	arc_width = value
@@ -19,7 +19,7 @@ func set_arc_width(value: float) -> void:
 
 
 func _draw() -> void:
-	var t := clampf((arc_width - 6.0) / 174.0, 0.0, 1.0)
+	var t := clampf((arc_width - Note.BELL_MIN_WIDTH) / (Note.BELL_MAX_WIDTH - Note.BELL_MIN_WIDTH), 0.0, 1.0)
 	var span := lerpf(52.0, maxf(52.0, size.x - 28.0), t)
 	var half := minf(15.0, (size.y - 16.0) * 0.36)
 	var p := size * Vector2(0.5, 0.46)

@@ -73,14 +73,14 @@ static func import_maidata(path: String, difficulty_index: int = 0) -> Chart:
 	for note in chart.notes:
 		final[note.type] = int(final.get(note.type, 0)) + 1
 	var audio_note := "音频：未找到 track.*" if chart.audio_path.is_empty() else "音频：%s" % chart.audio_path.get_file()
-	last_report = "Simai 导入 Lv.%s：Tap %d，Hold %d，Slide→Path %d，Touch→Bell %d，跳过 %d（解析 %d + 优化 %d）。\nBPM %.1f，offset %.0fms，%s。\n优化：同刻去重 %d，尾判吸附 %d，缩短星星 %d，降级 %d，轨外删除 %d，交互段锁定 %d，逐颗压角 %d。" % [
+	last_report = "Simai 导入 Lv.%s：Tap %d，Hold %d，Slide→Path %d，Touch→Bell %d，跳过 %d（解析 %d + 优化 %d）。\nBPM %.1f，offset %.0fms，%s。\n优化：同刻去重 %d，尾判吸附 %d，缩短星星 %d，降级 %d，轨外删除 %d，交互段锁定 %d，交互段叠键 %d，逐颗压角 %d。" % [
 		String(meta.get("lv_%d" % difficulty_index, "?")),
 		final["tap"], final["hold"], final["path"], final["bell"], counts["dropped"],
 		base_dropped, stats.get("dropped", 0),
 		base_bpm, chart.offset_ms, audio_note,
 		stats.get("chords", 0), stats.get("snapped", 0), stats.get("shortened", 0),
 		stats.get("degraded", 0), stats.get("off_track", 0),
-		stats.get("locked", 0), stats.get("relaxed", 0),
+		stats.get("locked", 0), stats.get("stacked", 0), stats.get("relaxed", 0),
 	]
 	return chart
 
@@ -352,7 +352,7 @@ static func _parse_touch(body: String, beat: float) -> Note:
 			radius = 1.0
 		_:
 			return null
-	var bell := Note.new("bell", beat, angle, 45.0)
+	var bell := Note.new("bell", beat, angle, Note.BELL_MAX_WIDTH)
 	bell.center_u = fposmod(angle, 360.0) / 360.0
 	bell.bell_radius = radius
 	bell.radius = 50.0
