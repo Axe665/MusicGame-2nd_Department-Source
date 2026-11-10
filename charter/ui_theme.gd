@@ -19,6 +19,8 @@ const GOLD := Color("#F0C36A")
 const KEY_YELLOW := Color("#FFD84D")
 const KEY_HILITE := Color("#FFF6D2")
 const KEY_EDGE := Color("#2A1E05")
+## 金键内侧斜面（比主色深一档）。
+const KEY_DEEP := Color("#B8860B")
 const ACCENT := Color("#FFDE00")
 const ACCENT_DARK := Color("#C9A800")
 const CARD := Color("#DCDAD2")

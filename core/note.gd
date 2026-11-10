@@ -463,8 +463,7 @@ static func from_dict(raw: Dictionary) -> Note:
 	note.anchor_pair = int(raw.get("pair", -1))
 	note.pair_id = String(raw.get("pair_id", ""))
 	note.center_u = float(raw.get("center_u", 0.25))
-	# 旧谱里的圆心 Bell（bell_radius = 0）也并到外环。
-	note.bell_radius = 1.0
+	note.bell_radius = float(raw.get("bell_radius", 1.0))
 	note.sized = bool(raw.get("sized", false)) and note.type == "tap"
 	note.size_ratio = clampf(float(raw.get("size", 1.0)), SIZED_TAP_MIN, SIZED_TAP_MAX)
 	if raw.has("rgb"):

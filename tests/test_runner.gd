@@ -2500,8 +2500,28 @@ func test_calibration_offset() -> bool:
 
 ## 旧谱的圆心 Bell（bell_radius = 0）读进来也归到外环，和所有 Bell 统一。
 func test_bell_center_merges() -> bool:
-	var note := Note.from_dict({"type": "bell", "beat": 1.0, "center_u": 0.0, "bell_radius": 0.0, "width": 45.0})
-	eq(note.bell_radius, 1.0, "legacy center bells load on the outer ring")
+	var chart := Chart.new()
+	var lead := Note.new("tap", 1.0, 90.0, 60.0)
+	lead.id = 1
+	var center := Note.new("bell", 2.0, 0.0, 45.0)
+	center.id = 2
+	center.bell_radius = 0.0
+	var tail := Note.new("tap", 3.0, 180.0, 60.0)
+	tail.id = 3
+	chart.notes = [lead, center, tail]
+	chart.merge_center_bells()
+	eq(center.bell_radius, 1.0, "legacy center bells merge into the outer ring")
+	eq(center.center_u, 0.25, "a legacy center bell inherits the previous note angle")
+	# 前面没有音符时继承后一个。
+	var only := Chart.new()
+	var first := Note.new("bell", 1.0, 0.0, 45.0)
+	first.id = 4
+	first.bell_radius = 0.0
+	var later := Note.new("tap", 2.0, 270.0, 60.0)
+	later.id = 5
+	only.notes = [first, later]
+	only.merge_center_bells()
+	eq(first.center_u, 0.75, "a leading center bell inherits the next note angle")
 	var flat := Note.new("bell", 2.0, 0.0, 0.0)
 	eq(flat.width, 45.0, "a bell without an arc width gets the 45 degree default")
 	return true

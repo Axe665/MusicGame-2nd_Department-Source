@@ -11,9 +11,9 @@ const MOUSE_TILT_DEGREES := 11.0
 ## Path / Trace 的视觉尺寸：相对旧版 ×2。只放大笔画与头尾，不改轨迹几何与判定。
 const PATH_SIZE_SCALE := 2.0
 ## 金键（Bell）：环上一段厚金键（楔形端 + 深色边 + 外半侧高光）。
-const BELL_BAND_HALF := 13.0
+const BELL_BAND_HALF := 14.0
 ## 楔形端伸出多少度。
-const BELL_KEY_TIP_DEG := 3.5
+const BELL_KEY_TIP_DEG := 6.0
 ## 光标离弧带（含两端）多少像素内算在场。
 const BELL_RADIAL_TOLERANCE := 40.0
 ## 手工放的 Bell 弧宽兜底；导入的 Touch 都是 45°。
@@ -4077,17 +4077,24 @@ func _draw_bell(canvas: Control, chart: Chart, note: Note, t: float) -> void:
 	var halo := _bell_shape(note, t, q, -half - 7.0 - 3.0 * breathe, half + 7.0 + 3.0 * breathe, BELL_KEY_TIP_DEG + 1.6)
 	if halo.size() >= 3:
 		canvas.draw_colored_polygon(halo, Color(UITheme.KEY_YELLOW.r, UITheme.KEY_YELLOW.g, UITheme.KEY_YELLOW.b, 0.10 + 0.07 * breathe))
-	var rim := _bell_shape(note, t, q, -half - 3.0, half + 3.0, BELL_KEY_TIP_DEG + 1.0)
+	var rim := _bell_shape(note, t, q, -half - 3.5, half + 3.5, BELL_KEY_TIP_DEG + 1.2)
 	if rim.size() >= 3:
 		canvas.draw_colored_polygon(rim, UITheme.KEY_EDGE)
 	var body := _bell_shape(note, t, q, -half, half, BELL_KEY_TIP_DEG)
 	if body.size() < 3:
 		return
 	canvas.draw_colored_polygon(body, UITheme.KEY_YELLOW)
-	# 外半侧高光：像 ExTAP 的顶部亮边，不是 Tap 的白描边。
-	var gloss := _bell_shape(note, t, q, half * 0.18, half * 0.86, BELL_KEY_TIP_DEG * 0.6)
+	# 内侧深金斜面：让键读成有厚度的实体，而不是一条涂黄的线。
+	var bevel := _bell_shape(note, t, q, -half * 0.98, -half * 0.12, BELL_KEY_TIP_DEG * 0.55)
+	if bevel.size() >= 3:
+		canvas.draw_colored_polygon(bevel, Color(UITheme.KEY_DEEP.r, UITheme.KEY_DEEP.g, UITheme.KEY_DEEP.b, 0.55))
+	# 外侧乳白高光（窄） + 最外缘一条白线。
+	var gloss := _bell_shape(note, t, q, half * 0.22, half * 0.86, BELL_KEY_TIP_DEG * 0.5)
 	if gloss.size() >= 3:
 		canvas.draw_colored_polygon(gloss, Color(UITheme.KEY_HILITE.r, UITheme.KEY_HILITE.g, UITheme.KEY_HILITE.b, 0.88))
+	var spec := _bell_shape(note, t, q, half * 0.90, half * 0.99, BELL_KEY_TIP_DEG * 0.25)
+	if spec.size() >= 3:
+		canvas.draw_colored_polygon(spec, Color(1, 1, 1, 0.85))
 
 
 ## 金键的形状：两条同心弧 + 两端楔形尖。lo/hi 是相对判定环的像素偏移。
@@ -4103,18 +4110,19 @@ func _bell_shape(note: Note, beat: float, q: float, lo: float, hi: float, tip_de
 	var a1 := note.center_u * 360.0 + width * 0.5
 	var hi_scale := maxf(0.0, (1.0 + hi / ring) * q)
 	var lo_scale := maxf(0.0, (1.0 + lo / ring) * q)
+	var tip_scale := maxf(0.0, (1.0 + (lo + hi) * 0.5 / ring) * q)
 	for i in steps + 1:
 		var p := _bell_ring_point(chart, a0 + width * float(i) / float(steps), beat, hi_scale)
 		if p.is_finite():
 			out.append(p)
-	var tip_hi := _bell_ring_point(chart, a1 + tip_deg, beat, q)
+	var tip_hi := _bell_ring_point(chart, a1 + tip_deg, beat, tip_scale)
 	if tip_hi.is_finite():
 		out.append(tip_hi)
 	for i in steps + 1:
 		var p := _bell_ring_point(chart, a1 - width * float(i) / float(steps), beat, lo_scale)
 		if p.is_finite():
 			out.append(p)
-	var tip_lo := _bell_ring_point(chart, a0 - tip_deg, beat, q)
+	var tip_lo := _bell_ring_point(chart, a0 - tip_deg, beat, tip_scale)
 	if tip_lo.is_finite():
 		out.append(tip_lo)
 	return out

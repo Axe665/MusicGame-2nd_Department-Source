@@ -203,6 +203,7 @@ static func chart_from_dict(data: Dictionary) -> Chart:
 		if note.type == "path" and note.path_legacy:
 			note.generate_path_shape()
 			note.path_legacy = false
+	chart.merge_center_bells()
 	chart.editor = data.get("editor", {}).duplicate(true)
 	chart.refresh_ids()
 	return chart

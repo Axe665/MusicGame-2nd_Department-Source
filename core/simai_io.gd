@@ -64,6 +64,7 @@ static func import_maidata(path: String, difficulty_index: int = 0) -> Chart:
 	chart.timing.points = [TimingPoint.new(0.0, base_bpm, 4)]
 	var counts := {"tap": 0, "hold": 0, "path": 0, "bell": 0, "dropped": 0}
 	_parse_notes(inote, chart, counts)
+	chart.merge_center_bells()
 	var base_dropped := int(counts["dropped"])
 	var stats := ConvertOptimizer.optimize_maimai(chart, counts)
 	chart.notes.sort_custom(func(a: Note, b: Note) -> bool: return a.beat < b.beat)
@@ -325,9 +326,9 @@ static func _parse_touch(body: String, beat: float) -> Note:
 	var radius := 0.0
 	match group:
 		"C":
-			# 键鼠只有一只光标：C 触也并到外环，不再有圆心铃铛。
+			# 圆心触先标成半径 0；解析完后由 Chart.merge_center_bells 并到外环并继承角度。
 			angle = 0.0
-			radius = 1.0
+			radius = 0.0
 		# 键鼠只有一只光标：A/B/D/E 全部落外圈，连续 Touch 才能沿同一个圆扫过去。
 		"A":
 			if digit < 1 or digit > 8:

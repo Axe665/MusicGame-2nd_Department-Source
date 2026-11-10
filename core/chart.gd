@@ -58,6 +58,49 @@ func sorted_shapes() -> Array[BoundaryShape]:
 	return result
 
 
+## 旧谱的圆心 Bell（bell_radius = 0）并到判定环：角度继承时间上最近的音符。
+## 一份谱只有圆心 Bell 时保留 0°，不会把整张谱打散。
+func merge_center_bells() -> void:
+	var ordered := sorted_notes()
+	var center := {}
+	for i in ordered.size():
+		var note := ordered[i]
+		if note.type == "bell" and float(note.bell_radius) < 0.5:
+			center[i] = true
+	if center.is_empty():
+		return
+	# 先找前一个非圆心音符，找不到再找后一个。
+	var donor: Array[float] = []
+	donor.resize(ordered.size())
+	var last := -1.0
+	for i in ordered.size():
+		if center.has(i):
+			donor[i] = last
+			continue
+		last = _position_angle(ordered[i])
+		donor[i] = last
+	var next := -1.0
+	for i in range(ordered.size() - 1, -1, -1):
+		if center.has(i):
+			if donor[i] < 0.0:
+				donor[i] = next
+			continue
+		next = _position_angle(ordered[i])
+	for i in center.keys():
+		var note := ordered[i]
+		var angle := donor[i]
+		if angle >= 0.0:
+			note.angle = fposmod(angle, 360.0)
+			note.center_u = fposmod(note.angle / 360.0, 1.0)
+		note.bell_radius = 1.0
+
+
+static func _position_angle(note: Note) -> float:
+	if note.type == "bell":
+		return fposmod(note.center_u * 360.0, 360.0)
+	return fposmod(note.angle, 360.0)
+
+
 func sorted_notes() -> Array[Note]:
 	var result := notes.duplicate()
 	result.sort_custom(func(a: Note, b: Note) -> bool: return a.beat < b.beat)
