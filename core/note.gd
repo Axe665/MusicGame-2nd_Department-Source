@@ -10,6 +10,10 @@ const TYPES := ["tap", "hold", "path", "seek", "anchor", "bell"]
 ## 数值同时用于绘制与判定，看到的长度就是能打到的长度。
 const TAP_LENGTH_SCALE := 0.5
 const HOLD_HEAD_LENGTH_SCALE := 0.5
+## 金键的可见/判定弧宽标准：和 Tap 到环时的可见长度同级（62° 的 Tap 可见 31°）。
+## 旧谱和导出的 Bell 都是 45°，载入时统一收敛，避免一条金键比 Tap 长 45%。
+const BELL_MIN_WIDTH := 24.0
+const BELL_MAX_WIDTH := 30.0
 ## 舞萌星星的默认深蓝色。
 const DEFAULT_PATH_COLOR := Color(0.55, 0.75, 1.0)
 const SIZED_TAP_MIN := 0.0
@@ -83,9 +87,10 @@ func _init(p_type: String = "tap", p_beat: float = 0.0, p_angle: float = 0.0, p_
 	# 判定里按“结束时间”做过期检查时会把它们当成 0ms：谱面播到 6 秒后，
 	# 所有 tap 都被判定为“早就过期”而跳过（表现就是突然整段没有判定）。
 	end_beat = p_beat
-	# 金键以前是金币（宽度 0）。没有弧宽就画不出键，旧数据统一补成 45°。
-	if type == "bell" and width <= 0.0:
-		width = 45.0
+	# 金键以前是金币（宽度 0）。没有弧宽就画不出键，旧数据统一补成标准宽度；
+	# 45°/180° 的历史值也在这里收敛，绘制、判定、编辑器看到的是同一个长度。
+	if type == "bell":
+		width = clampf(width if width > 0.0 else BELL_MAX_WIDTH, BELL_MIN_WIDTH, BELL_MAX_WIDTH)
 	if type == "path" or type == "trace":
 		space = "plane"
 
@@ -106,6 +111,11 @@ func length_ratio() -> float:
 ## 到判定环时的实际角度宽度。绘制与判定都走这里，保证"看到多长 = 能打多长"。
 func arc_width() -> float:
 	return maxf(0.0, width * length_ratio())
+
+
+## 金键的有效弧宽。数据已收敛，这里再兜底一次，编辑器直接改 width 也不会越界。
+func bell_width() -> float:
+	return clampf(width, BELL_MIN_WIDTH, BELL_MAX_WIDTH)
 
 
 ## 大小 Tap 只允许 Tap 使用；给编辑器一个统一的入口。

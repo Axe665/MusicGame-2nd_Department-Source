@@ -86,6 +86,7 @@ func _initialize() -> void:
 		"test_maimai_overlap_and_off_track",
 		"test_maimai_interaction_compress",
 		"test_interaction_run_lock",
+		"test_small_angle_stack",
 		"test_note_pop_scale",
 		"test_background_cache",
 		"test_maimai_hold_clamp",
@@ -2223,6 +2224,26 @@ func test_interaction_run_lock() -> bool:
 	return true
 
 
+## 45° 快速 A-B-A-B：整段收到第一颗角度，变成叠键；慢速段保留两个位置。
+func test_small_angle_stack() -> bool:
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 200.0, 4)]
+	var angles := [0.0, 45.0, 0.0, 45.0, 0.0]
+	for i in angles.size():
+		chart.notes.append(Note.new("tap", float(i) * 0.25, angles[i], 62.0))
+	var stats := ConvertOptimizer.optimize_maimai(chart, {"tap": 5, "hold": 0, "path": 0, "bell": 0, "dropped": 0})
+	eq(int(stats.get("stacked", 0)), 1, "a fast 45-degree run is stacked")
+	for i in chart.notes.size():
+		near(chart.notes[i].angle, 0.0, 0.01, "stacked run note %d" % i)
+	var slow := Chart.new()
+	slow.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	for i in angles.size():
+		slow.notes.append(Note.new("tap", float(i), angles[i], 62.0))
+	ConvertOptimizer.optimize_maimai(slow, {"tap": 5, "hold": 0, "path": 0, "bell": 0, "dropped": 0})
+	near(slow.notes[1].angle, 45.0, 0.01, "a slow 45-degree run keeps both positions")
+	return true
+
+
 func test_note_pop_scale() -> bool:
 	near(Preview3D.note_pop_scale(0.0), 1.0, 0.001, "note pop starts at its own size")
 	near(Preview3D.note_pop_scale(Preview3D.NOTE_POP_SEC), Preview3D.NOTE_POP_SCALE, 0.001, "note pop reaches its full scale")
@@ -2523,7 +2544,10 @@ func test_bell_center_merges() -> bool:
 	only.merge_center_bells()
 	eq(first.center_u, 0.75, "a leading center bell inherits the next note angle")
 	var flat := Note.new("bell", 2.0, 0.0, 0.0)
-	eq(flat.width, 45.0, "a bell without an arc width gets the 45 degree default")
+	eq(flat.width, Note.BELL_MAX_WIDTH, "a bell without an arc width gets the standard 30 degree width")
+	eq(center.width, Note.BELL_MAX_WIDTH, "a legacy 45-degree bell clamps to the new standard")
+	var loaded := Note.from_dict({"type": "bell", "beat": 1.0, "width": 45.0, "id": 9})
+	eq(loaded.width, Note.BELL_MAX_WIDTH, "a loaded 45-degree bell is normalized")
 	return true
 
 

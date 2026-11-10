@@ -467,7 +467,7 @@ func _build_note_page_for(page: VBoxContainer, note: Note) -> void:
 			_active_note.center_u = value
 	)
 	_note_widgets["bell_u"] = bu
-	var bw := _spin(bell, "弧宽 °", note.width, 6.0, 180.0, 1.0, func(value: float) -> void:
+	var bw := _spin(bell, "弧宽 °", note.bell_width(), Note.BELL_MIN_WIDTH, Note.BELL_MAX_WIDTH, 1.0, func(value: float) -> void:
 		if _active_note != null:
 			_active_note.width = value
 		if _note_widgets.has("bell_preview"):
@@ -479,10 +479,10 @@ func _build_note_page_for(page: VBoxContainer, note: Note) -> void:
 			_active_note.radius = value
 	)
 	_note_widgets["bell_r"] = br
-	_label(bell, "金键：白描边 + 金色核心 + 圆头；光标贴住即算在场（±100ms，触碰会立刻锁定），不用点。「弧宽」决定可见与判定长度。", 11, UITheme.MUTED)
+	_label(bell, "金键：白描边 + 金色核心 + 圆头；光标贴住即算在场（±100ms，触碰会立刻锁定），不用点。「弧宽」和 Tap 到环时的 31° 同级（24–30°），决定可见与判定长度。", 11, UITheme.MUTED)
 	var bell_preview := BellPreviewScript.new()
 	bell_preview.name = "BellShapePreview"
-	bell_preview.set_arc_width(note.width)
+	bell_preview.set_arc_width(note.bell_width())
 	bell.add_child(bell_preview)
 	_note_widgets["bell_preview"] = bell_preview
 
@@ -833,8 +833,8 @@ func _refresh_note_page() -> void:
 	_note_widgets["plane_y"].value = note.plane_y
 	_note_widgets["plane_r"].value = note.plane_radius
 	_note_widgets["bell_u"].value = note.center_u
-	_note_widgets["bell_w"].value = note.width
-	_note_widgets["bell_preview"].set_arc_width(note.width)
+	_note_widgets["bell_w"].value = note.bell_width()
+	_note_widgets["bell_preview"].set_arc_width(note.bell_width())
 	_note_widgets["bell_r"].value = note.radius
 	if note.type == "path":
 		note.derive_path_controls()

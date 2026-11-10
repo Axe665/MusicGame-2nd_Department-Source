@@ -14,8 +14,6 @@ const PATH_SIZE_SCALE := 2.0
 const BELL_BAND_HALF := 10.0
 ## 光标离弧带（含两端）多少像素内算在场。
 const BELL_RADIAL_TOLERANCE := 40.0
-## 手工放的 Bell 弧宽兜底；导入的 Touch 都是 45°。
-const BELL_MIN_WIDTH := 24.0
 ## 星头单独缩小（轨迹宽度不受影响）。
 const PATH_HEAD_SCALE := 0.62
 ## 接力高亮：等待处理的星在重叠时压到这个亮度。
@@ -1405,7 +1403,7 @@ func _create_note(type: String) -> void:
 			note.width = 0.0
 			note.anchor_pair = -1
 		"bell":
-			note.width = 45.0
+			note.width = Note.BELL_MAX_WIDTH
 			note.center_u = cursor_u
 			note.radius = 26.0
 	_app.begin_edit()
@@ -2232,20 +2230,13 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 		for piece in runs:
 			if piece.size() < 2:
 				continue
-			# 试玩里只有“现在该划”的那条画粗带；其余不打虚线，只把实线压暗。
-			# 编辑器预览保持全部粗带，方便看谱。
-			if active or not playtest_mode:
-				var path_band := float(_skin()["band"])
-				var band_width := 5.0 * PATH_SIZE_SCALE * ns * path_band
-				canvas.draw_polyline(piece, Color(0, 0, 0, 0.50 * trail_dim), band_width + 4.0, false)
-				canvas.draw_polyline(piece, Color(accent.r, accent.g, accent.b, 0.95 * trail_dim), band_width, false)
-			else:
-				# 还没轮到的星：实线 + 压暗，不再用虚线切碎轨迹。
-				canvas.draw_polyline(piece, Color(0, 0, 0, 0.35 * trail_dim), 4.0 * PATH_SIZE_SCALE * ns, false)
-				canvas.draw_polyline(piece, Color(accent.r, accent.g, accent.b, 0.92 * trail_dim), 2.6 * PATH_SIZE_SCALE * ns, false)
-			# V 形箭头链只画在“现在该划”的那条上：对向重叠的两条星都画箭头会叠成蝴蝶结。
-			if not active:
-				continue
+			# 所有星都用同一条粗带；还没轮到的那条只压明度（PATH_RELAY_DIM），
+			# 不再缩成细线，否则多条星先后出现时后一条完全读不出路径。
+			var path_band := float(_skin()["band"])
+			var band_width := 5.0 * PATH_SIZE_SCALE * ns * path_band
+			canvas.draw_polyline(piece, Color(0, 0, 0, 0.50 * trail_dim), band_width + 4.0, false)
+			canvas.draw_polyline(piece, Color(accent.r, accent.g, accent.b, 0.95 * trail_dim), band_width, false)
+			# 箭头链也画在所有星上：后面的星和前面的星同形，只靠 dim 压暗。
 			var piece_length := 0.0
 			for i in piece.size() - 1:
 				piece_length += piece[i].distance_to(piece[i + 1])
@@ -2330,7 +2321,8 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 		var star_in := clampf(fall_progress / 0.55, 0.0, 1.0)
 		var star_head := project_design(Vector2.ZERO).lerp(ring_head, fall_progress)
 		# 离圆心越远，星头越大：飞到环上时回到 1.0。
-		var star_grow := _radial_scale(star_head, 0.2, 1.0, t)
+		# 下落星星全程都要能看清：从圆心出发时也不再缩到 0.2。
+		var star_grow := _radial_scale(star_head, 0.8, 1.0, t)
 		_draw_path_star(canvas, star_head, ns * PATH_SIZE_SCALE * PATH_HEAD_SCALE * star_grow, accent, head_alpha * dim * star_in)
 	_draw_path_tail(canvas, tail, top, ns * PATH_SIZE_SCALE, accent, dim * trail_fade * end_fade)
 	# 大号发光球 + 短拖尾：当前进度点始终比星头更亮，方向一目了然。
@@ -2793,9 +2785,9 @@ func _draw_path_star(canvas: Control, point: Vector2, scale: float, color: Color
 	if not _valid_point(point):
 		return
 	var s := clampf(scale, 0.2, 2.0) * float(_skin()["scale"]) * PATH_SIZE_SCALE * PATH_HEAD_SCALE
-	canvas.draw_circle(point, 26.0 * s, Color(color.r, color.g, color.b, 0.18 * alpha))
-	canvas.draw_circle(point, 16.0 * s, Color(color.r, color.g, color.b, 0.10 * alpha))
-	_draw_star_filled(canvas, point, 18.0 * s, Color(color.r, color.g, color.b, alpha))
+	canvas.draw_circle(point, 32.0 * s, Color(color.r, color.g, color.b, 0.18 * alpha))
+	canvas.draw_circle(point, 20.0 * s, Color(color.r, color.g, color.b, 0.10 * alpha))
+	_draw_star_filled(canvas, point, 22.0 * s, Color(color.r, color.g, color.b, alpha))
 
 
 func _draw_star_filled(canvas: Control, point: Vector2, radius: float, color: Color) -> void:
@@ -4051,7 +4043,7 @@ func _draw_diamond(canvas: Control, point: Vector2, radius: float, color: Color)
 
 
 ## 金键：环上一段白描边金键（圆头 + 金色核心）。所有 Bell 都在判定环上。
-## 和 Tap 的白描边胶囊刻意相反：深褐边、亮黄体、更厚，高速下靠轮廓就能分开。
+## 长度走 Note.bell_width()，和 Tap 到环时的 31° 同级；不再是一条长 45° 的金板。
 func _draw_bell(canvas: Control, chart: Chart, note: Note, t: float) -> void:
 	var q := lerpf(Note.SPAWN_LENGTH_RATIO, 1.0, _approach(chart, note.beat, t))
 	var half := BELL_BAND_HALF * _note_scale() * float(_skin()["scale"])
@@ -4074,7 +4066,7 @@ func _bell_capsule(canvas: Control, note: Note, beat: float, q: float, lo: float
 		canvas.draw_colored_polygon(poly, color)
 	var ring := maxf(_ring_radius_px(beat), 1.0)
 	var mid := maxf(0.0, (1.0 + (lo + hi) * 0.5 / ring) * q)
-	var width := maxf(note.width, BELL_MIN_WIDTH)
+	var width := note.bell_width()
 	var cap := absf(hi - lo) * 0.5
 	for a in [note.center_u * 360.0 - width * 0.5, note.center_u * 360.0 + width * 0.5]:
 		var p := _bell_ring_point(chart, a, beat, mid)
@@ -4089,7 +4081,7 @@ func _bell_shape(note: Note, beat: float, q: float, lo: float, hi: float) -> Pac
 	if chart == null:
 		return out
 	var ring := maxf(_ring_radius_px(beat), 1.0)
-	var width := maxf(note.width, BELL_MIN_WIDTH)
+	var width := note.bell_width()
 	var steps := clampi(int(width / 4.0), 10, 96)
 	var a0 := note.center_u * 360.0 - width * 0.5
 	var a1 := note.center_u * 360.0 + width * 0.5
@@ -4129,7 +4121,7 @@ func bell_band_points(note: Note, beat: float, radius_scale: float = 1.0) -> Arr
 	var points: Array[Vector2] = []
 	if chart == null:
 		return points
-	var width := maxf(note.width, BELL_MIN_WIDTH)
+	var width := note.bell_width()
 	var steps := clampi(int(width / 4.0), 10, 96)
 	var radius := clampf(radius_scale, 0.0, 1.0)
 	for i in steps + 1:
