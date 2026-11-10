@@ -10,18 +10,18 @@ const PREVIEW_MARGIN := 1.24
 const MOUSE_TILT_DEGREES := 11.0
 ## Path / Trace 的视觉尺寸：相对旧版 ×2。只放大笔画与头尾，不改轨迹几何与判定。
 const PATH_SIZE_SCALE := 2.0
-## Bell 吸附：光标进入这个半径且距判定 0.5 拍内时，Bell 自己飞向光标。
-const BELL_SNAP_RANGE := 72.0
-## 吸附动画时长（秒），缓出吸到光标上。
-const BELL_SNAP_TIME := 0.15
-## 距判定点多少拍内才允许吸附，避免远处的 Bell 抢注意力。
-const BELL_SNAP_BEATS := 0.5
+## 金键（Phigros 黄键式）：环上一条细金弧带，光标贴近即算在场，不点、不吸。
+const BELL_BAND_THICKNESS := 9.0
+## 光标离弧带（含两端）多少像素内算在场。
+const BELL_RADIAL_TOLERANCE := 40.0
+## 圆心 Bell（maimai C）画成金点，判定半径固定 48px。
+const BELL_CENTER_RADIUS := 48.0
+## 手工放的 Bell 弧宽兜底；导入的 Touch 都是 45°。
+const BELL_MIN_WIDTH := 24.0
 ## 星头单独缩小（轨迹宽度不受影响）。
 const PATH_HEAD_SCALE := 0.62
 ## 接力高亮：等待处理的星在重叠时压到这个亮度。
 const PATH_RELAY_DIM := 0.45
-## Bell 直径缩放（相对旧版）。
-const BELL_SIZE_SCALE := 0.75
 ## 命中退场：尾判后尾巴停在判定环上再淡出的真实时长（秒）。
 ## 用真实时间而不是拍数，慢歌不会拖成半秒、快歌也不会一闪就没。
 const END_FADE_SEC := 0.1
@@ -130,8 +130,6 @@ var _last_mesh_usec: int = 0
 var _last_process_time: float = -9999.0
 var _last_mouse_screen: Vector2 = Vector2(-9999, -9999)
 var _cursor_trail: Array[Dictionary] = []
-## Bell 吸附进度：note.id -> 0..1（线性，读取时缓出）。
-var _bell_snap: Dictionary = {}
 ## 3D 视口上次重画时间（试玩时限频，不影响 2D/游戏帧率）。
 var _last_3d_usec: int = 0
 ## 性能采样：draw_overlay 的平均耗时 + FPS，每 2 秒打印一次（仅试玩）。
@@ -547,7 +545,6 @@ func _process(_delta: float) -> void:
 			_perf_proc_usec = 0
 			_perf_mesh_usec = 0
 			_perf_since_usec = perf_now
-	_update_bell_snap(chart, t, _delta)
 	var mouse_moved := mouse_screen.distance_to(_last_mouse_screen) > 0.1
 	if mouse_inside and (playtest_mode or (playing and Engine.get_process_frames() % 6 == 0) or mouse_moved):
 		_update_cursor()
@@ -1410,7 +1407,7 @@ func _create_note(type: String) -> void:
 			note.width = 0.0
 			note.anchor_pair = -1
 		"bell":
-			note.width = 0.0
+			note.width = 45.0
 			note.center_u = cursor_u
 			note.radius = 26.0
 	_app.begin_edit()
@@ -3069,10 +3066,7 @@ func _draw_notes(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 					canvas.draw_circle(p, 27.0 * grow, Color(UITheme.VIOLET.r, UITheme.VIOLET.g, UITheme.VIOLET.b, 0.14))
 				_draw_diamond(canvas, p, 16.0 * clampf(grow, 0.35, 1.0), UITheme.VIOLET)
 			"bell":
-				var bell := bell_screen(note, t)
-				if not bell.is_empty():
-					var bell_center: Vector2 = bell.get("origin", bell["center"])
-					_draw_bell(canvas, bell_center, bell["radius"], t, note.beat, pre, float(bell.get("snap", 0.0)))
+				_draw_bell(canvas, chart, note, t)
 
 
 func _draw_tap_donut(canvas: Control, point: Vector2, radius: float, color: Color, alpha: float = 1.0) -> void:
@@ -3450,31 +3444,6 @@ func _draw_cursor(canvas: Control, chart: Chart, t: float) -> void:
 		canvas.draw_circle(p, 1.8, UITheme.CORAL)
 		if show_debug:
 			canvas.draw_string(UITheme.mono_font(), p + Vector2(12, 22), "u %.1f°" % (cursor_u * 360.0), HORIZONTAL_ALIGNMENT_LEFT, -1, 11, UITheme.MUTED)
-
-
-## Bell 被光标吸附：进入 120px 且距判定 0.5 拍内时，Bell 自己飞向光标。
-func _update_bell_snap(chart: Chart, t: float, delta: float) -> void:
-	if not playtest_mode:
-		_bell_snap.clear()
-		return
-	var wanted := {}
-	var pre := _pre_read_beats(chart, t)
-	for note in _notes_in_range(chart, t - BELL_SNAP_BEATS, t + BELL_SNAP_BEATS):
-		if note.type != "bell" or absf(t - note.beat) > BELL_SNAP_BEATS:
-			continue
-		var bell := _bell_screen_raw(note, t)
-		if bell.is_empty():
-			continue
-		# 按画面上看到的位置触发，而不是它在判定环上的落点。
-		var q := _approach(chart, note.beat, t)
-		var shown: Vector2 = project_design(Vector2.ZERO).lerp(bell["center"], q)
-		if mouse_screen.distance_to(shown) <= BELL_SNAP_RANGE:
-			wanted[note.id] = true
-	for id in _bell_snap.keys():
-		if not wanted.has(id):
-			_bell_snap.erase(id)
-	for id in wanted.keys():
-		_bell_snap[id] = clampf(float(_bell_snap.get(id, 0.0)) + delta / BELL_SNAP_TIME, 0.0, 1.0)
 
 
 func _draw_player_cursor(canvas: Control) -> void:
@@ -4083,60 +4052,73 @@ func _draw_diamond(canvas: Control, point: Vector2, radius: float, color: Color)
 	canvas.draw_circle(point, maxf(1.2, radius * 0.14), Color(1, 1, 1, 0.92))
 
 
-func _draw_bell(canvas: Control, point: Vector2, radius: float, t: float, target: float, _pre: float, snap: float = 0.0) -> void:
+## 金键：外圈是一段细金弧带（和 Tap 同一套环上语言，但更细），圆心 Bell 是金点。
+func _draw_bell(canvas: Control, chart: Chart, note: Note, t: float) -> void:
+	var q := lerpf(Note.SPAWN_LENGTH_RATIO, 1.0, _approach(chart, note.beat, t))
+	if float(note.bell_radius) < 0.5:
+		var center := project_design(Vector2.ZERO)
+		if not _valid_point(center):
+			return
+		var r := maxf(10.0, note.radius) * lerpf(0.45, 1.0, q)
+		canvas.draw_circle(center, r + 9.0, Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, 0.12))
+		canvas.draw_circle(center, r, Color(0, 0, 0, 0.62))
+		canvas.draw_arc(center, r - 1.0, 0.0, TAU, 40, Color(1, 0.90, 0.55, 0.95), 2.4, true)
+		canvas.draw_circle(center, maxf(2.0, r * 0.22), Color(1, 0.96, 0.78, 0.96))
+		return
+	var points := bell_band_points(note, t, q)
+	if points.size() < 2:
+		return
+	var poly := PackedVector2Array(points)
+	# 金键以金色为主体（不套 Tap 的白色描边），和粉色 Tap 一眼分开。
+	var w := BELL_BAND_THICKNESS * _note_scale() * float(_skin()["scale"])
+	canvas.draw_polyline(poly, Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, 0.18), w + 16.0, false)
+	canvas.draw_polyline(poly, Color(0, 0, 0, 0.55), w + 6.0, false)
+	canvas.draw_polyline(poly, UITheme.GOLD, w, false)
+	canvas.draw_polyline(poly, Color(1.0, 0.97, 0.82, 0.95), 2.0, false)
+
+
+## 金色弧带的屏幕折线（radius_scale 用于从圆心长出来的接近动画）。
+func bell_band_points(note: Note, beat: float, radius_scale: float = 1.0) -> Array[Vector2]:
 	var chart := get_chart()
-	var q := _approach(chart, target, t) if chart != null else 1.0
-	var r := maxf(12.0, radius * 1.35) * lerpf(0.7, 1.0, q) * BELL_SIZE_SCALE
-	var p := project_design(Vector2.ZERO).lerp(point, q)
-	if snap > 0.01:
-		p = p.lerp(mouse_screen, snap)
-	# 吸附：只剩一个收缩环，贴到 Bell 上就收住。
-	var range_px := maxf(BELL_SNAP_RANGE, r)
-	if mouse_inside:
-		var distance := mouse_screen.distance_to(p)
-		if distance <= range_px * 1.5:
-			var pull := maxf(clampf(1.0 - distance / range_px, 0.0, 1.0), snap)
-			var ring := lerpf(range_px, r + 4.0, pull)
-			canvas.draw_arc(p, ring, 0.0, TAU, 40, Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, 0.35 + 0.45 * pull), 1.6 + 1.2 * pull, false)
-	# 扁平金币：一圈金环 + 中心小星，不做翻转/侧边/厚度阴影。
-	canvas.draw_circle(p, r + 7.0 * BELL_SIZE_SCALE, Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, 0.10))
-	canvas.draw_circle(p, r, Color(0, 0, 0, 0.55))
-	canvas.draw_circle(p, r - 2.0, Color(0.98, 0.80, 0.32))
-	canvas.draw_circle(p, r - 5.0, Color(0.06, 0.07, 0.10, 0.92))
-	canvas.draw_arc(p, r - 1.0, 0.0, TAU, 40, Color(1, 0.96, 0.78, 0.95), 2.2, false)
-	var star := PackedVector2Array()
-	for i in 8:
-		var angle := -PI * 0.5 + TAU * float(i) / 8.0
-		var rr := r * 0.34 if i % 2 == 0 else r * 0.13
-		star.append(p + Vector2(cos(angle), sin(angle)) * rr)
-	canvas.draw_colored_polygon(star, Color(1, 0.94, 0.68, 0.95))
+	var points: Array[Vector2] = []
+	if chart == null:
+		return points
+	var width := maxf(note.width, BELL_MIN_WIDTH)
+	var steps := clampi(int(width / 4.0), 10, 96)
+	var radius := clampf(radius_scale, 0.0, 1.0)
+	for i in steps + 1:
+		var angle := note.center_u * 360.0 - width * 0.5 + width * float(i) / float(steps)
+		var data := _boundary_point(chart, fposmod(angle, 360.0) / 360.0, beat)
+		if bool(data.get("gap", false)):
+			continue
+		var p := project_design((data.point as Vector2) * radius)
+		if _valid_point(p):
+			points.append(p)
+	return points
 
 
+## 在场判定：外圈离弧带 40px 内（含两端），圆心金点 48px 内。
+func bell_contains(note: Note, beat: float, point: Vector2) -> bool:
+	if float(note.bell_radius) < 0.5:
+		return point.distance_to(project_design(Vector2.ZERO)) <= BELL_CENTER_RADIUS
+	var points := bell_band_points(note, beat)
+	return points.size() >= 2 and JudgeMath.trace_distance(point, points) <= BELL_RADIAL_TOLERANCE
+
+
+## 金键的屏幕形态：外圈取弧带中点，圆心取圆心金点。
 func bell_screen(note: Note, beat: float) -> Dictionary:
-	var raw := _bell_screen_raw(note, beat)
-	if raw.is_empty():
-		return raw
-	var progress := float(_bell_snap.get(note.id, 0.0))
-	if progress <= 0.0:
-		return raw
-	# 缓出：一开始快、贴到光标时慢下来，才有“被吸住”的感觉。
-	var eased := 1.0 - pow(1.0 - progress, 3.0)
-	var center: Vector2 = (raw["center"] as Vector2).lerp(mouse_screen, eased)
-	return {"center": center, "radius": float(raw["radius"]), "origin": raw["center"], "snap": eased}
-
-
-func _bell_screen_raw(note: Note, beat: float) -> Dictionary:
 	var chart := get_chart()
 	if chart == null:
 		return {}
-	var data := _boundary_point(chart, note.center_u, beat)
-	if bool(data.get("gap", false)):
+	if float(note.bell_radius) < 0.5:
+		var dot := project_design(Vector2.ZERO)
+		if not _valid_point(dot):
+			return {}
+		return {"center": dot, "radius": maxf(BELL_CENTER_RADIUS, note.radius), "center_dot": true}
+	var points := bell_band_points(note, beat)
+	if points.size() < 2:
 		return {}
-	var design: Vector2 = data.point
-	var center := project_design(design * clampf(note.bell_radius, 0.0, 1.0))
-	if not _valid_point(center):
-		return {}
-	return {"center": center, "radius": _design_radius_to_screen(design, note.radius)}
+	return {"center": points[points.size() / 2], "radius": BELL_BAND_THICKNESS, "center_dot": false}
 
 
 ## 判定用：判定时刻（beat）环上条带的屏幕折线，宽度为角度 width。

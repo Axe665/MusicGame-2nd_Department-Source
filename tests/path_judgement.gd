@@ -28,6 +28,7 @@ func _run() -> void:
 	if app != null:
 		app.playtest_offset_ms = 0.0
 	await _test_playtest()
+	await _test_bell_judgement()
 	await _test_real_motion()
 	print("Path judgement: %d passed, %d failed" % [passed, failed])
 	quit(1 if failed else 0)
@@ -448,6 +449,69 @@ func _test_playtest() -> void:
 	run._input(toggle)
 	check(run.path_input_logging and run._path_input_log != null, "F9 can restart diagnostic capture during play")
 	run.queue_free()
+	await process_frame
+
+
+## 金键：窗口内光标在场只预备，到判定线才结算；越界才是 MISS，且不进 BIA。
+func _test_bell_judgement() -> void:
+	var chart := DemoChart.make_empty({"title": "bell judgement", "bpm": 120.0})
+	chart.notes.clear()
+	var band := Note.new("bell", 2.0, 90.0, 45.0)
+	band.id = 1
+	band.center_u = 0.25
+	band.bell_radius = 1.0
+	band.radius = 50.0
+	var dot := Note.new("bell", 4.0, 0.0, 45.0)
+	dot.id = 2
+	dot.center_u = 0.0
+	dot.bell_radius = 0.0
+	dot.radius = 50.0
+	chart.notes = [band, dot]
+	var run := Playtest.new()
+	run.path_input_logging = false
+	root.add_child(run)
+	await process_frame
+	run.setup(chart, 0.0, "")
+	run.set_process(false)
+	var beat := 2.0
+	run._preview.prepare_playtest_frame(beat, 0.0)
+	var target := chart.timing.beat_to_chart_ms(beat)
+	var screen: Dictionary = run._preview.bell_screen(band, beat)
+	check(not screen.is_empty(), "a gold band has a screen shape")
+	var point: Vector2 = screen["center"]
+	var center: Vector2 = run._preview.project_design(Vector2.ZERO)
+	var inward: Vector2 = (center - point).normalized()
+	check(run._preview.bell_contains(band, beat, point + inward * 39.0), "39px off the band still counts")
+	check(not run._preview.bell_contains(band, beat, point + inward * 41.0), "41px off the band is outside")
+	check(run._preview.bell_contains(dot, 4.0, center + Vector2(47.0, 0.0)), "the center dot keeps a 48px radius")
+	check(not run._preview.bell_contains(dot, 4.0, center + Vector2(49.0, 0.0)), "the center dot stops at 48px")
+	run._judge_bell(band, target - 199.0, beat, point)
+	check(bool(run._states[1]["armed"]) and not bool(run._states[1]["done"]),
+		"an early sweep only arms the gold note")
+	run._judge_bell(band, target, beat, point)
+	check(bool(run._states[1]["done"]), "the gold note resolves on the judgement line")
+	check(int(run._tier_counts["PERFECT"]) == 1, "presence scores a PERFECT")
+	check(run._combo == 1, "a gold note adds combo")
+	check(run._errors.is_empty(), "a gold note never feeds BIA")
+	run.queue_free()
+	await process_frame
+
+	var miss := Playtest.new()
+	miss.path_input_logging = false
+	root.add_child(miss)
+	await process_frame
+	miss.setup(chart, 0.0, "")
+	miss.set_process(false)
+	miss._preview.prepare_playtest_frame(beat, 0.0)
+	var far := point + (point - center) * 2.0
+	miss._judge_bell(band, target - 201.0, beat, far)
+	miss._judge_bell(band, target + 199.0, beat, far)
+	check(not bool(miss._states[1]["done"]), "the late window is still open")
+	miss._judge_bell(band, target + 201.0, beat, far)
+	check(bool(miss._states[1]["done"]) and miss._miss_count == 1, "an absent gold note misses after the window")
+	check(int(miss._tier_counts["MISS"]) == 1, "a missed gold note is judged")
+	check(miss._combo == 0, "a missed gold note breaks combo")
+	miss.queue_free()
 	await process_frame
 
 
