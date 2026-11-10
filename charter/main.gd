@@ -74,6 +74,8 @@ var _import_dir_dialog: FileDialog
 var _audio_dialog: FileDialog
 var _song_dialog: SongImportDialog
 var _chart_browser: ChartBrowser
+## 独立的“在线 osu! 谱面”窗口（只列 osu!std）。
+var _osu_browser: ChartBrowser
 var _new_dialog: NewChartDialog
 var _playtest: Playtest
 ## 试玩前的设置窗口：倍速 / 流速 / 星速 / 星显。
@@ -263,7 +265,7 @@ func _build_ui() -> void:
 	brand_row.add_child(_menu("文件", [
 		["新建", 0], ["打开", 1], ["保存", 2], ["另存为", 3], ["-", 0],
 		["新增难度（复制当前）", 13], ["保存全部难度", 14], ["-", 0],
-		["在线舞萌谱面…", 12], ["导入歌曲 / 识别 BPM…", 9], ["导入谱面 (.osz/.zip/.txt)", 6], ["导入舞萌文件夹", 8], ["导出 .lbp", 7], ["-", 0], ["恢复自动保存", 4], ["-", 0], ["退出", 5],
+		["在线舞萌谱面…", 12], ["在线 osu! 谱面…", 15], ["导入歌曲 / 识别 BPM…", 9], ["导入谱面 (.osz/.zip/.txt)", 6], ["导入舞萌文件夹", 8], ["导出 .lbp", 7], ["-", 0], ["恢复自动保存", 4], ["-", 0], ["退出", 5],
 	]))
 	brand_row.add_child(_menu("编辑", [
 		["撤销", 10], ["重做", 11], ["-", 0], ["删除", 12], ["取消选择", 13], ["全选可见", 14],
@@ -980,6 +982,12 @@ func _build_dialogs() -> void:
 		_show_report("已从在线谱面导入：%d 个 note，%d 个 BPM 点。\n%s" % [chart.notes.size(), chart.timing.points.size(), SimaiIO.last_report])
 	)
 	add_child(_chart_browser)
+	_osu_browser = ChartBrowser.new()
+	_osu_browser.osu_only = true
+	_osu_browser.source_ready.connect(func(source_path: String) -> void:
+		_on_import_osz_selected(source_path)
+	)
+	add_child(_osu_browser)
 	_lbp_dialog = FileDialog.new()
 	_lbp_dialog.file_mode = FileDialog.FILE_MODE_SAVE_FILE
 	_lbp_dialog.access = FileDialog.ACCESS_FILESYSTEM
@@ -1658,6 +1666,8 @@ func _on_menu(id: int) -> void:
 			_audio_dialog.popup_centered_ratio(0.75)
 		12:
 			_chart_browser.popup_centered_ratio(0.8)
+		15:
+			_osu_browser.popup_centered_ratio(0.8)
 		7:
 			_lbp_dialog.popup_centered_ratio(0.75)
 		8:

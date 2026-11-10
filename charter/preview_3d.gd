@@ -1538,6 +1538,21 @@ func _pre_read_beats(chart: Chart, beat: float) -> float:
 	return chart.pre_read_ms / maxf(0.1, flow_scale) / 60000.0 * chart.timing.bpm_at(beat)
 
 
+## 预读时长（毫秒）。和 BPM 无关，所以变 BPM 时不会跳。
+func _pre_read_ms(chart: Chart) -> float:
+	return maxf(30.0, chart.pre_read_ms / maxf(0.1, flow_scale))
+
+
+## 这个音符开始从圆心飞出的拍号（毫秒反推，变 BPM 处连续）。
+func _spawn_beat(chart: Chart, target_beat: float) -> float:
+	return chart.timing.spawn_beat(target_beat, _pre_read_ms(chart))
+
+
+## 0..1 的接近进度（毫秒恒速，不会在变 BPM 时忽然跳到一半）。
+func _approach(chart: Chart, target_beat: float, current_beat: float) -> float:
+	return chart.timing.approach(target_beat, current_beat, _pre_read_ms(chart))
+
+
 ## 星星从圆心落到环上的时长（固定 0.5 秒，换算成拍；不超过预读）。
 func _star_fall_beats(chart: Chart, beat: float) -> float:
 	var pre := _pre_read_beats(chart, beat)
@@ -1545,12 +1560,32 @@ func _star_fall_beats(chart: Chart, beat: float) -> float:
 	return clampf(0.5 * bpm / 60.0, 0.15, maxf(0.15, pre))
 
 
-func _flying_position(chart: Chart, angle: float, target_beat: float, current_beat: float, pre: float) -> Vector2:
+## 屏幕点到圆心的距离占环半径的比例 → min_scale..max_scale。
+## 用来做“离圆心越远，头越大”的星头缩放。
+func _radial_scale(point: Vector2, min_scale: float, max_scale: float, beat: float = 0.0) -> float:
+	if not _valid_point(point):
+		return max_scale
+	var center := project_design(Vector2.ZERO)
+	var ring := 0.0
+	for u in [0.0, 0.25, 0.5, 0.75]:
+		var edge := project_u(u, beat)
+		if _valid_point(edge):
+			ring = maxf(ring, center.distance_to(edge))
+	if ring <= 1.0:
+		return max_scale
+	return lerpf(min_scale, max_scale, clampf(center.distance_to(point) / ring, 0.0, 1.0))
+
+
+## 星星开始下落（落到环上 0.5 秒前）的拍号。
+func _fall_beat(chart: Chart, target_beat: float) -> float:
+	return chart.timing.spawn_beat(target_beat, minf(_pre_read_ms(chart), 500.0))
+
+
+func _flying_position(chart: Chart, angle: float, target_beat: float, current_beat: float, _pre: float) -> Vector2:
 	var u := fposmod(angle, 360.0) / 360.0
 	var boundary := project_u(u, current_beat)
 	var center := project_design(Vector2.ZERO)
-	var q := clampf((current_beat - (target_beat - pre)) / maxf(0.001, pre), 0.0, 1.0)
-	return center.lerp(boundary, q)
+	return center.lerp(boundary, _approach(chart, target_beat, current_beat))
 
 
 func _update_cursor_trail(delta: float) -> void:
@@ -1888,7 +1923,7 @@ func _draw_red_regions(canvas: Control, chart: Chart, t: float) -> void:
 	var pre := _pre_read_beats(chart, t)
 	for region in chart.regions:
 		var active := region.active_at(t)
-		var incoming := t >= region.start_beat - pre and t < region.start_beat
+		var incoming := t >= _spawn_beat(chart, region.start_beat) and t < region.start_beat
 		if not active and not incoming:
 			continue
 		var outer := _arc_points_scaled(region.angle, region.width, t, 40, 1.0)
@@ -2003,7 +2038,7 @@ func _draw_paths(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 			guard += 1
 		var on_screen := false
 		for part in chain:
-			if t >= part.beat - pre and t <= part.end_beat + 0.5:
+			if t >= _spawn_beat(chart, part.beat) and t <= part.end_beat + 0.5:
 				on_screen = true
 				break
 		if not on_screen:
@@ -2166,8 +2201,9 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 	# 每条 Path 都按"顶层"完整画（箭头链 / 星头 / 尾环 / 进度球）。
 	top = true
 	# 先铺轨迹，再落星星：轨迹从生成开始淡入，星星落下的那一刻正好铺满。
-	var fall := _star_fall_beats(chart, t)
-	var trail_fade := smoothstep(0.0, 1.0, clampf((t - (note.beat - pre)) / maxf(0.001, pre - fall), 0.0, 1.0))
+	var spawn_beat := _spawn_beat(chart, note.beat)
+	var fall_beat := _fall_beat(chart, note.beat)
+	var trail_fade := smoothstep(0.0, 1.0, chart.timing.ms_fraction(spawn_beat, fall_beat, t))
 	var ns := _note_scale()
 	var wait := clampf(note.wait_beat, 0.0, maxf(0.0, total - 0.001))
 	var q := clampf((t - note.beat - wait) / maxf(0.001, total - wait), 0.0, 1.0)
@@ -2251,7 +2287,7 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 			if _valid_point(node):
 				_draw_diamond(canvas, node, 5.0, UITheme.CYAN)
 				canvas.draw_circle(node, 1.8, UITheme.INK)
-	var star_head := _flying_position(chart, note.angle, note.beat, t, fall)
+	var fall_progress := chart.timing.ms_fraction(fall_beat, note.beat, t)
 	# 环上固定的落点（圆的中心）和滑动终点。
 	var ring_head := _path_screen_point(chart, note, 0.0, t, true, 1.0)
 	var tail := _path_screen_point(chart, note, total, t, true, 1.0)
@@ -2293,9 +2329,12 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 		if show_debug:
 			canvas.draw_string(UITheme.bold_font(), ring_head + Vector2(-12, -22), "PATH", HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(UITheme.CORAL.r, UITheme.CORAL.g, UITheme.CORAL.b, 0.85))
 	# 滑动开始后星星交给进度球，不再留在起点。星星在轨迹铺满之后才开始下落。
-	if head_alpha > 0.01 and t >= note.beat - fall and t < note.beat + wait + 0.02 and _valid_point(star_head):
-		var star_in := clampf((t - (note.beat - fall)) / maxf(0.001, fall * 0.55), 0.0, 1.0)
-		_draw_path_star(canvas, star_head, ns * PATH_SIZE_SCALE * PATH_HEAD_SCALE, accent, head_alpha * dim * star_in)
+	if head_alpha > 0.01 and t >= fall_beat and t < note.beat + wait + 0.02 and _valid_point(ring_head):
+		var star_in := clampf(fall_progress / 0.55, 0.0, 1.0)
+		var star_head := project_design(Vector2.ZERO).lerp(ring_head, fall_progress)
+		# 离圆心越远，星头越大：飞到环上时回到 1.0。
+		var star_grow := _radial_scale(star_head, 0.2, 1.0, t)
+		_draw_path_star(canvas, star_head, ns * PATH_SIZE_SCALE * PATH_HEAD_SCALE * star_grow, accent, head_alpha * dim * star_in)
 	_draw_path_tail(canvas, tail, top, ns * PATH_SIZE_SCALE, accent, dim * trail_fade * end_fade)
 	# 大号发光球 + 短拖尾：当前进度点始终比星头更亮，方向一目了然。
 	if t >= note.beat and t <= note.end_beat + end_span:
@@ -2835,9 +2874,10 @@ func _draw_hold_sector(canvas: Control, chart: Chart, note: Note, t: float, pre:
 	var width := maxf(4.0, note.arc_width())
 	var half := width * 0.5
 	var steps := clampi(int(width / 3.0), 8, 48)
-	var read := maxf(0.25, pre)
 	var duration := maxf(0.001, note.duration())
-	var outer_scale := clampf((t - note.beat + read) / read, 0.0, 1.0)
+	var head_start := _spawn_beat(chart, note.beat)
+	var read := maxf(0.001, note.beat - head_start)
+	var outer_scale := clampf((t - head_start) / read, 0.0, 1.0)
 	var inner_scale := clampf((t - note.beat - duration + read) / read, 0.0, 1.0)
 	# 尾端压到环上（inner_scale 到 1）后不再返回：退化成零宽的最后一帧要留着，
 	# 让尾端光带停在环上淡出，而不是当帧消失。
@@ -2903,7 +2943,7 @@ func _draw_holds(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 		if note.type != "hold":
 			continue
 		var fade_beats := end_fade_beats(chart.timing.bpm_at(note.beat))
-		if t >= note.beat - pre and t <= note.end_beat + maxf(0.3, fade_beats):
+		if t >= _spawn_beat(chart, note.beat) and t <= note.end_beat + maxf(0.3, fade_beats):
 			visible.append(note)
 	visible.sort_custom(func(a: Note, b: Note) -> bool: return a.beat > b.beat)
 	for note in visible:
@@ -2927,7 +2967,7 @@ func _draw_holds(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 			continue
 		# 头部命中后只收起头部，长条继续表示“正在按住”；尾巴压到环上时头尾重合，也收起来。
 		var hide_head := state == "holding" or state == "slip" or t >= note.end_beat
-		var grow_raw := clampf((t - (note.beat - pre)) / maxf(0.001, pre), 0.0, 1.0)
+		var grow_raw := _approach(chart, note.beat, t)
 		# 与 Tap 同一套接近表现：环心处只有 1/6 长，飞近时长大到 1。
 		var grow := lerpf(Note.SPAWN_LENGTH_RATIO, 1.0, grow_raw)
 		# 直长条：扇形 → 扇环 → 收到判定线上消失（WACCA 玩家的读法）。
@@ -3005,10 +3045,10 @@ func _draw_notes(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 	var visible: Array[Note] = []
 	# 试玩里音符留到判定出来为止（MISS 窗口最长 0.3s），编辑器预览仍只多留 0.3 拍。
 	var tail_beats := 2.0 if playtest_mode else 0.3
-	for note in _notes_in_range(chart, t - pre - 0.1, t + pre + 0.1):
+	for note in _notes_around(chart, t, 0.1, 0.1):
 		if note.type in ["path", "hold", "trace", "seek"]:
 			continue
-		if t >= note.beat - pre and t <= note.beat + tail_beats:
+		if t >= _spawn_beat(chart, note.beat) and t <= note.beat + tail_beats:
 			visible.append(note)
 	visible.sort_custom(func(a: Note, b: Note) -> bool: return a.beat > b.beat)
 	for note in visible:
@@ -3018,7 +3058,7 @@ func _draw_notes(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 			"tap":
 				_draw_tap_note(canvas, chart, note, t, pre)
 			"anchor":
-				var grow := clampf((t - (note.beat - pre)) / maxf(0.001, pre), 0.0, 1.0)
+				var grow := _approach(chart, note.beat, t)
 				var p := _flying_position(chart, note.angle, note.beat, t, pre)
 				if _valid_point(p):
 					canvas.draw_circle(p, 27.0 * grow, Color(UITheme.VIOLET.r, UITheme.VIOLET.g, UITheme.VIOLET.b, 0.14))
@@ -3049,7 +3089,7 @@ func _draw_tap_donut(canvas: Control, point: Vector2, radius: float, color: Colo
 
 func _draw_tap_note(canvas: Control, chart: Chart, note: Note, t: float, pre: float) -> void:
 	# 长度系统：普通 Tap = 0.5 l，大小 Tap = size_ratio × l；条带随半径从 1/6 长到 1。
-	var progress := clampf((t - (note.beat - pre)) / maxf(0.001, pre), 0.0, 1.0)
+	var progress := _approach(chart, note.beat, t)
 	var q := lerpf(Note.SPAWN_LENGTH_RATIO, 1.0, progress)
 	var center_point := _draw_length_band(canvas, chart, note.angle, note.arc_width(), q, t, UITheme.PINK)
 	if show_debug and _valid_point(center_point):
@@ -3110,10 +3150,10 @@ func _draw_seeks(canvas: Control, chart: Chart, t: float) -> void:
 			ring_radius = maxf(ring_radius, center.distance_to(edge))
 	ring_radius = maxf(20.0, ring_radius)
 	# 必须把整个预读窗口都取进来：Seek 从 note.beat - pre 就开始从圆心长大。
-	for note in _notes_in_range(chart, t - pre - 2.0, t + pre + 0.5):
-		if note.type != "seek" or t < note.beat - pre or t > note.beat + 0.5:
+	for note in _notes_around(chart, t, 2.0, 0.5):
+		if note.type != "seek" or t < _spawn_beat(chart, note.beat) or t > note.beat + 0.5:
 			continue
-		var grow := clampf((t - (note.beat - pre)) / maxf(0.001, pre), 0.0, 1.0)
+		var grow := _approach(chart, note.beat, t)
 		var fade := clampf((note.beat + 0.5 - t) / 0.5, 0.0, 1.0)
 		var color := UITheme.SEEK_IN if note.seek_orien == 0 else UITheme.SEEK_OUT
 		var radius := ring_radius * grow
@@ -3421,7 +3461,7 @@ func _update_bell_snap(chart: Chart, t: float, delta: float) -> void:
 		if bell.is_empty():
 			continue
 		# 按画面上看到的位置触发，而不是它在判定环上的落点。
-		var q := clampf((t - (note.beat - pre)) / maxf(0.001, pre), 0.0, 1.0)
+		var q := _approach(chart, note.beat, t)
 		var shown: Vector2 = project_design(Vector2.ZERO).lerp(bell["center"], q)
 		if mouse_screen.distance_to(shown) <= BELL_SNAP_RANGE:
 			wanted[note.id] = true
@@ -4038,8 +4078,9 @@ func _draw_diamond(canvas: Control, point: Vector2, radius: float, color: Color)
 	canvas.draw_circle(point, maxf(1.2, radius * 0.14), Color(1, 1, 1, 0.92))
 
 
-func _draw_bell(canvas: Control, point: Vector2, radius: float, t: float, target: float, pre: float, snap: float = 0.0) -> void:
-	var q := clampf((t - (target - pre)) / maxf(0.001, pre), 0.0, 1.0)
+func _draw_bell(canvas: Control, point: Vector2, radius: float, t: float, target: float, _pre: float, snap: float = 0.0) -> void:
+	var chart := get_chart()
+	var q := _approach(chart, target, t) if chart != null else 1.0
 	var r := maxf(12.0, radius * 1.35) * lerpf(0.7, 1.0, q) * BELL_SIZE_SCALE
 	var p := project_design(Vector2.ZERO).lerp(point, q)
 	if snap > 0.01:
@@ -4125,7 +4166,7 @@ func note_live_band(note: Note, beat: float, pad: float = 0.0) -> PackedVector2A
 	if chart == null:
 		return PackedVector2Array()
 	var pre := _pre_read_beats(chart, beat)
-	var progress := clampf((beat - (note.beat - pre)) / maxf(0.001, pre), 0.0, 1.0)
+	var progress := _approach(chart, note.beat, beat)
 	var grow := lerpf(Note.SPAWN_LENGTH_RATIO, 1.0, progress)
 	return note_band_points(note.angle, note.arc_width() + pad, beat, grow)
 
@@ -4160,6 +4201,17 @@ func _design_radius_to_screen(point: Vector2, radius: float) -> float:
 	if not _valid_point(p1) or not _valid_point(p2):
 		return radius
 	return p1.distance_to(p2)
+
+
+## 以“毫秒预读”为准的取音符窗口。
+## 变 BPM 时同一个预读在拍号上会变宽/变窄，按拍号取窗口会让音符提前进/提前出；
+## 这里先把 t±pre_ms 换成拍号，窗口在时间上永远是同一个长度。
+func _notes_around(chart: Chart, t: float, back: float = 0.0, ahead: float = 0.0) -> Array[Note]:
+	var pre_ms := _pre_read_ms(chart)
+	var t_ms := chart.timing.beat_to_chart_ms(t)
+	var from_beat := chart.timing.chart_ms_to_beat(t_ms - pre_ms) - back
+	var to_beat := chart.timing.chart_ms_to_beat(t_ms + pre_ms) + ahead
+	return _notes_in_range(chart, from_beat, to_beat)
 
 
 func _notes_in_range(chart: Chart, from_beat: float, to_beat: float) -> Array[Note]:

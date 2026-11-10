@@ -121,7 +121,7 @@ godot --path .
 - 帧率：视图/设置 可选 60 / 120 / 跟随显示器（vsync）/ 无限制，默认跟随显示器
 - 判定偏移：试玩设置里可手动填 −200…200ms，游戏内 [ / ] 微调，数值写入设置；勾选「动态 offset」后，≥8 次命中起每命中一次按偏差 5% 自动校准（自动部分最多 ±50ms）
 - AUTO 自动演示：试玩设置里勾「AUTO 自动演示」或游戏内 F8 切换。它把「完美演奏」合成成真实输入——Tap/Hold 头/Path 头/Trace 头在判定时间按下按键，Hold 一直按到尾巴，合成光标贴着 Path/Trace 走、去接 Bell、躲开 Red——判定、特效、音效、连击、结算全都是真的，所以能直接挂着看谱面；结算页会标 AUTO，不写最高分、也不参与动态 offset 校准
-- 偏差显示：试玩右上角实时显示本次平均偏差 BIA 与当前偏移 OFF；结算页给出判定偏差直方图、平均判定偏差、不稳定率（UR）和命中统计
+- 偏差显示：试玩右上角实时显示本次平均偏差 BIA 与当前偏移 OFF；结算页给出判定偏差直方图、判定散布图（横轴整首时间、纵轴 ±180ms，上 Late 下 Early，按判定等级着色）、平均判定偏差、不稳定率（UR）和命中统计
 - osu!std 混合层导入：circle → 环上 Tap（连续 u）；slider → 环内平面 Path（星头按键 + 沿轨迹移动，尾部在终点时刻按鼠标位置判定）；lazy/短 → Hold；重复滑条按 Sentakki 段链转成单向 Path；滑条带 Sentakki 式 wait 阶段。转换后只做两件鼠标保护：同刻多押只留一颗（星星 > Hold > Tap），以及星的尾判与后一颗头同拍时把后一颗头吸到前一条尾
 - 连续角度：流内按 Sentakki 式 45° 步进，jump 用两端道差，间隔超过 1 拍回绝对位置
 - 可变 Tap 宽度：按相邻角度/时间补偿（45–75°），密集段更容易跟，jump 略窄
@@ -134,6 +134,7 @@ godot --path .
 
 - **转谱窗口**：导入 `.osz` / `maidata.txt`，或者从「在线舞萌谱面」下载完成，都会先把来源里的**所有难度都转好并存成一个套组文件**（`user://sets/<曲名> [导入].set.json`），再**另开一个窗口**（`--open-set=<set.json> --child-window`）专门编辑它；父窗口的谱面原样不动。新窗口和普通编辑器一样，只是顶部左侧多一个「难度」下拉框，可以在套组里的所有难度之间直接切换（`<曲名> · <难度>` 会显示在标题栏）。在线谱面下载后不再在浏览器里选难度，统一在新窗口切。自动保存写到 `user://autosave_import.json`，不碰主窗口的 `autosave.json`。
 - **难度套组 `.set.json`**：一个文件装一首歌的所有难度（`{"format":"tamaki3-set","difficulties":[{"name","chart"}]}`）；`ChartIO.load_set/save_set` 读写，`文件 → 打开` 会自动识别，Ctrl+S 存回整个套组；`文件 → 新增难度（复制当前）` 加一份，`文件 → 另存为` 则把当前难度单独存成普通 `.json`。
+- **在线 osu! 谱面**：`文件 → 在线 osu! 谱面…` 独立窗口，搜索走 `osu.direct` 镜像（只列带 osu!std 难度的谱面包），下载走 sayobot 的去视频包（失败退回 `osu.direct`），拿到 `.osz` 后与本地导入走完全相同的转谱管线；搜索框也接受 `beatmapsets/<id>`、`beatmaps/<id>`、`/s/<id>` 链接或纯数字 ID，直接下载（谱面 ID 会经 `osu.ppy.sh/osu/<id>` 的 `BeatmapSetID` 解析成谱面包，不需要 OAuth）。
 - **导入 `.osz`**：支持 osu!std 与 osu!taiko；circle → Tap、slider → Slide Trace/Hold、drumroll → Hold；spinner 跳过；多难度包会弹窗选择 `.osu`；导入报告列出保留/丢弃原因。
 - **导入 Simai**：支持舞萌 `maidata.txt`（`.zip` 或 `.txt`）；Tap/Hold/Slide→Path/Break→加宽 Tap/Touch→Bell 会导入；p/q=U、pp/qq=Cup、s/z=闪电、V=经过点、w=扇形中轴、`1-3q5-7` 链式拼成一条 Path、`1-4*-6` 同头多星只留尾部落点最顺的一条；Touch 的 A/B/D/E 全部落外圈（C 圆心），连续铃铛沿同一个圆扫；双押按星星 > Hold > Tap > Bell 只留一颗。导入后只做鼠标保护：重叠星星缩短/降 Tap、超速轨迹压短、>45° 快折返压 45°、≥5 颗的 A-B-A-B 交互整段锁 45°、星星期间只留轨上音符、Hold 撞下一颗时缩短
 - **osu!std 混合层**：circle → 环上 Tap（连续 u）；slider 按 Sentakki 段库转成**环内平面 Path**（星头按键 + 沿轨迹移动，尾部在终点时刻判定），lazy/短 → Hold；没有 8 轨吸附，也没有全平面模式。
@@ -253,6 +254,7 @@ tests/     SceneTree 无头测试
 | `trace.wav` | Trace 完成；编辑器预听在起点触发 |
 | `anchor.wav` | Anchor 命中 |
 | `bell.ogg` | Bell 收集 |
+| `slide.wav` | 星星开始沿轨迹移动（`beat + wait`）时的“起划”提示音 |
 
 替换时可使用 WAV（建议 44.1 kHz、16 位 PCM）或 OGG Vorbis，短音效建议去掉起始静音。覆盖对应同名文件，然后回到 Godot 等待重新导入并重新运行游戏。保留 `.import` 文件，它记录导入设置；不要修改 `.godot/imported/` 中的缓存。如果使用新文件名或格式，修改 `HitSfx.PATHS` 中对应路径。
 

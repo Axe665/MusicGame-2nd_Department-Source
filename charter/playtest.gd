@@ -133,6 +133,11 @@ var _results: PanelContainer
 var _results_text: RichTextLabel
 var _results_button: Button
 var _timing_chart: TimingChart
+## 结算页的判定散布图（Etterna 风格）。
+var _scatter_chart: JudgeScatter
+var _scatter: Array[Dictionary] = []
+## 当前帧的判定时刻（_record_error 没显式给时间时用它）。
+var _judge_ms_now: float = 0.0
 var _bias_label: Label
 ## 暂停菜单（ESC）。
 var _pause_overlay: Control = null
@@ -336,13 +341,13 @@ func _build_ui() -> void:
 
 	_results = PanelContainer.new()
 	_results.visible = false
-	_results.custom_minimum_size = Vector2(640, 500)
+	_results.custom_minimum_size = Vector2(720, 760)
 	add_child(_results)
 	_results.set_anchors_preset(Control.PRESET_CENTER)
-	_results.offset_left = -320
-	_results.offset_top = -250
-	_results.offset_right = 320
-	_results.offset_bottom = 250
+	_results.offset_left = -360
+	_results.offset_top = -380
+	_results.offset_right = 360
+	_results.offset_bottom = 380
 	var box := VBoxContainer.new()
 	box.add_theme_constant_override("separation", 8)
 	_results.add_child(box)
@@ -355,8 +360,11 @@ func _build_ui() -> void:
 	UITheme.style_mono(chart_title, 12, UITheme.MUTED)
 	box.add_child(chart_title)
 	_timing_chart = TimingChart.new()
-	_timing_chart.custom_minimum_size = Vector2(600, 180)
+	_timing_chart.custom_minimum_size = Vector2(600, 150)
 	box.add_child(_timing_chart)
+	_scatter_chart = JudgeScatter.new()
+	_scatter_chart.custom_minimum_size = Vector2(600, 170)
+	box.add_child(_scatter_chart)
 	_bias_label = Label.new()
 	UITheme.style_mono(_bias_label, 12, UITheme.CYAN)
 	box.add_child(_bias_label)
@@ -410,6 +418,7 @@ func _init_states() -> void:
 	_bell_hits = 0
 	_red_breaks = 0
 	_errors.clear()
+	_scatter.clear()
 	_error_sum = 0.0
 	_near_miss_logs = 0
 	_near_miss_logged_stamp = -INF
@@ -440,6 +449,7 @@ func _init_states() -> void:
 			"tail_hit": false,
 			"path_tracker": PathTracker.for_note(note) if note.type == "path" else null,
 			"path_finish_ms": INF,
+			"slide_cued": false,
 			"path_auto_index": 0,
 			"trace_started": false,
 			"trace_distance": 0.0,
@@ -508,6 +518,7 @@ func _process(delta: float) -> void:
 		return
 	var chart_ms := _chart_ms()
 	var judge_ms := chart_ms + float(_app.playtest_offset_ms if _app != null else 0.0)
+	_judge_ms_now = judge_ms
 	var beat := chart.timing.chart_ms_to_beat(chart_ms)
 	_preview.playing = true
 	_preview.prepare_playtest_frame(beat, delta)
@@ -865,7 +876,7 @@ func _judge_seek(note: Note, ms: float, beat: float) -> void:
 		var color := UITheme.SEEK_IN if note.seek_orien == 0 else UITheme.SEEK_OUT
 		_pulse_at(0.0, beat, color, "PERFECT", 360.0, "seek", "SEEK", _preview.project_design(Vector2.ZERO))
 		_sfx.play("bell", randf_range(0.98, 1.02))
-		_record_error(float(press["time"]) - target, "Seek #%d PERFECT" % note.id)
+		_record_error(float(press["time"]) - target, "Seek #%d PERFECT" % note.id, "PERFECT", float(press["time"]))
 		return
 	if ms > target + HIT_WINDOW_MS:
 		state["done"] = true
@@ -892,7 +903,7 @@ func _judge_tap(note: Note, ms: float, beat: float) -> void:
 		_register_hit(tier)
 		_pulse_at(note.angle, beat, _tier_color(tier), tier, note.arc_width(), "tap", _timing_detail(error, tier))
 		_sfx.play(HitSfx.kind_for_note(note), randf_range(0.98, 1.02))
-		_record_error(float(press["time"]) - target, "Tap #%d %s" % [note.id, tier])
+		_record_error(float(press["time"]) - target, "Tap #%d %s" % [note.id, tier], tier, float(press["time"]))
 		return
 	if ms > target + HIT_WINDOW_MS:
 		state["done"] = true
@@ -959,7 +970,7 @@ func _judge_hold(note: Note, ms: float, beat: float) -> void:
 		_sfx.play("hold_end")
 		# 提前松手不算时机样本，避免污染平均偏差和动态 offset。
 		if held_tier == "PERFECT":
-			_record_error(release_ms - end_ms, "HOLD #%d COMPLETE PERFECT" % note.id)
+			_record_error(release_ms - end_ms, "HOLD #%d COMPLETE PERFECT" % note.id, "PERFECT")
 		else:
 			_add_log("HOLD #%d EARLY RELEASE %s" % [note.id, held_tier])
 		return
@@ -973,7 +984,14 @@ func _judge_hold(note: Note, ms: float, beat: float) -> void:
 		_register_hit(tier)
 		_pulse_at(note.angle, beat, _tier_color(tier), tier, note.arc_width(), "tap")
 		_sfx.play("hold_end")
-		_record_error(ms - end_ms, "HOLD #%d COMPLETE %s" % [note.id, tier])
+		_record_error(ms - end_ms, "HOLD #%d COMPLETE %s" % [note.id, tier], tier, ms)
+
+
+## 星星开始沿轨迹移动的时刻：note.beat + wait（wait 夹在 duration 内），再加判定偏移。
+static func slide_start_ms(chart: Chart, note: Note, offset_ms: float) -> float:
+	var total := maxf(0.0, note.duration())
+	var wait := clampf(note.wait_beat, 0.0, maxf(0.0, total - 0.001))
+	return chart.timing.beat_to_chart_ms(note.beat + wait) + offset_ms
 
 
 func _judge_path(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
@@ -982,6 +1000,15 @@ func _judge_path(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 	var head_ms := float(state["target_ms"])
 	var tail_ms := float(state["end_ms"])
 	var head_point: Vector2 = _preview.note_head_screen(note, beat)
+	# 星星头开始沿轨迹移动的那一刻（beat + wait）才是“起划”，在这里响提示音。
+	if not bool(state.get("slide_cued", false)):
+		var slide_ms := slide_start_ms(chart, note, float(_app.playtest_offset_ms if _app != null else 0.0))
+		if ms >= slide_ms:
+			state["slide_cued"] = true
+			# 错过太久（跳转/卡帧）就不再补播。
+			if ms - slide_ms <= 400.0:
+				_sfx.play("slide", randf_range(0.99, 1.01))
+				_add_log("PATH #%d SLIDE START @%.0fms (expect %.0fms)" % [note.id, ms, slide_ms])
 	if not state["head_judged"]:
 		if ms >= head_ms - EARLY_MS:
 			# 头部：鼠标实际位置贴近判定时刻的星头（不再用角度条带兜底）。
@@ -997,7 +1024,6 @@ func _judge_path(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 				_register_hit(tier)
 				# 星头用实际的星头屏幕位置，平面星星（V / 折线）也能炸在正确的位置。
 				_pulse_at(note.angle, beat, _tier_color(tier), tier, note.arc_width(), "path", _timing_detail(head_error, tier), head_point)
-				_sfx.play("path", randf_range(0.98, 1.02))
 				_add_log("PATH #%d HEAD %s" % [note.id, tier])
 				_preview.set_path_head_state(note.id, true, beat)
 				_preview.add_note_pop("path", note, beat)
@@ -1353,7 +1379,7 @@ func _judge_anchor(note: Note, ms: float, beat: float) -> void:
 		_register_hit(tier)
 		_pulse_at(note.angle, beat, _tier_color(tier), tier, note.arc_width(), "tap", _timing_detail(anchor_error, tier))
 		_sfx.play("anchor", 1.0)
-		_record_error(float(press["time"]) - target, "ANCHOR #%d %s" % [note.id, tier])
+		_record_error(float(press["time"]) - target, "ANCHOR #%d %s" % [note.id, tier], tier, float(press["time"]))
 		return
 	if ms > target + HIT_WINDOW_MS:
 		state["done"] = true
@@ -1553,8 +1579,14 @@ func _distance_to_polyline(point: Vector2, points: PackedVector2Array) -> float:
 
 
 
-func _record_error(error_ms: float, label: String) -> void:
+func _record_error(error_ms: float, label: String, tier: String = "", time_ms: float = -1.0) -> void:
 	_errors.append(error_ms)
+	if not tier.is_empty():
+		_scatter.append({
+			"offset": error_ms,
+			"tier": tier,
+			"time": time_ms if time_ms >= 0.0 else _judge_ms_now,
+		})
 	_error_sum += error_ms
 	_add_log("%s  %+.0fms" % [label, error_ms])
 	if _app == null or not bool(_app.dynamic_offset) or _errors.size() < DYNAMIC_SAMPLE_MIN:
@@ -1903,6 +1935,11 @@ func _finish() -> void:
 		_flush_offset()
 	if _timing_chart != null:
 		_timing_chart.set_errors(_errors)
+	if _scatter_chart != null:
+		var span := 0.0
+		if chart != null:
+			span = chart.timing.beat_to_chart_ms(chart.duration_beats()) + float(_app.playtest_offset_ms if _app != null else 0.0)
+		_scatter_chart.set_hits(_scatter, span)
 	if _bias_label != null:
 		_bias_label.text = "平均判定偏差 %+.2f 毫秒   ·   不稳定率 (UR) %.2f   ·   样本 %d   ·   当前 offset %+.0fms" % [
 			average_error,

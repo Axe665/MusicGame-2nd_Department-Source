@@ -93,6 +93,29 @@ func audio_ms_to_beat(audio_ms: float) -> float:
 	return chart_ms_to_beat(audio_ms + offset_ms)
 
 
+## 某个音符“从圆心开始飞出”的拍号。
+## 预读是固定毫秒（`pre_ms`），这里按毫秒反推成拍号：变 BPM 的段落里
+## 这根“起飞拍号”不会跟着当前 BPM 变，所以音符不会在 BPM 变化那一拍忽然提前/消失。
+func spawn_beat(target_beat: float, pre_ms: float) -> float:
+	return chart_ms_to_beat(beat_to_chart_ms(target_beat) - maxf(0.0, pre_ms))
+
+
+## 0..1 的接近进度：直接按毫秒算，所以跨 BPM 段也是恒速。
+func approach(target_beat: float, current_beat: float, pre_ms: float) -> float:
+	var target_ms := beat_to_chart_ms(target_beat)
+	var current_ms := beat_to_chart_ms(current_beat)
+	var span := maxf(0.001, maxf(0.0, pre_ms))
+	return clampf((current_ms - (target_ms - span)) / span, 0.0, 1.0)
+
+
+## from_beat → to_beat 之间，current_beat 走到哪儿了（按毫秒比例，跨 BPM 恒速）。
+func ms_fraction(from_beat: float, to_beat: float, current_beat: float) -> float:
+	var start_ms := beat_to_chart_ms(from_beat)
+	var end_ms := beat_to_chart_ms(to_beat)
+	var now_ms := beat_to_chart_ms(current_beat)
+	return clampf((now_ms - start_ms) / maxf(0.001, end_ms - start_ms), 0.0, 1.0)
+
+
 static func parse_positive_int(text: String, max_value: int) -> int:
 	## Shared editor input rule: only positive integers within the drawable
 	## range are accepted; anything else returns 0.
