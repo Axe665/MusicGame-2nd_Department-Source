@@ -2236,9 +2236,7 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 			var band_width := 5.0 * PATH_SIZE_SCALE * ns * path_band
 			canvas.draw_polyline(piece, Color(0, 0, 0, 0.50 * trail_dim), band_width + 4.0, false)
 			canvas.draw_polyline(piece, Color(accent.r, accent.g, accent.b, 0.95 * trail_dim), band_width, false)
-			# V 形箭头链只画在“现在该划”的那条上：对向重叠的两条星都画箭头会叠成蝴蝶结。
-			if not active:
-				continue
+			# 箭头链也画在所有星上：后面的星和前面的星同形，只靠 dim 压暗。
 			var piece_length := 0.0
 			for i in piece.size() - 1:
 				piece_length += piece[i].distance_to(piece[i + 1])
