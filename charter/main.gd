@@ -1258,10 +1258,8 @@ func _build_sfx_events() -> void:
 				_add_sfx_event(note.beat, HitSfx.kind_for_note(note))
 			"hold":
 				_add_sfx_event(note.beat, "don")
-				_add_sfx_event(note.end_beat, "hold_end")
 			"path":
 				_add_sfx_event(note.beat, "path", 1.0)
-				_add_sfx_event(note.end_beat, "tail")
 			"anchor":
 				_add_sfx_event(note.beat, "anchor", 1.0)
 			"bell":
@@ -1788,10 +1786,10 @@ func _build_playtest_dialog() -> void:
 	_playtest_cursor = _playtest_spin_row(box, "光标大小", 0.5, 2.0, 0.05, 1.0, "×")
 	_playtest_offset = _playtest_spin_row(box, "判定偏移", -200.0, 200.0, 1.0, 0.0, "ms")
 	_playtest_latency = _playtest_spin_row(box, "输出延迟", 0.0, 250.0, 1.0, 0.0, "ms")
-	_playtest_latency.tooltip_text = "0 = 用驱动报告值；>0 = 强制覆盖（可升可降）。听声音校准会自动写入这里"
+	_playtest_latency.tooltip_text = "0 = 用驱动报告值；>0 = 强制覆盖（可升可降）。驱动明显不准时才手动填"
 	var calibrate := Button.new()
-	calibrate.text = "校准延迟/偏移…"
-	calibrate.tooltip_text = "① 跟声音点 8 次 → 输出延迟；② 跟脉冲点 8 次 → 判定偏移"
+	calibrate.text = "校准判定偏移…"
+	calibrate.tooltip_text = "① 跟声音点 8 次 或 ② 跟脉冲点 8 次（二选一）→ 写「判定偏移」"
 	calibrate.pressed.connect(_open_calibration)
 	box.add_child(calibrate)
 	_playtest_dynamic = CheckBox.new()

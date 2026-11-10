@@ -139,6 +139,8 @@ var _scatter: Array[Dictionary] = []
 ## 当前帧的判定时刻（_record_error 没显式给时间时用它）。
 var _judge_ms_now: float = 0.0
 var _bias_label: Label
+## 结算页：把本局平均偏差写进这张谱面的 offset（一次修一张，别的谱面不受影响）。
+var _apply_bias_button: Button
 ## 暂停菜单（ESC）。
 var _pause_overlay: Control = null
 var _path_judgement_toggle: CheckButton
@@ -364,6 +366,11 @@ func _build_ui() -> void:
 	_bias_label = Label.new()
 	UITheme.style_mono(_bias_label, 12, UITheme.CYAN)
 	box.add_child(_bias_label)
+	_apply_bias_button = Button.new()
+	_apply_bias_button.text = "把本局偏差写进本谱面"
+	_apply_bias_button.tooltip_text = "把平均判定偏差加进这张谱面的 offset 并存盘；只影响这一张，别的谱面不动"
+	_apply_bias_button.pressed.connect(_apply_bias_to_chart)
+	box.add_child(_apply_bias_button)
 	_results_text = RichTextLabel.new()
 	_results_text.bbcode_enabled = false
 	_results_text.fit_content = false
@@ -535,9 +542,11 @@ func _start_audio() -> void:
 			AudioServer.set_bus_volume_db(music_bus, -60.0)
 	print("[audio] playtest ", path, " -> ", stream, " bus=", _audio.bus)
 	_audio.finished.connect(_finish)
-	var from_sec := maxf(0.0, (_start_chart_ms - chart.offset_ms) / 1000.0)
-	_audio.play(from_sec)
-	var start_delay_ms := (AudioServer.get_time_to_next_mix() + _effective_latency()) * 1000.0
+	var lead_sec := (_start_chart_ms - chart.offset_ms) / 1000.0
+	_audio.play(maxf(0.0, lead_sec))
+	# 正 offset 想从“歌曲 0 之前”起播时无法回退，就把差的那段补进起播延迟，
+	# 否则要等漂移校正慢慢拉过来（前 0.2 秒会偏）。
+	var start_delay_ms := (AudioServer.get_time_to_next_mix() + _effective_latency() - minf(0.0, lead_sec)) * 1000.0
 	_clock.start(_start_chart_ms, Time.get_ticks_usec(), start_delay_ms)
 
 
@@ -990,7 +999,6 @@ func _judge_hold(note: Note, ms: float, beat: float) -> void:
 		_preview.set_note_state(note.id, "hit", beat)
 		_register_hit(held_tier)
 		_pulse_at(note.angle, beat, _tier_color(held_tier), held_tier, note.arc_width(), "tap")
-		_sfx.play("hold_end")
 		# 提前松手不算时机样本，避免污染平均偏差和动态 offset。
 		if held_tier == "PERFECT":
 			_record_error(release_ms - end_ms, "HOLD #%d COMPLETE PERFECT" % note.id, "PERFECT")
@@ -1006,7 +1014,6 @@ func _judge_hold(note: Note, ms: float, beat: float) -> void:
 		_preview.set_note_state(note.id, "hit", beat)
 		_register_hit(tier)
 		_pulse_at(note.angle, beat, _tier_color(tier), tier, note.arc_width(), "tap")
-		_sfx.play("hold_end")
 		_record_error(ms - end_ms, "HOLD #%d COMPLETE %s" % [note.id, tier], tier, ms)
 
 
@@ -1078,7 +1085,6 @@ func _judge_path(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 			state["tail_hit"] = true
 			_register_hit(tier)
 			_pulse_at(note.tail_angle, beat, _tier_color(tier), tier, note.tail_width, "path", _timing_detail(tail_error, tier))
-			_sfx.play("tail", randf_range(0.98, 1.02))
 			_add_log("PATH #%d TAIL %s" % [note.id, tier])
 			state["tail_judged"] = true
 			tracker.mark_complete()
@@ -2020,6 +2026,15 @@ func _finish() -> void:
 			_errors.size(),
 			float(_app.playtest_offset_ms if _app != null else 0.0),
 		]
+	if _apply_bias_button != null:
+		var delta := -average_error
+		var can_apply: bool = not auto_play and _errors.size() >= 8 and absf(delta) >= 1.0 \
+			and _app != null and (not _app.set_path.is_empty() or not _app.chart_path.is_empty())
+		_apply_bias_button.disabled = not can_apply
+		_apply_bias_button.text = ("把本局偏差写进本谱面（offset %+.0fms）" % delta) if can_apply else "把本局偏差写进本谱面"
+		_apply_bias_button.tooltip_text = ("本局样本不足或偏差 <1ms，不需要改谱面" if not can_apply
+			else "这是「本局平均偏差」的反向值：谱面 offset 会从 %+.0f 变成 %+.0f；只改这一张" % [
+				float(chart.offset_ms), clampf(float(chart.offset_ms) + delta, -10000.0, 10000.0)])
 	lines.append("")
 	lines.append("事件日志（最近 24 条）：")
 	for i in range(maxi(0, _log.size() - 24), _log.size()):
@@ -2027,6 +2042,40 @@ func _finish() -> void:
 	_results_text.text = "\n".join(lines)
 	_results.visible = true
 	Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
+
+
+## 一次修一张：把「本局平均偏差」反向加到这张谱面的 offset 并存盘。
+## 玩家普遍按得偏早（bias < 0）时 offset 变大，音符相对音频提前，下次就能贴着拍子按。
+func _apply_bias_to_chart() -> void:
+	if _app == null or chart == null or _errors.size() < 8:
+		return
+	if _app.chart != chart:
+		_notify_result("谱面已换掉，未写回 offset")
+		return
+	var bias := _mean_error()
+	var offset := chart_offset_for_bias(float(chart.offset_ms), bias)
+	chart.offset_ms = offset
+	chart.timing.offset_ms = offset
+	if not _app.save_chart():
+		_notify_result("写回 offset 失败（保存被拒绝）")
+		return
+	_notify_result("谱面 offset → %+.1fms（本局偏差 %+.1fms，已保存）" % [offset, bias])
+	if _apply_bias_button != null:
+		_apply_bias_button.disabled = true
+		_apply_bias_button.text = "已写入 offset %+.0fms" % offset
+		_apply_bias_button.tooltip_text = "这一张谱面的 offset 已保存；想撤销就重新打开谱面改回去"
+
+
+## 把本局偏差换算成谱面 offset（纯函数，符号有回归测试）。
+static func chart_offset_for_bias(current_offset_ms: float, bias_ms: float) -> float:
+	return clampf(current_offset_ms - bias_ms, -10000.0, 10000.0)
+
+
+## 结算页已经在显示，往上补一行，而不是只写进看不到的 _log。
+func _notify_result(message: String) -> void:
+	_add_log(message)
+	if _results_text != null:
+		_results_text.text += "\n" + message
 
 
 func _cycle_note_skin(step: int) -> void:

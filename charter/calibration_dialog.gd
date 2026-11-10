@@ -1,10 +1,10 @@
 class_name CalibrationDialog
 extends Control
 
-## Two-pass calibration. The audio pass taps along with the bundled 120 BPM
-## click and writes the output latency; the visual pass taps when the pulse
-## peaks and writes the judgement offset. Keeping them apart avoids the common
-## mistake of folding display latency into the audio clock.
+## One measurement, one field: whichever pass you tap along with writes the
+## judgement offset. Do NOT run both — the audio pass already contains the
+## player's tap lag, so adding a display-latency pass on top double-counts and
+## turns a correct setup into an early one.
 signal closed
 
 const CLICK_MS := 500.0
@@ -58,7 +58,7 @@ func _ready() -> void:
 	UITheme.style_mono(_title, 18, UITheme.INK)
 	box.add_child(_title)
 	_hint = Label.new()
-	_hint.text = "跟着听到的节拍点击 8 次\n不要看画面，只听声音"
+	_hint.text = "跟着听到的节拍点击 8 次\n不要看画面，只听声音\n（只做这一种；做完别再点②）"
 	_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	UITheme.style_mono(_hint, 12, UITheme.MUTED)
 	box.add_child(_hint)
@@ -83,12 +83,12 @@ func _ready() -> void:
 	box.add_child(modes)
 	_audio_button = Button.new()
 	_audio_button.text = "① 听声音"
-	_audio_button.tooltip_text = "跟节拍点击；结果写入「输出延迟」"
+	_audio_button.tooltip_text = "跟节拍点击；结果写入「判定偏移」（主要用这个）"
 	_audio_button.pressed.connect(_start.bind(MODE_AUDIO))
 	modes.add_child(_audio_button)
 	_visual_button = Button.new()
 	_visual_button.text = "② 看脉冲"
-	_visual_button.tooltip_text = "看圆环闪到最大时点击；结果写入「判定偏移」"
+	_visual_button.tooltip_text = "看圆环闪到最大时点击；同样写入「判定偏移」。和①二选一，不要连着做"
 	_visual_button.pressed.connect(_start.bind(MODE_VISUAL))
 	modes.add_child(_visual_button)
 	_retry_button = Button.new()
@@ -130,7 +130,7 @@ func _start(mode: String) -> void:
 	add_child(_player)
 	_player.play(0.0)
 	_beats_visible(mode == MODE_VISUAL)
-	_title.text = "音频延迟校准" if mode == MODE_AUDIO else "判定偏移校准"
+	_title.text = "校准判定偏移（听声音）" if mode == MODE_AUDIO else "校准判定偏移（看脉冲）"
 	_status.text = "0 / %d" % TAP_COUNT
 	_hint.text = ("跟着听到的节拍点击（空格 / 鼠标左键）\n不要看画面，只听声音" if mode == MODE_AUDIO
 		else "看圆环闪到最大时点击（空格 / 鼠标左键）")
@@ -219,17 +219,9 @@ static func offset_for_errors(values: Array[float]) -> float:
 	return clampf(-median, -200.0, 200.0)
 
 
-## The audio tap error is (true latency - assumed latency); adding it to the
-## current assumption is the fix. Kept pure for the same reason as above.
-static func latency_for_errors(values: Array[float], current_ms: float) -> float:
-	if values.size() < 4:
-		return clampf(current_ms, 0.0, 250.0)
-	var sorted := values.duplicate()
-	sorted.sort()
-	var median: float = float(sorted[sorted.size() / 2])
-	return clampf(current_ms + median, 0.0, 250.0)
-
-
+## Both passes write the same field. The measured error already contains the
+## player's tap lag, so it must land in the judgement offset — writing it into
+## the output latency as well would shift the visuals and double-correct.
 func _finish() -> void:
 	_running = false
 	if _taps.size() < 4:
@@ -237,24 +229,11 @@ func _finish() -> void:
 		_hint.text = "重新开始后再试一次"
 		_stop_player()
 		return
-	if _mode == MODE_AUDIO:
-		var current: float = (_app.effective_latency_sec() * 1000.0) if _app != null else 0.0
-		var latency := latency_for_errors(_taps, current)
-		# 0 means "trust the driver"; if the calibrated value lands on ~0 but
-		# the driver reports a non-zero latency, keep a tiny override so the
-		# correction is not silently undone.
-		if latency < 0.5 and current >= 1.0:
-			latency = 0.1
-		if _app != null:
-			_app.audio_latency_ms = snappedf(latency, 0.1)
-			_app.save_settings()
-		_status.text = "音频延迟 %.1fms" % latency
-		_hint.text = "已保存；点「看脉冲」继续校准判定偏移"
-	else:
-		var offset := offset_for_errors(_taps)
-		if _app != null:
-			_app.playtest_offset_ms = snappedf(offset, 0.1)
-			_app.save_settings()
-		_status.text = "判定偏移 %+.1fms" % offset
-		_hint.text = "已保存；点关闭回到试玩设置"
+	var offset := offset_for_errors(_taps)
+	var previous := float(_app.playtest_offset_ms) if _app != null else 0.0
+	if _app != null:
+		_app.playtest_offset_ms = snappedf(offset, 0.1)
+		_app.save_settings()
+	_status.text = "判定偏移 %+.1fms" % offset
+	_hint.text = "原值 %+.1fms → %+.1fms，已保存；试玩里按 [ / ] 还能 ±5ms 微调" % [previous, offset]
 	_stop_player()

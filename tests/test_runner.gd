@@ -97,6 +97,7 @@ func _initialize() -> void:
 		"test_judge_scatter",
 		"test_audio_clock",
 		"test_calibration_offset",
+		"test_chart_offset_for_bias",
 	]
 	for test_name in tests:
 		if call(test_name) != true:
@@ -2487,15 +2488,20 @@ func test_calibration_offset() -> bool:
 	var early: Array[float] = [-40.0, -30.0, -20.0, -10.0]
 	near(CalibrationDialog.offset_for_errors(early), 20.0, 0.01, "early taps produce a positive offset")
 	near(CalibrationDialog.offset_for_errors([1.0, 2.0]), 0.0, 0.01, "too few taps keep the offset unchanged")
-	# 音频延迟：测量值是「真实延迟 - 当前假设」，应加到当前值上。
-	near(CalibrationDialog.latency_for_errors([-20.0, -10.0, 0.0, 10.0], 40.0), 40.0, 0.01,
-		"audio taps with no latency error keep the current value")
-	near(CalibrationDialog.latency_for_errors([30.0, 40.0, 50.0, 60.0], 20.0), 70.0, 0.01,
-		"late audio taps raise the assumed latency")
-	near(CalibrationDialog.latency_for_errors([-60.0, -50.0, -40.0, -30.0], 90.0), 50.0, 0.01,
-		"early audio taps lower the assumed latency")
-	near(CalibrationDialog.latency_for_errors([-60.0, -50.0, -40.0, -30.0], 10.0), 0.0, 0.01,
-		"latency never goes below zero")
+	# 听声音和看脉冲写同一个字段：晚点 → 负 offset（判定往后挪）。
+	near(CalibrationDialog.offset_for_errors([30.0, 40.0, 50.0, 60.0]), -50.0, 0.01,
+		"late audio taps write the same judgement offset")
+	near(CalibrationDialog.offset_for_errors([-60.0, -50.0, -40.0, -30.0]), 40.0, 0.01,
+		"early audio taps write a positive judgement offset")
+	return true
+
+
+## 谱面 offset 的方向：按得早（bias<0）→ offset 变大，音符相对音频提前。
+func test_chart_offset_for_bias() -> bool:
+	near(Playtest.chart_offset_for_bias(0.0, -30.0), 30.0, 0.001, "early bias pushes the chart offset up")
+	near(Playtest.chart_offset_for_bias(0.0, 25.0), -25.0, 0.001, "late bias pulls the chart offset down")
+	near(Playtest.chart_offset_for_bias(-210.0, -10.0), -200.0, 0.001, "existing offset is kept as the base")
+	near(Playtest.chart_offset_for_bias(0.0, 0.0), 0.0, 0.001, "no bias leaves the offset alone")
 	return true
 
 
