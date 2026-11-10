@@ -19,6 +19,9 @@ func check(condition: bool, label: String) -> void:
 
 func _run() -> void:
 	_test_tracker()
+	_test_tail_visual()
+	_test_tail_entry()
+	_test_scan_model()
 	_test_forgiving_corridor()
 	root.size = Vector2i(1600, 900)
 	var app := root.get_node_or_null("App")
@@ -38,6 +41,28 @@ func _tracker(points: Array[Vector2]) -> PathProgress:
 
 func _feed(tracker: PathProgress, point: Vector2, ms: float, start_ms := 0.0) -> void:
 	tracker.feed(point, ms, tracker.points, 0.025, start_ms)
+
+
+## Clearing the last judgement group must not erase the visual tail; the player
+## still has to reach the tail ring.
+func _test_tail_visual() -> void:
+	var straight := _tracker([Vector2.ZERO, Vector2.RIGHT])
+	straight.confirm_head()
+	_feed(straight, Vector2(0.5, 0), 1000.0)
+	_feed(straight, Vector2(0.8, 0), 1100.0)
+	check(straight.body_ready(), "the last group clears before the tail")
+	check(straight.fraction < 0.95, "clearing the last group keeps the tail visible")
+	straight.mark_complete()
+	check(straight.fraction > 0.99, "the tail is erased only after completion")
+
+
+## 尾判参考是“星星进入尾区”：直线路径上应从末端往前一个尾区半径处进入。
+func _test_tail_entry() -> void:
+	var straight := _tracker([Vector2.ZERO, Vector2.RIGHT])
+	var entry := straight.tail_entry_parameter(straight.points, 0.2)
+	check(entry >= 0.75 and entry <= 0.85, "tail entry sits one tail radius before the end")
+	check(straight.tail_entry_parameter(straight.points, 0.0) == 1.0, "zero tail radius falls back to the end")
+	check(straight.tail_entry_parameter(PackedVector2Array(), 0.2) == 1.0, "missing projection falls back to the end")
 
 
 func _test_tracker() -> void:
@@ -149,6 +174,23 @@ func _wide_feed(tracker: PathProgress, point: Vector2, ms: float, start_ms := 0.
 	tracker.feed(point, ms, tracker.points, tracker.contact_radius, start_ms)
 
 
+func _test_scan_model() -> void:
+	var long_path := _tracker([Vector2.ZERO, Vector2(4, 0)])
+	check(long_path.tolerance == Tracker.SKIP_TOLERANCE, "long slides allow one skipped group")
+	var short_path := _tracker([Vector2.ZERO, Vector2.RIGHT])
+	check(short_path.tolerance == 0, "three-group slides protect every group")
+	var u_turn := _tracker([Vector2.ZERO, Vector2(0, 1), Vector2.ONE, Vector2.RIGHT])
+	_wide_feed(u_turn, Vector2.ZERO, 0.0)
+	_wide_feed(u_turn, Vector2.RIGHT, 100.0)
+	check(not u_turn.body_ready() and u_turn.remaining_groups() > 1,
+		"one jump cannot consume a whole U turn")
+	var straight := _tracker([Vector2.ZERO, Vector2(4, 0)])
+	_wide_feed(straight, Vector2.ZERO, 0.0)
+	_wide_feed(straight, Vector2(4, 0), 1000.0)
+	check(straight.body_ready(), "a continuous sweep clears every group")
+	check(straight.coverage > 0.99, "a continuous sweep keeps full corridor coverage")
+
+
 func _test_forgiving_corridor() -> void:
 	var wide := _tracker([Vector2.ZERO, Vector2(2, 0)])
 	for i in 21:
@@ -225,6 +267,7 @@ func _reset(run: Playtest, chart: Chart) -> void:
 func _at(run: Playtest, ms: float, point: Vector2, visual_ms := -INF) -> void:
 	var beat := run.chart.timing.chart_ms_to_beat(visual_ms if is_finite(visual_ms) else ms)
 	run._preview.prepare_playtest_frame(beat, 0.0)
+	run._assign_presses(ms, beat)
 	run._judge_path(run.chart.notes[0], ms, beat, point)
 	run._path_motion_samples.clear()
 
@@ -248,6 +291,8 @@ func _test_playtest() -> void:
 	check(debug["points"] == run._preview.path_judgement_points(live.points, 2.0), "visible regions use the exact live judgement coordinates")
 	check(absf(float(debug["radius"]) - live.contact_radius * run._preview.path_judgement_scale()) < 0.001, "visible radii match actual contact tolerance")
 	check(debug["mandatory"] == live.mandatory and int(debug["required"]) == live.required_index, "overlay marks the live mandatory and completion checkpoints")
+	check(int(debug["group_count"]) == live.group_count and int(debug["tolerance"]) == live.tolerance,
+		"overlay reads the live group count and skip tolerance")
 	run._path_judgement_toggle.button_pressed = false
 	check(not run._preview.show_path_judgement, "pause switch can disable judgement regions")
 	run._set_paused(true)
@@ -264,8 +309,18 @@ func _test_playtest() -> void:
 	check(not run._preview.path_erased(note, 2.0), "music time alone does not erase the middle")
 	_at(run, 3000.0, tail)
 	check(not bool(run._states[1]["tail_hit"]), "playtest rejects jumping directly to the tail")
-	_at(run, 3251.0, tail)
+	_at(run, 3351.0, tail)
 	check(bool(run._states[1]["tail_judged"]) and run._miss_count == 1, "incomplete path misses after its deadline")
+
+	_reset(run, chart)
+	_at(run, 1000.0, head)
+	tracker = run._states[1]["path_tracker"]
+	for group in range(tracker.group_count - 1):
+		tracker.cleared[group] = 1
+	tracker.next_gate = tracker.group_count - 1
+	_at(run, 3351.0, head)
+	check(int(run._tier_counts["GOOD"]) == 1 and run._miss_count == 0,
+		"missing only the last group earns GOOD instead of a miss")
 
 	_reset(run, chart)
 	head = run._preview.path_point(note, 0.0, 2.0)
@@ -315,10 +370,10 @@ func _test_playtest() -> void:
 	chart.notes.append(second)
 	_reset(run, chart)
 	run.auto_play = true
-	for ms in [1000.0, 2000.0, 2800.0]:
+	for ms in [1000.0, 2000.0]:
 		for path in chart.notes:
 			run._judge_path(path, ms, chart.timing.chart_ms_to_beat(ms), Vector2.INF)
-	check(not bool(run._states[1]["tail_hit"]) and not bool(run._states[2]["tail_hit"]), "AUTO does not finish simultaneous paths early")
+	check(not bool(run._states[1]["tail_hit"]) and not bool(run._states[2]["tail_hit"]), "AUTO does not finish before the tail zone")
 	for path in chart.notes:
 		run._judge_path(path, 2960.0, 5.92, Vector2.INF)
 	check(bool(run._states[1]["tail_hit"]) and bool(run._states[2]["tail_hit"]), "AUTO completes simultaneous paths through ordered checks")
@@ -422,8 +477,7 @@ func _test_real_motion() -> void:
 		motion.position = run._preview.get_screen_transform() * wanted
 		motion.global_position = motion.position
 		run._last_chart_ms = -INF
-		run._clock_update_usec = 0
-		run._start_usec = Time.get_ticks_usec() - int(visual_ms * 1000.0)
+		run._clock.start(visual_ms, Time.get_ticks_usec())
 		Input.parse_input_event(motion)
 		await process_frame
 		if i == 0:
@@ -436,6 +490,7 @@ func _test_real_motion() -> void:
 		for sample in run._path_motion_samples:
 			received += 1
 			max_error = maxf(max_error, (sample["point"] as Vector2).distance_to(wanted))
+		run._assign_presses(now - 49.0, now / 500.0)
 		run._judge_path(note, now - 49.0, now / 500.0, run._preview.get_local_mouse_position())
 		run._path_motion_samples.clear()
 	check(received >= 25, "real mouse events reach the Path input buffer")

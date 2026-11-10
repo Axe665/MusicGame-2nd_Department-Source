@@ -2043,7 +2043,7 @@ func _draw_paths(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 				break
 		if not on_screen:
 			continue
-		visible.append(_build_path_chain_note(root, chain) if chain.size() > 1 else root)
+		visible.append(build_path_chain_note(root, chain) if chain.size() > 1 else root)
 	# 旧 Path 先画、新的最后画：多星星重叠时，新星和它的擦除缺口始终在最上层。
 	visible.sort_custom(func(a: Note, b: Note) -> bool: return a.beat < b.beat)
 	# 舞萌式同色系：所有星共用一个主色，重叠时只压明明度，不换色相。
@@ -2102,7 +2102,9 @@ func _draw_paths(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 				canvas.draw_circle(p, 2.5, UITheme.CYAN)
 
 
-func _build_path_chain_note(root: Note, chain: Array[Note]) -> Note:
+## One synthetic Path for a part chain: one head, one guide ball, one tail.
+## Shared by drawing and judgement so the whole chain is judged as drawn.
+static func build_path_chain_note(root: Note, chain: Array[Note]) -> Note:
 	var result := Note.new("path", root.beat, root.angle, root.width)
 	result.id = root.id
 	result.end_beat = chain[-1].end_beat
@@ -2477,6 +2479,8 @@ func path_judgement_debug(note: Note, beat: float) -> Dictionary:
 		"required": tracker.required_index, "coverage": tracker.coverage,
 		"progress": tracker.progress, "covered": tracker.covered, "gates": tracker.gates,
 		"gate_radii": tracker.gate_radii, "next_gate": tracker.next_gate,
+		"cleared": tracker.cleared, "group_count": tracker.group_count,
+		"tolerance": tracker.tolerance, "remaining": tracker.remaining_groups(),
 		"tail_radius": float(state.get("path_tail_radius", 0.0)),
 		"missed": bool(state.get("tail_judged", false)) and not bool(state.get("tail_hit", false))}
 
@@ -2505,6 +2509,7 @@ func _draw_path_judgement(canvas: Control, chart: Chart, beat: float, pre: float
 		var gates: PackedInt32Array = data["gates"]
 		var radii: PackedFloat32Array = data["gate_radii"]
 		var covered: PackedByteArray = data["covered"]
+		var cleared: PackedByteArray = data["cleared"]
 		# Draw only valid segments, so boundary gaps never become fake corridors.
 		var run := PackedVector2Array()
 		var run_covered := false
@@ -2527,7 +2532,7 @@ func _draw_path_judgement(canvas: Control, chart: Chart, beat: float, pre: float
 			if not _valid_point(point):
 				continue
 			var gate_radius := float(radii[i]) * path_judgement_scale()
-			var color := confirmed if i < next else pending
+			var color := confirmed if i < cleared.size() and cleared[i] != 0 else pending
 			if i == next:
 				color = failed if bool(data["missed"]) else current
 			canvas.draw_circle(point, gate_radius, Color(color, 0.045))
@@ -2537,13 +2542,13 @@ func _draw_path_judgement(canvas: Control, chart: Chart, beat: float, pre: float
 			canvas.draw_string_outline(font, point + offset, label, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, 3, Color(0, 0, 0, 0.9))
 			canvas.draw_string(font, point + offset, label, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, color)
 		if not points.is_empty() and _valid_point(points[0]):
-			var label := "#%d  覆盖%.0f%% / 进度%.0f%%  区域%d/%d" % [note.id, float(data["coverage"]) * 100.0, float(data["progress"]) * 100.0, mini(next + 1, gates.size()), gates.size()]
+			var label := "#%d  组%d/%d  容差%d  剩余%d" % [note.id, mini(next, int(data["group_count"])), int(data["group_count"]), int(data["tolerance"]), int(data["remaining"])]
 			var position := points[0] + Vector2(12, -radius - 12)
 			canvas.draw_string_outline(UITheme.FONT_REGULAR, position, label, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, 4, Color(0, 0, 0, 0.9))
 			canvas.draw_string(UITheme.FONT_REGULAR, position, label, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, Color.WHITE)
 		if not points.is_empty() and _valid_point(points[-1]) and float(data["tail_radius"]) > 0.0:
 			canvas.draw_arc(points[-1], float(data["tail_radius"]), 0.0, TAU, 48, Color(1, 1, 1, 0.35), 1.0, true)
-	var legend := "F10：蓝色为宽走廊 / 绿色为实际覆盖 / 橙色为下一关键区域 / 白圈为尾区（需先完成身体）"
+	var legend := "F10：绿=已消组 / 蓝=未消组 / 橙=下一组 / 白圈=尾区 · 容差=可跳组数"
 	canvas.draw_string_outline(UITheme.FONT_REGULAR, Vector2(24, 72), legend, HORIZONTAL_ALIGNMENT_LEFT, -1, 14, 4, Color.BLACK)
 	canvas.draw_string(UITheme.FONT_REGULAR, Vector2(24, 72), legend, HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color.WHITE)
 

@@ -26,6 +26,8 @@ var dirty: bool = false
 var playhead_beat: float = 0.0
 var last_import_report: String = ""
 var playtest_offset_ms: float = 0.0
+## 输出延迟回退（ms）。驱动报告 0 时使用（Android/Web 常见）；0 = 自动。
+var audio_latency_ms: float = 0.0
 var flow_scale: float = 1.0
 var ffmpeg_path: String = "ffmpeg"
 var star_speed: float = 1.0
@@ -40,6 +42,8 @@ var hit_sfx_style: String = "default"
 var cursor_scale: float = 1.0
 ## 帧率上限："60" / "120" / "vsync" / "unlimited"。
 var frame_cap: String = "vsync"
+## 音频缓冲（ms）。Godot 只在启动时读它，改动写进 override.cfg，重启生效。
+var audio_buffer_ms: int = 3
 ## 局内动态校准判定偏移（默认关）。
 var dynamic_offset: bool = false
 ## AUTO 自动演示：试玩时自动完美演奏，用来快速检查谱面（成绩不计入）。
@@ -423,7 +427,9 @@ func _load_settings() -> void:
 			hit_sfx_style = String(data.get("hit_sfx_style", hit_sfx_style))
 			ffmpeg_path = String(data.get("ffmpeg", ffmpeg_path))
 			frame_cap = String(data.get("frame_cap", frame_cap))
+			audio_buffer_ms = clampi(int(data.get("audio_buffer_ms", audio_buffer_ms)), 3, 40)
 			playtest_offset_ms = float(data.get("playtest_offset_ms", playtest_offset_ms))
+			audio_latency_ms = clampf(float(data.get("audio_latency_ms", audio_latency_ms)), 0.0, 250.0)
 			dynamic_offset = bool(data.get("dynamic_offset", dynamic_offset))
 			playtest_auto = bool(data.get("playtest_auto", playtest_auto))
 			last_bias_ms = float(data.get("last_bias_ms", last_bias_ms))
@@ -449,8 +455,42 @@ func apply_frame_cap() -> void:
 			DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_ENABLED)
 
 
+## override.cfg 的位置：导出包写游戏目录，源码运行写工程目录；Godot 两种都会读。
+func audio_override_path() -> String:
+	if OS.has_feature("template"):
+		return OS.get_executable_path().get_base_dir().path_join("override.cfg")
+	return "res://override.cfg"
+
+
+## 音频缓冲是启动期设置（引擎不给运行时接口），只能写 override.cfg 后重启生效。
+static func write_buffer_override(path: String, ms: int) -> bool:
+	var config := ConfigFile.new()
+	if FileAccess.file_exists(path):
+		config.load(path)
+	config.set_value("audio", "driver/output_latency", clampi(ms, 3, 40))
+	return config.save(path) == OK
+
+
+func set_audio_buffer(ms: int) -> void:
+	audio_buffer_ms = clampi(ms, 3, 40)
+	save_settings()
+	if not write_buffer_override(audio_override_path(), audio_buffer_ms):
+		notice.emit("写入 override.cfg 失败，音频缓冲没改", "error")
+		return
+	var running := int(ProjectSettings.get_setting("audio/driver/output_latency", 15))
+	notice.emit("音频缓冲 %dms（重启后生效，当前 %dms）" % [audio_buffer_ms, running], "info")
+
+
+## Output latency used by playtest/calibration. A positive setting overrides the
+## driver value in both directions; 0 means "trust the driver".
+func effective_latency_sec() -> float:
+	if audio_latency_ms > 0.0:
+		return clampf(audio_latency_ms / 1000.0, 0.0, 0.25)
+	return maxf(0.0, AudioServer.get_output_latency())
+
+
 func save_settings() -> void:
-	var data := {"note_skin": note_skin, "hit_fx_style": hit_fx_style, "hit_sfx_style": hit_sfx_style, "ffmpeg": ffmpeg_path, "frame_cap": frame_cap, "playtest_offset_ms": playtest_offset_ms, "dynamic_offset": dynamic_offset, "playtest_auto": playtest_auto, "last_bias_ms": last_bias_ms, "cursor_scale": cursor_scale}
+	var data := {"note_skin": note_skin, "hit_fx_style": hit_fx_style, "hit_sfx_style": hit_sfx_style, "ffmpeg": ffmpeg_path, "frame_cap": frame_cap, "audio_buffer_ms": audio_buffer_ms, "playtest_offset_ms": playtest_offset_ms, "audio_latency_ms": audio_latency_ms, "dynamic_offset": dynamic_offset, "playtest_auto": playtest_auto, "last_bias_ms": last_bias_ms, "cursor_scale": cursor_scale}
 	var file := FileAccess.open(SETTINGS_PATH, FileAccess.WRITE)
 	if file != null:
 		file.store_string(JSON.stringify(data, "\t"))

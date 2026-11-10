@@ -19,6 +19,7 @@ func _initialize() -> void:
 		"test_seek_and_limit_code",
 		"test_compact_chart_code",
 		"test_path_chain_code",
+		"test_path_chain_judgement",
 		"test_path_erase_overlap",
 		"test_path_erase_merge",
 		"test_path_run_split",
@@ -94,6 +95,10 @@ func _initialize() -> void:
 		"test_path_slide_start",
 		"test_hold_seam_interval",
 		"test_judge_scatter",
+		"test_audio_clock",
+		"test_calibration_offset",
+		"test_chart_offset_for_bias",
+		"test_audio_buffer_override",
 	]
 	for test_name in tests:
 		if call(test_name) != true:
@@ -501,6 +506,35 @@ func test_path_chain_code() -> bool:
 	return true
 
 
+## 画面把链式 Path 画成一条（一个头一个尾），判定也必须是一条；否则子段会
+## 要求一个画面上不存在的隐形头判。
+func test_path_chain_judgement() -> bool:
+	var code := "[1]path{(part0,1.0,0.0,2.0,180.0,0.7,0.5);(part1,2.0,0.0,3.0,90.0,0.6,-0.5)}"
+	var parts := Note.path_parts_from_code(code)
+	eq(parts.size(), 2, "chain parts parse for judgement")
+	if parts.size() != 2:
+		return true
+	var chart := Chart.new()
+	chart.notes = parts
+	chart.refresh_ids()
+	var run := Playtest.new()
+	run.chart = chart
+	run._init_states()
+	var paths: Array[Note] = []
+	for note in run._ordered_notes:
+		if note.type == "path":
+			paths.append(note)
+	eq(paths.size(), 1, "a chain is one judgement path")
+	ok(run._states.has(parts[0].id), "chain state lives on the root id")
+	ok(not run._states.has(parts[1].id), "child parts do not get an invisible head/tail")
+	if paths.size() == 1:
+		eq(paths[0].id, parts[0].id, "the synthetic chain keeps the root id")
+		near(paths[0].end_beat, 3.0, 0.001, "the chain keeps the final tail time")
+		ok(paths[0].trace_pts.size() > 4, "the chain carries the combined trace")
+	run.free()
+	return true
+
+
 func test_path_erase_overlap() -> bool:
 	var line := PackedVector2Array()
 	for i in 101:
@@ -592,7 +626,7 @@ func test_style_presets() -> bool:
 	ok(Playtest.PRESS_KEEP_MS < 100.0, "a press only lives for about one frame")
 	eq(Playtest.KEY_DEBOUNCE_MS, 50.0, "the same key is debounced for 50ms")
 	ok(Playtest.EARLY_MS < Playtest.HIT_WINDOW_MS, "early presses are stricter than late ones")
-	eq(Playtest.PATH_TAIL_SWEEP_EARLY_MS, 220.0, "finishing a slide early stops at the GOOD window")
+	eq(Playtest.PATH_TAIL_SWEEP_EARLY_MS, Playtest.TAIL_GOOD_MS, "finishing a slide early stops at the GOOD window")
 	ok(Playtest.HOLD_RELEASE_GRACE_MS >= 100.0 and Playtest.HOLD_RELEASE_GRACE_MS <= 260.0,
 		"the hold release grace is long enough to re-press")
 	ok(Playtest.hold_release_grace_alive(1000.0, 1000.0 + Playtest.HOLD_RELEASE_GRACE_MS - 1.0),
@@ -636,36 +670,59 @@ func test_position_judgement() -> bool:
 	return true
 
 
-## 就近分配：多个按键同时在窗口里时，选离图形最近的，而不是时间最近的。
+## 匹配逻辑现在是纯函数：全局分配和测试共用同一把尺子。
 func test_press_assignment() -> bool:
 	var run := Playtest.new()
 	var line := PackedVector2Array([Vector2(48, 0), Vector2(52, 0)])
-	run._key_presses = [
-		{"time": 1000.0, "mouse": Vector2(0, 0)},
-		{"time": 1012.0, "mouse": Vector2(50, 0)},
-	]
-	var picked := run._take_key_near(990.0, 1020.0, line, 10.0, 1000.0)
-	eq(float(picked.get("time", -1.0)), 1012.0, "the press aimed at the shape wins over the earlier one")
-	run._key_presses = [
-		{"time": 1000.0, "angle": 20.0, "mouse": Vector2.ZERO},
-		{"time": 1012.0, "angle": 89.0, "mouse": Vector2.ZERO},
-	]
-	var sector := run._take_key_for_sector(990.0, 1020.0, 88.0, 160.0, 1000.0)
-	eq(float(sector.get("time", -1.0)), 1012.0, "the press nearest the sector centre wins")
-	run._key_presses = [
-		{"time": 1000.0, "mouse": Vector2(0, 0)},
-		{"time": 1012.0, "mouse": Vector2(100, 0)},
-	]
-	var point := run._take_key_for_point(990.0, 1020.0, Vector2(100, 0), 120.0, 1000.0)
-	eq(float(point.get("time", -1.0)), 1012.0, "the press nearest the point wins")
-	# 光标在圈心/屏幕角落时按下的键没有方向意图，密集段不该吃它。
-	run._key_presses = [{"time": 1000.0, "angle": 88.0, "valid": false}]
-	ok(run._take_key_for_sector(990.0, 1010.0, 88.0, 100.0, 1000.0).is_empty(),
+	var note := Note.new("tap", 0.0, 88.0, 60.0)
+	var near_target := {"note": note, "points": line, "tolerance": 10.0, "pad": 0.0,
+		"dense": false, "ring_radius": 100.0}
+	ok(bool(run._match_press({"time": 1000.0, "mouse": Vector2(50, 0)}, near_target).get("ok", false)),
+		"a press on the shape matches")
+	ok(not bool(run._match_press({"time": 1000.0, "mouse": Vector2(50, 30)}, near_target).get("ok", false)),
+		"a press outside the tolerance does not match")
+	var sector_target := {"note": note, "points": PackedVector2Array([Vector2(0, 0)]),
+		"tolerance": 10.0, "pad": 0.0, "dense": true, "ring_radius": 330.0}
+	ok(bool(run._match_press({"time": 1000.0, "angle": 89.0, "valid": true}, sector_target).get("ok", false)),
+		"a press inside the dense sector matches")
+	ok(not bool(run._match_press({"time": 1000.0, "angle": 20.0, "valid": true}, sector_target).get("ok", false)),
+		"a press outside the dense sector does not match")
+	ok(not bool(run._match_press({"time": 1000.0, "angle": 89.0, "valid": false}, sector_target).get("ok", false)),
 		"a press made off the ring cannot take a dense sector")
-	run._key_presses = [{"time": 1000.0, "angle": 88.0, "valid": true}]
-	ok(not run._take_key_for_sector(990.0, 1010.0, 88.0, 100.0, 1000.0).is_empty(),
-		"a press made on the ring takes the sector")
 	run.free()
+	# 全局分配：同一帧的两颗 Tap 各拿一颗按键，不再由先判到的音符抢走。
+	var chart := DemoChart.make_empty({"bpm": 120.0})
+	chart.notes.clear()
+	var first := Note.new("tap", 4.0, 0.0, 60.0)
+	first.id = 1
+	var second := Note.new("tap", 4.0, 180.0, 60.0)
+	second.id = 2
+	chart.notes = [first, second]
+	var live := Playtest.new()
+	var preview := Preview3D.new()
+	preview._ready()
+	preview.chart_override = chart
+	preview.playtest_mode = true
+	preview.time_beat = 4.0
+	preview.prepare_playtest_frame(4.0, 0.0)
+	live._preview = preview
+	live.chart = chart
+	live._init_states()
+	var ms := 2000.0
+	var first_point := live._preview.note_head_screen(first, 4.0)
+	var second_point := live._preview.note_head_screen(second, 4.0)
+	live._key_presses = [
+		{"time": ms, "mouse": first_point, "angle": 0.0, "valid": true, "key": 65},
+		{"time": ms, "mouse": second_point, "angle": 180.0, "valid": true, "key": 66},
+	]
+	live._assign_presses(ms, 4.0)
+	ok(live._press_assignments.has(1) and live._press_assignments.has(2),
+		"simultaneous taps receive separate presses")
+	live._key_presses = [{"time": ms, "mouse": first_point, "angle": 0.0, "valid": true, "key": 65}]
+	live._assign_presses(ms, 4.0)
+	ok(live._press_assignments.size() == 1, "one press cannot be spent twice in a frame")
+	live.free()
+	preview.free()
 	return true
 
 
@@ -1888,11 +1945,23 @@ func test_ring_sector_and_tail_tier() -> bool:
 	eq(Preview3D.ring_sector(22.6), 1, "just after the boundary moves to sector 1")
 	eq(Preview3D.ring_sector(90.0), 2, "sector 2 centred on right")
 	eq(Preview3D.ring_sector(337.6), 0, "wrap-around closes back into sector 0")
-	# 星尾独立档位：PERFECT ±80 / GREAT ±140 / GOOD ±220。
-	eq(Playtest.tail_tier(-79.0), "PERFECT", "tail within 80ms is perfect")
-	eq(Playtest.tail_tier(81.0), "GREAT", "tail 81ms is great")
-	eq(Playtest.tail_tier(-141.0), "GOOD", "tail 141ms is good")
-	eq(Playtest.tail_tier(221.0), "BAD", "tail 221ms is bad")
+	# 星尾独立档位：PERFECT ±150 / GREAT ±220 / GOOD ±350；早到不 Miss。
+	eq(Playtest.tail_tier(-149.0), "PERFECT", "tail within 150ms is perfect")
+	eq(Playtest.tail_tier(151.0), "GREAT", "tail 151ms is great")
+	eq(Playtest.tail_tier(-221.0), "GOOD", "tail 221ms is good")
+	eq(Playtest.tail_tier(351.0), "MISS", "late tail beyond 350ms is a miss")
+	eq(Playtest.tail_tier(-360.0), "GOOD", "early tail never falls to miss")
+	eq(Playtest.tail_tier(-203.6), "GREAT", "the one real-log outlier stays a great")
+	# 星星入尾区参考：入口 0ms / 终点 dwell 都算 PERFECT；
+	# 早到用 dwell/4 扩展，晚到仍按终点。
+	eq(Playtest.tail_tier(0.0, 472.0), "PERFECT", "tail at the zone entry is perfect")
+	eq(Playtest.tail_tier(472.0, 472.0), "PERFECT", "tail at the slide end is still perfect")
+	eq(Playtest.tail_tier(-268.0, 472.0), "PERFECT", "early tail uses the dwell extension")
+	eq(Playtest.tail_tier(-300.0, 472.0), "GREAT", "early tail just outside the extended perfect is great")
+	eq(Playtest.tail_tier(-400.0, 472.0), "GOOD", "very early tail stays good")
+	eq(Playtest.tail_tier(472.0 + 151.0, 472.0), "GREAT", "late tail is measured from the end")
+	eq(Playtest.tail_tier(472.0 + 351.0, 472.0), "MISS", "late tail beyond end + 350 is a miss")
+	eq(Playtest.tail_tier(472.0 + 100.0, 472.0), "PERFECT", "completion after the end but inside the window")
 	return true
 
 
@@ -2250,8 +2319,8 @@ func test_auto_play() -> bool:
 func test_path_tail_judge() -> bool:
 	ok(Playtest.PATH_TAIL_RADIUS_RATIO > 0.15 and Playtest.PATH_TAIL_RADIUS_RATIO < 0.75,
 		"tail radius shrinks with the slide length")
-	ok(Playtest.PATH_TAIL_MIN_FRACTION >= 0.8, "tail wants most of the slide to be covered")
-	ok(Playtest.PATH_TAIL_MIN_FRACTION < 1.0, "tail still tolerates a small aiming error")
+	ok(PathProgress.SKIP_TOLERANCE >= 1, "slides allow skipping one judgement group")
+	ok(PathProgress.NO_SKIP_GROUP_LIMIT == 3, "short slides protect their middle group")
 	var ring := 430.0
 	var chord := 2.0 * ring * sin(deg_to_rad(22.5))
 	var radius := clampf(minf(Playtest.PATH_TAIL_RADIUS, chord * Playtest.PATH_TAIL_RADIUS_RATIO), 56.0, Playtest.PATH_TAIL_RADIUS)
@@ -2414,6 +2483,92 @@ func test_hold_seam_interval() -> bool:
 	near(JudgeMath.total_length(full), 360.0, 0.001, "full circle covers the ring")
 	return true
 ## 结算页散布图：只收合法样本，等级颜色互不相同。
+func test_calibration_offset() -> bool:
+	var samples: Array[float] = [-40.0, -20.0, -10.0, 0.0, 10.0, 20.0, 30.0, 40.0]
+	near(CalibrationDialog.offset_for_errors(samples), -10.0, 0.01, "late taps produce a negative offset")
+	var early: Array[float] = [-40.0, -30.0, -20.0, -10.0]
+	near(CalibrationDialog.offset_for_errors(early), 20.0, 0.01, "early taps produce a positive offset")
+	near(CalibrationDialog.offset_for_errors([1.0, 2.0]), 0.0, 0.01, "too few taps keep the offset unchanged")
+	# 听声音和看脉冲写同一个字段：晚点 → 负 offset（判定往后挪）。
+	near(CalibrationDialog.offset_for_errors([30.0, 40.0, 50.0, 60.0]), -50.0, 0.01,
+		"late audio taps write the same judgement offset")
+	near(CalibrationDialog.offset_for_errors([-60.0, -50.0, -40.0, -30.0]), 40.0, 0.01,
+		"early audio taps write a positive judgement offset")
+	return true
+
+
+## 音频缓冲只能启动期生效，所以写 override.cfg；这里验证能写、能改、不重复追加。
+func test_audio_buffer_override() -> bool:
+	var path := "user://test_override.cfg"
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	var app_script := load("res://charter/app.gd")
+	ok(app_script.write_buffer_override(path, 10), "buffer override writes a config file")
+	var config := ConfigFile.new()
+	eq(config.load(path), OK, "buffer override is a config file")
+	eq(int(config.get_value("audio", "driver/output_latency", 0)), 10, "buffer override stores the value")
+	ok(app_script.write_buffer_override(path, 3), "buffer override can be rewritten")
+	config = ConfigFile.new()
+	config.load(path)
+	eq(int(config.get_value("audio", "driver/output_latency", 0)), 3, "buffer override replaces the old value")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	return true
+
+
+## 谱面 offset 的方向：按得早（bias<0）→ offset 变大，音符相对音频提前。
+func test_chart_offset_for_bias() -> bool:
+	near(Playtest.chart_offset_for_bias(0.0, -30.0), 30.0, 0.001, "early bias pushes the chart offset up")
+	near(Playtest.chart_offset_for_bias(0.0, 25.0), -25.0, 0.001, "late bias pulls the chart offset down")
+	near(Playtest.chart_offset_for_bias(-210.0, -10.0), -200.0, 0.001, "existing offset is kept as the base")
+	near(Playtest.chart_offset_for_bias(0.0, 0.0), 0.0, 0.001, "no bias leaves the offset alone")
+	return true
+
+
+func test_audio_clock() -> bool:
+	var clock := AudioClock.new()
+	clock.start(1000.0, 0)
+	near(clock.update(16000, false, 0.0, 0.0, 0.0, 0.0), 1016.0, 0.01, "wall clock advances without audio")
+	var before := clock.clock_ms
+	clock.update(32000, true, 9.0, 0.0, 0.0, 0.0)
+	ok(clock.clock_ms - before < 20.0, "a bad forward playback sample cannot teleport the clock")
+	before = clock.clock_ms
+	clock.update(48000, true, 0.0, 0.0, 0.0, 0.0)
+	ok(before - clock.clock_ms < 20.0, "a bad backward playback sample cannot rewind the clock")
+	# 起播：音频没出声时停在起点，出声后用播放位置锚定（不再预测下一次 mix）。
+	var waiting := AudioClock.new()
+	waiting.start(500.0, 0)
+	near(waiting.update(16000, true, 0.0, 0.0, 0.04, 0.0), 500.0, 0.01,
+		"the clock waits for the first audible sample")
+	var latency_clock := AudioClock.new()
+	latency_clock.start(1000.0, 0)
+	var with_latency := latency_clock.update(16000, true, 1.0, 100.0, 0.05, 0.0)
+	near(with_latency, 1050.0, 0.01, "the first audio sample anchors the clock to the stream")
+	ok(latency_clock.consume_anchor_jump(), "the anchor reports its one allowed backward jump")
+	ok(not latency_clock.consume_anchor_jump(), "the anchor jump is reported only once")
+	# 驱动延迟在 29–58ms 之间抖：冻结后不能再推着时钟走。
+	var steady := AudioClock.new()
+	steady.start(0.0, 0)
+	var steady_now := 0
+	for i in 40:
+		steady_now += 16000
+		steady.update(steady_now, true, float(steady_now) / 1000000.0, 0.0,
+			0.045 if i % 2 == 0 else 0.035, 0.0)
+	near(steady.clock_ms, float(steady_now) / 1000.0 - 40.0, 8.0,
+		"latency noise stays inside the deadband after the estimate freezes")
+	var drift := AudioClock.new()
+	drift.start(0.0, 0)
+	var now := 0
+	for i in 120:
+		now += 16000
+		drift.update(now, true, float(now) / 1000000.0 + 0.050, 0.0, 0.0, 0.0)
+	ok(absf(drift.clock_ms - (float(now) / 1000.0 + 50.0)) < 3.0,
+		"the clock follows the audio stream once anchored")
+	var hitch := AudioClock.new()
+	hitch.start(0.0, 0)
+	var after_hitch := hitch.update(500000, true, 0.5, 0.0, 0.0, 0.0)
+	near(after_hitch, 500.0, 5.0, "a half-second hitch advances the clock instead of latching behind")
+	return true
+
+
 func test_judge_scatter() -> bool:
 	var chart := JudgeScatter.new()
 	chart.set_hits([

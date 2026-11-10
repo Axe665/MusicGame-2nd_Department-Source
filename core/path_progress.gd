@@ -1,13 +1,17 @@
 class_name PathProgress
 extends RefCounted
 
-## Fine samples form a corridor; coarse gates preserve route order.
+## Ordered path groups + tolerance scan, adapted from AstroDX's slide scan.
+## Groups come from the path geometry (arc length + corners), not from maimai's
+## physical sensor layout, so any plane curve or deformed ring works.
 const SAMPLE_SPACING := 0.06
 const GATE_SPACING := 0.85
 const CONTACT_RADIUS := 0.25
 const CORNER_RADIUS := 0.34
-const REQUIRED_COVERAGE := 0.80
-const END_PROGRESS := 0.90
+## How many groups a single movement may skip. AstroDX uses one by default.
+const SKIP_TOLERANCE := 1
+## Short slides (three groups or fewer) must be traced through every group.
+const NO_SKIP_GROUP_LIMIT := 3
 const REJOIN_DISTANCE := 0.45
 const REJOIN_GRACE_MS := 180.0
 
@@ -17,11 +21,14 @@ var distances := PackedFloat32Array()
 var mandatory := PackedByteArray()
 var gates := PackedInt32Array()
 var gate_radii := PackedFloat32Array()
+var cleared := PackedByteArray()
 var covered := PackedByteArray()
 var length := 0.0
 var contact_radius := CONTACT_RADIUS
-var next_index := 0
+var group_count := 0
+var tolerance := 0
 var next_gate := 0
+var next_index := 0
 var required_index := 0
 var fraction := 0.0
 var coverage := 0.0
@@ -30,13 +37,13 @@ var previous := Vector2.INF
 var previous_ms := -INF
 var _furthest := 0.0
 var _covered_length := 0.0
+var _covered_to := 0.0
 var _away_since := -INF
 var _screen_points := PackedVector2Array()
 var _from := Vector2.INF
 var _to := Vector2.INF
 var _from_ms := 0.0
 var _to_ms := 0.0
-var _finish_min_t := INF
 var _pending_tail_exit := -INF
 
 
@@ -69,16 +76,20 @@ func configure(source: PackedVector2Array, source_parameters := PackedFloat32Arr
 	mandatory.clear()
 	gates.clear()
 	gate_radii.clear()
+	cleared.clear()
 	covered.clear()
 	length = 0.0
-	next_index = 0
+	group_count = 0
+	tolerance = 0
 	next_gate = 0
+	next_index = 0
 	required_index = 0
 	fraction = 0.0
 	coverage = 0.0
 	progress = 0.0
 	_furthest = 0.0
 	_covered_length = 0.0
+	_covered_to = 0.0
 	reset_motion()
 	if source.size() < 2:
 		return
@@ -111,7 +122,7 @@ func configure(source: PackedVector2Array, source_parameters := PackedFloat32Arr
 		d += gate_step
 	gate_targets.append_array(corners)
 	gate_targets.sort()
-	var targets: Array[float] = [0.0, length * REQUIRED_COVERAGE, length * END_PROGRESS, length]
+	var targets: Array[float] = [0.0, length * 0.80, length]
 	targets.append_array(gate_targets)
 	var spacing := maxf(length / 1024.0, minf(SAMPLE_SPACING, length / 24.0))
 	d = spacing
@@ -142,36 +153,68 @@ func configure(source: PackedVector2Array, source_parameters := PackedFloat32Arr
 				if absf(corner - target) < 0.00001:
 					radius = maxf(radius, minf(CORNER_RADIUS, length * 0.24))
 			gate_radii.append(radius)
-		if target < length * REQUIRED_COVERAGE - 0.00001:
+		if target < length * 0.80 - 0.00001:
 			required_index = points.size()
 	covered.resize(maxi(0, points.size() - 1))
 	covered.fill(0)
+	cleared.resize(maxi(0, gates.size() - 1))
+	cleared.fill(0)
+	group_count = cleared.size()
+	tolerance = SKIP_TOLERANCE if group_count > NO_SKIP_GROUP_LIMIT else 0
 
 
+## The slide head counts as the first judgement group (maimai's A-zone exemption).
+## It is marked cleared but not covered: the player still has to trace the body.
 func confirm_head() -> void:
-	if next_gate == 0 and points.size() >= 2:
+	if group_count > 0 and cleared[0] == 0:
+		cleared[0] = 1
 		next_gate = 1
-		next_index = 1
+		next_index = mini(points.size(), int(gates[1])) if gates.size() > 1 else points.size()
+		fraction = float(parameters[next_index - 1]) if next_index > 0 else 0.0
 
 
 func reset_motion() -> void:
 	previous = Vector2.INF
 	previous_ms = -INF
-	_finish_min_t = INF
 	_pending_tail_exit = -INF
 	_away_since = -INF
 
 
 func body_ready() -> bool:
-	return points.size() >= 2 and coverage + 0.00001 >= REQUIRED_COVERAGE and next_gate >= gates.size() - 1
+	return group_count > 0 and next_gate >= group_count
 
 
-func quality_tier() -> String:
-	return "PERFECT" if coverage >= 0.90 - 0.00001 else ("GREAT" if coverage >= 0.85 - 0.00001 else "GOOD")
+## The tail was actually reached/judged; only then may the visual erase the
+## remaining tail segment.
+func mark_complete() -> void:
+	fraction = 1.0
+	progress = 1.0
+	coverage = 1.0
 
 
-func feed(point: Vector2, ms: float, projected: PackedVector2Array, radius: float, start_ms: float, coordinate_scale := 0.0) -> void:
-	_finish_min_t = INF
+## Path parameter where the guide star first enters the tail circle. This is
+## maimai's "star enters the last zone" reference, measured on the same
+## projected geometry the player sees.
+func tail_entry_parameter(projected: PackedVector2Array, radius: float) -> float:
+	if projected.size() < 2 or parameters.is_empty() or radius <= 0.0:
+		return 1.0
+	var tail := projected[projected.size() - 1]
+	if not tail.is_finite():
+		return 1.0
+	var entry := projected.size() - 1
+	for i in range(projected.size() - 2, -1, -1):
+		if not projected[i].is_finite() or projected[i].distance_to(tail) > radius:
+			break
+		entry = i
+	return clampf(parameters[clampi(entry, 0, parameters.size() - 1)], 0.0, 1.0)
+
+
+## Completion is judged by tail timing only; body groups never cap the tier.
+func remaining_groups() -> int:
+	return maxi(0, group_count - next_gate)
+
+
+func feed(point: Vector2, ms: float, projected: PackedVector2Array, radius: float, start_ms: float, _coordinate_scale := 0.0) -> void:
 	if not point.is_finite() or projected.size() != points.size() or ms < previous_ms:
 		reset_motion()
 		return
@@ -189,108 +232,121 @@ func feed(point: Vector2, ms: float, projected: PackedVector2Array, radius: floa
 	_from_ms = from_ms
 	_to_ms = ms
 	_screen_points = projected
-	var scale := 1.0
-	for i in points.size() - 1:
-		var local_length := points[i].distance_to(points[i + 1])
-		if local_length > 0.000001 and projected[i].is_finite() and projected[i + 1].is_finite():
-			scale = maxf(0.000001, projected[i].distance_to(projected[i + 1]) / local_length)
-			break
-	if coordinate_scale > 0.0:
-		scale = coordinate_scale
+	# Split long mouse jumps so a fast sweep still visits every group it crosses.
 	var steps := clampi(ceili(from.distance_to(point) / maxf(0.00001, radius * 0.45)), 1, 128)
-	var step_length := from.distance_to(point) / float(steps) / scale
+	var step_vector := (point - from) / float(steps)
 	for step in steps + 1:
 		var t := float(step) / float(steps)
-		_consume_position(from.lerp(point, t), lerpf(from_ms, ms, t), projected, radius, scale, step_length if step > 0 else 0.0, (point - from) / float(steps) if step > 0 else Vector2.ZERO)
-		if body_ready() and (progress >= END_PROGRESS or next_gate == gates.size()) and not is_finite(_finish_min_t):
-			_finish_min_t = t
+		_scan_groups(from.lerp(point, t), projected, radius, step_vector)
 
 
-func _consume_position(point: Vector2, ms: float, projected: PackedVector2Array, radius: float, scale: float, step_length: float, movement: Vector2) -> void:
-	var gap := minf(REJOIN_DISTANCE, length * 0.15)
-	if is_finite(_away_since) and ms - _away_since > REJOIN_GRACE_MS:
-		gap = minf(0.30, length * 0.10)
-	var low := maxf(0.0, _furthest - maxf(0.4, contact_radius))
-	var high := minf(length, _furthest + step_length * 1.6 + gap)
-	if next_gate < gates.size():
-		high = minf(high, float(distances[gates[next_gate]]) + float(gate_radii[next_gate]))
-	var effective_radius := radius
-	for gate in [next_gate - 1, next_gate]:
-		if gate >= 0 and gate < gates.size() and point.distance_to(projected[gates[gate]]) <= float(gate_radii[gate]) * scale:
-			effective_radius = maxf(effective_radius, float(gate_radii[gate]) * scale)
-	var best_distance := INF
-	var best_s := 0.0
-	var best_edge := 0
-	var best_t := 0.0
-	for i in range(_edge_at(low), mini(points.size() - 1, _edge_at(high) + 1)):
+func _scan_groups(point: Vector2, projected: PackedVector2Array, radius: float, movement: Vector2) -> void:
+	var scan := next_gate
+	var budget := tolerance
+	var moving := movement.length() > radius * 0.15
+	while scan < group_count:
+		var closest := _group_closest(scan, point, projected)
+		var tangent: Vector2 = closest.get("tangent", Vector2.ZERO)
+		var group_start := int(gates[scan])
+		var group_end := int(gates[scan + 1]) if scan + 1 < gates.size() else points.size() - 1
+		var group_length := float(distances[group_end] - distances[group_start])
+		var backwards := moving and tangent != Vector2.ZERO and group_length > contact_radius \
+			and movement.normalized().dot(tangent) < -0.3
+		if closest.distance <= radius and not backwards:
+			_clear_through(scan, closest, movement)
+			return
+		budget -= 1
+		if budget < 0:
+			return
+		scan += 1
+
+
+func _group_closest(index: int, point: Vector2, projected: PackedVector2Array) -> Dictionary:
+	var start := int(gates[index])
+	var finish := int(gates[index + 1]) if index + 1 < gates.size() else points.size() - 1
+	var result := {"distance": INF, "local": Vector2.ZERO, "parameter": 0.0}
+	if finish <= start:
+		if _valid(projected, start):
+			return {"distance": point.distance_to(projected[start]), "local": points[start], "parameter": parameters[start]}
+		return result
+	for i in range(start, finish):
+		if not _valid(projected, i) or not _valid(projected, i + 1):
+			continue
+		var closest := Geometry2D.get_closest_point_to_segment(point, projected[i], projected[i + 1])
+		var distance := point.distance_to(closest)
+		if distance >= float(result["distance"]):
+			continue
 		var a := projected[i]
 		var b := projected[i + 1]
-		if not a.is_finite() or not b.is_finite():
-			continue
 		var ab := b - a
-		var span := float(distances[i + 1] - distances[i])
-		if span <= 0.000001:
-			continue
-		var t := 0.0 if ab.length_squared() <= 0.000001 else (point - a).dot(ab) / ab.length_squared()
-		t = clampf(t, maxf(0.0, (low - float(distances[i])) / span), minf(1.0, (high - float(distances[i])) / span))
-		var distance := point.distance_to(a + ab * t)
-		var candidate_s := float(distances[i]) + span * t
-		if candidate_s > _furthest + 0.00001 and ab.dot(movement) < -0.15 * ab.length() * movement.length():
-			continue # A retraced branch needs an actual change of direction.
-		var forward_tie := candidate_s > best_s and candidate_s >= _furthest and ab.dot(movement) > 0.000001
-		if distance < best_distance - 0.00001 or (absf(distance - best_distance) <= 0.00001 and forward_tie):
-			best_distance = distance
-			best_s = candidate_s
-			best_edge = i
-			best_t = t
-	if best_distance > effective_radius:
-		if not is_finite(_away_since):
-			_away_since = ms
-		return
-	_away_since = -INF
-	if best_s > _furthest:
-		_furthest = best_s
-		fraction = lerpf(parameters[best_edge], parameters[best_edge + 1], best_t)
-		progress = _furthest / length
-		next_index = mini(points.size(), best_edge + 1)
-	# Only touched pieces receive coverage. Rejoining does not fill the gap.
-	var reach := effective_radius / scale
-	for i in range(_edge_at(maxf(0.0, best_s - reach)), mini(points.size() - 1, _edge_at(minf(length, best_s + reach)) + 1)):
-		if covered[i] == 0 and projected[i].is_finite() and projected[i + 1].is_finite() and point.distance_to(projected[i].lerp(projected[i + 1], 0.5)) <= effective_radius:
-			covered[i] = 1
-			_covered_length += float(distances[i + 1] - distances[i])
-	coverage = minf(1.0, _covered_length / length)
-	while next_gate < gates.size():
-		var index := gates[next_gate]
-		var gate_radius := float(gate_radii[next_gate])
-		if absf(float(distances[index]) - best_s) > gate_radius + 0.00001 or point.distance_to(projected[index]) > gate_radius * scale:
-			break
-		next_gate += 1
+		var t := 0.0 if ab.length_squared() <= 0.000001 else clampf((closest - a).dot(ab) / ab.length_squared(), 0.0, 1.0)
+		result["distance"] = distance
+		result["local"] = points[i].lerp(points[i + 1], t)
+		result["parameter"] = lerpf(parameters[i], parameters[i + 1], t)
+		result["path_distance"] = lerpf(float(distances[i]), float(distances[i + 1]), t)
+		result["edge"] = i
+		result["tangent"] = ab.normalized() if ab.length_squared() > 0.000001 else Vector2.ZERO
+	return result
 
 
-func _edge_at(distance: float) -> int:
-	var low := 0
-	var high := distances.size() - 1
-	while low < high:
-		var mid := (low + high + 1) / 2
-		if float(distances[mid]) <= distance:
-			low = mid
-		else:
-			high = mid - 1
-	return mini(low, maxi(0, distances.size() - 2))
+static func _valid(points_array: PackedVector2Array, index: int) -> bool:
+	return index >= 0 and index < points_array.size() and points_array[index].is_finite()
 
 
-## Coverage unlocks the tail; only actual end contact supplies its timing.
-## Holding an early arrival until the perfect window avoids a forced early GOOD.
+## Clear every group up to `index`. Groups are contiguous; skipped intermediate
+## groups count as cleared but their corridor stays visually pending unless the
+## movement actually touched them.
+func _clear_through(index: int, closest: Dictionary, _movement: Vector2) -> void:
+	# Only the group the cursor actually touched gets corridor coverage.
+	var hit_distance := float(closest.get("path_distance", 0.0))
+	var skipped := index > next_gate
+	var cover_from := _covered_to if not skipped else float(distances[clampi(int(gates[index]), 0, distances.size() - 1)])
+	if cleared[index] == 0:
+		cleared[index] = 1
+	# Continuous progress fills everything between the last covered point and the
+	# hit; a skipped group never fills the gap it jumped over.
+	if hit_distance > cover_from:
+		for edge in range(covered.size()):
+			if float(distances[edge + 1]) <= cover_from + 0.000001:
+				continue
+			if float(distances[edge]) >= hit_distance - 0.000001:
+				break
+			if covered[edge] == 0:
+				covered[edge] = 1
+				_covered_length += float(distances[edge + 1] - distances[edge])
+		_covered_to = maxf(_covered_to, hit_distance)
+	for group in range(next_gate, index):
+		cleared[group] = 1
+	next_gate = index + 1
+	next_index = points.size() if next_gate >= group_count else int(gates[next_gate])
+	var fallback_index := clampi(index, 0, maxi(0, distances.size() - 1))
+	var reached := float(closest.get("path_distance", distances[fallback_index]))
+	_furthest = maxf(_furthest, reached)
+	if next_gate >= group_count:
+		_furthest = length
+		_covered_to = length
+		progress = 1.0
+		coverage = 1.0
+		# fraction deliberately stays at the last touched point; the visual
+		# tail is only erased by mark_complete() after the tail is judged.
+	else:
+		progress = clampf(_furthest / length, 0.0, 1.0)
+		fraction = clampf(float(closest["parameter"]), 0.0, 1.0)
+		coverage = minf(1.0, _covered_length / length)
+
+
+## Coverage unlocks nothing; completion is the last group's contact. Holding an
+## early arrival until the perfect window avoids a forced early GOOD.
 func finish_contact(window_from: float, window_to: float, tail_radius: float, target_ms := INF, perfect_ms := 80.0) -> float:
+	if not body_ready():
+		return INF
 	var begin := INF
 	var end := -INF
-	if is_finite(_finish_min_t) and body_ready():
-		var interval := circle_interval(_from, _to, _screen_points[-1], tail_radius)
-		var t := maxf(interval.x, _finish_min_t)
-		if is_finite(t) and t <= interval.y:
-			begin = maxf(window_from, lerpf(_from_ms, _to_ms, t))
-			end = minf(window_to, lerpf(_from_ms, _to_ms, interval.y))
+	var interval := circle_interval(_from, _to, _screen_points[-1], tail_radius)
+	var t := maxf(interval.x, 0.0)
+	if is_finite(t) and t <= interval.y:
+		begin = maxf(window_from, lerpf(_from_ms, _to_ms, t))
+		end = minf(window_to, lerpf(_from_ms, _to_ms, interval.y))
 	if begin <= end:
 		if not is_finite(target_ms):
 			return begin

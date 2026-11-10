@@ -23,16 +23,18 @@ const PATH_TAIL_RADIUS := 192.0
 ## 尾判半径最多占“头到尾直线距离”的多少（短滑条要跟着缩）。
 const PATH_TAIL_RADIUS_RATIO := 0.42
 const PathTracker = preload("res://core/path_progress.gd")
-## 实际覆盖至少 80%，并按顺序通过主要区域，才取得尾判资格。
-const PATH_TAIL_MIN_FRACTION := PathTracker.REQUIRED_COVERAGE
 const PATH_INPUT_CAPACITY := 2048
 const PATH_LOG_LIMIT_BYTES := 4 * 1024 * 1024
-## 尾区最早接受的接触时间；早到后停留可等到 PERFECT 窗口。
-const PATH_TAIL_SWEEP_EARLY_MS := 220.0
+## 尾区早到 GOOD 的基础窗口；实际早到窗口取 max(这个, Perfect 扩展值)。
+const PATH_TAIL_SWEEP_EARLY_MS := 350.0
 ## 星尾自己的档位窗口（连续滑动有鼠标延迟，比 Tap 宽）。
-const TAIL_PERFECT_MS := 80.0
-const TAIL_GREAT_MS := 140.0
-const TAIL_GOOD_MS := 220.0
+## 150/220/350 是 maimai ±233/366/600 的收紧版：真实日志里 83 条尾判
+## 全部落在 ±233 内，±150 已能覆盖绝大多数，同时保留本作的准度感。
+const TAIL_PERFECT_MS := 150.0
+const TAIL_GREAT_MS := 220.0
+const TAIL_GOOD_MS := 350.0
+## maimai 的尾区停留最多把 Perfect/Great 的早到窗口扩到 22 帧（366.7ms）。
+const TAIL_EXT_MAX_MS := 366.6667
 const TRACE_HEAD_RADIUS := 72.0
 const TRACE_CONTACT_PX := 56.0
 const BELL_COLLECT_RADIUS := 72.0
@@ -62,9 +64,9 @@ var _audio: AudioStreamPlayer
 var _running: bool = false
 var _finished: bool = false
 var _audio_available: bool = false
-var _start_usec: int = 0
 var _start_chart_ms: float = 0.0
 var _last_chart_ms: float = -INF
+var _clock := AudioClock.new()
 var _ordered_notes: Array[Note] = []
 var _ui_accum: float = 0.0
 
@@ -109,18 +111,16 @@ const AUTO_PREVIEW_MS := 900.0         # 光标提前多久开始预判下一个
 const AUTO_KEY_A := 65                 # 'A'
 const AUTO_KEY_B := 66                 # 'B'
 var _judge_from: int = 0
+## One frame-wide press assignment: a press belongs to the note it fits best,
+## not to whichever note happens to be judged first.
+var _press_assignments: Dictionary = {}
 ## 帧时间采样（基准模式诊断卡顿）：每帧间隔 + 2 秒统计。
 var _frame_last_usec: int = 0
 var _frame_samples: Array[int] = []
 var _frame_since_usec: int = 0
-var _smooth_ms: float = 0.0
-var _clock_update_usec: int = 0
 var _frame_last_beat: float = -1.0
 var _beat_stalls: int = 0
 var _dense_ids: Dictionary = {}
-var _near_miss_logs: int = 0
-var _near_miss_stamp: float = 0.0
-var _near_miss_logged_stamp: float = -INF
 var _log: Array[String] = []
 var _combo: int = 0
 var _max_combo: int = 0
@@ -139,11 +139,12 @@ var _scatter: Array[Dictionary] = []
 ## 当前帧的判定时刻（_record_error 没显式给时间时用它）。
 var _judge_ms_now: float = 0.0
 var _bias_label: Label
+## 结算页：把本局平均偏差写进这张谱面的 offset（一次修一张，别的谱面不受影响）。
+var _apply_bias_button: Button
 ## 暂停菜单（ESC）。
 var _pause_overlay: Control = null
 var _path_judgement_toggle: CheckButton
 var _paused: bool = false
-var _pause_usec: int = 0
 
 
 func _ready() -> void:
@@ -275,12 +276,9 @@ func _set_paused(value: bool) -> void:
 	if _audio_available and _audio != null:
 		_audio.stream_paused = value
 	if value:
-		_pause_usec = Time.get_ticks_usec()
 		Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
 	else:
-		if _pause_usec > 0:
-			_start_usec += Time.get_ticks_usec() - _pause_usec
-			_pause_usec = 0
+		_clock.resume(Time.get_ticks_usec())
 		Input.set_mouse_mode(Input.MOUSE_MODE_HIDDEN)
 
 
@@ -368,6 +366,11 @@ func _build_ui() -> void:
 	_bias_label = Label.new()
 	UITheme.style_mono(_bias_label, 12, UITheme.CYAN)
 	box.add_child(_bias_label)
+	_apply_bias_button = Button.new()
+	_apply_bias_button.text = "把本局偏差写进本谱面"
+	_apply_bias_button.tooltip_text = "把平均判定偏差加进这张谱面的 offset 并存盘；只影响这一张，别的谱面不动"
+	_apply_bias_button.pressed.connect(_apply_bias_to_chart)
+	box.add_child(_apply_bias_button)
 	_results_text = RichTextLabel.new()
 	_results_text.bbcode_enabled = false
 	_results_text.fit_content = false
@@ -420,13 +423,12 @@ func _init_states() -> void:
 	_errors.clear()
 	_scatter.clear()
 	_error_sum = 0.0
-	_near_miss_logs = 0
-	_near_miss_logged_stamp = -INF
 	_auto_origin_ms = float(_app.playtest_offset_ms if _app != null else 0.0)
+	_press_assignments.clear()
 	_log.clear()
 	_combo = 0
 	_max_combo = 0
-	_ordered_notes = chart.sorted_notes()
+	_ordered_notes = _judgement_notes()
 	_dense_ids.clear()
 	for i in _ordered_notes.size():
 		var note := _ordered_notes[i]
@@ -437,9 +439,10 @@ func _init_states() -> void:
 				_dense_ids[note.id] = true
 				break
 	for note in _ordered_notes:
+		var end_chart := chart.timing.beat_to_chart_ms(note.end_beat)
 		_states[note.id] = {
 			"target_ms": chart.timing.beat_to_chart_ms(note.beat),
-			"end_ms": chart.timing.beat_to_chart_ms(note.end_beat),
+			"end_ms": end_chart,
 			"done": false,
 			"head": false,
 			"started": false,
@@ -449,6 +452,11 @@ func _init_states() -> void:
 			"tail_hit": false,
 			"path_tracker": PathTracker.for_note(note) if note.type == "path" else null,
 			"path_finish_ms": INF,
+			"path_tail_ref_chart_ms": end_chart,
+			"path_tail_ref_ms": end_chart,
+			"path_tail_end_ms": end_chart,
+			"path_tail_dwell_ms": 0.0,
+			"path_tail_perfect_early_ms": TAIL_PERFECT_MS,
 			"slide_cued": false,
 			"path_auto_index": 0,
 			"trace_started": false,
@@ -470,15 +478,40 @@ func _init_states() -> void:
 		_red_states[region.id] = {"time": 0.0, "broken": false}
 
 
+## Chains are drawn as one Path (one head, one guide ball, one tail), so they
+## are judged as one too. Child parts are folded into a synthetic root note;
+## otherwise each part would demand an invisible extra head press.
+func _judgement_notes() -> Array[Note]:
+	var by_id := {}
+	for note in chart.notes:
+		by_id[note.id] = note
+	var result: Array[Note] = []
+	for note in chart.sorted_notes():
+		if note.type == "path" and note.path_part > 0:
+			continue
+		if note.type != "path":
+			result.append(note)
+			continue
+		var chain: Array[Note] = [note]
+		var cursor: Note = note
+		var guard := 0
+		while cursor.path_next_id >= 0 and by_id.has(cursor.path_next_id) and guard < 64:
+			cursor = by_id[cursor.path_next_id]
+			chain.append(cursor)
+			guard += 1
+		result.append(Preview3D.build_path_chain_note(note, chain) if chain.size() > 1 else note)
+	result.sort_custom(func(a: Note, b: Note) -> bool: return a.beat < b.beat)
+	return result
+
+
 func _start_audio() -> void:
 	_last_chart_ms = -INF
-	_smooth_ms = 0.0
-	_clock_update_usec = 0
+	_clock = AudioClock.new()
 	var bench_audio := bench_mode and "--bench-audio" in OS.get_cmdline_user_args()
 	if bench_mode and not bench_audio:
 		_audio_available = false
 		_start_chart_ms = chart.timing.beat_to_chart_ms(start_beat)
-		_start_usec = Time.get_ticks_usec()
+		_clock.start(_start_chart_ms, Time.get_ticks_usec())
 		return
 	# 重开/重进时先停掉旧播放器，避免音频叠加。
 	if _audio != null:
@@ -494,10 +527,10 @@ func _start_audio() -> void:
 	if not path.begins_with("res://") and not path.begins_with("user://") and not path.is_absolute_path() and not chart_path.is_empty():
 		path = ChartIO.resolve_path(chart_path, path)
 	var stream := ChartIO.audio_stream_from_path(path)
-	_start_usec = Time.get_ticks_usec()
 	_start_chart_ms = chart.timing.beat_to_chart_ms(start_beat)
 	if stream == null:
 		_audio_available = false
+		_clock.start(_start_chart_ms, Time.get_ticks_usec())
 		_add_log("音频不可用，使用系统时钟继续试玩。")
 		return
 	_audio_available = true
@@ -509,8 +542,11 @@ func _start_audio() -> void:
 			AudioServer.set_bus_volume_db(music_bus, -60.0)
 	print("[audio] playtest ", path, " -> ", stream, " bus=", _audio.bus)
 	_audio.finished.connect(_finish)
-	var from_sec := maxf(0.0, (_start_chart_ms - chart.offset_ms) / 1000.0)
-	_audio.play(from_sec)
+	var lead_sec := (_start_chart_ms - chart.offset_ms) / 1000.0
+	_audio.play(maxf(0.0, lead_sec))
+	# 起播时刻交给 AudioClock：等音频真的出声后，用它自己的播放位置锚定，
+	# 不再预测「下一次 mix + 驱动延迟」（那个值一次采样就能偏 40ms）。
+	_clock.start(_start_chart_ms, Time.get_ticks_usec())
 
 
 func _process(delta: float) -> void:
@@ -553,37 +589,35 @@ func _process(delta: float) -> void:
 		_seek_presses.pop_front()
 
 
+## 驱动报告 0 的平台上用设置里的回退值（Android/Web 常见）。
+func _effective_latency() -> float:
+	if _app != null:
+		return _app.effective_latency_sec()
+	return maxf(0.0, AudioServer.get_output_latency())
+
+
 func _chart_ms() -> float:
 	if _paused:
 		return _last_chart_ms
 	var now_usec := Time.get_ticks_usec()
-	var dt := 0.0
-	if _clock_update_usec != 0:
-		dt = float(now_usec - _clock_update_usec) / 1000.0
-	_clock_update_usec = now_usec
-	var candidate := _last_chart_ms
-	if _audio_available and _audio != null and _audio.playing:
-		var stream_ms := (_audio.get_playback_position() + AudioServer.get_time_since_last_mix() - AudioServer.get_output_latency()) * 1000.0
-		candidate = stream_ms + chart.offset_ms
-		# 音频时钟只做小步校正。设备重连、VBR MP3 的播放位置估算跳变都可能一次偏几秒，
-		# 直接接受会把整段音符甩到身后（表现就是“这段完全没判定/没输入响应”）。
-		if _last_chart_ms > -INF and absf(candidate - _last_chart_ms) > 250.0:
-			candidate = _last_chart_ms + dt
-	elif _last_chart_ms > -INF:
-		# 音频不可用时沿用当前时钟按墙钟推进，绝不能跳回起点。
-		candidate = _last_chart_ms + dt
-	else:
-		candidate = _start_chart_ms + float(now_usec - _start_usec) / 1000.0
-	if not is_finite(candidate) or candidate > 1.0e9:
-		candidate = _last_chart_ms if _last_chart_ms > -INF else _start_chart_ms
-	if _last_chart_ms <= -INF:
-		_smooth_ms = candidate
-	else:
-		# 音频仍是主时钟，两帧之间用墙钟补间，最多领先 30ms；绝不后退。
-		_smooth_ms = maxf(_smooth_ms + dt, candidate)
-		_smooth_ms = minf(_smooth_ms, candidate + 30.0)
-	_last_chart_ms = maxf(_last_chart_ms, _smooth_ms)
-	return _last_chart_ms
+	var playing := _audio_available and _audio != null and _audio.playing
+	var playback := _audio.get_playback_position() if playing else 0.0
+	var mix := AudioServer.get_time_since_last_mix() if playing else 0.0
+	var latency := _effective_latency() if playing else 0.0
+	var ms := _clock.update(now_usec, playing, playback, chart.offset_ms, latency, mix)
+	# 起播锚定要把驱动延迟减掉，是一次真实的回跳；只允许这一帧不单调。
+	if _clock.consume_anchor_jump():
+		_last_chart_ms = -INF
+		_add_log("AUDIO ANCHOR @%.0fms（延迟 %.0fms，%.0fms 后冻结）" % [
+			ms, _clock.latency_ms, AudioClock.LATENCY_WINDOW_MS])
+	if not is_finite(ms) or ms > 1.0e9:
+		ms = _last_chart_ms if _last_chart_ms > -INF else _start_chart_ms
+	# Judge time must never run backwards: a tiny drift correction otherwise makes
+	# PathProgress treat every frame as a new motion segment.
+	if _last_chart_ms > -INF:
+		ms = maxf(ms, _last_chart_ms)
+	_last_chart_ms = ms
+	return ms
 
 
 ## ── AUTO 自动演示 ────────────────────────────────────────────────────────
@@ -807,6 +841,7 @@ func _toggle_auto() -> void:
 
 
 func _judge_all(ms: float, beat: float, delta: float) -> void:
+	_assign_presses(ms, beat)
 	var mouse: Vector2 = _preview.mouse_screen
 	for i in range(_judge_from, _ordered_notes.size()):
 		var note := _ordered_notes[i]
@@ -847,6 +882,7 @@ func _judge_all(ms: float, beat: float, delta: float) -> void:
 			"bell":
 				_judge_bell(note, ms, beat, mouse)
 	_judge_red(ms, beat, delta, mouse)
+	_press_assignments.clear()
 
 
 func _judge_seek(note: Note, ms: float, beat: float) -> void:
@@ -893,7 +929,7 @@ func _judge_tap(note: Note, ms: float, beat: float) -> void:
 	var target := float(state["target_ms"])
 	if ms < target - EARLY_MS:
 		return
-	var press := _take_press_for_note(target - EARLY_MS, target + HIT_WINDOW_MS, note, beat, 0.0)
+	var press := _take_assigned_press(note.id)
 	if not press.is_empty():
 		var error := float(press["time"]) - target
 		var tier := _tier_for(error)
@@ -922,7 +958,7 @@ func _judge_hold(note: Note, ms: float, beat: float) -> void:
 	if not state["started"]:
 		if ms < target - EARLY_MS:
 			return
-		var press := _take_press_for_note(target - EARLY_MS, target + HIT_WINDOW_MS, note, beat, HOLD_ARC_PAD)
+		var press := _take_assigned_press(note.id)
 		if not press.is_empty():
 			var head_error := float(press["time"]) - target
 			var head_tier := _tier_for(head_error)
@@ -967,7 +1003,6 @@ func _judge_hold(note: Note, ms: float, beat: float) -> void:
 		_preview.set_note_state(note.id, "hit", beat)
 		_register_hit(held_tier)
 		_pulse_at(note.angle, beat, _tier_color(held_tier), held_tier, note.arc_width(), "tap")
-		_sfx.play("hold_end")
 		# 提前松手不算时机样本，避免污染平均偏差和动态 offset。
 		if held_tier == "PERFECT":
 			_record_error(release_ms - end_ms, "HOLD #%d COMPLETE PERFECT" % note.id, "PERFECT")
@@ -983,7 +1018,6 @@ func _judge_hold(note: Note, ms: float, beat: float) -> void:
 		_preview.set_note_state(note.id, "hit", beat)
 		_register_hit(tier)
 		_pulse_at(note.angle, beat, _tier_color(tier), tier, note.arc_width(), "tap")
-		_sfx.play("hold_end")
 		_record_error(ms - end_ms, "HOLD #%d COMPLETE %s" % [note.id, tier], tier, ms)
 
 
@@ -1012,8 +1046,7 @@ func _judge_path(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 	if not state["head_judged"]:
 		if ms >= head_ms - EARLY_MS:
 			# 头部：鼠标实际位置贴近判定时刻的星头（不再用角度条带兜底）。
-			var press := _take_press_for_shape(head_ms - EARLY_MS, head_ms + HIT_WINDOW_MS, head_ms, note,
-				PackedVector2Array([head_point]), POSITION_TOLERANCE_PX + float(_preview.note_graphic_radius("path")))
+			var press := _take_assigned_press(note.id)
 			if not press.is_empty():
 				var head_error := float(press["time"]) - head_ms
 				var tier := _tier_for(head_error)
@@ -1046,31 +1079,43 @@ func _judge_path(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 		var tail_radius := clampf(minf(PATH_TAIL_RADIUS, chord * PATH_TAIL_RADIUS_RATIO), 56.0, PATH_TAIL_RADIUS)
 		state["path_tail_radius"] = tail_radius
 		_update_path_progress(note, state, tracker, ms, beat, mouse, tail_radius)
+		var entry_chart := float(state.get("path_tail_ref_chart_ms", tail_ms))
+		var dwell := float(state.get("path_tail_dwell_ms", 0.0))
+		var end_sample := float(state.get("path_tail_end_ms", tail_ms))
 		var finish_ms := float(state["path_finish_ms"])
 		if is_finite(finish_ms):
-			var tail_error := finish_ms - tail_ms
-			var tier := tail_tier(tail_error)
-			var quality := tracker.quality_tier()
-			if quality == "GOOD" and tier in ["PERFECT", "GREAT"]:
-				tier = "GOOD"
-			elif quality == "GREAT" and tier == "PERFECT":
-				tier = "GREAT"
+			var tail_error := finish_ms - entry_chart
+			var tier := tail_tier(tail_error, dwell)
 			state["tail_hit"] = true
 			_register_hit(tier)
 			_pulse_at(note.tail_angle, beat, _tier_color(tier), tier, note.tail_width, "path", _timing_detail(tail_error, tier))
 			_sfx.play("tail", randf_range(0.98, 1.02))
 			_add_log("PATH #%d TAIL %s" % [note.id, tier])
 			state["tail_judged"] = true
-			_write_path_input_log({"kind": "tail", "note": note.id, "tier": tier, "error_ms": tail_error, "coverage": tracker.coverage})
-		elif ms > tail_ms + HIT_WINDOW_MS:
+			tracker.mark_complete()
+			_write_path_input_log({"kind": "tail", "note": note.id, "tier": tier,
+				"error_ms": tail_error, "end_error_ms": finish_ms - tail_ms,
+				"dwell_ms": dwell, "coverage": tracker.coverage})
+		elif ms > end_sample + TAIL_GOOD_MS:
+			# 只剩最后一组没消：给 GOOD，避免“差一点白划”；差更多仍判 MISS。
+			var remaining := tracker.remaining_groups()
+			var near_complete := bool(state["head_hit"]) and remaining <= 1 and tracker.next_gate > 1
 			state["tail_hit"] = false
-			_miss_count += 1
-			_add_judgement("MISS")
-			_combo = 0
-			_pulse_at(note.tail_angle, beat, UITheme.RED, "MISS", note.tail_width)
-			_add_log("PATH #%d TAIL MISS" % note.id)
+			if near_complete:
+				_register_hit("GOOD")
+				_pulse_at(note.tail_angle, beat, _tier_color("GOOD"), "GOOD", note.tail_width, "path")
+				_add_log("PATH #%d TAIL GOOD (remaining %d)" % [note.id, remaining])
+			else:
+				_miss_count += 1
+				_add_judgement("MISS")
+				_combo = 0
+				_pulse_at(note.tail_angle, beat, UITheme.RED, "MISS", note.tail_width)
+				_add_log("PATH #%d TAIL MISS (remaining %d)" % [note.id, remaining])
 			state["tail_judged"] = true
-			_write_path_input_log({"kind": "tail", "note": note.id, "tier": "MISS", "coverage": tracker.coverage, "next": tracker.next_index})
+			_write_path_input_log({"kind": "tail", "note": note.id,
+				"tier": "GOOD" if near_complete else "MISS",
+				"coverage": tracker.coverage, "next": tracker.next_index,
+				"remaining": remaining})
 	if state["tail_judged"] and not state["done"]:
 		var head_ok := bool(state["head_hit"])
 		var tail_ok := bool(state["tail_hit"])
@@ -1094,6 +1139,17 @@ func _update_path_progress(note: Note, state: Dictionary, tracker: PathProgress,
 		return
 	var projected := _preview.path_judgement_points(tracker.points, beat)
 	var radius := tracker.contact_radius * _preview.path_judgement_scale()
+	# maimai 的尾判参考：星星进入尾区的那一刻，而不是 Slide 结束。
+	# 停留时间 dwell 用来扩展早到窗口；晚到仍按终点算，避免“跟星星走到
+	# 终点”被反判成晚。所有时间都换算到包含判定偏移的采样时钟。
+	var entry_param := tracker.tail_entry_parameter(projected, tail_radius)
+	var entry_chart := chart.timing.beat_to_chart_ms(note.beat + note.duration() * entry_param)
+	var dwell := maxf(0.0, tail_ms - entry_chart)
+	state["path_tail_ref_chart_ms"] = entry_chart
+	state["path_tail_ref_ms"] = entry_chart + offset_ms
+	state["path_tail_end_ms"] = tail_ms + offset_ms
+	state["path_tail_dwell_ms"] = dwell
+	state["path_tail_perfect_early_ms"] = TAIL_PERFECT_MS + minf(dwell * 0.25, TAIL_EXT_MAX_MS)
 	if auto_play:
 		# AUTO feeds each path separately through the same checkpoint tracker.
 		var total := maxf(0.001, note.duration())
@@ -1101,10 +1157,9 @@ func _update_path_progress(note: Note, state: Dictionary, tracker: PathProgress,
 		var q := clampf((beat - note.beat - wait) / (total - wait), 0.0, 1.0)
 		var progress := 1.0 - pow(1.0 - q, maxf(0.05, note.path_speed))
 		var finishing := ms >= tail_ms - 40.0
-		var guard := PATH_TAIL_MIN_FRACTION - tracker.contact_radius / tracker.length - 0.03
 		var index := int(state["path_auto_index"])
 		while ms >= start_ms and index < projected.size():
-			if not finishing and (float(tracker.parameters[index]) > progress or float(tracker.distances[index]) / tracker.length >= guard):
+			if not finishing and float(tracker.parameters[index]) > progress:
 				break
 			_feed_path_sample(state, tracker, projected[index], ms, projected, radius, start_ms, tail_radius)
 			index += 1
@@ -1125,8 +1180,11 @@ func _feed_path_sample(state: Dictionary, tracker: PathProgress, point: Vector2,
 	tracker.feed(point, ms, projected, radius, start_ms, radius / tracker.contact_radius)
 	if is_finite(float(state["path_finish_ms"])):
 		return
-	var tail_ms := float(state["end_ms"])
-	state["path_finish_ms"] = tracker.finish_contact(tail_ms - PATH_TAIL_SWEEP_EARLY_MS, tail_ms + HIT_WINDOW_MS, tail_radius, tail_ms, TAIL_PERFECT_MS)
+	var ref := float(state.get("path_tail_ref_ms", float(state["end_ms"])))
+	var end_sample := float(state.get("path_tail_end_ms", float(state["end_ms"])))
+	var perfect := float(state.get("path_tail_perfect_early_ms", TAIL_PERFECT_MS))
+	state["path_finish_ms"] = tracker.finish_contact(ref - maxf(PATH_TAIL_SWEEP_EARLY_MS, perfect),
+		end_sample + TAIL_GOOD_MS, tail_radius, ref, perfect)
 
 
 func _reset_path_motion() -> void:
@@ -1209,7 +1267,8 @@ func _record_path_input_frame(note: Note, state: Dictionary, tracker: PathProgre
 	var record := {"kind": "frame", "note": note.id, "time_ms": snappedf(ms, 0.01),
 		"beat": beat, "start_ms": start_ms, "offset_ms": float(_app.playtest_offset_ms if _app != null else 0.0),
 		"head_hit": state["head_hit"], "coverage": tracker.coverage, "progress": tracker.progress,
-		"next": tracker.next_index, "next_gate": tracker.next_gate, "gate_count": tracker.gates.size(), "body_ready": tracker.body_ready(),
+		"next": tracker.next_index, "next_gate": tracker.next_gate, "gate_count": tracker.group_count,
+		"tolerance": tracker.tolerance, "remaining": tracker.remaining_groups(), "body_ready": tracker.body_ready(),
 		"count": projected.size(), "cursor": _path_log_point(mouse), "target": _path_log_point(target),
 		"distance": snappedf(distance, 0.01) if is_finite(distance) else -1.0,
 		"radius": radius, "target_radius": target_radius, "target_index": next,
@@ -1232,9 +1291,7 @@ func _judge_trace(note: Note, ms: float, beat: float, delta: float, mouse: Vecto
 			return
 		var started := false
 		if note.trace_style == "slider":
-			var points := _preview.trace_screen_points(note, beat)
-			var head: Vector2 = points[0] if not points.is_empty() else mouse
-			var press := _take_key_for_point(start_ms - EARLY_MS, start_ms + HIT_WINDOW_MS, head, TRACE_HEAD_RADIUS, start_ms)
+			var press := _take_assigned_press(note.id)
 			if not press.is_empty():
 				started = true
 				_sfx.play("path", 0.94)
@@ -1367,10 +1424,7 @@ func _judge_anchor(note: Note, ms: float, beat: float) -> void:
 	var target := float(state["target_ms"])
 	if ms < target - EARLY_MS:
 		return
-	var anchor_point := _preview.note_head_screen(note, beat)
-	var anchor_tolerance := POSITION_TOLERANCE_PX + float(_preview.note_graphic_radius(note.type))
-	var press := _take_press_for_shape(target - EARLY_MS, target + HIT_WINDOW_MS, target, note,
-		PackedVector2Array([anchor_point]), anchor_tolerance)
+	var press := _take_assigned_press(note.id)
 	if not press.is_empty():
 		var anchor_error := float(press["time"]) - target
 		var tier := _tier_for(anchor_error)
@@ -1432,138 +1486,153 @@ func _pulse_at(angle_degrees: float, beat: float, color: Color, label: String, w
 		_preview.add_arc_flash(angle_degrees, width, beat, color)
 
 
-## 光标贴近某个点（Path/Trace 头）。命中里挑离 target 最近的。
-func _take_key_for_point(lo: float, hi: float, point: Vector2, radius: float, target: float = NAN) -> Dictionary:
-	var best_index := -1
-	var best_point := INF
-	var best_time := INF
-	for i in _key_presses.size():
-		var press: Dictionary = _key_presses[i]
-		var stamp := float(press.get("time", -INF))
-		if stamp < lo:
-			continue
-		if stamp > hi:
-			break
-		var press_mouse: Vector2 = press.get("mouse", Vector2.ZERO)
-		var distance := press_mouse.distance_to(point)
-		if distance > radius:
-			continue
-		# 就近分配：先比鼠标离点多近，时间只做平手裁决。
-		var time_distance := absf(stamp - target) if is_finite(target) else 0.0
-		if distance < best_point - 0.001 or (distance <= best_point + 0.001 and time_distance < best_time):
-			best_point = distance
-			best_time = time_distance
-			best_index = i
-	if best_index < 0:
-		return {}
-	var result: Dictionary = _key_presses[best_index]
-	_key_presses.remove_at(best_index)
-	return result
-
-
-## 密集流（相邻音符 ≤ 0.25 拍）用角度扇区区分：鼠标角度落在条带内即可。
-func _take_key_for_sector(lo: float, hi: float, angle: float, width: float, target: float = NAN) -> Dictionary:
-	var half := maxf(24.0, width * 0.5)
-	var best_index := -1
-	var best_angle := INF
-	var best_time := INF
-	for i in _key_presses.size():
-		var press: Dictionary = _key_presses[i]
-		var stamp := float(press.get("time", -INF))
-		if stamp < lo:
-			continue
-		if stamp > hi:
-			break
-		var press_angle := float(press.get("angle", NAN))
-		if is_nan(press_angle):
-			continue
-		# 鼠标在圈心/屏幕角落时按下的键没有方向意图，不参与密集段的方向判定。
-		if not bool(press.get("valid", true)):
-			continue
-		# 就近分配：先比方向差多少，时间只做平手裁决。
-		var delta := absf(JudgeMath.angle_delta(press_angle, angle))
-		if delta > half:
-			continue
-		var time_distance := absf(stamp - target) if is_finite(target) else 0.0
-		if delta < best_angle - 0.001 or (delta <= best_angle + 0.001 and time_distance < best_time):
-			best_angle = delta
-			best_time = time_distance
-			best_index = i
-	if best_index < 0:
-		return {}
-	var result: Dictionary = _key_presses[best_index]
-	_key_presses.remove_at(best_index)
-	return result
-
-
-## 一组候选图形的取键（Path 头 / Anchor / Trace 头）。
-## 密集流（相邻 ≤0.25 拍）只看方向：角度宽 = 稀疏段同一套（弧宽 + 容差折算），不检查半径。
-func _take_press_for_shape(lo: float, hi: float, target: float, note: Note, points: PackedVector2Array, tolerance: float, pad: float = 0.0) -> Dictionary:
+## One press belongs to the note whose timing/position fits it best. This runs
+## once per frame before any note is judged, so a tap can no longer steal the
+## press that belongs to a simultaneous slide head.
+func _assign_presses(ms: float, beat: float) -> void:
+	_press_assignments.clear()
 	if _key_presses.is_empty():
+		return
+	var targets: Array[Dictionary] = []
+	var last := mini(_ordered_notes.size(), _judge_from + 96)
+	for i in range(maxi(0, _judge_from), last):
+		var note := _ordered_notes[i]
+		var target := _press_target(note, ms, beat)
+		if not target.is_empty():
+			targets.append(target)
+	if targets.is_empty():
+		return
+	var pairs: Array[Dictionary] = []
+	for press_index in _key_presses.size():
+		var press: Dictionary = _key_presses[press_index]
+		var stamp := float(press.get("time", -INF))
+		for target in targets:
+			if stamp < float(target["lo"]) or stamp > float(target["hi"]):
+				continue
+			var match := _match_press(press, target)
+			if not bool(match.get("ok", false)):
+				continue
+			pairs.append({
+				"press": press_index,
+				"note": int(target["id"]),
+				"error": absf(stamp - float(target["target"])),
+				"distance": float(match["distance"]),
+			})
+	if pairs.is_empty():
+		return
+	pairs.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		if absf(float(a["error"]) - float(b["error"])) > 0.001:
+			return float(a["error"]) < float(b["error"])
+		return float(a["distance"]) < float(b["distance"]))
+	var used: Dictionary = {}
+	for pair in pairs:
+		var press_index := int(pair["press"])
+		var note_id := int(pair["note"])
+		if used.has(press_index) or _press_assignments.has(note_id):
+			continue
+		used[press_index] = true
+		_press_assignments[note_id] = _key_presses[press_index]
+	if used.is_empty():
+		return
+	var kept: Array[Dictionary] = []
+	for i in _key_presses.size():
+		if not used.has(i):
+			kept.append(_key_presses[i])
+	_key_presses = kept
+
+
+## What press a note is waiting for this frame, or {} when it needs none.
+func _press_target(note: Note, ms: float, beat: float) -> Dictionary:
+	if not _states.has(note.id):
 		return {}
-	if _dense_ids.has(note.id):
-		# 图形整个落在环的缺口里时没有可判的位置，别退化成"任何角度都算"。
-		if points.is_empty():
-			return {}
-		var center: Vector2 = _preview.project_design(Vector2.ZERO)
-		var ring_radius := 1.0
-		if not points.is_empty():
-			ring_radius = maxf(1.0, center.distance_to(points[points.size() / 2]))
-		var slack := rad_to_deg(tolerance / ring_radius)
-		# 点判定（Path 头 / Anchor）没有自己的弧宽，只有容差折算出来的角度。
-		var base := 0.0 if points.size() <= 1 else note.arc_width() + pad
-		return _take_key_for_sector(lo, hi, note.angle, base + 2.0 * slack, target)
-	return _take_key_near(lo, hi, points, tolerance, target)
-
-
-## Tap / Hold 头：密集流走角度扇区，其余按鼠标实际位置。
-func _take_press_for_note(lo: float, hi: float, note: Note, beat: float, pad: float = 0.0) -> Dictionary:
-	if _key_presses.is_empty():
+	var state: Dictionary = _states[note.id]
+	if bool(state.get("done", false)):
 		return {}
-	var target := float(_states[note.id]["target_ms"]) if _states.has(note.id) else (lo + hi) * 0.5
-	var points := _preview.note_live_band(note, beat, pad)
-	var tolerance := POSITION_TOLERANCE_PX + float(_preview.note_graphic_radius(note.type))
-	return _take_press_for_shape(lo, hi, target, note, points, tolerance, pad)
+	var target := float(state["target_ms"])
+	# A press is only assigned once the note is actually judgeable; otherwise an
+	# early press would be consumed while the note is still outside its window.
+	if ms < target - EARLY_MS:
+		return {}
+	# Skip notes far outside the current press pool before projecting anything.
+	if target + HIT_WINDOW_MS < ms - 60.0 or target - EARLY_MS > ms + 60.0:
+		return {}
+	match note.type:
+		"tap":
+			return _shape_target(note, target - EARLY_MS, target + HIT_WINDOW_MS, target,
+				_preview.note_live_band(note, beat, 0.0),
+				POSITION_TOLERANCE_PX + float(_preview.note_graphic_radius(note.type)), 0.0)
+		"hold":
+			if bool(state.get("started", false)):
+				return {}
+			return _shape_target(note, target - EARLY_MS, target + HIT_WINDOW_MS, target,
+				_preview.note_live_band(note, beat, HOLD_ARC_PAD),
+				POSITION_TOLERANCE_PX + float(_preview.note_graphic_radius(note.type)), HOLD_ARC_PAD)
+		"path":
+			if bool(state.get("head_judged", false)) or ms < target - EARLY_MS:
+				return {}
+			return _shape_target(note, target - EARLY_MS, target + HIT_WINDOW_MS, target,
+				PackedVector2Array([_preview.note_head_screen(note, beat)]),
+				POSITION_TOLERANCE_PX + float(_preview.note_graphic_radius("path")), 0.0)
+		"anchor":
+			return _shape_target(note, target - EARLY_MS, target + HIT_WINDOW_MS, target,
+				PackedVector2Array([_preview.note_head_screen(note, beat)]),
+				POSITION_TOLERANCE_PX + float(_preview.note_graphic_radius(note.type)), 0.0)
+		"trace":
+			if bool(state.get("trace_started", false)) or note.trace_style != "slider":
+				return {}
+			var trace := _preview.trace_screen_points(note, beat)
+			if trace.is_empty():
+				return {}
+			return {"id": note.id, "note": note, "lo": target - EARLY_MS, "hi": target + HIT_WINDOW_MS,
+				"target": target, "points": PackedVector2Array([trace[0]]),
+				"tolerance": TRACE_HEAD_RADIUS, "pad": 0.0, "dense": false}
+	return {}
 
 
-func _take_key_near(lo: float, hi: float, points: PackedVector2Array, tolerance: float, target: float = NAN) -> Dictionary:
+func _shape_target(note: Note, lo: float, hi: float, target: float, points: PackedVector2Array,
+		tolerance: float, pad: float) -> Dictionary:
+	var dense := _dense_ids.has(note.id)
+	var ring_radius := 1.0
+	if dense and not points.is_empty():
+		ring_radius = maxf(1.0, _preview.project_design(Vector2.ZERO).distance_to(points[points.size() / 2]))
+	return {"id": note.id, "note": note, "lo": lo, "hi": hi, "target": target,
+		"points": points, "tolerance": tolerance, "pad": pad, "dense": dense,
+		"ring_radius": ring_radius}
+
+
+## Pure match used both by the assignment pass and by diagnostics.
+func _match_press(press: Dictionary, target: Dictionary) -> Dictionary:
+	var note: Note = target["note"]
+	var points: PackedVector2Array = target["points"]
 	if points.is_empty():
 		return {}
-	var best := INF
-	var best_mouse := Vector2.ZERO
-	var best_index := -1
-	var best_time_distance := INF
-	for i in _key_presses.size():
-		var press: Dictionary = _key_presses[i]
-		var stamp := float(press.get("time", -INF))
-		if stamp < lo:
-			continue
-		if stamp > hi:
-			break
-		var press_mouse: Vector2 = press.get("mouse", Vector2.ZERO)
-		var distance := _distance_to_polyline(press_mouse, points)
-		if distance <= tolerance:
-			# 就近分配：先比鼠标离图形多近，时间只做平手裁决。
-			var time_distance := absf(stamp - target) if is_finite(target) else 0.0
-			if distance < best - 0.001 or (distance <= best + 0.001 and time_distance < best_time_distance):
-				best = distance
-				best_time_distance = time_distance
-				best_index = i
-			continue
-		if distance < best:
-			best = distance
-			best_mouse = press_mouse
-			_near_miss_stamp = stamp
-	if best_index >= 0:
-		var picked: Dictionary = _key_presses[best_index]
-		_key_presses.remove_at(best_index)
-		return picked
-	if best < INF and _near_miss_logs < 40 and _near_miss_stamp != _near_miss_logged_stamp:
-		_near_miss_logs += 1
-		_near_miss_logged_stamp = _near_miss_stamp
-		var mid: Vector2 = points[points.size() / 2]
-		print("[judge] 位置未命中 d=%.0f toll=%.0f mouse=(%.0f,%.0f) note=(%.0f,%.0f)" % [best, tolerance, best_mouse.x, best_mouse.y, mid.x, mid.y])
-	return {}
+	var tolerance := float(target["tolerance"])
+	var pad := float(target["pad"])
+	if bool(target["dense"]):
+		var slack := rad_to_deg(tolerance / maxf(1.0, float(target.get("ring_radius", 1.0))))
+		var half := maxf(24.0, (0.0 if points.size() <= 1 else note.arc_width() + pad + 2.0 * slack) * 0.5)
+		if not bool(press.get("valid", true)):
+			return {}
+		var press_angle := float(press.get("angle", NAN))
+		if is_nan(press_angle):
+			return {}
+		var delta := absf(JudgeMath.angle_delta(press_angle, note.angle))
+		if delta > half:
+			return {}
+		return {"ok": true, "distance": delta}
+	var mouse: Vector2 = press.get("mouse", Vector2.ZERO)
+	var distance := _distance_to_polyline(mouse, points)
+	if distance > tolerance:
+		return {}
+	return {"ok": true, "distance": distance}
+
+
+func _take_assigned_press(note_id: int) -> Dictionary:
+	var press: Variant = _press_assignments.get(note_id)
+	if press == null:
+		return {}
+	_press_assignments.erase(note_id)
+	return press
 
 
 func _distance_to_polyline(point: Vector2, points: PackedVector2Array) -> float:
@@ -1744,16 +1813,31 @@ func _tier_for(error_ms: float) -> String:
 
 
 ## 星尾档位：连续滑动有鼠标延迟，窗口比 Tap 宽一档。
-static func tail_tier(error_ms: float) -> String:
-	var error := absf(error_ms)
-	if error <= TAIL_PERFECT_MS:
-		return "PERFECT"
-	if error <= TAIL_GREAT_MS:
-		return "GREAT"
-	if error <= TAIL_GOOD_MS:
+## 尾判档位。参考点是「星星进入尾区」：
+## - 早到按 entry 算，Perfect/Great 用尾区停留/4 扩展（maimai 的 dwell 补偿）；
+## - 晚到按 end 算，避免“跟着星星走到终点”反而被判晚。
+## 这样尾区入口和终点都会落在 PERFECT，符合 maimai
+## “贴着星星划”和“等星星进最后区再划”判得一样”的设计。
+static func tail_tier(error_ms: float, dwell_ms := 0.0) -> String:
+	var dwell := maxf(0.0, dwell_ms)
+	var extension := minf(dwell * 0.25, TAIL_EXT_MAX_MS)
+	var perfect_early := TAIL_PERFECT_MS + extension
+	var great_early := maxf(TAIL_GREAT_MS + extension, perfect_early)
+	if error_ms < 0.0:
+		var early := -error_ms
+		if early <= perfect_early:
+			return "PERFECT"
+		if early <= great_early:
+			return "GREAT"
+		# maimai 的滑条早到永远不会 Miss（Fast Good）。
 		return "GOOD"
-	if error <= BAD_MS:
-		return "BAD"
+	var late := error_ms - dwell
+	if late <= TAIL_PERFECT_MS:
+		return "PERFECT"
+	if late <= TAIL_GREAT_MS:
+		return "GREAT"
+	if late <= TAIL_GOOD_MS:
+		return "GOOD"
 	return "MISS"
 
 
@@ -1947,6 +2031,15 @@ func _finish() -> void:
 			_errors.size(),
 			float(_app.playtest_offset_ms if _app != null else 0.0),
 		]
+	if _apply_bias_button != null:
+		var delta := -average_error
+		var can_apply: bool = not auto_play and _errors.size() >= 8 and absf(delta) >= 1.0 \
+			and _app != null and (not _app.set_path.is_empty() or not _app.chart_path.is_empty())
+		_apply_bias_button.disabled = not can_apply
+		_apply_bias_button.text = ("把本局偏差写进本谱面（offset %+.0fms）" % delta) if can_apply else "把本局偏差写进本谱面"
+		_apply_bias_button.tooltip_text = ("本局样本不足或偏差 <1ms，不需要改谱面" if not can_apply
+			else "这是「本局平均偏差」的反向值：谱面 offset 会从 %+.0f 变成 %+.0f；只改这一张" % [
+				float(chart.offset_ms), clampf(float(chart.offset_ms) + delta, -10000.0, 10000.0)])
 	lines.append("")
 	lines.append("事件日志（最近 24 条）：")
 	for i in range(maxi(0, _log.size() - 24), _log.size()):
@@ -1954,6 +2047,40 @@ func _finish() -> void:
 	_results_text.text = "\n".join(lines)
 	_results.visible = true
 	Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
+
+
+## 一次修一张：把「本局平均偏差」反向加到这张谱面的 offset 并存盘。
+## 玩家普遍按得偏早（bias < 0）时 offset 变大，音符相对音频提前，下次就能贴着拍子按。
+func _apply_bias_to_chart() -> void:
+	if _app == null or chart == null or _errors.size() < 8:
+		return
+	if _app.chart != chart:
+		_notify_result("谱面已换掉，未写回 offset")
+		return
+	var bias := _mean_error()
+	var offset := chart_offset_for_bias(float(chart.offset_ms), bias)
+	chart.offset_ms = offset
+	chart.timing.offset_ms = offset
+	if not _app.save_chart():
+		_notify_result("写回 offset 失败（保存被拒绝）")
+		return
+	_notify_result("谱面 offset → %+.1fms（本局偏差 %+.1fms，已保存）" % [offset, bias])
+	if _apply_bias_button != null:
+		_apply_bias_button.disabled = true
+		_apply_bias_button.text = "已写入 offset %+.0fms" % offset
+		_apply_bias_button.tooltip_text = "这一张谱面的 offset 已保存；想撤销就重新打开谱面改回去"
+
+
+## 把本局偏差换算成谱面 offset（纯函数，符号有回归测试）。
+static func chart_offset_for_bias(current_offset_ms: float, bias_ms: float) -> float:
+	return clampf(current_offset_ms - bias_ms, -10000.0, 10000.0)
+
+
+## 结算页已经在显示，往上补一行，而不是只写进看不到的 _log。
+func _notify_result(message: String) -> void:
+	_add_log(message)
+	if _results_text != null:
+		_results_text.text += "\n" + message
 
 
 func _cycle_note_skin(step: int) -> void:
