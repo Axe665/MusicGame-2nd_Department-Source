@@ -2515,18 +2515,35 @@ func test_audio_clock() -> bool:
 	before = clock.clock_ms
 	clock.update(48000, true, 0.0, 0.0, 0.0, 0.0)
 	ok(before - clock.clock_ms < 20.0, "a bad backward playback sample cannot rewind the clock")
+	# 起播：音频没出声时停在起点，出声后用播放位置锚定（不再预测下一次 mix）。
+	var waiting := AudioClock.new()
+	waiting.start(500.0, 0)
+	near(waiting.update(16000, true, 0.0, 0.0, 0.04, 0.0), 500.0, 0.01,
+		"the clock waits for the first audible sample")
 	var latency_clock := AudioClock.new()
 	latency_clock.start(1000.0, 0)
 	var with_latency := latency_clock.update(16000, true, 1.0, 100.0, 0.05, 0.0)
-	near(with_latency, 1018.5, 0.01, "latency and chart offset are applied to the audio target")
+	near(with_latency, 1050.0, 0.01, "the first audio sample anchors the clock to the stream")
+	ok(latency_clock.consume_anchor_jump(), "the anchor reports its one allowed backward jump")
+	ok(not latency_clock.consume_anchor_jump(), "the anchor jump is reported only once")
+	# 驱动延迟在 29–58ms 之间抖：冻结后不能再推着时钟走。
+	var steady := AudioClock.new()
+	steady.start(0.0, 0)
+	var steady_now := 0
+	for i in 40:
+		steady_now += 16000
+		steady.update(steady_now, true, float(steady_now) / 1000000.0, 0.0,
+			0.045 if i % 2 == 0 else 0.035, 0.0)
+	near(steady.clock_ms, float(steady_now) / 1000.0 - 40.0, 8.0,
+		"latency noise stays inside the deadband after the estimate freezes")
 	var drift := AudioClock.new()
 	drift.start(0.0, 0)
 	var now := 0
 	for i in 120:
 		now += 16000
-		drift.update(now, true, float(now) / 1000.0 + 0.050, 0.0, 0.0, 0.0)
-	ok(absf(drift.clock_ms - (float(now) / 1000.0 + 0.050)) < 3.0,
-		"a persistent 50ms drift is corrected within two seconds")
+		drift.update(now, true, float(now) / 1000000.0 + 0.050, 0.0, 0.0, 0.0)
+	ok(absf(drift.clock_ms - (float(now) / 1000.0 + 50.0)) < 3.0,
+		"the clock follows the audio stream once anchored")
 	var hitch := AudioClock.new()
 	hitch.start(0.0, 0)
 	var after_hitch := hitch.update(500000, true, 0.5, 0.0, 0.0, 0.0)

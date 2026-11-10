@@ -544,10 +544,9 @@ func _start_audio() -> void:
 	_audio.finished.connect(_finish)
 	var lead_sec := (_start_chart_ms - chart.offset_ms) / 1000.0
 	_audio.play(maxf(0.0, lead_sec))
-	# 正 offset 想从“歌曲 0 之前”起播时无法回退，就把差的那段补进起播延迟，
-	# 否则要等漂移校正慢慢拉过来（前 0.2 秒会偏）。
-	var start_delay_ms := (AudioServer.get_time_to_next_mix() + _effective_latency() - minf(0.0, lead_sec)) * 1000.0
-	_clock.start(_start_chart_ms, Time.get_ticks_usec(), start_delay_ms)
+	# 起播时刻交给 AudioClock：等音频真的出声后，用它自己的播放位置锚定，
+	# 不再预测「下一次 mix + 驱动延迟」（那个值一次采样就能偏 40ms）。
+	_clock.start(_start_chart_ms, Time.get_ticks_usec())
 
 
 func _process(delta: float) -> void:
@@ -606,6 +605,11 @@ func _chart_ms() -> float:
 	var mix := AudioServer.get_time_since_last_mix() if playing else 0.0
 	var latency := _effective_latency() if playing else 0.0
 	var ms := _clock.update(now_usec, playing, playback, chart.offset_ms, latency, mix)
+	# 起播锚定要把驱动延迟减掉，是一次真实的回跳；只允许这一帧不单调。
+	if _clock.consume_anchor_jump():
+		_last_chart_ms = -INF
+		_add_log("AUDIO ANCHOR @%.0fms（延迟 %.0fms，%.0fms 后冻结）" % [
+			ms, _clock.latency_ms, AudioClock.LATENCY_WINDOW_MS])
 	if not is_finite(ms) or ms > 1.0e9:
 		ms = _last_chart_ms if _last_chart_ms > -INF else _start_chart_ms
 	# Judge time must never run backwards: a tiny drift correction otherwise makes
