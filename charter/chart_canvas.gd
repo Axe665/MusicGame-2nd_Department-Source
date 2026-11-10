@@ -971,24 +971,25 @@ func _draw_anchor(note: Note) -> void:
 func _draw_bell(note: Note) -> void:
 	var p := Vector2(_u_to_x(note.center_u), _beat_to_y(note.beat))
 	var selected := _is_note_selected(note.id)
-	# 时间轴里的金键 = 游戏里那段弧带的俯视图：带楔形端的金条，长度跟弧宽走。
+	# 时间轴里的金键 = 游戏内那段弧带的俯视图：白壳 + 金色核心 + 尖角端。
 	var span := clampf(12.0 + note.width * 0.35, 14.0, 64.0)
 	var half := 7.0 if selected else 6.0
 	var tip := 4.5
 	if selected:
 		draw_circle(p, span * 0.5 + 9.0, Color(UITheme.KEY_YELLOW.r, UITheme.KEY_YELLOW.g, UITheme.KEY_YELLOW.b, 0.16))
-	var pts := PackedVector2Array([
+	draw_colored_polygon(_bell_hex(p, span + 4.0, half + 2.0, tip + 1.5), Color(0, 0, 0, 0.5))
+	draw_colored_polygon(_bell_hex(p, span, half, tip), Color(1, 1, 1, 0.94))
+	draw_colored_polygon(_bell_hex(p, span, half * 0.62, tip * 0.62), UITheme.KEY_YELLOW)
+	if _show_type_label(note):
+		_draw_type_label("BELL", p + Vector2(span * 0.5 + 10.0, 4.0), UITheme.KEY_YELLOW)
+
+
+func _bell_hex(p: Vector2, span: float, half: float, tip: float) -> PackedVector2Array:
+	return PackedVector2Array([
 		p + Vector2(-span * 0.5 - tip, 0.0), p + Vector2(-span * 0.5, -half),
 		p + Vector2(span * 0.5, -half), p + Vector2(span * 0.5 + tip, 0.0),
 		p + Vector2(span * 0.5, half), p + Vector2(-span * 0.5, half),
 	])
-	draw_colored_polygon(pts, UITheme.KEY_YELLOW)
-	draw_line(p + Vector2(-span * 0.5 + 2.0, -half + 2.0), p + Vector2(span * 0.5 - 2.0, -half + 2.0),
-		Color(UITheme.KEY_HILITE.r, UITheme.KEY_HILITE.g, UITheme.KEY_HILITE.b, 0.85), 1.5)
-	pts.append(pts[0])
-	draw_polyline(pts, UITheme.KEY_EDGE, 1.5, true)
-	if _show_type_label(note):
-		_draw_type_label("BELL", p + Vector2(span * 0.5 + 10.0, 4.0), UITheme.KEY_YELLOW)
 
 
 func _show_type_label(note: Note) -> bool:

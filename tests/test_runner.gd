@@ -617,7 +617,7 @@ func test_style_presets() -> bool:
 	cursor.free()
 	ok(Playtest.PATH_TAIL_RADIUS >= 180.0, "path tail judgement is forgiving")
 	ok(Playtest.TRACE_CONTACT_PX >= 50.0, "trace contact is forgiving")
-	ok(Playtest.BELL_WINDOW_MS <= 250.0, "a gold note uses a drag window, not the old collect-all window")
+	eq(Playtest.BELL_WINDOW_MS, 100.0, "a gold note uses a tight drag window")
 	ok(Preview3D.BELL_RADIAL_TOLERANCE <= 48.0, "gold note presence stays close to the band")
 	eq(Playtest.PERFECT_MS, 65.0, "perfect window tightened")
 	eq(Playtest.GREAT_MS, 115.0, "great window tightened")

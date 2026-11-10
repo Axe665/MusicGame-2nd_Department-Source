@@ -11,7 +11,7 @@ const MOUSE_TILT_DEGREES := 11.0
 ## Path / Trace 的视觉尺寸：相对旧版 ×2。只放大笔画与头尾，不改轨迹几何与判定。
 const PATH_SIZE_SCALE := 2.0
 ## 金键（Bell）：环上一段厚金键（楔形端 + 深色边 + 外半侧高光）。
-const BELL_BAND_HALF := 14.0
+const BELL_BAND_HALF := 9.0
 ## 楔形端伸出多少度。
 const BELL_KEY_TIP_DEG := 6.0
 ## 光标离弧带（含两端）多少像素内算在场。
@@ -3674,8 +3674,8 @@ func _draw_pulses(canvas: Control) -> void:
 		var fx_point := Vector2.ZERO if scaled else point
 		if kind == "path":
 			_draw_fx_path_head(canvas, fx_point, color, age)
-		elif kind == "bell":
-			_draw_fx_bell(canvas, fx_point, age)
+		elif kind == "lock":
+			_draw_fx_lock(canvas, fx_point, age)
 		elif kind == "miss":
 			_draw_fx_miss(canvas, fx_point, age, color)
 		else:
@@ -3732,29 +3732,13 @@ func _draw_fx_path_head(canvas: Control, point: Vector2, color: Color, age: floa
 	canvas.draw_circle(point, 7.0 * fade, Color(1, 1, 1, 0.95 * fade))
 
 
-func _draw_fx_bell(canvas: Control, point: Vector2, age: float) -> void:
-	# 金键命中：白闪 + 六片金色碎片 + 一圈细金环，和 Tap 的扩散环区分开。
-	var t := clampf(age / 0.42, 0.0, 1.0)
+func _draw_fx_lock(canvas: Control, point: Vector2, age: float) -> void:
+	# 在场锁定：一圈快速收束的金环，不写判定字；告诉玩家“已经算上了”。
+	var t := clampf(age / 0.18, 0.0, 1.0)
 	var fade := 1.0 - t
-	var flash := clampf(1.0 - age / 0.12, 0.0, 1.0)
-	if flash > 0.0:
-		canvas.draw_circle(point, 10.0 + 26.0 * flash, Color(UITheme.KEY_YELLOW.r, UITheme.KEY_YELLOW.g, UITheme.KEY_YELLOW.b, 0.22 * flash))
-		canvas.draw_circle(point, 5.0 + 9.0 * flash, Color(1, 1, 1, 0.95 * flash))
-	for i in 6:
-		var a := TAU * float(i) / 6.0 + 0.35
-		var dir := Vector2(cos(a), sin(a))
-		var n := Vector2(-dir.y, dir.x)
-		var d := 10.0 + 48.0 * (1.0 - pow(1.0 - t, 2.2))
-		var p := point + dir * d
-		var s := 7.0 - 4.0 * t
-		var shard := PackedVector2Array([
-			p + n * s * 0.35, p + dir * s, p - n * s * 0.35, p - dir * s * 0.7,
-		])
-		canvas.draw_colored_polygon(shard, Color(UITheme.KEY_YELLOW.r, UITheme.KEY_YELLOW.g, UITheme.KEY_YELLOW.b, 0.9 * fade))
-		shard.append(shard[0])
-		canvas.draw_polyline(shard, Color(1, 1, 0.92, 0.75 * fade), 1.2, false)
-	canvas.draw_arc(point, 16.0 + 52.0 * t, 0.0, TAU, 32,
-		Color(UITheme.KEY_YELLOW.r, UITheme.KEY_YELLOW.g, UITheme.KEY_YELLOW.b, 0.55 * fade), 1.5 + 2.0 * fade, false)
+	canvas.draw_arc(point, lerpf(30.0, 12.0, t), 0.0, TAU, 32,
+		Color(UITheme.KEY_YELLOW.r, UITheme.KEY_YELLOW.g, UITheme.KEY_YELLOW.b, 0.9 * fade), 2.0 + 2.0 * fade, false)
+	canvas.draw_circle(point, 3.0 * fade, Color(1, 1, 1, 0.85 * fade))
 
 
 func _draw_fx_miss(canvas: Control, point: Vector2, age: float, color: Color) -> void:
@@ -4074,27 +4058,20 @@ func _draw_bell(canvas: Control, chart: Chart, note: Note, t: float) -> void:
 	var q := lerpf(Note.SPAWN_LENGTH_RATIO, 1.0, _approach(chart, note.beat, t))
 	var half := BELL_BAND_HALF * _note_scale() * float(_skin()["scale"])
 	var breathe := 0.5 + 0.5 * sin(float(Time.get_ticks_msec()) / 1000.0 * 2.4)
-	var halo := _bell_shape(note, t, q, -half - 7.0 - 3.0 * breathe, half + 7.0 + 3.0 * breathe, BELL_KEY_TIP_DEG + 1.6)
+	# 和 Tap / Hold 同一套语言：白色外壳 + 彩色核心，只把端部做成尖角。
+	var halo := _bell_shape(note, t, q, -half - 5.0, half + 5.0, BELL_KEY_TIP_DEG + 1.0)
 	if halo.size() >= 3:
-		canvas.draw_colored_polygon(halo, Color(UITheme.KEY_YELLOW.r, UITheme.KEY_YELLOW.g, UITheme.KEY_YELLOW.b, 0.10 + 0.07 * breathe))
-	var rim := _bell_shape(note, t, q, -half - 3.5, half + 3.5, BELL_KEY_TIP_DEG + 1.2)
-	if rim.size() >= 3:
-		canvas.draw_colored_polygon(rim, UITheme.KEY_EDGE)
-	var body := _bell_shape(note, t, q, -half, half, BELL_KEY_TIP_DEG)
-	if body.size() < 3:
+		canvas.draw_colored_polygon(halo, Color(UITheme.KEY_YELLOW.r, UITheme.KEY_YELLOW.g, UITheme.KEY_YELLOW.b, 0.07 + 0.05 * breathe))
+	var shadow := _bell_shape(note, t, q, -half - 2.0, half + 2.0, BELL_KEY_TIP_DEG + 0.8)
+	if shadow.size() >= 3:
+		canvas.draw_colored_polygon(shadow, Color(0, 0, 0, 0.55))
+	var shell := _bell_shape(note, t, q, -half, half, BELL_KEY_TIP_DEG)
+	if shell.size() < 3:
 		return
-	canvas.draw_colored_polygon(body, UITheme.KEY_YELLOW)
-	# 内侧深金斜面：让键读成有厚度的实体，而不是一条涂黄的线。
-	var bevel := _bell_shape(note, t, q, -half * 0.98, -half * 0.12, BELL_KEY_TIP_DEG * 0.55)
-	if bevel.size() >= 3:
-		canvas.draw_colored_polygon(bevel, Color(UITheme.KEY_DEEP.r, UITheme.KEY_DEEP.g, UITheme.KEY_DEEP.b, 0.55))
-	# 外侧乳白高光（窄） + 最外缘一条白线。
-	var gloss := _bell_shape(note, t, q, half * 0.22, half * 0.86, BELL_KEY_TIP_DEG * 0.5)
-	if gloss.size() >= 3:
-		canvas.draw_colored_polygon(gloss, Color(UITheme.KEY_HILITE.r, UITheme.KEY_HILITE.g, UITheme.KEY_HILITE.b, 0.88))
-	var spec := _bell_shape(note, t, q, half * 0.90, half * 0.99, BELL_KEY_TIP_DEG * 0.25)
-	if spec.size() >= 3:
-		canvas.draw_colored_polygon(spec, Color(1, 1, 1, 0.85))
+	canvas.draw_colored_polygon(shell, Color(1, 1, 1, 0.94))
+	var core := _bell_shape(note, t, q, -half * 0.62, half * 0.62, BELL_KEY_TIP_DEG * 0.62)
+	if core.size() >= 3:
+		canvas.draw_colored_polygon(core, UITheme.KEY_YELLOW)
 
 
 ## 金键的形状：两条同心弧 + 两端楔形尖。lo/hi 是相对判定环的像素偏移。

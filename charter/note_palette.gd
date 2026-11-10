@@ -154,7 +154,7 @@ func _draw_icon(type: String, center: Vector2, r: float, color: Color) -> void:
 			draw_line(center + Vector2(0, -r * 0.35), center + Vector2(0, r * 0.2), color, 1.5, true)
 			draw_line(center + Vector2(0, r * 0.2), center + Vector2(r * 0.3, r * 0.45), color, 1.5, true)
 		"bell":
-			# 金键：楔形端键身 + 深色边 + 乳白高光。
+			# 金键：白壳 + 金色核心 + 尖角端（和 Tap/Hold 同一套语言）。
 			var kw := r * 0.86
 			var kh := r * 0.62
 			var tip := r * 0.26
@@ -163,13 +163,15 @@ func _draw_icon(type: String, center: Vector2, r: float, color: Color) -> void:
 				center + Vector2(kw, -kh), center + Vector2(kw + tip, 0.0),
 				center + Vector2(kw, kh), center + Vector2(-kw, kh),
 			])
-			var outer := PackedVector2Array()
+			var shell := PackedVector2Array()
 			for p in key:
-				outer.append(center + (p - center) * 1.16)
-			draw_colored_polygon(outer, UITheme.KEY_EDGE)
-			draw_colored_polygon(key, UITheme.KEY_YELLOW)
-			draw_line(center + Vector2(-kw + 2.0, -kh + 2.0), center + Vector2(kw - 2.0, -kh + 2.0),
-				Color(UITheme.KEY_HILITE.r, UITheme.KEY_HILITE.g, UITheme.KEY_HILITE.b, 0.9), 2.0)
+				shell.append(center + (p - center) * 1.16)
+			draw_colored_polygon(shell, Color(0, 0, 0, 0.5))
+			draw_colored_polygon(key, Color(1, 1, 1, 0.94))
+			var core := PackedVector2Array()
+			for p in key:
+				core.append(center + (p - center) * 0.62)
+			draw_colored_polygon(core, UITheme.KEY_YELLOW)
 		"limit":
 			draw_arc(center, r * 0.9, -PI * 0.8, PI * 0.1, 20, color, 7.0, true)
 			draw_line(center + Vector2(r * 0.3, -r * 0.9), center + Vector2(r * 0.3, r * 0.9), Color(color.r, color.g, color.b, 0.55), 1.5)
