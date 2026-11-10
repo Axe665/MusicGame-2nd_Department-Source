@@ -488,7 +488,7 @@ func _test_bell_judgement() -> void:
 	check(not legacy.is_empty(), "a legacy center bell still has a ring shape")
 	check(not run._preview.bell_contains(dot, 4.0, center), "a legacy center bell is no longer judged at the center")
 	check(run._preview.bell_contains(dot, 4.0, legacy["center"]), "a legacy center bell is judged on the ring")
-	run._judge_bell(band, target - 199.0, beat, point)
+	run._judge_bell(band, target - 99.0, beat, point)
 	check(bool(run._states[1]["armed"]) and not bool(run._states[1]["done"]),
 		"an early sweep only arms the gold note")
 	run._judge_bell(band, target, beat, point)
@@ -507,10 +507,10 @@ func _test_bell_judgement() -> void:
 	miss.set_process(false)
 	miss._preview.prepare_playtest_frame(beat, 0.0)
 	var far := point + (point - center) * 2.0
-	miss._judge_bell(band, target - 201.0, beat, far)
-	miss._judge_bell(band, target + 199.0, beat, far)
+	miss._judge_bell(band, target - 101.0, beat, far)
+	miss._judge_bell(band, target + 99.0, beat, far)
 	check(not bool(miss._states[1]["done"]), "the late window is still open")
-	miss._judge_bell(band, target + 201.0, beat, far)
+	miss._judge_bell(band, target + 101.0, beat, far)
 	check(bool(miss._states[1]["done"]) and miss._miss_count == 1, "an absent gold note misses after the window")
 	check(int(miss._tier_counts["MISS"]) == 1, "a missed gold note is judged")
 	check(miss._combo == 0, "a missed gold note breaks combo")

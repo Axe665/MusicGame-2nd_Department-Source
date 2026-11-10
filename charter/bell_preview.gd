@@ -29,20 +29,13 @@ func _draw() -> void:
 
 
 func _key(p: Vector2, span: float, half: float) -> void:
-	var tip := 7.0
-	_poly(p, span, half + 6.0, tip + 4.0, Color(UITheme.KEY_YELLOW.r, UITheme.KEY_YELLOW.g, UITheme.KEY_YELLOW.b, 0.12))
-	_poly(p, span, half + 3.0, tip + 2.0, UITheme.KEY_EDGE)
-	_poly(p, span, half, tip, UITheme.KEY_YELLOW)
-	# 外半侧高光：和游戏里一致，不做 Tap 那种白描边。
-	draw_colored_polygon(PackedVector2Array([
-		p + Vector2(-span * 0.5, -half * 0.86), p + Vector2(span * 0.5, -half * 0.86),
-		p + Vector2(span * 0.5, -half * 0.20), p + Vector2(-span * 0.5, -half * 0.20),
-	]), Color(UITheme.KEY_HILITE.r, UITheme.KEY_HILITE.g, UITheme.KEY_HILITE.b, 0.88))
+	_bar(p, span, half + 5.0, Color(UITheme.KEY_YELLOW.r, UITheme.KEY_YELLOW.g, UITheme.KEY_YELLOW.b, 0.10))
+	_bar(p, span, half + 2.0, Color(0, 0, 0, 0.5))
+	_bar(p, span, half, Color(1, 1, 1, 0.94))
+	_bar(p, span, half * 0.62, UITheme.KEY_YELLOW)
 
 
-func _poly(p: Vector2, span: float, half: float, tip: float, color: Color) -> void:
-	draw_colored_polygon(PackedVector2Array([
-		p + Vector2(-span * 0.5 - tip, 0.0), p + Vector2(-span * 0.5, -half),
-		p + Vector2(span * 0.5, -half), p + Vector2(span * 0.5 + tip, 0.0),
-		p + Vector2(span * 0.5, half), p + Vector2(-span * 0.5, half),
-	]), color)
+func _bar(p: Vector2, span: float, half: float, color: Color) -> void:
+	draw_rect(Rect2(p + Vector2(-span * 0.5, -half), Vector2(span, half * 2.0)), color)
+	draw_circle(p + Vector2(-span * 0.5, 0.0), half, color)
+	draw_circle(p + Vector2(span * 0.5, 0.0), half, color)

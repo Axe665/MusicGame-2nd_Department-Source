@@ -481,7 +481,7 @@
     border: "#2A2F3A", ink: "#F2F0EA", muted: "#9AA0AC",
     accent: "#FFDE00", coral: "#F2583E", pink: "#FF6FAE", cyan: "#5FD8CF",
     gold: "#F0C36A", mint: "#6FE3A8", violet: "#9C8CFF", red: "#D94B3D",
-    key: "#FFD84D", keyHi: "#FFF6D2", keyEdge: "#2A1E05"
+    key: "#FFD84D"
   };
 
   const SKINS = {
@@ -685,22 +685,19 @@
     ctx.restore();
   }
 
-  // 金键：亮黄键身 + 乳白高光 + 深褐边（和游戏内、时间轴同一套语言）。
+  // 金键：白壳 + 金色核心 + 圆头（和 Tap/Hold 同一套语言）。
   function bell(ctx, x, y, r, skin, alpha = 1) {
     ctx.save();
     ctx.globalAlpha = alpha;
-    const w = r * 1.9, h = r * 1.55, cut = r * 0.42;
-    const key = (w2, h2) => [
-      { x: x - w2 + cut, y: y - h2 }, { x: x + w2 - cut, y: y - h2 },
-      { x: x + w2, y: y }, { x: x + w2 - cut, y: y + h2 },
-      { x: x - w2 + cut, y: y + h2 }, { x: x - w2, y: y }
-    ];
-    ctx.fillStyle = rgba(PALETTE.key, 0.12);
+    const w = r * 1.9, h = r * 1.55;
+    const pill = (w2, h2) => {
+      ctx.beginPath(); ctx.roundRect(x - w2, y - h2, w2 * 2, h2 * 2, h2); ctx.fill();
+    };
+    ctx.fillStyle = rgba(PALETTE.key, 0.10);
     ctx.beginPath(); ctx.arc(x, y, r * 2.2, 0, Math.PI * 2); ctx.fill();
-    poly(ctx, key(w + 3, h + 3)); ctx.fillStyle = PALETTE.keyEdge; ctx.fill();
-    poly(ctx, key(w, h)); ctx.fillStyle = PALETTE.key; ctx.fill();
-    ctx.fillStyle = "rgba(255,246,210,0.9)";
-    ctx.fillRect(x - w + cut * 0.5, y - h * 0.76, (w - cut * 0.5) * 2, h * 0.52);
+    ctx.fillStyle = "rgba(0,0,0,0.55)"; pill(w + 3, h + 3);
+    ctx.fillStyle = "rgba(255,255,255,0.94)"; pill(w, h);
+    ctx.fillStyle = PALETTE.key; pill(w * 0.62, h * 0.62);
     ctx.restore();
   }
 

@@ -479,7 +479,7 @@ func _build_note_page_for(page: VBoxContainer, note: Note) -> void:
 			_active_note.radius = value
 	)
 	_note_widgets["bell_r"] = br
-	_label(bell, "厚金键：楔形端 + 深色边 + 外半侧高光；光标贴住即算在场，不用点。「弧宽」决定可见与判定长度。", 11, UITheme.MUTED)
+	_label(bell, "金键：白描边 + 金色核心 + 圆头；光标贴住即算在场（±100ms，触碰会立刻锁定），不用点。「弧宽」决定可见与判定长度。", 11, UITheme.MUTED)
 	var bell_preview := BellPreviewScript.new()
 	bell_preview.name = "BellShapePreview"
 	bell_preview.set_arc_width(note.width)

@@ -17,8 +17,8 @@ const EARLY_MS := 115.0
 const PRESS_KEEP_MS := 34.0
 ## 同一个键 50ms 内的重复按下只算一次（手抖双击）。
 const KEY_DEBOUNCE_MS := 50.0
-## 金键（黄键式）：判定线前后各 200ms 内光标在场就算，到线才结算。
-const BELL_WINDOW_MS := 200.0
+## 金键（黄键式）：判定线前后各 100ms 内光标在场就算，到线才结算。
+const BELL_WINDOW_MS := 100.0
 const RED_LIMIT_SEC := 0.2
 const PATH_TAIL_RADIUS := 192.0
 ## 尾判半径最多占“头到尾直线距离”的多少（短滑条要跟着缩）。
@@ -1397,6 +1397,9 @@ func _judge_bell(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 	# 黄键式：窗口内光标在场只是“预备”，不提前结算，音符不会提前消失。
 	if not bool(state.get("armed", false)) and _preview.bell_contains(note, beat, mouse):
 		state["armed"] = true
+		var lock: Dictionary = _preview.bell_screen(note, beat)
+		if not lock.is_empty():
+			_preview.add_hit_pulse(lock["center"], UITheme.KEY_YELLOW, "", "lock")
 	if ms < target:
 		return
 	if bool(state.get("armed", false)):
