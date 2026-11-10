@@ -106,6 +106,12 @@ func _selected_type() -> String:
 	return ""
 
 
+func _bell_bar(center: Vector2, half_w: float, half_h: float, color: Color) -> void:
+	draw_rect(Rect2(center + Vector2(-half_w, -half_h), Vector2(half_w * 2.0, half_h * 2.0)), color)
+	draw_circle(center + Vector2(-half_w, 0.0), half_h, color)
+	draw_circle(center + Vector2(half_w, 0.0), half_h, color)
+
+
 func _draw_icon(type: String, center: Vector2, r: float, color: Color) -> void:
 	match type:
 		"tap":
@@ -154,24 +160,12 @@ func _draw_icon(type: String, center: Vector2, r: float, color: Color) -> void:
 			draw_line(center + Vector2(0, -r * 0.35), center + Vector2(0, r * 0.2), color, 1.5, true)
 			draw_line(center + Vector2(0, r * 0.2), center + Vector2(r * 0.3, r * 0.45), color, 1.5, true)
 		"bell":
-			# 金键：白壳 + 金色核心 + 尖角端（和 Tap/Hold 同一套语言）。
+			# 金键：白壳 + 金色核心 + 圆头（和 Tap/Hold 同一套语言）。
 			var kw := r * 0.86
 			var kh := r * 0.62
-			var tip := r * 0.26
-			var key := PackedVector2Array([
-				center + Vector2(-kw - tip, 0.0), center + Vector2(-kw, -kh),
-				center + Vector2(kw, -kh), center + Vector2(kw + tip, 0.0),
-				center + Vector2(kw, kh), center + Vector2(-kw, kh),
-			])
-			var shell := PackedVector2Array()
-			for p in key:
-				shell.append(center + (p - center) * 1.16)
-			draw_colored_polygon(shell, Color(0, 0, 0, 0.5))
-			draw_colored_polygon(key, Color(1, 1, 1, 0.94))
-			var core := PackedVector2Array()
-			for p in key:
-				core.append(center + (p - center) * 0.62)
-			draw_colored_polygon(core, UITheme.KEY_YELLOW)
+			_bell_bar(center + Vector2(0, 2), kw + 2.0, kh + 2.0, Color(0, 0, 0, 0.5))
+			_bell_bar(center, kw, kh, Color(1, 1, 1, 0.94))
+			_bell_bar(center, kw * 0.62, kh * 0.62, UITheme.KEY_YELLOW)
 		"limit":
 			draw_arc(center, r * 0.9, -PI * 0.8, PI * 0.1, 20, color, 7.0, true)
 			draw_line(center + Vector2(r * 0.3, -r * 0.9), center + Vector2(r * 0.3, r * 0.9), Color(color.r, color.g, color.b, 0.55), 1.5)

@@ -29,16 +29,13 @@ func _draw() -> void:
 
 
 func _key(p: Vector2, span: float, half: float) -> void:
-	var tip := 7.0
-	_poly(p, span, half + 5.0, tip + 3.0, Color(UITheme.KEY_YELLOW.r, UITheme.KEY_YELLOW.g, UITheme.KEY_YELLOW.b, 0.10))
-	_poly(p, span, half + 2.0, tip + 1.5, Color(0, 0, 0, 0.5))
-	_poly(p, span, half, tip, Color(1, 1, 1, 0.94))
-	_poly(p, span, half * 0.62, tip * 0.62, UITheme.KEY_YELLOW)
+	_bar(p, span, half + 5.0, Color(UITheme.KEY_YELLOW.r, UITheme.KEY_YELLOW.g, UITheme.KEY_YELLOW.b, 0.10))
+	_bar(p, span, half + 2.0, Color(0, 0, 0, 0.5))
+	_bar(p, span, half, Color(1, 1, 1, 0.94))
+	_bar(p, span, half * 0.62, UITheme.KEY_YELLOW)
 
 
-func _poly(p: Vector2, span: float, half: float, tip: float, color: Color) -> void:
-	draw_colored_polygon(PackedVector2Array([
-		p + Vector2(-span * 0.5 - tip, 0.0), p + Vector2(-span * 0.5, -half),
-		p + Vector2(span * 0.5, -half), p + Vector2(span * 0.5 + tip, 0.0),
-		p + Vector2(span * 0.5, half), p + Vector2(-span * 0.5, half),
-	]), color)
+func _bar(p: Vector2, span: float, half: float, color: Color) -> void:
+	draw_rect(Rect2(p + Vector2(-span * 0.5, -half), Vector2(span, half * 2.0)), color)
+	draw_circle(p + Vector2(-span * 0.5, 0.0), half, color)
+	draw_circle(p + Vector2(span * 0.5, 0.0), half, color)

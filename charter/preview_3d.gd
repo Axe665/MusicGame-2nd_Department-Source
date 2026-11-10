@@ -10,10 +10,8 @@ const PREVIEW_MARGIN := 1.24
 const MOUSE_TILT_DEGREES := 11.0
 ## Path / Trace 的视觉尺寸：相对旧版 ×2。只放大笔画与头尾，不改轨迹几何与判定。
 const PATH_SIZE_SCALE := 2.0
-## 金键（Bell）：环上一段厚金键（楔形端 + 深色边 + 外半侧高光）。
-const BELL_BAND_HALF := 9.0
-## 楔形端伸出多少度。
-const BELL_KEY_TIP_DEG := 6.0
+## 金键（Bell）：环上一段白描边金键（圆头 + 金色核心 + 细金光环）。
+const BELL_BAND_HALF := 10.0
 ## 光标离弧带（含两端）多少像素内算在场。
 const BELL_RADIAL_TOLERANCE := 40.0
 ## 手工放的 Bell 弧宽兜底；导入的 Touch 都是 45°。
@@ -4052,30 +4050,40 @@ func _draw_diamond(canvas: Control, point: Vector2, radius: float, color: Color)
 	canvas.draw_circle(point, maxf(1.2, radius * 0.14), Color(1, 1, 1, 0.92))
 
 
-## 金键：环上一段厚金键（楔形端 + 深边 + 外半侧高光）。所有 Bell 都在判定环上。
+## 金键：环上一段白描边金键（圆头 + 金色核心）。所有 Bell 都在判定环上。
 ## 和 Tap 的白描边胶囊刻意相反：深褐边、亮黄体、更厚，高速下靠轮廓就能分开。
 func _draw_bell(canvas: Control, chart: Chart, note: Note, t: float) -> void:
 	var q := lerpf(Note.SPAWN_LENGTH_RATIO, 1.0, _approach(chart, note.beat, t))
 	var half := BELL_BAND_HALF * _note_scale() * float(_skin()["scale"])
 	var breathe := 0.5 + 0.5 * sin(float(Time.get_ticks_msec()) / 1000.0 * 2.4)
-	# 和 Tap / Hold 同一套语言：白色外壳 + 彩色核心，只把端部做成尖角。
-	var halo := _bell_shape(note, t, q, -half - 5.0, half + 5.0, BELL_KEY_TIP_DEG + 1.0)
-	if halo.size() >= 3:
-		canvas.draw_colored_polygon(halo, Color(UITheme.KEY_YELLOW.r, UITheme.KEY_YELLOW.g, UITheme.KEY_YELLOW.b, 0.07 + 0.05 * breathe))
-	var shadow := _bell_shape(note, t, q, -half - 2.0, half + 2.0, BELL_KEY_TIP_DEG + 0.8)
-	if shadow.size() >= 3:
-		canvas.draw_colored_polygon(shadow, Color(0, 0, 0, 0.55))
-	var shell := _bell_shape(note, t, q, -half, half, BELL_KEY_TIP_DEG)
-	if shell.size() < 3:
+	# 和 Tap / Hold 同一套语言：白色外壳 + 彩色核心，两端圆头。
+	_bell_capsule(canvas, note, t, q, -half - 5.0, half + 5.0,
+		Color(UITheme.KEY_YELLOW.r, UITheme.KEY_YELLOW.g, UITheme.KEY_YELLOW.b, 0.07 + 0.05 * breathe))
+	_bell_capsule(canvas, note, t, q, -half - 2.0, half + 2.0, Color(0, 0, 0, 0.55))
+	_bell_capsule(canvas, note, t, q, -half, half, Color(1, 1, 1, 0.94))
+	_bell_capsule(canvas, note, t, q, -half * 0.62, half * 0.62, UITheme.KEY_YELLOW)
+
+
+## 弧带 + 两端圆头：画成一根沿环的胶囊。
+func _bell_capsule(canvas: Control, note: Note, beat: float, q: float, lo: float, hi: float, color: Color) -> void:
+	var chart := get_chart()
+	if chart == null:
 		return
-	canvas.draw_colored_polygon(shell, Color(1, 1, 1, 0.94))
-	var core := _bell_shape(note, t, q, -half * 0.62, half * 0.62, BELL_KEY_TIP_DEG * 0.62)
-	if core.size() >= 3:
-		canvas.draw_colored_polygon(core, UITheme.KEY_YELLOW)
+	var poly := _bell_shape(note, beat, q, lo, hi)
+	if poly.size() >= 3:
+		canvas.draw_colored_polygon(poly, color)
+	var ring := maxf(_ring_radius_px(beat), 1.0)
+	var mid := maxf(0.0, (1.0 + (lo + hi) * 0.5 / ring) * q)
+	var width := maxf(note.width, BELL_MIN_WIDTH)
+	var cap := absf(hi - lo) * 0.5
+	for a in [note.center_u * 360.0 - width * 0.5, note.center_u * 360.0 + width * 0.5]:
+		var p := _bell_ring_point(chart, a, beat, mid)
+		if p.is_finite():
+			canvas.draw_circle(p, cap, color)
 
 
-## 金键的形状：两条同心弧 + 两端楔形尖。lo/hi 是相对判定环的像素偏移。
-func _bell_shape(note: Note, beat: float, q: float, lo: float, hi: float, tip_deg: float) -> PackedVector2Array:
+## 金键的形状：两条同心弧。lo/hi 是相对判定环的像素偏移，圆头由 _bell_capsule 补。
+func _bell_shape(note: Note, beat: float, q: float, lo: float, hi: float) -> PackedVector2Array:
 	var chart := get_chart()
 	var out := PackedVector2Array()
 	if chart == null:
@@ -4087,21 +4095,14 @@ func _bell_shape(note: Note, beat: float, q: float, lo: float, hi: float, tip_de
 	var a1 := note.center_u * 360.0 + width * 0.5
 	var hi_scale := maxf(0.0, (1.0 + hi / ring) * q)
 	var lo_scale := maxf(0.0, (1.0 + lo / ring) * q)
-	var tip_scale := maxf(0.0, (1.0 + (lo + hi) * 0.5 / ring) * q)
 	for i in steps + 1:
 		var p := _bell_ring_point(chart, a0 + width * float(i) / float(steps), beat, hi_scale)
 		if p.is_finite():
 			out.append(p)
-	var tip_hi := _bell_ring_point(chart, a1 + tip_deg, beat, tip_scale)
-	if tip_hi.is_finite():
-		out.append(tip_hi)
 	for i in steps + 1:
 		var p := _bell_ring_point(chart, a1 - width * float(i) / float(steps), beat, lo_scale)
 		if p.is_finite():
 			out.append(p)
-	var tip_lo := _bell_ring_point(chart, a0 - tip_deg, beat, tip_scale)
-	if tip_lo.is_finite():
-		out.append(tip_lo)
 	return out
 
 
