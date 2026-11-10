@@ -23,8 +23,6 @@ const PATH_TAIL_RADIUS := 192.0
 ## 尾判半径最多占“头到尾直线距离”的多少（短滑条要跟着缩）。
 const PATH_TAIL_RADIUS_RATIO := 0.42
 const PathTracker = preload("res://core/path_progress.gd")
-## 实际覆盖至少 80%，并按顺序通过主要区域，才取得尾判资格。
-const PATH_TAIL_MIN_FRACTION := PathTracker.REQUIRED_COVERAGE
 const PATH_INPUT_CAPACITY := 2048
 const PATH_LOG_LIMIT_BYTES := 4 * 1024 * 1024
 ## 尾区最早接受的接触时间；早到后停留可等到 PERFECT 窗口。
@@ -1050,11 +1048,6 @@ func _judge_path(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 		if is_finite(finish_ms):
 			var tail_error := finish_ms - tail_ms
 			var tier := tail_tier(tail_error)
-			var quality := tracker.quality_tier()
-			if quality == "GOOD" and tier in ["PERFECT", "GREAT"]:
-				tier = "GOOD"
-			elif quality == "GREAT" and tier == "PERFECT":
-				tier = "GREAT"
 			state["tail_hit"] = true
 			_register_hit(tier)
 			_pulse_at(note.tail_angle, beat, _tier_color(tier), tier, note.tail_width, "path", _timing_detail(tail_error, tier))
@@ -1063,14 +1056,25 @@ func _judge_path(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 			state["tail_judged"] = true
 			_write_path_input_log({"kind": "tail", "note": note.id, "tier": tier, "error_ms": tail_error, "coverage": tracker.coverage})
 		elif ms > tail_ms + HIT_WINDOW_MS:
+			# 只剩最后一组没消：给 GOOD，避免“差一点白划”；差更多仍判 MISS。
+			var remaining := tracker.remaining_groups()
+			var near_complete := bool(state["head_hit"]) and remaining <= 1
 			state["tail_hit"] = false
-			_miss_count += 1
-			_add_judgement("MISS")
-			_combo = 0
-			_pulse_at(note.tail_angle, beat, UITheme.RED, "MISS", note.tail_width)
-			_add_log("PATH #%d TAIL MISS" % note.id)
+			if near_complete:
+				_register_hit("GOOD")
+				_pulse_at(note.tail_angle, beat, _tier_color("GOOD"), "GOOD", note.tail_width, "path")
+				_add_log("PATH #%d TAIL GOOD (remaining %d)" % [note.id, remaining])
+			else:
+				_miss_count += 1
+				_add_judgement("MISS")
+				_combo = 0
+				_pulse_at(note.tail_angle, beat, UITheme.RED, "MISS", note.tail_width)
+				_add_log("PATH #%d TAIL MISS (remaining %d)" % [note.id, remaining])
 			state["tail_judged"] = true
-			_write_path_input_log({"kind": "tail", "note": note.id, "tier": "MISS", "coverage": tracker.coverage, "next": tracker.next_index})
+			_write_path_input_log({"kind": "tail", "note": note.id,
+				"tier": "GOOD" if near_complete else "MISS",
+				"coverage": tracker.coverage, "next": tracker.next_index,
+				"remaining": remaining})
 	if state["tail_judged"] and not state["done"]:
 		var head_ok := bool(state["head_hit"])
 		var tail_ok := bool(state["tail_hit"])
@@ -1101,10 +1105,9 @@ func _update_path_progress(note: Note, state: Dictionary, tracker: PathProgress,
 		var q := clampf((beat - note.beat - wait) / (total - wait), 0.0, 1.0)
 		var progress := 1.0 - pow(1.0 - q, maxf(0.05, note.path_speed))
 		var finishing := ms >= tail_ms - 40.0
-		var guard := PATH_TAIL_MIN_FRACTION - tracker.contact_radius / tracker.length - 0.03
 		var index := int(state["path_auto_index"])
 		while ms >= start_ms and index < projected.size():
-			if not finishing and (float(tracker.parameters[index]) > progress or float(tracker.distances[index]) / tracker.length >= guard):
+			if not finishing and float(tracker.parameters[index]) > progress:
 				break
 			_feed_path_sample(state, tracker, projected[index], ms, projected, radius, start_ms, tail_radius)
 			index += 1
@@ -1209,7 +1212,8 @@ func _record_path_input_frame(note: Note, state: Dictionary, tracker: PathProgre
 	var record := {"kind": "frame", "note": note.id, "time_ms": snappedf(ms, 0.01),
 		"beat": beat, "start_ms": start_ms, "offset_ms": float(_app.playtest_offset_ms if _app != null else 0.0),
 		"head_hit": state["head_hit"], "coverage": tracker.coverage, "progress": tracker.progress,
-		"next": tracker.next_index, "next_gate": tracker.next_gate, "gate_count": tracker.gates.size(), "body_ready": tracker.body_ready(),
+		"next": tracker.next_index, "next_gate": tracker.next_gate, "gate_count": tracker.group_count,
+		"tolerance": tracker.tolerance, "remaining": tracker.remaining_groups(), "body_ready": tracker.body_ready(),
 		"count": projected.size(), "cursor": _path_log_point(mouse), "target": _path_log_point(target),
 		"distance": snappedf(distance, 0.01) if is_finite(distance) else -1.0,
 		"radius": radius, "target_radius": target_radius, "target_index": next,

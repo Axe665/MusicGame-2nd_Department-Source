@@ -2250,8 +2250,8 @@ func test_auto_play() -> bool:
 func test_path_tail_judge() -> bool:
 	ok(Playtest.PATH_TAIL_RADIUS_RATIO > 0.15 and Playtest.PATH_TAIL_RADIUS_RATIO < 0.75,
 		"tail radius shrinks with the slide length")
-	ok(Playtest.PATH_TAIL_MIN_FRACTION >= 0.8, "tail wants most of the slide to be covered")
-	ok(Playtest.PATH_TAIL_MIN_FRACTION < 1.0, "tail still tolerates a small aiming error")
+	ok(PathProgress.SKIP_TOLERANCE >= 1, "slides allow skipping one judgement group")
+	ok(PathProgress.NO_SKIP_GROUP_LIMIT == 3, "short slides protect their middle group")
 	var ring := 430.0
 	var chord := 2.0 * ring * sin(deg_to_rad(22.5))
 	var radius := clampf(minf(Playtest.PATH_TAIL_RADIUS, chord * Playtest.PATH_TAIL_RADIUS_RATIO), 56.0, Playtest.PATH_TAIL_RADIUS)

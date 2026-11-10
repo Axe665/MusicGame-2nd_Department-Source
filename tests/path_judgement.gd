@@ -19,6 +19,7 @@ func check(condition: bool, label: String) -> void:
 
 func _run() -> void:
 	_test_tracker()
+	_test_scan_model()
 	_test_forgiving_corridor()
 	root.size = Vector2i(1600, 900)
 	var app := root.get_node_or_null("App")
@@ -149,6 +150,23 @@ func _wide_feed(tracker: PathProgress, point: Vector2, ms: float, start_ms := 0.
 	tracker.feed(point, ms, tracker.points, tracker.contact_radius, start_ms)
 
 
+func _test_scan_model() -> void:
+	var long_path := _tracker([Vector2.ZERO, Vector2(4, 0)])
+	check(long_path.tolerance == Tracker.SKIP_TOLERANCE, "long slides allow one skipped group")
+	var short_path := _tracker([Vector2.ZERO, Vector2.RIGHT])
+	check(short_path.tolerance == 0, "three-group slides protect every group")
+	var u_turn := _tracker([Vector2.ZERO, Vector2(0, 1), Vector2.ONE, Vector2.RIGHT])
+	_wide_feed(u_turn, Vector2.ZERO, 0.0)
+	_wide_feed(u_turn, Vector2.RIGHT, 100.0)
+	check(not u_turn.body_ready() and u_turn.remaining_groups() > 1,
+		"one jump cannot consume a whole U turn")
+	var straight := _tracker([Vector2.ZERO, Vector2(4, 0)])
+	_wide_feed(straight, Vector2.ZERO, 0.0)
+	_wide_feed(straight, Vector2(4, 0), 1000.0)
+	check(straight.body_ready(), "a continuous sweep clears every group")
+	check(straight.coverage > 0.99, "a continuous sweep keeps full corridor coverage")
+
+
 func _test_forgiving_corridor() -> void:
 	var wide := _tracker([Vector2.ZERO, Vector2(2, 0)])
 	for i in 21:
@@ -248,6 +266,8 @@ func _test_playtest() -> void:
 	check(debug["points"] == run._preview.path_judgement_points(live.points, 2.0), "visible regions use the exact live judgement coordinates")
 	check(absf(float(debug["radius"]) - live.contact_radius * run._preview.path_judgement_scale()) < 0.001, "visible radii match actual contact tolerance")
 	check(debug["mandatory"] == live.mandatory and int(debug["required"]) == live.required_index, "overlay marks the live mandatory and completion checkpoints")
+	check(int(debug["group_count"]) == live.group_count and int(debug["tolerance"]) == live.tolerance,
+		"overlay reads the live group count and skip tolerance")
 	run._path_judgement_toggle.button_pressed = false
 	check(not run._preview.show_path_judgement, "pause switch can disable judgement regions")
 	run._set_paused(true)
@@ -266,6 +286,16 @@ func _test_playtest() -> void:
 	check(not bool(run._states[1]["tail_hit"]), "playtest rejects jumping directly to the tail")
 	_at(run, 3251.0, tail)
 	check(bool(run._states[1]["tail_judged"]) and run._miss_count == 1, "incomplete path misses after its deadline")
+
+	_reset(run, chart)
+	_at(run, 1000.0, head)
+	tracker = run._states[1]["path_tracker"]
+	for group in range(tracker.group_count - 1):
+		tracker.cleared[group] = 1
+	tracker.next_gate = tracker.group_count - 1
+	_at(run, 3251.0, head)
+	check(int(run._tier_counts["GOOD"]) == 1 and run._miss_count == 0,
+		"missing only the last group earns GOOD instead of a miss")
 
 	_reset(run, chart)
 	head = run._preview.path_point(note, 0.0, 2.0)
