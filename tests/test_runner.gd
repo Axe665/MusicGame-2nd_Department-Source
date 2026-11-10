@@ -98,6 +98,7 @@ func _initialize() -> void:
 		"test_audio_clock",
 		"test_calibration_offset",
 		"test_chart_offset_for_bias",
+		"test_audio_buffer_override",
 	]
 	for test_name in tests:
 		if call(test_name) != true:
@@ -2493,6 +2494,23 @@ func test_calibration_offset() -> bool:
 		"late audio taps write the same judgement offset")
 	near(CalibrationDialog.offset_for_errors([-60.0, -50.0, -40.0, -30.0]), 40.0, 0.01,
 		"early audio taps write a positive judgement offset")
+	return true
+
+
+## 音频缓冲只能启动期生效，所以写 override.cfg；这里验证能写、能改、不重复追加。
+func test_audio_buffer_override() -> bool:
+	var path := "user://test_override.cfg"
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	var app_script := load("res://charter/app.gd")
+	ok(app_script.write_buffer_override(path, 10), "buffer override writes a config file")
+	var config := ConfigFile.new()
+	eq(config.load(path), OK, "buffer override is a config file")
+	eq(int(config.get_value("audio", "driver/output_latency", 0)), 10, "buffer override stores the value")
+	ok(app_script.write_buffer_override(path, 3), "buffer override can be rewritten")
+	config = ConfigFile.new()
+	config.load(path)
+	eq(int(config.get_value("audio", "driver/output_latency", 0)), 3, "buffer override replaces the old value")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
 	return true
 
 

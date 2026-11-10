@@ -1089,6 +1089,7 @@ func _judge_path(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 			state["tail_hit"] = true
 			_register_hit(tier)
 			_pulse_at(note.tail_angle, beat, _tier_color(tier), tier, note.tail_width, "path", _timing_detail(tail_error, tier))
+			_sfx.play("tail", randf_range(0.98, 1.02))
 			_add_log("PATH #%d TAIL %s" % [note.id, tier])
 			state["tail_judged"] = true
 			tracker.mark_complete()

@@ -1159,6 +1159,12 @@ func _build_view_page(page: VBoxContainer) -> void:
 		_app.save_settings()
 		_app.notice.emit("帧率上限：%s" % cap_labels[index], "info")
 	)
+	# Godot 只在启动时读音频缓冲；这里写 override.cfg，重启后生效。
+	var buffer_values: Array[int] = [3, 10, 20]
+	var buffer_labels: Array[String] = ["低延迟 3ms", "标准 10ms", "安全 20ms"]
+	_setting_option(page, "音频缓冲", buffer_labels, maxi(0, buffer_values.find(int(_app.audio_buffer_ms))),
+		func(index: int) -> void: _app.set_audio_buffer(buffer_values[index]))
+	_label(page, "音频缓冲改动写进 override.cfg，重启游戏后生效（3ms ≈ 12ms 总延迟，爆音就换标准）。", 11, UITheme.MUTED)
 	_check(page, "正对镜头（忽略倾斜）", bool(_app.chart.metadata.get("face_camera", true)), func(value: bool) -> void:
 		_app.mutate(func() -> void: _app.chart.metadata["face_camera"] = value)
 	)

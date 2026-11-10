@@ -1260,6 +1260,7 @@ func _build_sfx_events() -> void:
 				_add_sfx_event(note.beat, "don")
 			"path":
 				_add_sfx_event(note.beat, "path", 1.0)
+				_add_sfx_event(note.end_beat, "tail")
 			"anchor":
 				_add_sfx_event(note.beat, "anchor", 1.0)
 			"bell":
