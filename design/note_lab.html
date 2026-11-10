@@ -685,7 +685,7 @@
     ctx.restore();
   }
 
-  // 金键：亮黄键帽 + 乳白高光 + 深褐边 + 双箭头（和游戏内、时间轴同一套语言）。
+  // 金键：亮黄键身 + 乳白高光 + 深褐边（和游戏内、时间轴同一套语言）。
   function bell(ctx, x, y, r, skin, alpha = 1) {
     ctx.save();
     ctx.globalAlpha = alpha;
@@ -701,13 +701,6 @@
     poly(ctx, key(w, h)); ctx.fillStyle = PALETTE.key; ctx.fill();
     ctx.fillStyle = "rgba(255,246,210,0.9)";
     ctx.fillRect(x - w + cut * 0.5, y - h * 0.76, (w - cut * 0.5) * 2, h * 0.52);
-    ctx.strokeStyle = PALETTE.keyEdge;
-    ctx.lineWidth = Math.max(1.6, r * 0.16);
-    ctx.lineCap = "round";
-    for (const k of [-0.34, 0.34]) {
-      const cx = x + w * k, s = r * 0.36;
-      ctx.beginPath(); ctx.moveTo(cx - s, y + s); ctx.lineTo(cx + s * 0.5, y); ctx.lineTo(cx - s, y - s); ctx.stroke();
-    }
     ctx.restore();
   }
 

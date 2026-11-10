@@ -483,8 +483,11 @@ func _test_bell_judgement() -> void:
 	var inward: Vector2 = (center - point).normalized()
 	check(run._preview.bell_contains(band, beat, point + inward * 39.0), "39px off the band still counts")
 	check(not run._preview.bell_contains(band, beat, point + inward * 41.0), "41px off the band is outside")
-	check(run._preview.bell_contains(dot, 4.0, center + Vector2(47.0, 0.0)), "the center dot keeps a 48px radius")
-	check(not run._preview.bell_contains(dot, 4.0, center + Vector2(49.0, 0.0)), "the center dot stops at 48px")
+	# 旧的圆心 Bell（bell_radius = 0）也并到外环：圆心不算，环上才算。
+	var legacy: Dictionary = run._preview.bell_screen(dot, 4.0)
+	check(not legacy.is_empty(), "a legacy center bell still has a ring shape")
+	check(not run._preview.bell_contains(dot, 4.0, center), "a legacy center bell is no longer judged at the center")
+	check(run._preview.bell_contains(dot, 4.0, legacy["center"]), "a legacy center bell is judged on the ring")
 	run._judge_bell(band, target - 199.0, beat, point)
 	check(bool(run._states[1]["armed"]) and not bool(run._states[1]["done"]),
 		"an early sweep only arms the gold note")

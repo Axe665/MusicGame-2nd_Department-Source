@@ -987,10 +987,6 @@ func _draw_bell(note: Note) -> void:
 		Color(UITheme.KEY_HILITE.r, UITheme.KEY_HILITE.g, UITheme.KEY_HILITE.b, 0.85), 1.5)
 	pts.append(pts[0])
 	draw_polyline(pts, UITheme.KEY_EDGE, 1.5, true)
-	for k: float in [-0.2, 0.2]:
-		var c := p + Vector2(span * k, 0.0)
-		draw_line(c + Vector2(-3.0, -3.0), c + Vector2(2.0, 0.0), UITheme.KEY_EDGE, 1.3, true)
-		draw_line(c + Vector2(2.0, 0.0), c + Vector2(-3.0, 3.0), UITheme.KEY_EDGE, 1.3, true)
 	if _show_type_label(note):
 		_draw_type_label("BELL", p + Vector2(span * 0.5 + 10.0, 4.0), UITheme.KEY_YELLOW)
 

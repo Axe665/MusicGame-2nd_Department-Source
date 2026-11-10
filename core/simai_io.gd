@@ -325,8 +325,9 @@ static func _parse_touch(body: String, beat: float) -> Note:
 	var radius := 0.0
 	match group:
 		"C":
+			# 键鼠只有一只光标：C 触也并到外环，不再有圆心铃铛。
 			angle = 0.0
-			radius = 0.0
+			radius = 1.0
 		# 键鼠只有一只光标：A/B/D/E 全部落外圈，连续 Touch 才能沿同一个圆扫过去。
 		"A":
 			if digit < 1 or digit > 8:

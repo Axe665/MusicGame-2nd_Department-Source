@@ -38,11 +38,6 @@ func _key(p: Vector2, span: float, half: float) -> void:
 		p + Vector2(-span * 0.5, -half * 0.86), p + Vector2(span * 0.5, -half * 0.86),
 		p + Vector2(span * 0.5, -half * 0.20), p + Vector2(-span * 0.5, -half * 0.20),
 	]), Color(UITheme.KEY_HILITE.r, UITheme.KEY_HILITE.g, UITheme.KEY_HILITE.b, 0.88))
-	for k: float in [-0.2, 0.0, 0.2]:
-		var c := p + Vector2(span * k, half * 0.30)
-		var s := maxf(4.0, half * 0.55)
-		draw_line(c + Vector2(-s * 0.8, -s * 0.8), c + Vector2(s * 0.2, 0.0), UITheme.KEY_EDGE, 2.2, true)
-		draw_line(c + Vector2(s * 0.2, 0.0), c + Vector2(-s * 0.8, s * 0.8), UITheme.KEY_EDGE, 2.2, true)
 
 
 func _poly(p: Vector2, span: float, half: float, tip: float, color: Color) -> void:

@@ -10,16 +10,12 @@ const PREVIEW_MARGIN := 1.24
 const MOUSE_TILT_DEGREES := 11.0
 ## Path / Trace 的视觉尺寸：相对旧版 ×2。只放大笔画与头尾，不改轨迹几何与判定。
 const PATH_SIZE_SCALE := 2.0
-## 金键（Bell）：环上一段厚金键（楔形端 + 深色边 + 顶部高光 + 内嵌箭头）。
+## 金键（Bell）：环上一段厚金键（楔形端 + 深色边 + 外半侧高光）。
 const BELL_BAND_HALF := 13.0
 ## 楔形端伸出多少度。
 const BELL_KEY_TIP_DEG := 3.5
-## 圆心 Bell（maimai C）的小键帽边长。
-const BELL_CENTER_SIZE := 36.0
 ## 光标离弧带（含两端）多少像素内算在场。
 const BELL_RADIAL_TOLERANCE := 40.0
-## 圆心 Bell（maimai C）画成金点，判定半径固定 48px。
-const BELL_CENTER_RADIUS := 48.0
 ## 手工放的 Bell 弧宽兜底；导入的 Touch 都是 45°。
 const BELL_MIN_WIDTH := 24.0
 ## 星头单独缩小（轨迹宽度不受影响）。
@@ -4072,13 +4068,10 @@ func _draw_diamond(canvas: Control, point: Vector2, radius: float, color: Color)
 	canvas.draw_circle(point, maxf(1.2, radius * 0.14), Color(1, 1, 1, 0.92))
 
 
-## 金键：环上一段厚金键（楔形端 + 深边 + 外半侧高光 + 内嵌箭头），圆心是小键帽。
+## 金键：环上一段厚金键（楔形端 + 深边 + 外半侧高光）。所有 Bell 都在判定环上。
 ## 和 Tap 的白描边胶囊刻意相反：深褐边、亮黄体、更厚，高速下靠轮廓就能分开。
 func _draw_bell(canvas: Control, chart: Chart, note: Note, t: float) -> void:
 	var q := lerpf(Note.SPAWN_LENGTH_RATIO, 1.0, _approach(chart, note.beat, t))
-	if float(note.bell_radius) < 0.5:
-		_draw_keycap(canvas, project_design(Vector2.ZERO), BELL_CENTER_SIZE * q)
-		return
 	var half := BELL_BAND_HALF * _note_scale() * float(_skin()["scale"])
 	var breathe := 0.5 + 0.5 * sin(float(Time.get_ticks_msec()) / 1000.0 * 2.4)
 	var halo := _bell_shape(note, t, q, -half - 7.0 - 3.0 * breathe, half + 7.0 + 3.0 * breathe, BELL_KEY_TIP_DEG + 1.6)
@@ -4095,7 +4088,6 @@ func _draw_bell(canvas: Control, chart: Chart, note: Note, t: float) -> void:
 	var gloss := _bell_shape(note, t, q, half * 0.18, half * 0.86, BELL_KEY_TIP_DEG * 0.6)
 	if gloss.size() >= 3:
 		canvas.draw_colored_polygon(gloss, Color(UITheme.KEY_HILITE.r, UITheme.KEY_HILITE.g, UITheme.KEY_HILITE.b, 0.88))
-	_draw_bell_chevrons(canvas, note, t, q, half)
 
 
 ## 金键的形状：两条同心弧 + 两端楔形尖。lo/hi 是相对判定环的像素偏移。
@@ -4145,57 +4137,6 @@ func _ring_radius_px(beat: float) -> float:
 	return ring
 
 
-## 金键内部的三枚箭头：告诉玩家这是「扫过去」而不是「点一下」。
-func _draw_bell_chevrons(canvas: Control, note: Note, beat: float, q: float, half: float) -> void:
-	var chart := get_chart()
-	if chart == null:
-		return
-	var width := maxf(note.width, BELL_MIN_WIDTH)
-	var size := clampf(half * 0.62, 4.0, 9.0)
-	for k: float in [-0.18, 0.0, 0.18]:
-		var a := note.center_u * 360.0 + k * width
-		var p := _bell_ring_point(chart, a, beat, q)
-		var pa := _bell_ring_point(chart, a - 1.5, beat, q)
-		var pb := _bell_ring_point(chart, a + 1.5, beat, q)
-		if not (p.is_finite() and pa.is_finite() and pb.is_finite()):
-			continue
-		var dir := (pb - pa).normalized()
-		if dir.length_squared() < 0.5:
-			continue
-		var n := Vector2(-dir.y, dir.x)
-		var tip := p + dir * size
-		var w := maxf(2.0, size * 0.34)
-		canvas.draw_line(p - dir * size * 0.6 + n * size * 0.95, tip, UITheme.KEY_EDGE, w, true)
-		canvas.draw_line(p - dir * size * 0.6 - n * size * 0.95, tip, UITheme.KEY_EDGE, w, true)
-
-
-## 圆心 Bell：和环上同一套金键语言，缩成一颗 36px 键帽。
-func _draw_keycap(canvas: Control, center: Vector2, size: float) -> void:
-	if not _valid_point(center):
-		return
-	var s := maxf(6.0, size)
-	var half := s * 0.5
-	var radius := s * 0.2
-	_draw_round_rect(canvas, center, Vector2(half + 3.0, half + 3.0), radius + 2.0, UITheme.KEY_EDGE)
-	_draw_round_rect(canvas, center, Vector2(half, half), radius, UITheme.KEY_YELLOW)
-	_draw_round_rect(canvas, center + Vector2(0.0, -half * 0.42), Vector2(half * 0.78, half * 0.28), radius * 0.6,
-		Color(UITheme.KEY_HILITE.r, UITheme.KEY_HILITE.g, UITheme.KEY_HILITE.b, 0.9))
-	for k: float in [-0.18, 0.18]:
-		var p := center + Vector2(s * k, s * 0.2)
-		var tip := p + Vector2(s * 0.11, 0.0)
-		canvas.draw_line(p + Vector2(-s * 0.05, -s * 0.12), tip, UITheme.KEY_EDGE, maxf(2.0, s * 0.055), true)
-		canvas.draw_line(tip, p + Vector2(-s * 0.05, s * 0.12), UITheme.KEY_EDGE, maxf(2.0, s * 0.055), true)
-
-
-func _draw_round_rect(canvas: Control, center: Vector2, half: Vector2, radius: float, color: Color) -> void:
-	var r := clampf(radius, 0.0, minf(half.x, half.y))
-	canvas.draw_rect(Rect2(center + Vector2(-half.x + r, -half.y), Vector2((half.x - r) * 2.0, half.y * 2.0)), color)
-	canvas.draw_rect(Rect2(center + Vector2(-half.x, -half.y + r), Vector2(half.x * 2.0, (half.y - r) * 2.0)), color)
-	for sx in [-1.0, 1.0]:
-		for sy in [-1.0, 1.0]:
-			canvas.draw_circle(center + Vector2(sx * (half.x - r), sy * (half.y - r)), r, color)
-
-
 ## 金色弧带的屏幕折线（radius_scale 用于从圆心长出来的接近动画）。
 func bell_band_points(note: Note, beat: float, radius_scale: float = 1.0) -> Array[Vector2]:
 	var chart := get_chart()
@@ -4218,8 +4159,6 @@ func bell_band_points(note: Note, beat: float, radius_scale: float = 1.0) -> Arr
 
 ## 在场判定：外圈离弧带 40px 内（含两端），圆心金点 48px 内。
 func bell_contains(note: Note, beat: float, point: Vector2) -> bool:
-	if float(note.bell_radius) < 0.5:
-		return point.distance_to(project_design(Vector2.ZERO)) <= BELL_CENTER_RADIUS
 	var points := bell_band_points(note, beat)
 	return points.size() >= 2 and JudgeMath.trace_distance(point, points) <= BELL_RADIAL_TOLERANCE
 
@@ -4229,15 +4168,10 @@ func bell_screen(note: Note, beat: float) -> Dictionary:
 	var chart := get_chart()
 	if chart == null:
 		return {}
-	if float(note.bell_radius) < 0.5:
-		var dot := project_design(Vector2.ZERO)
-		if not _valid_point(dot):
-			return {}
-		return {"center": dot, "radius": maxf(BELL_CENTER_RADIUS, note.radius), "center_dot": true}
 	var points := bell_band_points(note, beat)
 	if points.size() < 2:
 		return {}
-	return {"center": points[points.size() / 2], "radius": BELL_BAND_HALF, "center_dot": false}
+	return {"center": points[points.size() / 2], "radius": BELL_BAND_HALF}
 
 
 ## 判定用：判定时刻（beat）环上条带的屏幕折线，宽度为角度 width。
