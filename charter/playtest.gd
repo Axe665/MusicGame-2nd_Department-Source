@@ -1052,7 +1052,9 @@ func _judge_path(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 				_register_hit(tier)
 				# 星头用实际的星头屏幕位置，平面星星（V / 折线）也能炸在正确的位置。
 				_pulse_at(note.angle, beat, _tier_color(tier), tier, note.arc_width(), "path", _timing_detail(head_error, tier), head_point)
-				_add_log("PATH #%d HEAD %s" % [note.id, tier])
+				# 星头是按键时机，和 Tap 同源，可以喂给动态校准与散布图。
+				# 星尾不算：tail_error 量的是“进尾区”相对星星的时刻，早到是设计内行为。
+				_record_error(head_error, "PATH #%d HEAD %s" % [note.id, tier], tier, float(press["time"]))
 				_preview.set_path_head_state(note.id, true, beat)
 				_preview.add_note_pop("path", note, beat)
 				state["head_judged"] = true
