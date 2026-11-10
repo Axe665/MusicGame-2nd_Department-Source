@@ -154,10 +154,22 @@ func _draw_icon(type: String, center: Vector2, r: float, color: Color) -> void:
 			draw_line(center + Vector2(0, -r * 0.35), center + Vector2(0, r * 0.2), color, 1.5, true)
 			draw_line(center + Vector2(0, r * 0.2), center + Vector2(r * 0.3, r * 0.45), color, 1.5, true)
 		"bell":
-			draw_circle(center, r * 0.8, Color(color.r, color.g, color.b, 0.18))
-			draw_arc(center, r * 0.8, 0.0, TAU, 28, color, 2.5, true)
-			draw_circle(center, r * 0.34, color)
-			draw_circle(center, r * 0.12, UITheme.INK)
+			# 金键：楔形端键身 + 深色边 + 乳白高光。
+			var kw := r * 0.86
+			var kh := r * 0.62
+			var tip := r * 0.26
+			var key := PackedVector2Array([
+				center + Vector2(-kw - tip, 0.0), center + Vector2(-kw, -kh),
+				center + Vector2(kw, -kh), center + Vector2(kw + tip, 0.0),
+				center + Vector2(kw, kh), center + Vector2(-kw, kh),
+			])
+			var outer := PackedVector2Array()
+			for p in key:
+				outer.append(center + (p - center) * 1.16)
+			draw_colored_polygon(outer, UITheme.KEY_EDGE)
+			draw_colored_polygon(key, UITheme.KEY_YELLOW)
+			draw_line(center + Vector2(-kw + 2.0, -kh + 2.0), center + Vector2(kw - 2.0, -kh + 2.0),
+				Color(UITheme.KEY_HILITE.r, UITheme.KEY_HILITE.g, UITheme.KEY_HILITE.b, 0.9), 2.0)
 		"limit":
 			draw_arc(center, r * 0.9, -PI * 0.8, PI * 0.1, 20, color, 7.0, true)
 			draw_line(center + Vector2(r * 0.3, -r * 0.9), center + Vector2(r * 0.3, r * 0.9), Color(color.r, color.g, color.b, 0.55), 1.5)

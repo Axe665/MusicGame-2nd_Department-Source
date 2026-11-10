@@ -99,6 +99,7 @@ func _initialize() -> void:
 		"test_calibration_offset",
 		"test_chart_offset_for_bias",
 		"test_audio_buffer_override",
+		"test_bell_center_merges",
 	]
 	for test_name in tests:
 		if call(test_name) != true:
@@ -616,8 +617,8 @@ func test_style_presets() -> bool:
 	cursor.free()
 	ok(Playtest.PATH_TAIL_RADIUS >= 180.0, "path tail judgement is forgiving")
 	ok(Playtest.TRACE_CONTACT_PX >= 50.0, "trace contact is forgiving")
-	ok(Playtest.BELL_COLLECT_RADIUS >= 64.0 and Playtest.BELL_COLLECT_RADIUS <= 96.0, "bell collect stays tight but forgiving")
-	ok(Preview3D.BELL_SNAP_RANGE <= Playtest.BELL_COLLECT_RADIUS, "bell snap never reaches farther than collect")
+	ok(Playtest.BELL_WINDOW_MS <= 250.0, "a gold note uses a drag window, not the old collect-all window")
+	ok(Preview3D.BELL_RADIAL_TOLERANCE <= 48.0, "gold note presence stays close to the band")
 	eq(Playtest.PERFECT_MS, 65.0, "perfect window tightened")
 	eq(Playtest.GREAT_MS, 115.0, "great window tightened")
 	eq(Playtest.GOOD_MS, 170.0, "good window tightened")
@@ -2129,13 +2130,13 @@ func test_simai_touch_layers() -> bool:
 	if bells.size() == 5:
 		near(bells[0].bell_radius, 1.0, 0.001, "A is on the outer ring")
 		near(bells[1].bell_radius, 1.0, 0.001, "B joins the outer ring for mouse sweeps")
-		near(bells[2].bell_radius, 0.0, 0.001, "C is the center")
+		near(bells[2].bell_radius, 1.0, 0.001, "C also joins the outer ring")
 		near(bells[3].bell_radius, 1.0, 0.001, "D is on the outer gap")
 		near(bells[4].bell_radius, 1.0, 0.001, "E joins the outer ring for mouse sweeps")
 		near(bells[0].angle, 90.0, 0.01, "A1 sits on button 1")
 		near(bells[3].angle, 67.5, 0.01, "D1 sits between button 1 and 2")
 		var restored := Note.from_dict(bells[2].to_dict())
-		near(restored.bell_radius, 0.0, 0.001, "center bell radius roundtrips")
+		near(restored.bell_radius, 1.0, 0.001, "legacy center bells roundtrip as outer ring bells")
 	return true
 
 
@@ -2494,6 +2495,35 @@ func test_calibration_offset() -> bool:
 		"late audio taps write the same judgement offset")
 	near(CalibrationDialog.offset_for_errors([-60.0, -50.0, -40.0, -30.0]), 40.0, 0.01,
 		"early audio taps write a positive judgement offset")
+	return true
+
+
+## 旧谱的圆心 Bell（bell_radius = 0）读进来也归到外环，和所有 Bell 统一。
+func test_bell_center_merges() -> bool:
+	var chart := Chart.new()
+	var lead := Note.new("tap", 1.0, 90.0, 60.0)
+	lead.id = 1
+	var center := Note.new("bell", 2.0, 0.0, 45.0)
+	center.id = 2
+	center.bell_radius = 0.0
+	var tail := Note.new("tap", 3.0, 180.0, 60.0)
+	tail.id = 3
+	chart.notes = [lead, center, tail]
+	chart.merge_center_bells()
+	eq(center.bell_radius, 1.0, "legacy center bells merge into the outer ring")
+	eq(center.center_u, 0.25, "a legacy center bell inherits the previous note angle")
+	# 前面没有音符时继承后一个。
+	var only := Chart.new()
+	var first := Note.new("bell", 1.0, 0.0, 45.0)
+	first.id = 4
+	first.bell_radius = 0.0
+	var later := Note.new("tap", 2.0, 270.0, 60.0)
+	later.id = 5
+	only.notes = [first, later]
+	only.merge_center_bells()
+	eq(first.center_u, 0.75, "a leading center bell inherits the next note angle")
+	var flat := Note.new("bell", 2.0, 0.0, 0.0)
+	eq(flat.width, 45.0, "a bell without an arc width gets the 45 degree default")
 	return true
 
 

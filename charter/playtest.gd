@@ -17,7 +17,8 @@ const EARLY_MS := 115.0
 const PRESS_KEEP_MS := 34.0
 ## 同一个键 50ms 内的重复按下只算一次（手抖双击）。
 const KEY_DEBOUNCE_MS := 50.0
-const BELL_WINDOW_MS := 300.0
+## 金键（黄键式）：判定线前后各 200ms 内光标在场就算，到线才结算。
+const BELL_WINDOW_MS := 200.0
 const RED_LIMIT_SEC := 0.2
 const PATH_TAIL_RADIUS := 192.0
 ## 尾判半径最多占“头到尾直线距离”的多少（短滑条要跟着缩）。
@@ -37,7 +38,6 @@ const TAIL_GOOD_MS := 350.0
 const TAIL_EXT_MAX_MS := 366.6667
 const TRACE_HEAD_RADIUS := 72.0
 const TRACE_CONTACT_PX := 56.0
-const BELL_COLLECT_RADIUS := 72.0
 ## 位置判定：鼠标到音符图形边缘外还有这么多像素也算命中。
 ## Tap / Hold 头 / Path 头 / Anchor 共用这一把尺子（再各自加上图形半径）。
 const POSITION_TOLERANCE_PX := 120.0
@@ -83,8 +83,6 @@ var _miss_count: int = 0
 var _accuracy_sum: float = 0.0
 var _judged_total: int = 0
 var _tier_counts: Dictionary = {"PERFECT": 0, "GREAT": 0, "GOOD": 0, "BAD": 0, "MISS": 0}
-var _bell_total: int = 0
-var _bell_hits: int = 0
 var _red_breaks: int = 0
 var _errors: Array[float] = []
 var _error_sum: float = 0.0
@@ -417,8 +415,6 @@ func _init_states() -> void:
 	_accuracy_sum = 0.0
 	_judged_total = 0
 	_tier_counts = {"PERFECT": 0, "GREAT": 0, "GOOD": 0, "BAD": 0, "MISS": 0}
-	_bell_total = 0
-	_bell_hits = 0
 	_red_breaks = 0
 	_errors.clear()
 	_scatter.clear()
@@ -466,9 +462,8 @@ func _init_states() -> void:
 			"trace_frac": 0.0,
 			"trace_away": 0.0,
 			"trace_reset": false,
+			"armed": false,
 		}
-		if note.type == "bell":
-			_bell_total += 1
 	_judge_from = 0
 	_auto_index = 0
 	_auto_cursor = Vector2.ZERO
@@ -625,7 +620,7 @@ func _chart_ms() -> float:
 ##   · Tap / Anchor / Path 头 / Trace 头 → 判定时间塞一次按键
 ##   · Hold → 判定时按下、尾判之后再松
 ##   · Path / Trace → 合成光标贴着轨迹走，轨迹按进度擦除
-##   · Bell → 合成光标停在金币上
+##   · Bell（金键）→ 合成光标停在金色弧带上
 ##   · Red → 合成光标躲到红区外
 ## 所以打击特效、音效、连击、结算都和真人打出来的一样。
 
@@ -676,7 +671,7 @@ func _auto_press_note(note: Note, state: Dictionary, beat: float) -> void:
 	var key := AUTO_KEY_A if _auto_key_phase % 2 == 0 else AUTO_KEY_B
 	_auto_key_phase += 1
 	if note.type == "bell":
-		# 金币只认光标位置，不需要按键。
+		# 金键只认光标位置，不需要按键。
 		return
 	var point := _preview.note_head_screen(note, beat)
 	if not point.is_finite():
@@ -1399,24 +1394,32 @@ func _judge_bell(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 	var target := float(state["target_ms"])
 	if ms < target - BELL_WINDOW_MS:
 		return
-	if ms <= target + BELL_WINDOW_MS:
+	# 黄键式：窗口内光标在场只是“预备”，不提前结算，音符不会提前消失。
+	if not bool(state.get("armed", false)) and _preview.bell_contains(note, beat, mouse):
+		state["armed"] = true
+	if ms < target:
+		return
+	if bool(state.get("armed", false)):
+		state["done"] = true
+		_preview.set_note_state(note.id, "hit")
+		_register_hit("PERFECT")
 		var bell: Dictionary = _preview.bell_screen(note, beat)
-		# 鼠标瞄准有误差：Bell 收取半径与吸附范围对齐，靠近就算收到。
-		if not bell.is_empty() and mouse.distance_to(bell["center"]) <= maxf(BELL_COLLECT_RADIUS, float(bell["radius"])):
-			state["done"] = true
-			_bell_hits += 1
-			_preview.set_note_state(note.id, "hit")
-			_preview.add_hit_pulse(bell["center"], UITheme.GOLD, "BELL", "bell")
-			_sfx.play("bell", randf_range(0.99, 1.01))
-			_add_log("BELL #%d COLLECTED" % note.id)
-			return
+		if not bell.is_empty():
+			_preview.add_hit_pulse(bell["center"], UITheme.KEY_YELLOW, "PERFECT", "bell")
+		# 结算发生在判定线上，声音天然和音乐对齐。
+		_sfx.play("bell", randf_range(0.99, 1.01))
+		_add_log("BELL #%d PERFECT" % note.id)
+		return
 	if ms > target + BELL_WINDOW_MS:
 		state["done"] = true
 		_preview.set_note_state(note.id, "miss")
+		_miss_count += 1
+		_add_judgement("MISS")
+		_combo = 0
 		var missed: Dictionary = _preview.bell_screen(note, beat)
 		if not missed.is_empty():
 			_preview.add_hit_pulse(missed["center"], UITheme.MUTED, "漏", "miss")
-		_add_log("BELL #%d MISSED" % note.id)
+		_add_log("MISS Bell #%d @%.0fms" % [note.id, target])
 
 
 func _judge_anchor(note: Note, ms: float, beat: float) -> void:
@@ -1706,14 +1709,12 @@ func _update_top_bar(ms: float, beat: float) -> void:
 	var fx_label := String(Preview3D.hit_fx_presets().get(_preview.hit_fx_style, _preview.hit_fx_style))
 	if _style_label != null:
 		_style_label.text = "%s · %s" % [skin_label, fx_label]
-	_top_stats.text = "%sHIT %d  MISS %d  ACC %s  COMBO %d  |  BELL %d/%d  LIMIT %d  |  BIA %+.1fms  OFF %+.0fms" % [
+	_top_stats.text = "%sHIT %d  MISS %d  ACC %s  COMBO %d  |  LIMIT %d  |  BIA %+.1fms  OFF %+.0fms" % [
 		"[AUTO] " if auto_play else "",
 		_hit_count,
 		_miss_count,
 		"—" if accuracy < 0.0 else "%.1f%%" % accuracy,
 		_combo,
-		_bell_hits,
-		_bell_total,
 		_red_breaks,
 		_mean_error(),
 		offset,
@@ -2011,7 +2012,6 @@ func _finish() -> void:
 		int(_tier_counts.get("GOOD", 0)), int(_tier_counts.get("BAD", 0)),
 		int(_tier_counts.get("MISS", 0)),
 	])
-	lines.append("Bell 收集：%d / %d" % [_bell_hits, _bell_total])
 	lines.append("Limit 断连：%d 次" % _red_breaks)
 	var average_error := _mean_error()
 	# AUTO 的“误差”恒为 0，不能让它把动态 offset 带偏。

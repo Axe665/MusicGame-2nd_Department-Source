@@ -70,7 +70,7 @@ var center_u: float = 0.25
 var seek_orien: int = 0
 ## Transient editor state: freshly placed Seek waiting for W/S orientation.
 var seek_pending: bool = false
-## Bell 的径向位置（环半径 = 1.0）。Touch 全部落外圈，C = 0（圆心）。
+## 兼容字段：所有 Bell 都在判定环上（舞萌 C 触也并入外环），读取旧谱时统一归 1.0。
 var bell_radius: float = 1.0
 
 
@@ -83,6 +83,9 @@ func _init(p_type: String = "tap", p_beat: float = 0.0, p_angle: float = 0.0, p_
 	# 判定里按“结束时间”做过期检查时会把它们当成 0ms：谱面播到 6 秒后，
 	# 所有 tap 都被判定为“早就过期”而跳过（表现就是突然整段没有判定）。
 	end_beat = p_beat
+	# 金键以前是金币（宽度 0）。没有弧宽就画不出键，旧数据统一补成 45°。
+	if type == "bell" and width <= 0.0:
+		width = 45.0
 	if type == "path" or type == "trace":
 		space = "plane"
 

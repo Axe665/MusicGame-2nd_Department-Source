@@ -1,6 +1,8 @@
 class_name Inspector
 extends TabContainer
 
+const BellPreviewScript = preload("res://charter/bell_preview.gd")
+
 var _app: Node = null
 var _pages: Dictionary = {}
 var _page_list: Array[VBoxContainer] = []
@@ -459,17 +461,30 @@ func _build_note_page_for(page: VBoxContainer, note: Note) -> void:
 	_note_widgets["plane_r"] = pr
 	_label(plane, "平面 Tap：按 osu 原 2D 坐标；鼠标进入半径 + 按键判定，不占用环上角度。", 11, UITheme.MUTED)
 
-	var bell := _note_group(page, "bell", "Bell")
+	var bell := _note_group(page, "bell", "金键 Bell")
 	var bu := _spin(bell, "中心 u", note.center_u, 0.0, 0.9999, 0.001, func(value: float) -> void:
 		if _active_note != null:
 			_active_note.center_u = value
 	)
 	_note_widgets["bell_u"] = bu
+	var bw := _spin(bell, "弧宽 °", note.width, 6.0, 180.0, 1.0, func(value: float) -> void:
+		if _active_note != null:
+			_active_note.width = value
+		if _note_widgets.has("bell_preview"):
+			_note_widgets["bell_preview"].set_arc_width(value)
+	)
+	_note_widgets["bell_w"] = bw
 	var br := _spin(bell, "半径 px", note.radius, 4.0, 200.0, 1.0, func(value: float) -> void:
 		if _active_note != null:
 			_active_note.radius = value
 	)
 	_note_widgets["bell_r"] = br
+	_label(bell, "厚金键：楔形端 + 深色边 + 外半侧高光；光标贴住即算在场，不用点。「弧宽」决定可见与判定长度。", 11, UITheme.MUTED)
+	var bell_preview := BellPreviewScript.new()
+	bell_preview.name = "BellShapePreview"
+	bell_preview.set_arc_width(note.width)
+	bell.add_child(bell_preview)
+	_note_widgets["bell_preview"] = bell_preview
 
 	if note.type == "path":
 		note.derive_path_controls()
@@ -806,7 +821,7 @@ func _refresh_note_page() -> void:
 	_note_widgets["lock"].get_parent().visible = false
 	_note_groups["tapsize"].visible = false
 	_note_groups["plane"].visible = false
-	_note_groups["bell"].visible = false
+	_note_groups["bell"].visible = is_bell
 	_note_groups["path"].visible = false
 	_note_groups["path_edit"].visible = note.type == "path"
 	_note_groups["hold"].visible = false
@@ -818,6 +833,8 @@ func _refresh_note_page() -> void:
 	_note_widgets["plane_y"].value = note.plane_y
 	_note_widgets["plane_r"].value = note.plane_radius
 	_note_widgets["bell_u"].value = note.center_u
+	_note_widgets["bell_w"].value = note.width
+	_note_widgets["bell_preview"].set_arc_width(note.width)
 	_note_widgets["bell_r"].value = note.radius
 	if note.type == "path":
 		note.derive_path_controls()
