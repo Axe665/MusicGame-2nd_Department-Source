@@ -20,6 +20,7 @@ func check(condition: bool, label: String) -> void:
 func _run() -> void:
 	_test_tracker()
 	_test_tail_visual()
+	_test_tail_entry()
 	_test_scan_model()
 	_test_forgiving_corridor()
 	root.size = Vector2i(1600, 900)
@@ -53,6 +54,15 @@ func _test_tail_visual() -> void:
 	check(straight.fraction < 0.95, "clearing the last group keeps the tail visible")
 	straight.mark_complete()
 	check(straight.fraction > 0.99, "the tail is erased only after completion")
+
+
+## 尾判参考是“星星进入尾区”：直线路径上应从末端往前一个尾区半径处进入。
+func _test_tail_entry() -> void:
+	var straight := _tracker([Vector2.ZERO, Vector2.RIGHT])
+	var entry := straight.tail_entry_parameter(straight.points, 0.2)
+	check(entry >= 0.75 and entry <= 0.85, "tail entry sits one tail radius before the end")
+	check(straight.tail_entry_parameter(straight.points, 0.0) == 1.0, "zero tail radius falls back to the end")
+	check(straight.tail_entry_parameter(PackedVector2Array(), 0.2) == 1.0, "missing projection falls back to the end")
 
 
 func _test_tracker() -> void:
@@ -360,10 +370,10 @@ func _test_playtest() -> void:
 	chart.notes.append(second)
 	_reset(run, chart)
 	run.auto_play = true
-	for ms in [1000.0, 2000.0, 2800.0]:
+	for ms in [1000.0, 2000.0]:
 		for path in chart.notes:
 			run._judge_path(path, ms, chart.timing.chart_ms_to_beat(ms), Vector2.INF)
-	check(not bool(run._states[1]["tail_hit"]) and not bool(run._states[2]["tail_hit"]), "AUTO does not finish simultaneous paths early")
+	check(not bool(run._states[1]["tail_hit"]) and not bool(run._states[2]["tail_hit"]), "AUTO does not finish before the tail zone")
 	for path in chart.notes:
 		run._judge_path(path, 2960.0, 5.92, Vector2.INF)
 	check(bool(run._states[1]["tail_hit"]) and bool(run._states[2]["tail_hit"]), "AUTO completes simultaneous paths through ordered checks")

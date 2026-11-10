@@ -192,6 +192,23 @@ func mark_complete() -> void:
 	coverage = 1.0
 
 
+## Path parameter where the guide star first enters the tail circle. This is
+## maimai's "star enters the last zone" reference, measured on the same
+## projected geometry the player sees.
+func tail_entry_parameter(projected: PackedVector2Array, radius: float) -> float:
+	if projected.size() < 2 or parameters.is_empty() or radius <= 0.0:
+		return 1.0
+	var tail := projected[projected.size() - 1]
+	if not tail.is_finite():
+		return 1.0
+	var entry := projected.size() - 1
+	for i in range(projected.size() - 2, -1, -1):
+		if not projected[i].is_finite() or projected[i].distance_to(tail) > radius:
+			break
+		entry = i
+	return clampf(parameters[clampi(entry, 0, parameters.size() - 1)], 0.0, 1.0)
+
+
 ## Completion is judged by tail timing only; body groups never cap the tier.
 func remaining_groups() -> int:
 	return maxi(0, group_count - next_gate)

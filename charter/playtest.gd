@@ -25,7 +25,7 @@ const PATH_TAIL_RADIUS_RATIO := 0.42
 const PathTracker = preload("res://core/path_progress.gd")
 const PATH_INPUT_CAPACITY := 2048
 const PATH_LOG_LIMIT_BYTES := 4 * 1024 * 1024
-## 尾区最早接受的接触时间；早到后停留可等到 PERFECT 窗口。
+## 尾区早到 GOOD 的基础窗口；实际早到窗口取 max(这个, Perfect 扩展值)。
 const PATH_TAIL_SWEEP_EARLY_MS := 350.0
 ## 星尾自己的档位窗口（连续滑动有鼠标延迟，比 Tap 宽）。
 ## 150/220/350 是 maimai ±233/366/600 的收紧版：真实日志里 83 条尾判
@@ -33,6 +33,8 @@ const PATH_TAIL_SWEEP_EARLY_MS := 350.0
 const TAIL_PERFECT_MS := 150.0
 const TAIL_GREAT_MS := 220.0
 const TAIL_GOOD_MS := 350.0
+## maimai 的尾区停留最多把 Perfect/Great 的早到窗口扩到 22 帧（366.7ms）。
+const TAIL_EXT_MAX_MS := 366.6667
 const TRACE_HEAD_RADIUS := 72.0
 const TRACE_CONTACT_PX := 56.0
 const BELL_COLLECT_RADIUS := 72.0
@@ -430,9 +432,10 @@ func _init_states() -> void:
 				_dense_ids[note.id] = true
 				break
 	for note in _ordered_notes:
+		var end_chart := chart.timing.beat_to_chart_ms(note.end_beat)
 		_states[note.id] = {
 			"target_ms": chart.timing.beat_to_chart_ms(note.beat),
-			"end_ms": chart.timing.beat_to_chart_ms(note.end_beat),
+			"end_ms": end_chart,
 			"done": false,
 			"head": false,
 			"started": false,
@@ -442,6 +445,11 @@ func _init_states() -> void:
 			"tail_hit": false,
 			"path_tracker": PathTracker.for_note(note) if note.type == "path" else null,
 			"path_finish_ms": INF,
+			"path_tail_ref_chart_ms": end_chart,
+			"path_tail_ref_ms": end_chart,
+			"path_tail_end_ms": end_chart,
+			"path_tail_dwell_ms": 0.0,
+			"path_tail_perfect_early_ms": TAIL_PERFECT_MS,
 			"slide_cued": false,
 			"path_auto_index": 0,
 			"trace_started": false,
@@ -1060,10 +1068,13 @@ func _judge_path(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 		var tail_radius := clampf(minf(PATH_TAIL_RADIUS, chord * PATH_TAIL_RADIUS_RATIO), 56.0, PATH_TAIL_RADIUS)
 		state["path_tail_radius"] = tail_radius
 		_update_path_progress(note, state, tracker, ms, beat, mouse, tail_radius)
+		var entry_chart := float(state.get("path_tail_ref_chart_ms", tail_ms))
+		var dwell := float(state.get("path_tail_dwell_ms", 0.0))
+		var end_sample := float(state.get("path_tail_end_ms", tail_ms))
 		var finish_ms := float(state["path_finish_ms"])
 		if is_finite(finish_ms):
-			var tail_error := finish_ms - tail_ms
-			var tier := tail_tier(tail_error)
+			var tail_error := finish_ms - entry_chart
+			var tier := tail_tier(tail_error, dwell)
 			state["tail_hit"] = true
 			_register_hit(tier)
 			_pulse_at(note.tail_angle, beat, _tier_color(tier), tier, note.tail_width, "path", _timing_detail(tail_error, tier))
@@ -1071,8 +1082,10 @@ func _judge_path(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 			_add_log("PATH #%d TAIL %s" % [note.id, tier])
 			state["tail_judged"] = true
 			tracker.mark_complete()
-			_write_path_input_log({"kind": "tail", "note": note.id, "tier": tier, "error_ms": tail_error, "coverage": tracker.coverage})
-		elif ms > tail_ms + TAIL_GOOD_MS:
+			_write_path_input_log({"kind": "tail", "note": note.id, "tier": tier,
+				"error_ms": tail_error, "end_error_ms": finish_ms - tail_ms,
+				"dwell_ms": dwell, "coverage": tracker.coverage})
+		elif ms > end_sample + TAIL_GOOD_MS:
 			# 只剩最后一组没消：给 GOOD，避免“差一点白划”；差更多仍判 MISS。
 			var remaining := tracker.remaining_groups()
 			var near_complete := bool(state["head_hit"]) and remaining <= 1 and tracker.next_gate > 1
@@ -1115,6 +1128,17 @@ func _update_path_progress(note: Note, state: Dictionary, tracker: PathProgress,
 		return
 	var projected := _preview.path_judgement_points(tracker.points, beat)
 	var radius := tracker.contact_radius * _preview.path_judgement_scale()
+	# maimai 的尾判参考：星星进入尾区的那一刻，而不是 Slide 结束。
+	# 停留时间 dwell 用来扩展早到窗口；晚到仍按终点算，避免“跟星星走到
+	# 终点”被反判成晚。所有时间都换算到包含判定偏移的采样时钟。
+	var entry_param := tracker.tail_entry_parameter(projected, tail_radius)
+	var entry_chart := chart.timing.beat_to_chart_ms(note.beat + note.duration() * entry_param)
+	var dwell := maxf(0.0, tail_ms - entry_chart)
+	state["path_tail_ref_chart_ms"] = entry_chart
+	state["path_tail_ref_ms"] = entry_chart + offset_ms
+	state["path_tail_end_ms"] = tail_ms + offset_ms
+	state["path_tail_dwell_ms"] = dwell
+	state["path_tail_perfect_early_ms"] = TAIL_PERFECT_MS + minf(dwell * 0.25, TAIL_EXT_MAX_MS)
 	if auto_play:
 		# AUTO feeds each path separately through the same checkpoint tracker.
 		var total := maxf(0.001, note.duration())
@@ -1145,8 +1169,11 @@ func _feed_path_sample(state: Dictionary, tracker: PathProgress, point: Vector2,
 	tracker.feed(point, ms, projected, radius, start_ms, radius / tracker.contact_radius)
 	if is_finite(float(state["path_finish_ms"])):
 		return
-	var tail_ms := float(state["end_ms"])
-	state["path_finish_ms"] = tracker.finish_contact(tail_ms - PATH_TAIL_SWEEP_EARLY_MS, tail_ms + TAIL_GOOD_MS, tail_radius, tail_ms, TAIL_PERFECT_MS)
+	var ref := float(state.get("path_tail_ref_ms", float(state["end_ms"])))
+	var end_sample := float(state.get("path_tail_end_ms", float(state["end_ms"])))
+	var perfect := float(state.get("path_tail_perfect_early_ms", TAIL_PERFECT_MS))
+	state["path_finish_ms"] = tracker.finish_contact(ref - maxf(PATH_TAIL_SWEEP_EARLY_MS, perfect),
+		end_sample + TAIL_GOOD_MS, tail_radius, ref, perfect)
 
 
 func _reset_path_motion() -> void:
@@ -1775,14 +1802,30 @@ func _tier_for(error_ms: float) -> String:
 
 
 ## 星尾档位：连续滑动有鼠标延迟，窗口比 Tap 宽一档。
-static func tail_tier(error_ms: float) -> String:
-	var error := absf(error_ms)
-	if error <= TAIL_PERFECT_MS:
+## 尾判档位。参考点是「星星进入尾区」：
+## - 早到按 entry 算，Perfect/Great 用尾区停留/4 扩展（maimai 的 dwell 补偿）；
+## - 晚到按 end 算，避免“跟着星星走到终点”反而被判晚。
+## 这样尾区入口和终点都会落在 PERFECT，符合 maimai
+## “贴着星星划”和“等星星进最后区再划”判得一样”的设计。
+static func tail_tier(error_ms: float, dwell_ms := 0.0) -> String:
+	var dwell := maxf(0.0, dwell_ms)
+	var extension := minf(dwell * 0.25, TAIL_EXT_MAX_MS)
+	var perfect_early := TAIL_PERFECT_MS + extension
+	var great_early := maxf(TAIL_GREAT_MS + extension, perfect_early)
+	if error_ms < 0.0:
+		var early := -error_ms
+		if early <= perfect_early:
+			return "PERFECT"
+		if early <= great_early:
+			return "GREAT"
+		# maimai 的滑条早到永远不会 Miss（Fast Good）。
+		return "GOOD"
+	var late := error_ms - dwell
+	if late <= TAIL_PERFECT_MS:
 		return "PERFECT"
-	if error <= TAIL_GREAT_MS:
+	if late <= TAIL_GREAT_MS:
 		return "GREAT"
-	# maimai 的滑条早到永远不会 Miss（Fast Good），只有晚到才掉 Miss。
-	if error <= TAIL_GOOD_MS or error_ms < 0.0:
+	if late <= TAIL_GOOD_MS:
 		return "GOOD"
 	return "MISS"
 

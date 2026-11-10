@@ -1950,6 +1950,16 @@ func test_ring_sector_and_tail_tier() -> bool:
 	eq(Playtest.tail_tier(351.0), "MISS", "late tail beyond 350ms is a miss")
 	eq(Playtest.tail_tier(-360.0), "GOOD", "early tail never falls to miss")
 	eq(Playtest.tail_tier(-203.6), "GREAT", "the one real-log outlier stays a great")
+	# 星星入尾区参考：入口 0ms / 终点 dwell 都算 PERFECT；
+	# 早到用 dwell/4 扩展，晚到仍按终点。
+	eq(Playtest.tail_tier(0.0, 472.0), "PERFECT", "tail at the zone entry is perfect")
+	eq(Playtest.tail_tier(472.0, 472.0), "PERFECT", "tail at the slide end is still perfect")
+	eq(Playtest.tail_tier(-268.0, 472.0), "PERFECT", "early tail uses the dwell extension")
+	eq(Playtest.tail_tier(-300.0, 472.0), "GREAT", "early tail just outside the extended perfect is great")
+	eq(Playtest.tail_tier(-400.0, 472.0), "GOOD", "very early tail stays good")
+	eq(Playtest.tail_tier(472.0 + 151.0, 472.0), "GREAT", "late tail is measured from the end")
+	eq(Playtest.tail_tier(472.0 + 351.0, 472.0), "MISS", "late tail beyond end + 350 is a miss")
+	eq(Playtest.tail_tier(472.0 + 100.0, 472.0), "PERFECT", "completion after the end but inside the window")
 	return true
 
 
