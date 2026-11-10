@@ -94,6 +94,8 @@ func _initialize() -> void:
 		"test_path_slide_start",
 		"test_hold_seam_interval",
 		"test_judge_scatter",
+		"test_audio_clock",
+		"test_calibration_offset",
 	]
 	for test_name in tests:
 		if call(test_name) != true:
@@ -636,36 +638,59 @@ func test_position_judgement() -> bool:
 	return true
 
 
-## 就近分配：多个按键同时在窗口里时，选离图形最近的，而不是时间最近的。
+## 匹配逻辑现在是纯函数：全局分配和测试共用同一把尺子。
 func test_press_assignment() -> bool:
 	var run := Playtest.new()
 	var line := PackedVector2Array([Vector2(48, 0), Vector2(52, 0)])
-	run._key_presses = [
-		{"time": 1000.0, "mouse": Vector2(0, 0)},
-		{"time": 1012.0, "mouse": Vector2(50, 0)},
-	]
-	var picked := run._take_key_near(990.0, 1020.0, line, 10.0, 1000.0)
-	eq(float(picked.get("time", -1.0)), 1012.0, "the press aimed at the shape wins over the earlier one")
-	run._key_presses = [
-		{"time": 1000.0, "angle": 20.0, "mouse": Vector2.ZERO},
-		{"time": 1012.0, "angle": 89.0, "mouse": Vector2.ZERO},
-	]
-	var sector := run._take_key_for_sector(990.0, 1020.0, 88.0, 160.0, 1000.0)
-	eq(float(sector.get("time", -1.0)), 1012.0, "the press nearest the sector centre wins")
-	run._key_presses = [
-		{"time": 1000.0, "mouse": Vector2(0, 0)},
-		{"time": 1012.0, "mouse": Vector2(100, 0)},
-	]
-	var point := run._take_key_for_point(990.0, 1020.0, Vector2(100, 0), 120.0, 1000.0)
-	eq(float(point.get("time", -1.0)), 1012.0, "the press nearest the point wins")
-	# 光标在圈心/屏幕角落时按下的键没有方向意图，密集段不该吃它。
-	run._key_presses = [{"time": 1000.0, "angle": 88.0, "valid": false}]
-	ok(run._take_key_for_sector(990.0, 1010.0, 88.0, 100.0, 1000.0).is_empty(),
+	var note := Note.new("tap", 0.0, 88.0, 60.0)
+	var near_target := {"note": note, "points": line, "tolerance": 10.0, "pad": 0.0,
+		"dense": false, "ring_radius": 100.0}
+	ok(bool(run._match_press({"time": 1000.0, "mouse": Vector2(50, 0)}, near_target).get("ok", false)),
+		"a press on the shape matches")
+	ok(not bool(run._match_press({"time": 1000.0, "mouse": Vector2(50, 30)}, near_target).get("ok", false)),
+		"a press outside the tolerance does not match")
+	var sector_target := {"note": note, "points": PackedVector2Array([Vector2(0, 0)]),
+		"tolerance": 10.0, "pad": 0.0, "dense": true, "ring_radius": 330.0}
+	ok(bool(run._match_press({"time": 1000.0, "angle": 89.0, "valid": true}, sector_target).get("ok", false)),
+		"a press inside the dense sector matches")
+	ok(not bool(run._match_press({"time": 1000.0, "angle": 20.0, "valid": true}, sector_target).get("ok", false)),
+		"a press outside the dense sector does not match")
+	ok(not bool(run._match_press({"time": 1000.0, "angle": 89.0, "valid": false}, sector_target).get("ok", false)),
 		"a press made off the ring cannot take a dense sector")
-	run._key_presses = [{"time": 1000.0, "angle": 88.0, "valid": true}]
-	ok(not run._take_key_for_sector(990.0, 1010.0, 88.0, 100.0, 1000.0).is_empty(),
-		"a press made on the ring takes the sector")
 	run.free()
+	# 全局分配：同一帧的两颗 Tap 各拿一颗按键，不再由先判到的音符抢走。
+	var chart := DemoChart.make_empty({"bpm": 120.0})
+	chart.notes.clear()
+	var first := Note.new("tap", 4.0, 0.0, 60.0)
+	first.id = 1
+	var second := Note.new("tap", 4.0, 180.0, 60.0)
+	second.id = 2
+	chart.notes = [first, second]
+	var live := Playtest.new()
+	var preview := Preview3D.new()
+	preview._ready()
+	preview.chart_override = chart
+	preview.playtest_mode = true
+	preview.time_beat = 4.0
+	preview.prepare_playtest_frame(4.0, 0.0)
+	live._preview = preview
+	live.chart = chart
+	live._init_states()
+	var ms := 2000.0
+	var first_point := live._preview.note_head_screen(first, 4.0)
+	var second_point := live._preview.note_head_screen(second, 4.0)
+	live._key_presses = [
+		{"time": ms, "mouse": first_point, "angle": 0.0, "valid": true, "key": 65},
+		{"time": ms, "mouse": second_point, "angle": 180.0, "valid": true, "key": 66},
+	]
+	live._assign_presses(ms, 4.0)
+	ok(live._press_assignments.has(1) and live._press_assignments.has(2),
+		"simultaneous taps receive separate presses")
+	live._key_presses = [{"time": ms, "mouse": first_point, "angle": 0.0, "valid": true, "key": 65}]
+	live._assign_presses(ms, 4.0)
+	ok(live._press_assignments.size() == 1, "one press cannot be spent twice in a frame")
+	live.free()
+	preview.free()
 	return true
 
 
@@ -2414,6 +2439,44 @@ func test_hold_seam_interval() -> bool:
 	near(JudgeMath.total_length(full), 360.0, 0.001, "full circle covers the ring")
 	return true
 ## 结算页散布图：只收合法样本，等级颜色互不相同。
+func test_calibration_offset() -> bool:
+	var samples: Array[float] = [-40.0, -20.0, -10.0, 0.0, 10.0, 20.0, 30.0, 40.0]
+	near(CalibrationDialog.offset_for_errors(samples), -10.0, 0.01, "late taps produce a negative offset")
+	var early: Array[float] = [-40.0, -30.0, -20.0, -10.0]
+	near(CalibrationDialog.offset_for_errors(early), 20.0, 0.01, "early taps produce a positive offset")
+	near(CalibrationDialog.offset_for_errors([1.0, 2.0]), 0.0, 0.01, "too few taps keep the offset unchanged")
+	return true
+
+
+func test_audio_clock() -> bool:
+	var clock := AudioClock.new()
+	clock.start(1000.0, 0)
+	near(clock.update(16000, false, 0.0, 0.0, 0.0, 0.0), 1016.0, 0.01, "wall clock advances without audio")
+	var before := clock.clock_ms
+	clock.update(32000, true, 9.0, 0.0, 0.0, 0.0)
+	ok(clock.clock_ms - before < 20.0, "a bad forward playback sample cannot teleport the clock")
+	before = clock.clock_ms
+	clock.update(48000, true, 0.0, 0.0, 0.0, 0.0)
+	ok(before - clock.clock_ms < 20.0, "a bad backward playback sample cannot rewind the clock")
+	var latency_clock := AudioClock.new()
+	latency_clock.start(1000.0, 0)
+	var with_latency := latency_clock.update(16000, true, 1.0, 100.0, 0.05, 0.0)
+	near(with_latency, 1018.5, 0.01, "latency and chart offset are applied to the audio target")
+	var drift := AudioClock.new()
+	drift.start(0.0, 0)
+	var now := 0
+	for i in 120:
+		now += 16000
+		drift.update(now, true, float(now) / 1000.0 + 0.050, 0.0, 0.0, 0.0)
+	ok(absf(drift.clock_ms - (float(now) / 1000.0 + 0.050)) < 3.0,
+		"a persistent 50ms drift is corrected within two seconds")
+	var hitch := AudioClock.new()
+	hitch.start(0.0, 0)
+	var after_hitch := hitch.update(500000, true, 0.5, 0.0, 0.0, 0.0)
+	near(after_hitch, 500.0, 5.0, "a half-second hitch advances the clock instead of latching behind")
+	return true
+
+
 func test_judge_scatter() -> bool:
 	var chart := JudgeScatter.new()
 	chart.set_hits([

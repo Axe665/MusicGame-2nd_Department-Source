@@ -243,6 +243,7 @@ func _reset(run: Playtest, chart: Chart) -> void:
 func _at(run: Playtest, ms: float, point: Vector2, visual_ms := -INF) -> void:
 	var beat := run.chart.timing.chart_ms_to_beat(visual_ms if is_finite(visual_ms) else ms)
 	run._preview.prepare_playtest_frame(beat, 0.0)
+	run._assign_presses(ms, beat)
 	run._judge_path(run.chart.notes[0], ms, beat, point)
 	run._path_motion_samples.clear()
 
@@ -452,8 +453,7 @@ func _test_real_motion() -> void:
 		motion.position = run._preview.get_screen_transform() * wanted
 		motion.global_position = motion.position
 		run._last_chart_ms = -INF
-		run._clock_update_usec = 0
-		run._start_usec = Time.get_ticks_usec() - int(visual_ms * 1000.0)
+		run._clock.start(visual_ms, Time.get_ticks_usec())
 		Input.parse_input_event(motion)
 		await process_frame
 		if i == 0:
@@ -466,6 +466,7 @@ func _test_real_motion() -> void:
 		for sample in run._path_motion_samples:
 			received += 1
 			max_error = maxf(max_error, (sample["point"] as Vector2).distance_to(wanted))
+		run._assign_presses(now - 49.0, now / 500.0)
 		run._judge_path(note, now - 49.0, now / 500.0, run._preview.get_local_mouse_position())
 		run._path_motion_samples.clear()
 	check(received >= 25, "real mouse events reach the Path input buffer")

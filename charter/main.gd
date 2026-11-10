@@ -87,9 +87,11 @@ var _playtest_cursor: SpinBox = null
 var _playtest_star_color: ColorPickerButton = null
 var _playtest_trace_color: ColorPickerButton = null
 var _playtest_offset: SpinBox = null
+var _playtest_latency: SpinBox = null
 var _playtest_dynamic: CheckBox = null
 var _playtest_auto: CheckBox = null
 var _playtest_bias: Label = null
+var _calibration_dialog: CalibrationDialog = null
 var _playtest_from_start: bool = false
 ## 制谱界面保留的流速输入框（试玩设置改流速后要同步回来）。
 var _editor_flow_spin: SpinBox = null
@@ -1725,6 +1727,25 @@ func _save() -> void:
 		_sync_from_app()
 
 
+func _open_calibration() -> void:
+	if _app == null:
+		return
+	if _calibration_dialog == null:
+		_calibration_dialog = CalibrationDialog.new()
+		_calibration_dialog.setup(_app)
+		_calibration_dialog.closed.connect(func() -> void:
+			if _playtest_offset != null:
+				_playtest_offset.value = float(_app.playtest_offset_ms)
+			if _playtest_latency != null:
+				_playtest_latency.value = float(_app.audio_latency_ms)
+			_open_playtest_setup(_playtest_from_start)
+		)
+		add_child(_calibration_dialog)
+	if _playtest_dialog != null:
+		_playtest_dialog.hide()
+	_calibration_dialog.open()
+
+
 func _open_playtest_setup(from_start: bool) -> void:
 	if _app == null or _app.chart == null:
 		return
@@ -1766,6 +1787,13 @@ func _build_playtest_dialog() -> void:
 	_playtest_star = _playtest_spin_row(box, "星速", 0.5, 2.0, 0.05, 1.0, "×")
 	_playtest_cursor = _playtest_spin_row(box, "光标大小", 0.5, 2.0, 0.05, 1.0, "×")
 	_playtest_offset = _playtest_spin_row(box, "判定偏移", -200.0, 200.0, 1.0, 0.0, "ms")
+	_playtest_latency = _playtest_spin_row(box, "输出延迟", 0.0, 250.0, 1.0, 0.0, "ms")
+	_playtest_latency.tooltip_text = "驱动报告 0 时使用的音频输出延迟；桌面一般留 0，手机/网页可先试 100–180ms"
+	var calibrate := Button.new()
+	calibrate.text = "校准判定偏移…"
+	calibrate.tooltip_text = "播放点击轨，跟着点击 8 次；结果写入判定偏移"
+	calibrate.pressed.connect(_open_calibration)
+	box.add_child(calibrate)
 	_playtest_dynamic = CheckBox.new()
 	_playtest_dynamic.text = "动态 offset（局内自动校准，≤±50ms）"
 	_playtest_dynamic.tooltip_text = "至少 8 次命中后，每次命中按偏差的 5% 自动微调判定偏移"
@@ -1831,6 +1859,8 @@ func _playtest_spin_row(parent: VBoxContainer, label_text: String, lo: float, hi
 
 func _begin_playtest_with_settings() -> void:
 	_rate = _playtest_rate.value
+	if _playtest_latency != null:
+		_app.audio_latency_ms = clampf(_playtest_latency.value, 0.0, 250.0)
 	_app.flow_scale = _playtest_flow.value
 	_app.star_speed = _playtest_star.value
 	if _playtest_cursor != null:
@@ -1903,6 +1933,8 @@ func _end_playtest() -> void:
 
 func _input(event: InputEvent) -> void:
 	if _playtest != null:
+		return
+	if _calibration_dialog != null and _calibration_dialog.visible:
 		return
 	if event is InputEventKey and event.pressed and not event.echo:
 		var focus := get_viewport().gui_get_focus_owner()
