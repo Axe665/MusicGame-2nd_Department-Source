@@ -83,6 +83,9 @@ func _init(p_type: String = "tap", p_beat: float = 0.0, p_angle: float = 0.0, p_
 	# 判定里按“结束时间”做过期检查时会把它们当成 0ms：谱面播到 6 秒后，
 	# 所有 tap 都被判定为“早就过期”而跳过（表现就是突然整段没有判定）。
 	end_beat = p_beat
+	# 金键以前是金币（宽度 0）。没有弧宽就画不出键，旧数据统一补成 45°。
+	if type == "bell" and width <= 0.0:
+		width = 45.0
 	if type == "path" or type == "trace":
 		space = "plane"
 

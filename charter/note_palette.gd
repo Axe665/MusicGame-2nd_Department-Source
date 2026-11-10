@@ -154,10 +154,17 @@ func _draw_icon(type: String, center: Vector2, r: float, color: Color) -> void:
 			draw_line(center + Vector2(0, -r * 0.35), center + Vector2(0, r * 0.2), color, 1.5, true)
 			draw_line(center + Vector2(0, r * 0.2), center + Vector2(r * 0.3, r * 0.45), color, 1.5, true)
 		"bell":
-			draw_circle(center, r * 0.8, Color(color.r, color.g, color.b, 0.18))
-			draw_arc(center, r * 0.8, 0.0, TAU, 28, color, 2.5, true)
-			draw_circle(center, r * 0.34, color)
-			draw_circle(center, r * 0.12, UITheme.INK)
+			# 金键：亮黄键帽 + 深色边 + 乳白高光 + 双箭头。
+			var kw := r * 0.92
+			var kh := r * 0.70
+			draw_rect(Rect2(center + Vector2(-kw - 2.0, -kh - 2.0), Vector2((kw + 2.0) * 2.0, (kh + 2.0) * 2.0)), UITheme.KEY_EDGE)
+			draw_rect(Rect2(center + Vector2(-kw, -kh), Vector2(kw * 2.0, kh * 2.0)), UITheme.KEY_YELLOW)
+			draw_rect(Rect2(center + Vector2(-kw + 2.0, -kh + 2.0), Vector2((kw - 2.0) * 2.0, kh * 0.85)),
+				Color(UITheme.KEY_HILITE.r, UITheme.KEY_HILITE.g, UITheme.KEY_HILITE.b, 0.9))
+			for k: float in [-0.24, 0.24]:
+				var c := center + Vector2(kw * k, kh * 0.30)
+				draw_line(c + Vector2(-kw * 0.12, -kh * 0.30), c + Vector2(kw * 0.12, 0.0), UITheme.KEY_EDGE, 1.7, true)
+				draw_line(c + Vector2(kw * 0.12, 0.0), c + Vector2(-kw * 0.12, kh * 0.30), UITheme.KEY_EDGE, 1.7, true)
 		"limit":
 			draw_arc(center, r * 0.9, -PI * 0.8, PI * 0.1, 20, color, 7.0, true)
 			draw_line(center + Vector2(r * 0.3, -r * 0.9), center + Vector2(r * 0.3, r * 0.9), Color(color.r, color.g, color.b, 0.55), 1.5)

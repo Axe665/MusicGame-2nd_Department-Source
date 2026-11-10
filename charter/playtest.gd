@@ -1405,7 +1405,7 @@ func _judge_bell(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 		_register_hit("PERFECT")
 		var bell: Dictionary = _preview.bell_screen(note, beat)
 		if not bell.is_empty():
-			_preview.add_hit_pulse(bell["center"], UITheme.GOLD, "PERFECT", "bell")
+			_preview.add_hit_pulse(bell["center"], UITheme.KEY_YELLOW, "PERFECT", "bell")
 		# 结算发生在判定线上，声音天然和音乐对齐。
 		_sfx.play("bell", randf_range(0.99, 1.01))
 		_add_log("BELL #%d PERFECT" % note.id)

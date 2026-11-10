@@ -1,6 +1,8 @@
 class_name Inspector
 extends TabContainer
 
+const BellPreviewScript = preload("res://charter/bell_preview.gd")
+
 var _app: Node = null
 var _pages: Dictionary = {}
 var _page_list: Array[VBoxContainer] = []
@@ -468,6 +470,8 @@ func _build_note_page_for(page: VBoxContainer, note: Note) -> void:
 	var bw := _spin(bell, "弧宽 °", note.width, 6.0, 180.0, 1.0, func(value: float) -> void:
 		if _active_note != null:
 			_active_note.width = value
+		if _note_widgets.has("bell_preview"):
+			_note_widgets["bell_preview"].set_arc_width(value)
 	)
 	_note_widgets["bell_w"] = bw
 	var br := _spin(bell, "半径 px", note.radius, 4.0, 200.0, 1.0, func(value: float) -> void:
@@ -475,7 +479,12 @@ func _build_note_page_for(page: VBoxContainer, note: Note) -> void:
 			_active_note.radius = value
 	)
 	_note_widgets["bell_r"] = br
-	_label(bell, "外圈金弧带：光标贴近即算在场，不用点；「弧宽」决定可见与判定长度。圆心 Bell（bell_radius < 0.5）画金点，用「半径 px」。", 11, UITheme.MUTED)
+	_label(bell, "厚金键：楔形端 + 深色边 + 内嵌箭头；光标贴住即算在场，不用点。「弧宽」决定可见与判定长度；圆心 Bell（bell_radius < 0.5）画小键帽，用「半径 px」。", 11, UITheme.MUTED)
+	var bell_preview := BellPreviewScript.new()
+	bell_preview.name = "BellShapePreview"
+	bell_preview.set_arc_width(note.width)
+	bell.add_child(bell_preview)
+	_note_widgets["bell_preview"] = bell_preview
 
 	if note.type == "path":
 		note.derive_path_controls()
@@ -825,6 +834,7 @@ func _refresh_note_page() -> void:
 	_note_widgets["plane_r"].value = note.plane_radius
 	_note_widgets["bell_u"].value = note.center_u
 	_note_widgets["bell_w"].value = note.width
+	_note_widgets["bell_preview"].set_arc_width(note.width)
 	_note_widgets["bell_r"].value = note.radius
 	if note.type == "path":
 		note.derive_path_controls()
