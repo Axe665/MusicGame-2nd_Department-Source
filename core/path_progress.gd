@@ -184,6 +184,14 @@ func body_ready() -> bool:
 	return group_count > 0 and next_gate >= group_count
 
 
+## The tail was actually reached/judged; only then may the visual erase the
+## remaining tail segment.
+func mark_complete() -> void:
+	fraction = 1.0
+	progress = 1.0
+	coverage = 1.0
+
+
 ## Completion is judged by tail timing only; body groups never cap the tier.
 func remaining_groups() -> int:
 	return maxi(0, group_count - next_gate)
@@ -301,8 +309,9 @@ func _clear_through(index: int, closest: Dictionary, _movement: Vector2) -> void
 		_furthest = length
 		_covered_to = length
 		progress = 1.0
-		fraction = 1.0
 		coverage = 1.0
+		# fraction deliberately stays at the last touched point; the visual
+		# tail is only erased by mark_complete() after the tail is judged.
 	else:
 		progress = clampf(_furthest / length, 0.0, 1.0)
 		fraction = clampf(float(closest["parameter"]), 0.0, 1.0)

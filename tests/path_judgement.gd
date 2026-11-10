@@ -19,6 +19,7 @@ func check(condition: bool, label: String) -> void:
 
 func _run() -> void:
 	_test_tracker()
+	_test_tail_visual()
 	_test_scan_model()
 	_test_forgiving_corridor()
 	root.size = Vector2i(1600, 900)
@@ -39,6 +40,19 @@ func _tracker(points: Array[Vector2]) -> PathProgress:
 
 func _feed(tracker: PathProgress, point: Vector2, ms: float, start_ms := 0.0) -> void:
 	tracker.feed(point, ms, tracker.points, 0.025, start_ms)
+
+
+## Clearing the last judgement group must not erase the visual tail; the player
+## still has to reach the tail ring.
+func _test_tail_visual() -> void:
+	var straight := _tracker([Vector2.ZERO, Vector2.RIGHT])
+	straight.confirm_head()
+	_feed(straight, Vector2(0.5, 0), 1000.0)
+	_feed(straight, Vector2(0.8, 0), 1100.0)
+	check(straight.body_ready(), "the last group clears before the tail")
+	check(straight.fraction < 0.95, "clearing the last group keeps the tail visible")
+	straight.mark_complete()
+	check(straight.fraction > 0.99, "the tail is erased only after completion")
 
 
 func _test_tracker() -> void:
@@ -285,7 +299,7 @@ func _test_playtest() -> void:
 	check(not run._preview.path_erased(note, 2.0), "music time alone does not erase the middle")
 	_at(run, 3000.0, tail)
 	check(not bool(run._states[1]["tail_hit"]), "playtest rejects jumping directly to the tail")
-	_at(run, 3251.0, tail)
+	_at(run, 3351.0, tail)
 	check(bool(run._states[1]["tail_judged"]) and run._miss_count == 1, "incomplete path misses after its deadline")
 
 	_reset(run, chart)
@@ -294,7 +308,7 @@ func _test_playtest() -> void:
 	for group in range(tracker.group_count - 1):
 		tracker.cleared[group] = 1
 	tracker.next_gate = tracker.group_count - 1
-	_at(run, 3251.0, head)
+	_at(run, 3351.0, head)
 	check(int(run._tier_counts["GOOD"]) == 1 and run._miss_count == 0,
 		"missing only the last group earns GOOD instead of a miss")
 

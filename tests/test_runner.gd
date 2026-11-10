@@ -19,6 +19,7 @@ func _initialize() -> void:
 		"test_seek_and_limit_code",
 		"test_compact_chart_code",
 		"test_path_chain_code",
+		"test_path_chain_judgement",
 		"test_path_erase_overlap",
 		"test_path_erase_merge",
 		"test_path_run_split",
@@ -503,6 +504,35 @@ func test_path_chain_code() -> bool:
 	return true
 
 
+## 画面把链式 Path 画成一条（一个头一个尾），判定也必须是一条；否则子段会
+## 要求一个画面上不存在的隐形头判。
+func test_path_chain_judgement() -> bool:
+	var code := "[1]path{(part0,1.0,0.0,2.0,180.0,0.7,0.5);(part1,2.0,0.0,3.0,90.0,0.6,-0.5)}"
+	var parts := Note.path_parts_from_code(code)
+	eq(parts.size(), 2, "chain parts parse for judgement")
+	if parts.size() != 2:
+		return true
+	var chart := Chart.new()
+	chart.notes = parts
+	chart.refresh_ids()
+	var run := Playtest.new()
+	run.chart = chart
+	run._init_states()
+	var paths: Array[Note] = []
+	for note in run._ordered_notes:
+		if note.type == "path":
+			paths.append(note)
+	eq(paths.size(), 1, "a chain is one judgement path")
+	ok(run._states.has(parts[0].id), "chain state lives on the root id")
+	ok(not run._states.has(parts[1].id), "child parts do not get an invisible head/tail")
+	if paths.size() == 1:
+		eq(paths[0].id, parts[0].id, "the synthetic chain keeps the root id")
+		near(paths[0].end_beat, 3.0, 0.001, "the chain keeps the final tail time")
+		ok(paths[0].trace_pts.size() > 4, "the chain carries the combined trace")
+	run.free()
+	return true
+
+
 func test_path_erase_overlap() -> bool:
 	var line := PackedVector2Array()
 	for i in 101:
@@ -594,7 +624,7 @@ func test_style_presets() -> bool:
 	ok(Playtest.PRESS_KEEP_MS < 100.0, "a press only lives for about one frame")
 	eq(Playtest.KEY_DEBOUNCE_MS, 50.0, "the same key is debounced for 50ms")
 	ok(Playtest.EARLY_MS < Playtest.HIT_WINDOW_MS, "early presses are stricter than late ones")
-	eq(Playtest.PATH_TAIL_SWEEP_EARLY_MS, 220.0, "finishing a slide early stops at the GOOD window")
+	eq(Playtest.PATH_TAIL_SWEEP_EARLY_MS, Playtest.TAIL_GOOD_MS, "finishing a slide early stops at the GOOD window")
 	ok(Playtest.HOLD_RELEASE_GRACE_MS >= 100.0 and Playtest.HOLD_RELEASE_GRACE_MS <= 260.0,
 		"the hold release grace is long enough to re-press")
 	ok(Playtest.hold_release_grace_alive(1000.0, 1000.0 + Playtest.HOLD_RELEASE_GRACE_MS - 1.0),
@@ -1913,11 +1943,13 @@ func test_ring_sector_and_tail_tier() -> bool:
 	eq(Preview3D.ring_sector(22.6), 1, "just after the boundary moves to sector 1")
 	eq(Preview3D.ring_sector(90.0), 2, "sector 2 centred on right")
 	eq(Preview3D.ring_sector(337.6), 0, "wrap-around closes back into sector 0")
-	# 星尾独立档位：PERFECT ±80 / GREAT ±140 / GOOD ±220。
-	eq(Playtest.tail_tier(-79.0), "PERFECT", "tail within 80ms is perfect")
-	eq(Playtest.tail_tier(81.0), "GREAT", "tail 81ms is great")
-	eq(Playtest.tail_tier(-141.0), "GOOD", "tail 141ms is good")
-	eq(Playtest.tail_tier(221.0), "BAD", "tail 221ms is bad")
+	# 星尾独立档位：PERFECT ±150 / GREAT ±220 / GOOD ±350；早到不 Miss。
+	eq(Playtest.tail_tier(-149.0), "PERFECT", "tail within 150ms is perfect")
+	eq(Playtest.tail_tier(151.0), "GREAT", "tail 151ms is great")
+	eq(Playtest.tail_tier(-221.0), "GOOD", "tail 221ms is good")
+	eq(Playtest.tail_tier(351.0), "MISS", "late tail beyond 350ms is a miss")
+	eq(Playtest.tail_tier(-360.0), "GOOD", "early tail never falls to miss")
+	eq(Playtest.tail_tier(-203.6), "GREAT", "the one real-log outlier stays a great")
 	return true
 
 
@@ -2445,6 +2477,15 @@ func test_calibration_offset() -> bool:
 	var early: Array[float] = [-40.0, -30.0, -20.0, -10.0]
 	near(CalibrationDialog.offset_for_errors(early), 20.0, 0.01, "early taps produce a positive offset")
 	near(CalibrationDialog.offset_for_errors([1.0, 2.0]), 0.0, 0.01, "too few taps keep the offset unchanged")
+	# 音频延迟：测量值是「真实延迟 - 当前假设」，应加到当前值上。
+	near(CalibrationDialog.latency_for_errors([-20.0, -10.0, 0.0, 10.0], 40.0), 40.0, 0.01,
+		"audio taps with no latency error keep the current value")
+	near(CalibrationDialog.latency_for_errors([30.0, 40.0, 50.0, 60.0], 20.0), 70.0, 0.01,
+		"late audio taps raise the assumed latency")
+	near(CalibrationDialog.latency_for_errors([-60.0, -50.0, -40.0, -30.0], 90.0), 50.0, 0.01,
+		"early audio taps lower the assumed latency")
+	near(CalibrationDialog.latency_for_errors([-60.0, -50.0, -40.0, -30.0], 10.0), 0.0, 0.01,
+		"latency never goes below zero")
 	return true
 
 

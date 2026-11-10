@@ -452,6 +452,14 @@ func apply_frame_cap() -> void:
 			DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_ENABLED)
 
 
+## Output latency used by playtest/calibration. A positive setting overrides the
+## driver value in both directions; 0 means "trust the driver".
+func effective_latency_sec() -> float:
+	if audio_latency_ms > 0.0:
+		return clampf(audio_latency_ms / 1000.0, 0.0, 0.25)
+	return maxf(0.0, AudioServer.get_output_latency())
+
+
 func save_settings() -> void:
 	var data := {"note_skin": note_skin, "hit_fx_style": hit_fx_style, "hit_sfx_style": hit_sfx_style, "ffmpeg": ffmpeg_path, "frame_cap": frame_cap, "playtest_offset_ms": playtest_offset_ms, "audio_latency_ms": audio_latency_ms, "dynamic_offset": dynamic_offset, "playtest_auto": playtest_auto, "last_bias_ms": last_bias_ms, "cursor_scale": cursor_scale}
 	var file := FileAccess.open(SETTINGS_PATH, FileAccess.WRITE)

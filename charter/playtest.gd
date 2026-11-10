@@ -26,11 +26,13 @@ const PathTracker = preload("res://core/path_progress.gd")
 const PATH_INPUT_CAPACITY := 2048
 const PATH_LOG_LIMIT_BYTES := 4 * 1024 * 1024
 ## 尾区最早接受的接触时间；早到后停留可等到 PERFECT 窗口。
-const PATH_TAIL_SWEEP_EARLY_MS := 220.0
+const PATH_TAIL_SWEEP_EARLY_MS := 350.0
 ## 星尾自己的档位窗口（连续滑动有鼠标延迟，比 Tap 宽）。
-const TAIL_PERFECT_MS := 80.0
-const TAIL_GREAT_MS := 140.0
-const TAIL_GOOD_MS := 220.0
+## 150/220/350 是 maimai ±233/366/600 的收紧版：真实日志里 83 条尾判
+## 全部落在 ±233 内，±150 已能覆盖绝大多数，同时保留本作的准度感。
+const TAIL_PERFECT_MS := 150.0
+const TAIL_GREAT_MS := 220.0
+const TAIL_GOOD_MS := 350.0
 const TRACE_HEAD_RADIUS := 72.0
 const TRACE_CONTACT_PX := 56.0
 const BELL_COLLECT_RADIUS := 72.0
@@ -417,7 +419,7 @@ func _init_states() -> void:
 	_log.clear()
 	_combo = 0
 	_max_combo = 0
-	_ordered_notes = chart.sorted_notes()
+	_ordered_notes = _judgement_notes()
 	_dense_ids.clear()
 	for i in _ordered_notes.size():
 		var note := _ordered_notes[i]
@@ -459,6 +461,32 @@ func _init_states() -> void:
 	_path_motion_samples.clear()
 	for region in chart.regions:
 		_red_states[region.id] = {"time": 0.0, "broken": false}
+
+
+## Chains are drawn as one Path (one head, one guide ball, one tail), so they
+## are judged as one too. Child parts are folded into a synthetic root note;
+## otherwise each part would demand an invisible extra head press.
+func _judgement_notes() -> Array[Note]:
+	var by_id := {}
+	for note in chart.notes:
+		by_id[note.id] = note
+	var result: Array[Note] = []
+	for note in chart.sorted_notes():
+		if note.type == "path" and note.path_part > 0:
+			continue
+		if note.type != "path":
+			result.append(note)
+			continue
+		var chain: Array[Note] = [note]
+		var cursor: Note = note
+		var guard := 0
+		while cursor.path_next_id >= 0 and by_id.has(cursor.path_next_id) and guard < 64:
+			cursor = by_id[cursor.path_next_id]
+			chain.append(cursor)
+			guard += 1
+		result.append(Preview3D.build_path_chain_note(note, chain) if chain.size() > 1 else note)
+	result.sort_custom(func(a: Note, b: Note) -> bool: return a.beat < b.beat)
+	return result
 
 
 func _start_audio() -> void:
@@ -547,9 +575,9 @@ func _process(delta: float) -> void:
 
 ## 驱动报告 0 的平台上用设置里的回退值（Android/Web 常见）。
 func _effective_latency() -> float:
-	var reported := maxf(0.0, AudioServer.get_output_latency())
-	var fallback := clampf(float(_app.audio_latency_ms if _app != null else 0.0) / 1000.0, 0.0, 0.25)
-	return maxf(reported, fallback)
+	if _app != null:
+		return _app.effective_latency_sec()
+	return maxf(0.0, AudioServer.get_output_latency())
 
 
 func _chart_ms() -> float:
@@ -1042,8 +1070,9 @@ func _judge_path(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 			_sfx.play("tail", randf_range(0.98, 1.02))
 			_add_log("PATH #%d TAIL %s" % [note.id, tier])
 			state["tail_judged"] = true
+			tracker.mark_complete()
 			_write_path_input_log({"kind": "tail", "note": note.id, "tier": tier, "error_ms": tail_error, "coverage": tracker.coverage})
-		elif ms > tail_ms + HIT_WINDOW_MS:
+		elif ms > tail_ms + TAIL_GOOD_MS:
 			# 只剩最后一组没消：给 GOOD，避免“差一点白划”；差更多仍判 MISS。
 			var remaining := tracker.remaining_groups()
 			var near_complete := bool(state["head_hit"]) and remaining <= 1 and tracker.next_gate > 1
@@ -1117,7 +1146,7 @@ func _feed_path_sample(state: Dictionary, tracker: PathProgress, point: Vector2,
 	if is_finite(float(state["path_finish_ms"])):
 		return
 	var tail_ms := float(state["end_ms"])
-	state["path_finish_ms"] = tracker.finish_contact(tail_ms - PATH_TAIL_SWEEP_EARLY_MS, tail_ms + HIT_WINDOW_MS, tail_radius, tail_ms, TAIL_PERFECT_MS)
+	state["path_finish_ms"] = tracker.finish_contact(tail_ms - PATH_TAIL_SWEEP_EARLY_MS, tail_ms + TAIL_GOOD_MS, tail_radius, tail_ms, TAIL_PERFECT_MS)
 
 
 func _reset_path_motion() -> void:
@@ -1752,10 +1781,9 @@ static func tail_tier(error_ms: float) -> String:
 		return "PERFECT"
 	if error <= TAIL_GREAT_MS:
 		return "GREAT"
-	if error <= TAIL_GOOD_MS:
+	# maimai 的滑条早到永远不会 Miss（Fast Good），只有晚到才掉 Miss。
+	if error <= TAIL_GOOD_MS or error_ms < 0.0:
 		return "GOOD"
-	if error <= BAD_MS:
-		return "BAD"
 	return "MISS"
 
 

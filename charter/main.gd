@@ -1788,10 +1788,10 @@ func _build_playtest_dialog() -> void:
 	_playtest_cursor = _playtest_spin_row(box, "光标大小", 0.5, 2.0, 0.05, 1.0, "×")
 	_playtest_offset = _playtest_spin_row(box, "判定偏移", -200.0, 200.0, 1.0, 0.0, "ms")
 	_playtest_latency = _playtest_spin_row(box, "输出延迟", 0.0, 250.0, 1.0, 0.0, "ms")
-	_playtest_latency.tooltip_text = "驱动报告 0 时使用的音频输出延迟；桌面一般留 0，手机/网页可先试 100–180ms"
+	_playtest_latency.tooltip_text = "0 = 用驱动报告值；>0 = 强制覆盖（可升可降）。听声音校准会自动写入这里"
 	var calibrate := Button.new()
-	calibrate.text = "校准判定偏移…"
-	calibrate.tooltip_text = "播放点击轨，跟着点击 8 次；结果写入判定偏移"
+	calibrate.text = "校准延迟/偏移…"
+	calibrate.tooltip_text = "① 跟声音点 8 次 → 输出延迟；② 跟脉冲点 8 次 → 判定偏移"
 	calibrate.pressed.connect(_open_calibration)
 	box.add_child(calibrate)
 	_playtest_dynamic = CheckBox.new()

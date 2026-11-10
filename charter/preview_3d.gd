@@ -2043,7 +2043,7 @@ func _draw_paths(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 				break
 		if not on_screen:
 			continue
-		visible.append(_build_path_chain_note(root, chain) if chain.size() > 1 else root)
+		visible.append(build_path_chain_note(root, chain) if chain.size() > 1 else root)
 	# 旧 Path 先画、新的最后画：多星星重叠时，新星和它的擦除缺口始终在最上层。
 	visible.sort_custom(func(a: Note, b: Note) -> bool: return a.beat < b.beat)
 	# 舞萌式同色系：所有星共用一个主色，重叠时只压明明度，不换色相。
@@ -2102,7 +2102,9 @@ func _draw_paths(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 				canvas.draw_circle(p, 2.5, UITheme.CYAN)
 
 
-func _build_path_chain_note(root: Note, chain: Array[Note]) -> Note:
+## One synthetic Path for a part chain: one head, one guide ball, one tail.
+## Shared by drawing and judgement so the whole chain is judged as drawn.
+static func build_path_chain_note(root: Note, chain: Array[Note]) -> Note:
 	var result := Note.new("path", root.beat, root.angle, root.width)
 	result.id = root.id
 	result.end_beat = chain[-1].end_beat
