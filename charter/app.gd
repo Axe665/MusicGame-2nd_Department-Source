@@ -278,7 +278,13 @@ func save_set_file(path: String = "") -> bool:
 	dirty = false
 	save_state_changed.emit()
 	status_changed.emit()
-	notice.emit("已保存 %d 个难度到 %s" % [difficulties.size(), target.get_file()], "info")
+	var faint := 0
+	for entry in difficulties:
+		faint += _low_contrast_count(entry.get("chart", null))
+	if faint > 0:
+		notice.emit("已保存 %d 个难度到 %s；其中 %d 个音符的配色对比度偏低（不影响保存）" % [difficulties.size(), target.get_file(), faint], "warning")
+	else:
+		notice.emit("已保存 %d 个难度到 %s" % [difficulties.size(), target.get_file()], "info")
 	return true
 
 
@@ -415,6 +421,8 @@ func _update_window_title() -> void:
 
 
 const SETTINGS_PATH := "user://settings.json"
+## 舞台底色（project.godot 的 default_clear_color），用于对比度提示。
+const STAGE_BACKGROUND := Color(0.043137, 0.047059, 0.062745)
 
 
 func _load_settings() -> void:
@@ -694,6 +702,7 @@ func save_chart() -> bool:
 	if not errors.is_empty():
 		notice.emit("有 %d 个校验错误，已阻止保存：%s" % [errors.size(), errors[0].get("message", "")], "error")
 		return false
+	var faint := low_contrast_note_count()
 	chart.offset_ms = chart.timing.offset_ms
 	var err := ChartIO.save_chart(chart, chart_path)
 	if err != OK:
@@ -703,7 +712,10 @@ func save_chart() -> bool:
 	_commands_since_autosave = 0
 	save_state_changed.emit()
 	status_changed.emit()
-	notice.emit("已保存 %s" % chart_path.get_file(), "info")
+	if faint > 0:
+		notice.emit("已保存 %s；其中 %d 个音符的配色与背景对比度偏低，可能看不清（不影响保存）" % [chart_path.get_file(), faint], "warning")
+	else:
+		notice.emit("已保存 %s" % chart_path.get_file(), "info")
 	return true
 
 
@@ -1253,3 +1265,28 @@ func validation_issues() -> Array[Dictionary]:
 	if chart == null:
 		return []
 	return Validator.validate(chart)
+
+
+## 保存时的颜色提示：统计自定义色或配色组色与舞台背景对比度过低的音符。
+## 设计文档要求“提示但不阻止保存”，所以只发 warning，不做拦截。
+func low_contrast_note_count() -> int:
+	return _low_contrast_count(chart)
+
+
+func _low_contrast_count(target: Chart) -> int:
+	if target == null:
+		return 0
+	var count := 0
+	for note in target.notes:
+		if not note.supports_custom_color():
+			continue
+		var picked := Color(0, 0, 0, 0)
+		if note.has_custom_color:
+			picked = note.custom_color
+		elif note.color > 0:
+			picked = target.palette_color(note.color, note.type)
+		if picked.a <= 0.0:
+			continue
+		if Note.contrast_ratio(picked, STAGE_BACKGROUND) < Note.MIN_CONTRAST:
+			count += 1
+	return count
