@@ -7,10 +7,11 @@ extends RefCounted
 ##      缩不了就把后一条只留星头降 Tap。
 ##   3. 星星超速：压短轨迹（尾巴可能不在原按钮），保留星星本体。
 ##   4. 严格 A-B-A-B 交互段（≥5 颗、均速超上限）整段锁到一对 45° 位置；
-##      ≤45° 的快速交替（≥4 颗）整段收到第一颗角度，形成叠键；
+##      ≤45°（舞萌邻键）的快速 Tap 交替（≥3 颗）整段收到第一颗角度，形成叠键；
 ##      其余大于 45° 且快过鼠标上限的折返逐颗压成 45°。
 ##   5. 星星期间只留落在星轨上的 Tap/Hold/Bell。
 ##   6. Hold 尾巴撞到下一颗按键时缩短，不足半拍降 Tap。
+##   7. Bell 撞上 100ms 内的 Tap/Hold 时吸到同一角度（单光标不可能同时站两处）。
 
 const RING_RADIUS := 330.0
 ## 鼠标跟轨迹的速度上限（px/s，按 330px 半径折算）。
@@ -41,10 +42,13 @@ static func optimize_maimai(chart: Chart, counts: Dictionary) -> Dictionary:
 	_fit_path_overlaps(chart, counts, stats)
 	_fit_all_paths(chart, counts, stats)
 	_refresh_path_tails(chart)
-	_compress_jumps(chart, stats)
+	var locked := _compress_jumps(chart, stats)
 	enforce_slide_floor(chart, counts, stats)
 	_drop_off_track(chart, counts, stats)
 	_clamp_holds(chart, counts, stats)
+	# 压角/Hold 降级会新造出 45° 邻键来回；补一遍只叠不改别的，别留下“看着能叠却没叠”。
+	_lock_interaction_runs(chart, stats, true, locked)
+	_snap_bells_to_press_notes(chart, stats)
 	chart.refresh_ids()
 	return stats
 
@@ -299,7 +303,7 @@ static func _refresh_path_tails(chart: Chart) -> void:
 
 # ---------------------------------------------------------------- 大位移交互
 
-static func _compress_jumps(chart: Chart, stats: Dictionary) -> void:
+static func _compress_jumps(chart: Chart, stats: Dictionary) -> Dictionary:
 	var locked := _lock_interaction_runs(chart, stats)
 	var tail_paths := {}
 	for path in chart.notes:
@@ -333,15 +337,16 @@ static func _compress_jumps(chart: Chart, stats: Dictionary) -> void:
 				_rotate_note(note, signf(delta) * 45.0 - delta)
 				stats["relaxed"] = int(stats["relaxed"]) + 1
 		previous = note
+	return locked
 
 
 ## 严格 A-B-A-B 的两位置交互（Tap/Hold 头，Path 打断，Bell 忽略）：
 ## 段够长且平均速度快过鼠标上限时，第一颗不动，第二颗朝原转向收到 45°，
 ## 整段都锁到这两个位置，避免鼠标每次跨 90°/180°。
-## 小角度（≤45°）的快速交替不锁 45°，而是整段收到第一颗的角度，
-## 形成「叠键」（前后两下位置重叠的同点连打），连 228px 的抖动都不需要。
+## 邻键（≤45°）的快速 Tap 交替整段收到第一颗的角度，形成「叠键」，
+## 连 228px 的抖动都不需要。
 ## 只收 Tap；Hold 头保持原位置，符合「tap 优化」的范围。
-static func _lock_interaction_runs(chart: Chart, stats: Dictionary) -> Dictionary:
+static func _lock_interaction_runs(chart: Chart, stats: Dictionary, stack_only: bool = false, skip: Dictionary = {}) -> Dictionary:
 	var locked := {}
 	var ordered := chart.sorted_notes()
 	var i := 0
@@ -350,11 +355,17 @@ static func _lock_interaction_runs(chart: Chart, stats: Dictionary) -> Dictionar
 		if first.type != "tap" and first.type != "hold":
 			i += 1
 			continue
+		if skip.has(first.id):
+			i += 1
+			continue
 		var j := i + 1
 		while j < ordered.size() and ordered[j].type == "bell":
 			j += 1
 		if j >= ordered.size() or (ordered[j].type != "tap" and ordered[j].type != "hold"):
 			i = maxi(i + 1, j)
+			continue
+		if skip.has(ordered[j].id):
+			i = j
 			continue
 		var a_angle := first.angle
 		var b_angle := ordered[j].angle
@@ -362,9 +373,12 @@ static func _lock_interaction_runs(chart: Chart, stats: Dictionary) -> Dictionar
 		if delta <= 0.5:
 			i = j
 			continue
-		# 小角度里只有 Tap-Tap 才收叠键；Tap/Hold 混合段保持原位置。
+		# 邻键（≤45°）的 Tap-Tap 直接收叠键；Tap/Hold 混合段保持原位置。
 		var stack := delta <= 45.0 and first.type == "tap" and ordered[j].type == "tap"
 		if delta <= 45.0 and not stack:
+			i = j
+			continue
+		if stack_only and not stack:
 			i = j
 			continue
 		var run: Array[Note] = [first, ordered[j]]
@@ -376,22 +390,43 @@ static func _lock_interaction_runs(chart: Chart, stats: Dictionary) -> Dictionar
 				continue
 			if next.type != "tap" and next.type != "hold":
 				break
-			# 叠键只收 Tap；遇到 Hold 头就在它前面截断，让前面的 Tap 段仍能叠。
-			if stack and next.type != "tap":
+			if skip.has(next.id):
 				break
-			var expect := a_angle if run.size() % 2 == 0 else b_angle
-			if absf(JudgeMath.angle_delta(next.angle, expect)) > 1.0:
-				break
+			if stack:
+				# 叠键只收 Tap，且整段只要落在首颗 ±45°（舞萌邻键）内就算来回；
+				# 不再要求严格 A-B-A-B，轻微漂移、三颗 A-B-A 都能收。
+				if next.type != "tap" or absf(JudgeMath.angle_delta(next.angle, a_angle)) > 45.0:
+					break
+			else:
+				var expect := a_angle if run.size() % 2 == 0 else b_angle
+				if absf(JudgeMath.angle_delta(next.angle, expect)) > 1.0:
+					break
 			run.append(next)
 			k += 1
-		var min_run := 4 if stack else MIN_RUN_NOTES
-		if run.size() >= min_run:
+		var min_run := 3 if stack else MIN_RUN_NOTES
+		var did_lock := false
+		var eligible := run.size() >= min_run
+		if eligible and stack:
+			# 只有真正“来回”的段才叠：单向扫台阶（0→45→90）叠完会给下一颗留下大跳。
+			var deviated := false
+			var returned := false
+			for note in run:
+				if absf(JudgeMath.angle_delta(note.angle, a_angle)) > 10.0:
+					deviated = true
+				elif deviated:
+					returned = true
+			eligible = deviated and returned
+		if eligible:
 			var first_ms := chart.timing.beat_to_chart_ms(run[0].beat)
 			var last_ms := chart.timing.beat_to_chart_ms(run[-1].beat)
 			var avg_gap := (last_ms - first_ms) / float(run.size() - 1)
-			var chord := 2.0 * sin(deg_to_rad(delta) * 0.5) * RING_RADIUS
+			var span := 0.0
+			for note in run:
+				span = maxf(span, absf(JudgeMath.angle_delta(note.angle, a_angle)))
+			var chord := 2.0 * sin(deg_to_rad(span) * 0.5) * RING_RADIUS
 			var speed := chord / maxf(0.001, avg_gap) * 1000.0
 			if avg_gap > 0.1 and speed > MAX_HEAD_SPEED:
+				did_lock = true
 				if stack:
 					for note in run:
 						_rotate_note(note, JudgeMath.angle_delta(note.angle, a_angle))
@@ -407,8 +442,49 @@ static func _lock_interaction_runs(chart: Chart, stats: Dictionary) -> Dictionar
 						_rotate_note(run[index], JudgeMath.angle_delta(run[index].angle, target))
 						locked[run[index].id] = true
 					stats["locked"] = int(stats.get("locked", 0)) + 1
-		i = maxi(k, i + 1)
+		# 段失败时只退到断点前一颗：断点处往往才是真正可叠的子段开头。
+		i = maxi(k if did_lock else k - 1, i + 1)
 	return locked
+
+
+## Bell 是触摸装饰，但 PC 只有一个光标：和 100ms 内的 Tap/Hold 撞车时，
+## 把它吸到那颗按键的角度上，让一个光标同时完成“贴住 Bell + 按时按键”。
+static func _snap_bells_to_press_notes(chart: Chart, stats: Dictionary) -> void:
+	var ordered := chart.sorted_notes()
+	var press: Array[Note] = []
+	for note in ordered:
+		if note.type == "tap" or note.type == "hold":
+			press.append(note)
+	if press.is_empty():
+		return
+	var p := 0
+	for bell in ordered:
+		if bell.type != "bell":
+			continue
+		var bell_ms := chart.timing.beat_to_chart_ms(bell.beat)
+		while p + 1 < press.size():
+			var here := absf(chart.timing.beat_to_chart_ms(press[p].beat) - bell_ms)
+			var next := absf(chart.timing.beat_to_chart_ms(press[p + 1].beat) - bell_ms)
+			if next > here:
+				break
+			p += 1
+		var best: Note = null
+		var best_dt := INF
+		for candidate in [press[p], press[p - 1] if p > 0 else null]:
+			if candidate == null:
+				continue
+			var dt := absf(chart.timing.beat_to_chart_ms(candidate.beat) - bell_ms)
+			if dt <= 100.0 and dt < best_dt:
+				best_dt = dt
+				best = candidate
+		if best == null:
+			continue
+		var target := fposmod(best.angle, 360.0)
+		if absf(JudgeMath.angle_delta(bell.center_u * 360.0, target)) <= 0.5:
+			continue
+		bell.center_u = fposmod(target / 360.0, 1.0)
+		bell.angle = target
+		stats["bells_moved"] = int(stats["bells_moved"]) + 1
 
 
 static func _beat_key(chart: Chart, beat: float) -> int:

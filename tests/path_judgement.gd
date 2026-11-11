@@ -488,9 +488,27 @@ func _test_bell_judgement() -> void:
 	check(not legacy.is_empty(), "a legacy center bell still has a ring shape")
 	check(not run._preview.bell_contains(dot, 4.0, center), "a legacy center bell is no longer judged at the center")
 	check(run._preview.bell_contains(dot, 4.0, legacy["center"]), "a legacy center bell is judged on the ring")
+	# 飞入中的 Bell 按可见位置判定：贴住画出来的位置才算，不能只看判定环。
+	var early := beat - 0.2
+	run._preview.prepare_playtest_frame(early, 0.0)
+	var ring_points: Array = run._preview.bell_band_points(band, early, 1.0)
+	var ring_center: Vector2 = ring_points[ring_points.size() / 2]
+	check(run._preview.bell_contains(band, early, ring_center + inward * 55.0),
+		"the flying-in bell is judged where it is drawn")
+	check(run._preview.bell_contains(band, early, ring_center),
+		"standing on the ring early still counts")
+	check(not run._preview.bell_contains(band, early, ring_center + inward * 120.0),
+		"far inside the ring is still outside")
+	run._preview.prepare_playtest_frame(beat, 0.0)
 	run._judge_bell(band, target - 99.0, beat, point)
+	check(not bool(run._states[1]["armed"]), "one frame of presence does not arm the gold note")
+	var far_point := point + (point - center) * 2.0
+	run._judge_bell(band, target - 90.0, beat, far_point)
+	run._judge_bell(band, target - 85.0, beat, point)
+	check(not bool(run._states[1]["armed"]), "sweeping across resets the dwell")
+	run._judge_bell(band, target - 60.0, beat, point)
 	check(bool(run._states[1]["armed"]) and not bool(run._states[1]["done"]),
-		"an early sweep only arms the gold note")
+		"staying on the gold note arms it")
 	run._judge_bell(band, target, beat, point)
 	check(bool(run._states[1]["done"]), "the gold note resolves on the judgement line")
 	check(int(run._tier_counts["PERFECT"]) == 1, "presence scores a PERFECT")
