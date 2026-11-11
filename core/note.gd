@@ -20,6 +20,8 @@ const SIZED_TAP_MIN := 0.0
 const SIZED_TAP_MAX := 1.5
 ## 出现时（环心）的长度 = 1/6 l，飞向判定环的过程中长到 1 l。
 const SPAWN_LENGTH_RATIO := 1.0 / 6.0
+## 自定义颜色与背景的 WCAG 对比度低于这个值就提示“看不清”，但不阻止保存。
+const MIN_CONTRAST := 2.5
 
 var id: int = 1
 var type: String = "tap"
@@ -712,3 +714,37 @@ static func _points_from_array(raw: Array) -> Array[Dictionary]:
 				point[String(key)] = float(item[key])
 			result.append(point)
 	return result
+
+
+# ---------------------------------------------------------------- 自定义颜色
+
+
+func supports_custom_color() -> bool:
+	return type in ["tap", "hold", "path"]
+
+
+## 最终显示色：单音符覆盖 > 配色组 > 类型默认色。
+func resolved_color(chart: Chart, fallback: Color) -> Color:
+	if has_custom_color:
+		return custom_color
+	if color > 0 and chart != null:
+		var picked := chart.palette_color(color, type)
+		if picked.a > 0.0:
+			return picked
+	return fallback
+
+
+static func relative_luminance(color: Color) -> float:
+	return 0.2126 * _channel_luminance(color.r) + 0.7152 * _channel_luminance(color.g) + 0.0722 * _channel_luminance(color.b)
+
+
+static func _channel_luminance(value: float) -> float:
+	var channel := clampf(value, 0.0, 1.0)
+	return channel / 12.92 if channel <= 0.04045 else pow((channel + 0.055) / 1.055, 2.4)
+
+
+## WCAG 对比度（1–21）。低于 MIN_CONTRAST 时只提示，不阻止保存。
+static func contrast_ratio(a: Color, b: Color) -> float:
+	var la := relative_luminance(a)
+	var lb := relative_luminance(b)
+	return (maxf(la, lb) + 0.05) / (minf(la, lb) + 0.05)

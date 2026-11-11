@@ -2010,6 +2010,11 @@ func _pick_visual_node(screen_position: Vector2) -> int:
 	return -1
 
 
+## 音符最终颜色：单音符覆盖 > 配色组 > 类型默认；预览与试玩共用同一条路径。
+func _note_tint(note: Note, fallback: Color) -> Color:
+	return note.resolved_color(get_chart(), fallback)
+
+
 func _draw_paths(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 	# A part chain is drawn as one synthetic Path: one head star at part0, one
 	# progress ball travelling the whole chain, and one final tail ring.
@@ -2053,13 +2058,11 @@ func _draw_paths(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 	var colors := {}
 	var shade := 0
 	for note in visible:
-		if note.has_custom_color:
-			colors[note] = note.custom_color
-			continue
+		var tint := _note_tint(note, base)
 		if not any_overlap:
-			colors[note] = base
+			colors[note] = tint
 		else:
-			colors[note] = base.darkened(0.18 * float(shade % 4))
+			colors[note] = tint.darkened(0.18 * float(shade % 4))
 			shade += 1
 	# 接力高亮：还没划完的星里，只有尾判定最早的那条（或几条同时到点）保持全亮。
 	# 未来星只要还在预读期就已经整条可见，所以也要参与压暗，否则屏幕上会有
@@ -2868,28 +2871,28 @@ func _hold_node_screen(chart: Chart, note: Note, relative_beat: float, relative_
 
 
 ## Hold 头/尾共用的圆角金条贴图。
-func _draw_hold_cap_band(canvas: Control, band_a: Vector2, band_b: Vector2, fade: float) -> void:
+func _draw_hold_cap_band(canvas: Control, band_a: Vector2, band_b: Vector2, fade: float, tint: Color = UITheme.GOLD) -> void:
 	var ns := _note_scale()
 	var band_w := 16.0 * ns
 	canvas.draw_line(band_a, band_b, Color(0, 0, 0, 0.55 * fade), band_w + 6.0 * ns, false)
 	canvas.draw_line(band_a, band_b, Color(1, 1, 1, 0.92 * fade), band_w, false)
-	canvas.draw_line(band_a, band_b, Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, 0.95 * fade), band_w * 0.62, false)
-	canvas.draw_circle(band_a, band_w * 0.5, Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, 0.95 * fade))
-	canvas.draw_circle(band_b, band_w * 0.5, Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, 0.95 * fade))
+	canvas.draw_line(band_a, band_b, Color(tint.r, tint.g, tint.b, 0.95 * fade), band_w * 0.62, false)
+	canvas.draw_circle(band_a, band_w * 0.5, Color(tint.r, tint.g, tint.b, 0.95 * fade))
+	canvas.draw_circle(band_b, band_w * 0.5, Color(tint.r, tint.g, tint.b, 0.95 * fade))
 	canvas.draw_circle(band_a, band_w * 0.5, Color(1, 1, 1, 0.92 * fade), false, 2.0, true)
 	canvas.draw_circle(band_b, band_w * 0.5, Color(1, 1, 1, 0.92 * fade), false, 2.0, true)
 	canvas.draw_line(band_a + Vector2(0, -band_w * 0.18), band_b + Vector2(0, -band_w * 0.18), Color(1, 1, 0.94, 0.45 * fade), band_w * 0.18, false)
 
 
 ## Hold 尾端：形状同头，但用多层柔光代替锐利描边，一眼就能分清头尾。
-func _draw_hold_tail_band(canvas: Control, band_a: Vector2, band_b: Vector2, fade: float) -> void:
+func _draw_hold_tail_band(canvas: Control, band_a: Vector2, band_b: Vector2, fade: float, tint: Color = UITheme.GOLD) -> void:
 	var ns := _note_scale()
 	var band_w := 16.0 * ns
 	for layer in 4:
 		var k := float(layer) / 3.0
 		var w := band_w * lerpf(2.0, 0.9, k)
 		var a := lerpf(0.05, 0.28, k) * fade
-		var c := Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, a)
+		var c := Color(tint.r, tint.g, tint.b, a)
 		canvas.draw_line(band_a, band_b, c, w, false)
 		canvas.draw_circle(band_a, w * 0.5, c)
 		canvas.draw_circle(band_b, w * 0.5, c)
@@ -2899,7 +2902,7 @@ func _draw_hold_tail_band(canvas: Control, band_a: Vector2, band_b: Vector2, fad
 	canvas.draw_circle(band_b, band_w * 0.17, Color(1, 1, 1, 0.30 * fade))
 
 
-func _draw_hold_sector(canvas: Control, chart: Chart, note: Note, t: float, pre: float, fade: float, hide_head: bool = false) -> void:
+func _draw_hold_sector(canvas: Control, chart: Chart, note: Note, t: float, pre: float, fade: float, hide_head: bool = false, tint: Color = UITheme.GOLD) -> void:
 	# 直长条 = 一个从圆心张开的扇形。整根条按**同一个径向速度**往判定环落：
 	# 头部（外缘）在 pre 拍内从圆心走到环上，尾部（内缘）晚 duration 拍跟随，
 	# 所以看起来是匀速下落，而不是"先快速长出来再慢慢收"。
@@ -2947,14 +2950,14 @@ func _draw_hold_sector(canvas: Control, chart: Chart, note: Note, t: float, pre:
 		for k in range(edges.size() - 1, -1, -1):
 			quad.append(center.lerp(edges[k], s0))
 		var alpha := lerpf(0.07, 0.42, float(s) / float(maxi(1, slices - 1)))
-		canvas.draw_colored_polygon(quad, Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, alpha * fade))
+		canvas.draw_colored_polygon(quad, Color(tint.r, tint.g, tint.b, alpha * fade))
 	# 外弧：贴着判定环的高亮边。
 	canvas.draw_polyline(outer, Color(1, 1, 1, 0.72 * fade), 2.0, false)
-	canvas.draw_polyline(outer, Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, 0.95 * fade), 1.0, false)
+	canvas.draw_polyline(outer, Color(tint.r, tint.g, tint.b, 0.95 * fade), 1.0, false)
 	# 内弧：长条尾端，往判定环方向收缩；越窄越亮。
 	if inner.size() > 1 and inner_scale > 0.002:
 		var tail_alpha := lerpf(0.35, 1.0, clampf(inner_scale, 0.0, 1.0))
-		canvas.draw_polyline(inner, Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, tail_alpha * fade), 3.0, false)
+		canvas.draw_polyline(inner, Color(tint.r, tint.g, tint.b, tail_alpha * fade), 3.0, false)
 		canvas.draw_polyline(inner, Color(1, 1, 1, 0.28 * tail_alpha * fade), 1.2, false)
 	# 两侧的径向边，让扇形边界清楚。
 	if outer.size() == inner.size() and outer.size() > 1:
@@ -2963,9 +2966,9 @@ func _draw_hold_sector(canvas: Control, chart: Chart, note: Note, t: float, pre:
 		canvas.draw_line(outer[-1], inner[-1], Color(1, 1, 1, edge_alpha), 1.0, false)
 	# 头部：圆角金条 + 白色内高光（世界计划式的圆润端头）；尾部虚化。
 	if outer.size() > 1 and not hide_head:
-		_draw_hold_cap_band(canvas, outer[0], outer[outer.size() - 1], fade)
+		_draw_hold_cap_band(canvas, outer[0], outer[outer.size() - 1], fade, tint)
 	if inner.size() > 1 and inner_scale > 0.002:
-		_draw_hold_tail_band(canvas, inner[0], inner[inner.size() - 1], fade)
+		_draw_hold_tail_band(canvas, inner[0], inner[inner.size() - 1], fade, tint)
 
 
 func _draw_holds(canvas: Control, chart: Chart, t: float, pre: float) -> void:
@@ -2980,6 +2983,7 @@ func _draw_holds(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 	visible.sort_custom(func(a: Note, b: Note) -> bool: return a.beat > b.beat)
 	for note in visible:
 		var state := note_state(note.id)
+		var tint := _note_tint(note, UITheme.GOLD)
 		# 尾判命中后尾巴停在判定环上再淡出 0.1s，不再当帧消失。
 		# 早松手 / 头判 MISS 从判定那一拍起淡，不强行贴到环上。
 		var fade_beats := end_fade_beats(chart.timing.bpm_at(note.beat))
@@ -3010,7 +3014,7 @@ func _draw_holds(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 				straight = false
 				break
 		if straight:
-			_draw_hold_sector(canvas, chart, note, t, pre, fade, hide_head)
+			_draw_hold_sector(canvas, chart, note, t, pre, fade, hide_head, tint)
 			continue
 		var center := project_design(Vector2.ZERO)
 		var body := PackedVector2Array()
@@ -3036,18 +3040,18 @@ func _draw_holds(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 		var normal := Vector2(-direction.y, direction.x)
 		canvas.draw_polyline(body, Color(0, 0, 0, 0.55 * fade), 11.0 * cs, false)
 		canvas.draw_polyline(body, Color(1, 1, 1, 0.90 * fade), 6.0 * cs, false)
-		canvas.draw_polyline(body, Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, 0.92 * fade), 3.0 * cs, false)
+		canvas.draw_polyline(body, Color(tint.r, tint.g, tint.b, 0.92 * fade), 3.0 * cs, false)
 		# 尾端同为虚化：柔光层代替实心金点。
-		canvas.draw_circle(body[0], 9.0 * cs, Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, 0.10 * fade))
-		canvas.draw_circle(body[0], 6.0 * cs, Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, 0.20 * fade))
-		canvas.draw_circle(body[0], 3.0 * cs, Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, 0.70 * fade))
+		canvas.draw_circle(body[0], 9.0 * cs, Color(tint.r, tint.g, tint.b, 0.10 * fade))
+		canvas.draw_circle(body[0], 6.0 * cs, Color(tint.r, tint.g, tint.b, 0.20 * fade))
+		canvas.draw_circle(body[0], 3.0 * cs, Color(tint.r, tint.g, tint.b, 0.70 * fade))
 		canvas.draw_circle(body[0], 1.6 * cs, Color(1, 1, 1, 0.30 * fade))
 		# 外端：一小段横杆当"头"，宽度随整体一起放大。
 		var knob := 9.0 * cs
 		if not hide_head:
 			canvas.draw_line(boundary - normal * knob, boundary + normal * knob, Color(0, 0, 0, 0.55 * fade), 7.0 * cs, false)
 			canvas.draw_line(boundary - normal * knob, boundary + normal * knob, Color(1, 1, 1, 0.95 * fade), 5.0 * cs, false)
-			canvas.draw_line(boundary - normal * knob, boundary + normal * knob, Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, 0.95 * fade), 2.6 * cs, false)
+			canvas.draw_line(boundary - normal * knob, boundary + normal * knob, Color(tint.r, tint.g, tint.b, 0.95 * fade), 2.6 * cs, false)
 		if t >= note.beat and t <= note.end_beat:
 			var progress := clampf((t - note.beat) / maxf(0.001, note.duration()), 0.0, 1.0)
 			var marker_index := progress * float(body.size() - 1)
@@ -3056,21 +3060,21 @@ func _draw_holds(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 			var marker := body[lower].lerp(body[upper], marker_index - float(lower))
 			canvas.draw_circle(marker, 12.0 * hs, Color(1, 1, 1, 0.28))
 			canvas.draw_circle(marker, 8.0 * hs, Color(1, 1, 1, 0.96))
-			canvas.draw_circle(marker, 4.0 * hs, UITheme.GOLD)
+			canvas.draw_circle(marker, 4.0 * hs, tint)
 		if show_debug and t < note.beat + 0.02:
 			var head := _flying_position(chart, note.angle, note.beat, t, pre)
 			if _valid_point(head):
-				canvas.draw_string(UITheme.bold_font(), head + Vector2(-14, -22), "HOLD", HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, 0.85))
+				canvas.draw_string(UITheme.bold_font(), head + Vector2(-14, -22), "HOLD", HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(tint.r, tint.g, tint.b, 0.85))
 		if not hide_head and t >= note.beat and t <= note.end_beat:
 			var glow := 0.5 + 0.5 * sin(t * PI)
-			canvas.draw_arc(boundary, 28.0 * hs, 0.0, TAU, 32, Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, 0.28 * glow), 2.6, false)
+			canvas.draw_arc(boundary, 28.0 * hs, 0.0, TAU, 32, Color(tint.r, tint.g, tint.b, 0.28 * glow), 2.6, false)
 		if _app != null and not note.visual_pts.is_empty():
 			var selected: Note = _app.get_selected_note()
 			if selected != null and selected.id == note.id:
 				for point in note.visual_pts:
 					var marker := _hold_node_screen(chart, note, float(point.get("db", 0.0)), float(point.get("da", 0.0)), t)
 					if _valid_point(marker):
-						_draw_diamond(canvas, marker, 5.5, UITheme.GOLD)
+						_draw_diamond(canvas, marker, 5.5, tint)
 
 
 func _draw_notes(canvas: Control, chart: Chart, t: float, pre: float) -> void:
@@ -3120,10 +3124,11 @@ func _draw_tap_note(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 	# 长度系统：普通 Tap = 0.5 l，大小 Tap = size_ratio × l；条带随半径从 1/6 长到 1。
 	var progress := _approach(chart, note.beat, t)
 	var q := lerpf(Note.SPAWN_LENGTH_RATIO, 1.0, progress)
-	var center_point := _draw_length_band(canvas, chart, note.angle, note.arc_width(), q, t, UITheme.PINK)
+	var tint := _note_tint(note, UITheme.PINK)
+	var center_point := _draw_length_band(canvas, chart, note.angle, note.arc_width(), q, t, tint)
 	if show_debug and _valid_point(center_point):
 		var ns := _note_scale()
-		canvas.draw_string(UITheme.bold_font(), center_point + Vector2(-12, -22), "TAP %.0f°%s" % [note.arc_width(), " ×l %.2f" % note.size_ratio if note.sized else ""], HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(UITheme.PINK.r, UITheme.PINK.g, UITheme.PINK.b, 0.85))
+		canvas.draw_string(UITheme.bold_font(), center_point + Vector2(-12, -22), "TAP %.0f°%s" % [note.arc_width(), " ×l %.2f" % note.size_ratio if note.sized else ""], HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(tint.r, tint.g, tint.b, 0.85))
 
 
 ## Tap 与 Hold 头共用的“长度条”：一段按 radius_scale 缩放的弧带 + 两端圆头 + 中心点。

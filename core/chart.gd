@@ -28,6 +28,16 @@ var regions: Array[Region] = []
 var notes: Array[Note] = []
 var editor: Dictionary = {}
 
+## 配色分组：每组 {name, tap, hold, path}，颜色存 "#rrggbb" 字符串。
+## Note.color 是 1 起的组号，0 = 跟随各类型的默认皮肤色。
+const PALETTE_TYPES: Array[String] = ["tap", "hold", "path"]
+const PALETTE_DEFAULTS := {
+	"tap": "#ff6fae",
+	"hold": "#f0c36a",
+	"path": "#8cbfff",
+}
+var palette: Array[Dictionary] = []
+
 var _next_note_id: int = 1
 var _next_region_id: int = 1
 var _next_event_id: int = 1
@@ -179,3 +189,77 @@ func duration_beats() -> float:
 
 func bar_length() -> float:
 	return float(timing.beats_per_bar_at(0.0))
+
+
+# ---------------------------------------------------------------- 配色分组
+
+
+func palette_count() -> int:
+	return palette.size()
+
+
+func palette_group(index: int) -> Dictionary:
+	if index < 1 or index > palette.size():
+		return {}
+	var group: Variant = palette[index - 1]
+	return group if group is Dictionary else {}
+
+
+## 返回组内某类型的颜色；组号越界或颜色非法时返回 alpha=0 的空色。
+func palette_color(index: int, type_key: String) -> Color:
+	var group := palette_group(index)
+	if group.is_empty():
+		return Color(0, 0, 0, 0)
+	var text := String(group.get(type_key, ""))
+	if text.is_empty() or not Color.html_is_valid(text):
+		return Color(0, 0, 0, 0)
+	return Color(text)
+
+
+func palette_name(index: int) -> String:
+	var group := palette_group(index)
+	if group.is_empty():
+		return "配色 %d" % index
+	var title := String(group.get("name", "")).strip_edges()
+	return title if not title.is_empty() else "配色 %d" % index
+
+
+## 新建一组（返回 1 起的组号），默认三色取各类型默认皮肤色。
+func add_palette_group(title: String = "") -> int:
+	var group := {
+		"name": title,
+		"tap": String(PALETTE_DEFAULTS["tap"]),
+		"hold": String(PALETTE_DEFAULTS["hold"]),
+		"path": String(PALETTE_DEFAULTS["path"]),
+	}
+	palette.append(group)
+	return palette.size()
+
+
+## 删除一组；引用该组的音符回到默认色，后面的组号整体前移。
+func remove_palette_group(index: int) -> void:
+	if index < 1 or index > palette.size():
+		return
+	palette.remove_at(index - 1)
+	for note in notes:
+		if note.color == index:
+			note.color = 0
+		elif note.color > index:
+			note.color -= 1
+
+
+## 组号 → 使用它的音符数。
+func palette_usage(index: int) -> int:
+	var total := 0
+	for note in notes:
+		if note.color == index:
+			total += 1
+	return total
+
+
+## 谱面里是否有音符使用自定义颜色（分组或单音符覆盖）。
+func has_custom_note_colors() -> bool:
+	for note in notes:
+		if note.has_custom_color or note.color > 0:
+			return true
+	return false
