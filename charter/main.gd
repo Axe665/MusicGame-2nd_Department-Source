@@ -1835,6 +1835,8 @@ func _build_playtest_dialog() -> void:
 	trace_row.visible = false
 	add_child(_playtest_dialog)
 	_playtest_dialog.confirmed.connect(_begin_playtest_with_settings)
+	# × 或 Esc 关闭时同样保留设置（只保存，不开始试玩）。
+	_playtest_dialog.canceled.connect(_commit_playtest_settings)
 
 
 func _playtest_spin_row(parent: VBoxContainer, label_text: String, lo: float, hi: float, step: float, value: float, suffix: String) -> SpinBox:
@@ -1857,6 +1859,15 @@ func _playtest_spin_row(parent: VBoxContainer, label_text: String, lo: float, hi
 
 
 func _begin_playtest_with_settings() -> void:
+	_commit_playtest_settings()
+	_start_playtest(_playtest_from_start)
+
+
+## 把试玩设置写回 _app 并落盘。确认按钮和右上角 × 都走这里，
+## 否则用 × / Esc 关掉对话框时设置会退回默认值。
+func _commit_playtest_settings() -> void:
+	if _app == null:
+		return
 	_rate = _playtest_rate.value
 	if _playtest_latency != null:
 		_app.audio_latency_ms = clampf(_playtest_latency.value, 0.0, 250.0)
@@ -1870,11 +1881,11 @@ func _begin_playtest_with_settings() -> void:
 		_app.dynamic_offset = _playtest_dynamic.button_pressed
 	if _playtest_auto != null:
 		_app.playtest_auto = _playtest_auto.button_pressed
-	_app.save_settings()
 	if _playtest_star_color != null:
 		_app.star_color = _playtest_star_color.color
 	if _playtest_trace_color != null:
 		_app.trace_color = _playtest_trace_color.color
+	_app.save_settings()
 	_preview.flow_scale = _app.flow_scale
 	_preview.star_speed = _app.star_speed
 	_preview.star_color = _app.star_color
@@ -1891,7 +1902,6 @@ func _begin_playtest_with_settings() -> void:
 		_playtest._preview.request_redraw()
 	if _editor_flow_spin != null:
 		_editor_flow_spin.value = _app.flow_scale
-	_start_playtest(_playtest_from_start)
 
 
 func _start_playtest(from_start: bool) -> void:
