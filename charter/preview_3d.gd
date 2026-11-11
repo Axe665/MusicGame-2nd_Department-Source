@@ -41,8 +41,6 @@ var show_path_judgement := false
 var path_judgement_states: Dictionary = {}
 var flow_scale: float = 1.0
 var star_speed: float = 1.0
-## 星星主色（全局单色系，可在试玩设置里改）。
-var star_color: Color = Color(0.55, 0.75, 1.0)
 ## Trace 门框的主色（默认银白）。
 var trace_color: Color = Color(0.78, 0.86, 1.0)
 var custom_cursor_visible: bool = true
@@ -488,7 +486,7 @@ func _process(_delta: float) -> void:
 	_update_mouse_tilt(_delta)
 	for i in range(_pulses.size() - 1, -1, -1):
 		_pulses[i]["age"] = float(_pulses[i].get("age", 0.0)) + _delta
-		if float(_pulses[i]["age"]) > 0.5:
+		if float(_pulses[i]["age"]) > 0.62:
 			_pulses.remove_at(i)
 	for i in range(_arc_flashes.size() - 1, -1, -1):
 		_arc_flashes[i]["age"] = float(_arc_flashes[i].get("age", 0.0)) + _delta
@@ -2054,7 +2052,7 @@ func _draw_paths(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 				break
 		if any_overlap:
 			break
-	var base := star_color
+	var base := Note.DEFAULT_PATH_COLOR
 	var colors := {}
 	var shade := 0
 	for note in visible:
@@ -3609,7 +3607,7 @@ func add_note_pop(kind: String, note: Note, beat: float) -> void:
 		if not _valid_point(point):
 			return
 		pop["point"] = point
-		pop["color"] = note.custom_color if note.has_custom_color else star_color
+		pop["color"] = note.resolved_color(chart, Note.DEFAULT_PATH_COLOR)
 		var base_scale := clampf(ns * PATH_SIZE_SCALE * PATH_HEAD_SCALE, 0.2, 2.0)
 		pop["base"] = base_scale * float(_skin()["scale"]) * PATH_SIZE_SCALE * PATH_HEAD_SCALE
 		pop["arc_base"] = ns * PATH_SIZE_SCALE * PATH_HEAD_SCALE
@@ -3730,16 +3728,70 @@ func _draw_pulses(canvas: Control) -> void:
 				canvas.draw_line(point + Vector2(0, -92.0 * (1.0 - alpha)), point - Vector2(0, 20), Color(color.r, color.g, color.b, 0.35 * alpha), 12.0, false)
 			"trace":
 				canvas.draw_line(point - Vector2(52, 0), point + Vector2(52, 0), Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.5 * alpha), 9.0 * alpha + 1.0, false)
-		var text_scale := 1.0 + 0.28 * clampf(1.0 - age / 0.12, 0.0, 1.0)
-		var label_y := float(pulse.get("label_y", 0.0))
-		canvas.draw_string_outline(UITheme.bold_font(), point + Vector2(30, -40 - age * 30 + label_y), String(pulse.get("label", "")), HORIZONTAL_ALIGNMENT_LEFT, -1, int(16.0 * text_scale), 5, Color(0, 0, 0, 0.55 * alpha))
-		canvas.draw_string(UITheme.bold_font(), point + Vector2(30, -40 - age * 30 + label_y), String(pulse.get("label", "")), HORIZONTAL_ALIGNMENT_LEFT, -1, int(16.0 * text_scale), Color(color.r, color.g, color.b, alpha))
-		# 早/晚提示：Estella 被批评判定反馈不清，这里把偏差方向直接写在判定字下面。
+		var label := String(pulse.get("label", ""))
 		var detail := String(pulse.get("detail", ""))
+		var label_y := float(pulse.get("label_y", 0.0))
+		var pos := point + Vector2(30, -40 - age * 30 + label_y)
+		var label_alpha := alpha
+		var detail_alpha := 0.72 * alpha
+		var outline_alpha := 0.55 * alpha
+		var font_size := int(16.0 * (1.0 + 0.28 * clampf(1.0 - age / 0.12, 0.0, 1.0)))
+		var detail_size := 11
+		var outline_size := 5
+		if kind == "path":
+			# 星星判定字：不跟命中特效一起淡；满亮 0.25s，0.55s 淡完；画到白爆环外面。
+			label_alpha = clampf((0.55 - age) / 0.30, 0.0, 1.0)
+			detail_alpha = 0.9 * label_alpha
+			outline_alpha = 0.85 * label_alpha
+			font_size = _path_label_font_size()
+			detail_size = 14
+			outline_size = maxi(4, int(font_size * 0.24))
+			pos = _path_label_point(point, canvas.size, label, detail, font_size, detail_size)
+			pos.y += label_y
+		canvas.draw_string_outline(UITheme.bold_font(), pos, label, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, outline_size, Color(0, 0, 0, outline_alpha))
+		canvas.draw_string(UITheme.bold_font(), pos, label, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, Color(color.r, color.g, color.b, label_alpha))
+		# 早/晚提示：Estella 被批评判定反馈不清，这里把偏差方向直接写在判定字下面。
 		if not detail.is_empty():
 			# 这里原本用等宽字体，但它没有中文字形，每个不同的“早/晚 X ms”都会触发一次
 			# 系统字体回退查找（单次约 18ms），判定密集时会周期性卡顿。改用含中文的正文字体。
-			canvas.draw_string(UITheme.FONT_REGULAR, point + Vector2(30, -24 - age * 30 + label_y), detail, HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(1, 1, 1, 0.72 * alpha))
+			canvas.draw_string(UITheme.FONT_REGULAR, pos + Vector2(0, detail_size + 2), detail, HORIZONTAL_ALIGNMENT_LEFT, -1, detail_size, Color(1, 1, 1, detail_alpha))
+
+
+## 星星判定字字号：约环半径 6.5%，小预览自动缩、大屏封顶。
+func _path_label_font_size() -> int:
+	return int(round(clampf(_avg_radius_cache * 0.065, 18.0, 40.0)))
+
+
+func _path_label_point(point: Vector2, bounds: Vector2, label: String, detail: String, font_size: int, detail_size: int) -> Vector2:
+	var width := UITheme.bold_font().get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x
+	if not detail.is_empty():
+		width = maxf(width, UITheme.FONT_REGULAR.get_string_size(detail, HORIZONTAL_ALIGNMENT_LEFT, -1, detail_size).x)
+	var block := Vector2(width, float(font_size) + float(detail_size) + 6.0)
+	var center := project_design(Vector2.ZERO)
+	if not _valid_point(center):
+		center = bounds * 0.5
+	return path_label_pos(point, center, bounds, block, float(font_size) * 0.82)
+
+
+## 星头爆环半径 116px：优先推到外侧，放不下就换内侧，最后夹进画面避免裁切。
+static func path_label_pos(point: Vector2, center: Vector2, bounds: Vector2, block: Vector2, ascent: float, dist: float = 132.0) -> Vector2:
+	var dir := point - center
+	dir = dir.normalized() if dir.length() > 4.0 else Vector2.UP
+	var margin := 10.0
+	var outward := point + dir * dist
+	if _label_fits(outward, bounds, block, ascent, margin):
+		return outward
+	var inward := point - dir * dist
+	if _label_fits(inward, bounds, block, ascent, margin):
+		return inward
+	return Vector2(
+		clampf(outward.x, margin, maxf(margin, bounds.x - block.x - margin)),
+		clampf(outward.y, ascent + margin, maxf(ascent + margin, bounds.y - block.y - margin)))
+
+
+static func _label_fits(pos: Vector2, bounds: Vector2, block: Vector2, ascent: float, margin: float) -> bool:
+	return pos.x >= margin and pos.x + block.x <= bounds.x - margin \
+		and pos.y - ascent >= margin and pos.y + block.y <= bounds.y - margin
 
 
 func _draw_fx_path_head(canvas: Control, point: Vector2, color: Color, age: float) -> void:
@@ -4180,21 +4232,31 @@ func bell_band_points(note: Note, beat: float, radius_scale: float = 1.0) -> Arr
 	return points
 
 
-## 在场判定：外圈离弧带 40px 内（含两端），圆心金点 48px 内。
+## 在场判定：贴住画出来的位置算（Bell 到达前从圆心飞向环）；提前站在判定环上也算。
 func bell_contains(note: Note, beat: float, point: Vector2) -> bool:
-	var points := bell_band_points(note, beat)
-	return points.size() >= 2 and JudgeMath.trace_distance(point, points) <= BELL_RADIAL_TOLERANCE
+	var live := bell_live_band(note, beat)
+	if live.size() >= 2 and JudgeMath.trace_distance(point, live) <= BELL_RADIAL_TOLERANCE:
+		return true
+	var ring := bell_band_points(note, beat)
+	return ring.size() >= 2 and JudgeMath.trace_distance(point, ring) <= BELL_RADIAL_TOLERANCE
 
 
 ## 金键的屏幕形态：外圈取弧带中点，圆心取圆心金点。
 func bell_screen(note: Note, beat: float) -> Dictionary:
-	var chart := get_chart()
-	if chart == null:
-		return {}
-	var points := bell_band_points(note, beat)
+	var points := bell_live_band(note, beat)
 	if points.size() < 2:
 		return {}
 	return {"center": points[points.size() / 2], "radius": BELL_BAND_HALF}
+
+
+## 和 _draw_bell 同一套飞入几何：判定与特效都跟着可见位置走。
+func bell_live_band(note: Note, beat: float) -> Array[Vector2]:
+	var chart := get_chart()
+	var empty: Array[Vector2] = []
+	if chart == null:
+		return empty
+	var grow := lerpf(Note.SPAWN_LENGTH_RATIO, 1.0, _approach(chart, note.beat, beat))
+	return bell_band_points(note, beat, grow)
 
 
 ## 判定用：判定时刻（beat）环上条带的屏幕折线，宽度为角度 width。

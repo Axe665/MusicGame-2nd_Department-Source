@@ -84,7 +84,6 @@ var _playtest_rate: SpinBox = null
 var _playtest_flow: SpinBox = null
 var _playtest_star: SpinBox = null
 var _playtest_cursor: SpinBox = null
-var _playtest_star_color: ColorPickerButton = null
 var _playtest_trace_color: ColorPickerButton = null
 var _playtest_offset: SpinBox = null
 var _playtest_latency: SpinBox = null
@@ -128,6 +127,8 @@ func _ready() -> void:
 				_sfx.play("don")
 		)
 		_app.validation_changed.connect(_update_validation)
+		# App 在 main 之后才连上信号，启动时那次校验已经错过，这里补一次。
+		_update_validation(_app.validation_issues())
 		_app.snap_changed.connect(_on_snap_changed)
 		_app.stretch_changed.connect(_on_stretch_value_changed)
 		_app.audio_import_requested.connect(_on_audio_import_requested)
@@ -1060,7 +1061,6 @@ func _sync_from_app() -> void:
 	_preview.show_debug = _app.debug_overlay
 	_preview.flow_scale = _app.flow_scale
 	_preview.star_speed = _app.star_speed
-	_preview.star_color = _app.star_color
 	_preview.trace_color = _app.trace_color
 	_preview.note_skin = _app.note_skin
 	_preview.hit_fx_style = _app.hit_fx_style
@@ -1758,8 +1758,6 @@ func _open_playtest_setup(from_start: bool) -> void:
 	_playtest_star.value = _app.star_speed
 	if _playtest_cursor != null:
 		_playtest_cursor.value = _app.cursor_scale
-	if _playtest_star_color != null:
-		_playtest_star_color.color = _app.star_color
 	if _playtest_trace_color != null:
 		_playtest_trace_color.color = _app.trace_color
 	if _playtest_offset != null:
@@ -1806,20 +1804,6 @@ func _build_playtest_dialog() -> void:
 	_playtest_bias.add_theme_font_size_override("font_size", 11)
 	_playtest_bias.add_theme_color_override("font_color", UITheme.MUTED)
 	box.add_child(_playtest_bias)
-	# 星星主色（全局单色系）。
-	var color_row := HBoxContainer.new()
-	box.add_child(color_row)
-	var color_label := Label.new()
-	color_label.text = "星星颜色"
-	color_label.custom_minimum_size = Vector2(64, 0)
-	UITheme.style_mono(color_label, 12, UITheme.MUTED)
-	color_row.add_child(color_label)
-	_playtest_trace_color = ColorPickerButton.new()
-	_playtest_star_color = ColorPickerButton.new()
-	_playtest_star_color.edit_alpha = false
-	_playtest_star_color.custom_minimum_size = Vector2(0, 26)
-	_playtest_star_color.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	color_row.add_child(_playtest_star_color)
 	var trace_row := HBoxContainer.new()
 	box.add_child(trace_row)
 	var trace_label := Label.new()
@@ -1835,6 +1819,8 @@ func _build_playtest_dialog() -> void:
 	trace_row.visible = false
 	add_child(_playtest_dialog)
 	_playtest_dialog.confirmed.connect(_begin_playtest_with_settings)
+	# × 或 Esc 关闭时同样保留设置（只保存，不开始试玩）。
+	_playtest_dialog.canceled.connect(_commit_playtest_settings)
 
 
 func _playtest_spin_row(parent: VBoxContainer, label_text: String, lo: float, hi: float, step: float, value: float, suffix: String) -> SpinBox:
@@ -1857,6 +1843,15 @@ func _playtest_spin_row(parent: VBoxContainer, label_text: String, lo: float, hi
 
 
 func _begin_playtest_with_settings() -> void:
+	_commit_playtest_settings()
+	_start_playtest(_playtest_from_start)
+
+
+## 把试玩设置写回 _app 并落盘。确认按钮和右上角 × 都走这里，
+## 否则用 × / Esc 关掉对话框时设置会退回默认值。
+func _commit_playtest_settings() -> void:
+	if _app == null:
+		return
 	_rate = _playtest_rate.value
 	if _playtest_latency != null:
 		_app.audio_latency_ms = clampf(_playtest_latency.value, 0.0, 250.0)
@@ -1870,14 +1865,11 @@ func _begin_playtest_with_settings() -> void:
 		_app.dynamic_offset = _playtest_dynamic.button_pressed
 	if _playtest_auto != null:
 		_app.playtest_auto = _playtest_auto.button_pressed
-	_app.save_settings()
-	if _playtest_star_color != null:
-		_app.star_color = _playtest_star_color.color
 	if _playtest_trace_color != null:
 		_app.trace_color = _playtest_trace_color.color
+	_app.save_settings()
 	_preview.flow_scale = _app.flow_scale
 	_preview.star_speed = _app.star_speed
-	_preview.star_color = _app.star_color
 	_preview.trace_color = _app.trace_color
 	_preview.cursor_scale = _app.cursor_scale
 	_preview.request_redraw()
@@ -1885,13 +1877,11 @@ func _begin_playtest_with_settings() -> void:
 	if _playtest != null:
 		_playtest._preview.flow_scale = _app.flow_scale
 		_playtest._preview.star_speed = _app.star_speed
-		_playtest._preview.star_color = _app.star_color
 		_playtest._preview.trace_color = _app.trace_color
 		_playtest._preview.cursor_scale = _app.cursor_scale
 		_playtest._preview.request_redraw()
 	if _editor_flow_spin != null:
 		_editor_flow_spin.value = _app.flow_scale
-	_start_playtest(_playtest_from_start)
 
 
 func _start_playtest(from_start: bool) -> void:

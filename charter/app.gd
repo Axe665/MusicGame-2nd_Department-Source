@@ -35,8 +35,6 @@ var star_speed: float = 1.0
 const PATH_WAIT_MODES: Array[String] = ["off", "progress", "shrink"]
 const PATH_WAIT_LABELS: Array[String] = ["关闭", "环形进度", "淡蓝收缩圆环"]
 var path_wait_indicator: String = "progress"
-## 星星主色（舞萌蓝），所有 Path 共用；试玩设置里可改。
-var star_color: Color = Color(0.55, 0.75, 1.0)
 ## Trace 门框主色（默认银白）。
 var trace_color: Color = Color(0.78, 0.86, 1.0)
 var note_skin: String = "candy"
@@ -448,6 +446,9 @@ func _load_settings() -> void:
 			var wait_mode := String(data.get("path_wait_indicator", "progress"))
 			path_wait_indicator = wait_mode if wait_mode in PATH_WAIT_MODES else "progress"
 			cursor_scale = clampf(float(data.get("cursor_scale", cursor_scale)), 0.5, 2.0)
+			flow_scale = clampf(float(data.get("flow_scale", flow_scale)), 0.05, 3.0)
+			star_speed = clampf(float(data.get("star_speed", star_speed)), 0.5, 2.0)
+			trace_color = Color.from_string(String(data.get("trace_color", "")), trace_color)
 	MediaIO.set_ffmpeg_exe(ffmpeg_path)
 	apply_frame_cap()
 
@@ -504,7 +505,7 @@ func effective_latency_sec() -> float:
 
 
 func save_settings() -> void:
-	var data := {"path_wait_indicator": path_wait_indicator, "note_skin": note_skin, "hit_fx_style": hit_fx_style, "hit_sfx_style": hit_sfx_style, "ffmpeg": ffmpeg_path, "frame_cap": frame_cap, "audio_buffer_ms": audio_buffer_ms, "playtest_offset_ms": playtest_offset_ms, "audio_latency_ms": audio_latency_ms, "dynamic_offset": dynamic_offset, "playtest_auto": playtest_auto, "last_bias_ms": last_bias_ms, "cursor_scale": cursor_scale}
+	var data := {"path_wait_indicator": path_wait_indicator, "note_skin": note_skin, "hit_fx_style": hit_fx_style, "hit_sfx_style": hit_sfx_style, "ffmpeg": ffmpeg_path, "frame_cap": frame_cap, "audio_buffer_ms": audio_buffer_ms, "playtest_offset_ms": playtest_offset_ms, "audio_latency_ms": audio_latency_ms, "dynamic_offset": dynamic_offset, "playtest_auto": playtest_auto, "last_bias_ms": last_bias_ms, "cursor_scale": cursor_scale, "flow_scale": flow_scale, "star_speed": star_speed, "trace_color": trace_color.to_html()}
 	var file := FileAccess.open(SETTINGS_PATH, FileAccess.WRITE)
 	if file != null:
 		file.store_string(JSON.stringify(data, "\t"))

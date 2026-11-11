@@ -55,9 +55,15 @@ static func from_dict(data: Dictionary) -> Region:
 
 
 func to_code() -> String:
-	return "[%d]red(%s,%s,%s)" % [
+	# 角度是第 4 段；为 0 时省略，保持旧文件格式不变。
+	if is_zero_approx(angle):
+		return "[%d]red(%s,%s,%s)" % [
+			id, str(snappedf(start_beat, 0.001)), str(snappedf(end_beat, 0.001)),
+			str(snappedf(width, 0.001))
+		]
+	return "[%d]red(%s,%s,%s,%s)" % [
 		id, str(snappedf(start_beat, 0.001)), str(snappedf(end_beat, 0.001)),
-		str(snappedf(width, 0.001))
+		str(snappedf(width, 0.001)), str(snappedf(angle, 0.001))
 	]
 
 
@@ -74,6 +80,6 @@ static func from_code(code: String) -> Region:
 		region.start_beat = float(parts[0])
 		region.end_beat = float(parts[1]) if parts.size() > 1 else region.start_beat
 		region.width = float(parts[2]) if parts.size() > 2 else 90.0
+		region.angle = float(parts[3]) if parts.size() > 3 else 0.0
 	region.kind = "limit"
-	region.angle = 0.0
 	return region
