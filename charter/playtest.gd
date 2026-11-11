@@ -19,6 +19,9 @@ const PRESS_KEEP_MS := 34.0
 const KEY_DEBOUNCE_MS := 50.0
 ## 金键（黄键式）：判定线前后各 100ms 内光标在场就算，到线才结算。
 const BELL_WINDOW_MS := 130.0
+## 扫键串：相邻 Bell 间隔在这个范围内、角度还在动，就算同一条链，共享提前量。
+const BELL_CHAIN_GAP_MS := 45.0
+const BELL_CHAIN_STEP_DEG := 10.0
 
 const RED_LIMIT_SEC := 0.2
 const PATH_TAIL_RADIUS := 192.0
@@ -492,6 +495,21 @@ func _init_states() -> void:
 	_auto_cursor = Vector2.ZERO
 	_auto_hold_keys.clear()
 	_path_motion_samples.clear()
+	# 扫键串：连续 Bell（≤45ms、角度在动）共用整条链的提前量。一次扫过去时
+	# 先经过的铃能提前锁上，到各自判定线再结算，不会因为“扫得太快”漏掉后半段。
+	var previous_bell: Note = null
+	for note in _ordered_notes:
+		if note.type != "bell":
+			previous_bell = null
+			continue
+		if previous_bell != null:
+			var state: Dictionary = _states[note.id]
+			var previous: Dictionary = _states[previous_bell.id]
+			var gap := float(state["target_ms"]) - float(previous["target_ms"])
+			var step := absf(JudgeMath.angle_delta(note.angle, previous_bell.angle))
+			if gap <= BELL_CHAIN_GAP_MS and step >= BELL_CHAIN_STEP_DEG:
+				state["arm_from"] = float(previous.get("arm_from", float(previous["target_ms"]) - BELL_WINDOW_MS))
+		previous_bell = note
 	for region in chart.regions:
 		_red_states[region.id] = {"time": 0.0, "broken": false}
 
@@ -1419,7 +1437,7 @@ func _trace_contact(note: Note, mouse: Vector2, beat: float) -> bool:
 func _judge_bell(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 	var state: Dictionary = _states[note.id]
 	var target := float(state["target_ms"])
-	if ms < target - BELL_WINDOW_MS:
+	if ms < float(state.get("arm_from", target - BELL_WINDOW_MS)):
 		return
 	# 黄键式：窗口内光标在场只是“预备”，不提前结算，音符不会提前消失。
 	# 判定用这一帧光标扫过的线段，进入即收：设计文档 §5.2 的示例就是沿线扫过

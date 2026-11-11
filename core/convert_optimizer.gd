@@ -12,6 +12,7 @@ extends RefCounted
 ##   5. 星星期间只留落在星轨上的 Tap/Hold/Bell。
 ##   6. Hold 尾巴撞到下一颗按键时缩短，不足半拍降 Tap。
 ##   7. Bell 撞上 100ms 内的 Tap/Hold 时吸到同一角度（单光标不可能同时站两处）。
+##   8. 32 分扫键段（≥3 颗、间隔 ≤35ms、角度真的在扫）按键按不过来，整段转 Bell 用鼠标扫。
 
 const RING_RADIUS := 330.0
 ## 鼠标跟轨迹的速度上限（px/s，按 330px 半径折算）。
@@ -31,12 +32,18 @@ const ON_TRACK_R := 0.30
 ## 滑条底线：比这更短 / 头尾弦长更小的 Path 读不出“要滑”，降级。
 const MIN_SLIDE_MS := 160.0
 const MIN_SLIDE_CHORD_R := 0.6
+## 快速扫键：间隔 ≤45ms（≈22 颗/秒）、至少 3 颗、角度真的在扫 ≥45°，按键按不过来。
+const SWEEP_GAP_MS := 45.0
+const SWEEP_MIN_NOTES := 3
+const SWEEP_MIN_SPAN := 45.0
+## 每颗至少移动这么多角度才算“在扫”；同角度连爆会在这一步断开。
+const SWEEP_MIN_STEP := 10.0
 
 
 static func optimize_maimai(chart: Chart, counts: Dictionary) -> Dictionary:
 	var stats := {
 		"dropped": 0, "chords": 0, "snapped": 0, "shortened": 0,
-		"degraded": 0, "off_track": 0, "relaxed": 0, "locked": 0, "stacked": 0, "rebuilt": 0, "bells_moved": 0,
+		"degraded": 0, "off_track": 0, "relaxed": 0, "locked": 0, "stacked": 0, "rebuilt": 0, "bells_moved": 0, "swept": 0,
 	}
 	_resolve_chords(chart, counts, stats)
 	_fit_path_overlaps(chart, counts, stats)
@@ -49,6 +56,8 @@ static func optimize_maimai(chart: Chart, counts: Dictionary) -> Dictionary:
 	# 压角/Hold 降级会新造出 45° 邻键来回；补一遍只叠不改别的，别留下“看着能叠却没叠”。
 	_lock_interaction_runs(chart, stats, true, locked)
 	_snap_bells_to_press_notes(chart, stats)
+	# 放在 Bell 吸附之后：转出来的扫键串不该再被吸回旁边的 Tap/Hold，否则整条路线散掉。
+	_sweep_runs_to_bells(chart, stats)
 	chart.refresh_ids()
 	return stats
 
@@ -485,6 +494,45 @@ static func _snap_bells_to_press_notes(chart: Chart, stats: Dictionary) -> void:
 		bell.center_u = fposmod(target / 360.0, 1.0)
 		bell.angle = target
 		stats["bells_moved"] = int(stats["bells_moved"]) + 1
+
+
+## 快速扫键段：连续 Tap、间隔 ≤45ms、≥3 颗、角度跨度 ≥45°，一对一改成 Bell
+## （时间和角度不变）。按键打不到 28 颗/秒，但鼠标沿这条路线扫过去能收。
+static func _sweep_runs_to_bells(chart: Chart, stats: Dictionary) -> void:
+	var ordered := chart.sorted_notes()
+	var i := 0
+	while i < ordered.size():
+		if ordered[i].type != "tap":
+			i += 1
+			continue
+		var run: Array[Note] = [ordered[i]]
+		var j := i + 1
+		while j < ordered.size():
+			var next := ordered[j]
+			if next.type != "tap":
+				break
+			var prev := run[run.size() - 1]
+			var gap := chart.timing.beat_to_chart_ms(next.beat) - chart.timing.beat_to_chart_ms(prev.beat)
+			if gap > SWEEP_GAP_MS:
+				break
+			if absf(JudgeMath.angle_delta(next.angle, prev.angle)) < SWEEP_MIN_STEP:
+				break
+			run.append(next)
+			j += 1
+		var span := 0.0
+		for note in run:
+			span = maxf(span, absf(JudgeMath.angle_delta(note.angle, run[0].angle)))
+		# 同角度的 32 分连打不转：那不是“扫”，转成 Bell 会变成停住就全收。
+		if run.size() >= SWEEP_MIN_NOTES and span >= SWEEP_MIN_SPAN:
+			for note in run:
+				note.type = "bell"
+				note.bell_radius = 1.0
+				note.center_u = fposmod(note.angle, 360.0) / 360.0
+				note.width = clampf(note.width, Note.BELL_MIN_WIDTH, Note.BELL_MAX_WIDTH)
+			stats["swept"] = int(stats["swept"]) + run.size()
+			i = j
+		else:
+			i += 1
 
 
 static func _beat_key(chart: Chart, beat: float) -> int:
