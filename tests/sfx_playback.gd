@@ -69,8 +69,7 @@ func _run() -> void:
 		var before: int = editor._sfx._index
 		editor._fire_editor_sfx(1.0)
 		_check(expected > 0 and editor._sfx._index - before == expected, "slow frame plays all crossed chart events")
-		await create_timer(0.2).timeout
-		_check(_capture_peak(capture) > 0.001, "editor chart events reach SFX bus")
+		_check(await _await_peak(capture) > 0.001, "editor chart events reach SFX bus")
 		before = editor._sfx._index
 		editor._fire_editor_sfx(1.0)
 		_check(editor._sfx._index == before, "same beat never duplicates sounds")
@@ -108,8 +107,7 @@ func _run() -> void:
 		playtest._judge_tap(note, stamp, note.beat)
 		_check(playtest._hit_count == 1, "playtest accepts chart hit")
 		_check(playtest._sfx._index == before + 1, "playtest chart hit triggers sound")
-		await create_timer(0.2).timeout
-		_check(_capture_peak(capture) > 0.001, "playtest chart hit reaches SFX bus")
+		_check(await _await_peak(capture) > 0.001, "playtest chart hit reaches SFX bus")
 	# Head contact and slide start are separate audible events during the wait.
 	for width in [60.0, 75.0]:
 		var chart := DemoChart.make_empty({"bpm": 120.0})
@@ -130,8 +128,7 @@ func _run() -> void:
 		_check(playtest._sfx._index == before + 1, "Path head hit triggers exactly one sound")
 		var player: AudioStreamPlayer = playtest._sfx._players[before % playtest._sfx._players.size()]
 		_check(player.stream == playtest._sfx._streams[HitSfx.kind_for_note(note)], "Path head uses same sound as matching Tap")
-		await create_timer(0.2).timeout
-		_check(_capture_peak(capture) > 0.001, "Path head hit reaches SFX bus")
+		_check(await _await_peak(capture) > 0.001, "Path head hit reaches SFX bus")
 		playtest._judge_path(note, 1010.0, 2.02, point)
 		_check(playtest._sfx._index == before + 1, "judged Path head never repeats its sound")
 		playtest._judge_path(note, 1500.0, 3.0, point)
@@ -145,6 +142,17 @@ func _run() -> void:
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(fixture))
 	print("SFX playback: %d passed, %d failed" % [passed, failed])
 	quit(1 if failed > 0 else 0)
+
+## 无头/Dummy 音频按缓冲周期出帧，固定等 0.2s 会抖；等到真的出帧为止。
+func _await_peak(capture: AudioEffectCapture, timeout_sec := 1.0) -> float:
+	var waited := 0.0
+	while waited < timeout_sec:
+		await create_timer(0.05).timeout
+		waited += 0.05
+		var peak := _capture_peak(capture)
+		if peak > 0.001:
+			return peak
+	return 0.0
 
 
 func _capture_peak(capture: AudioEffectCapture) -> float:
