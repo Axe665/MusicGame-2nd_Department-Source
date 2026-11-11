@@ -29,6 +29,7 @@ func _run() -> void:
 		app.playtest_offset_ms = 0.0
 	await _test_playtest()
 	await _test_bell_judgement()
+	await _test_bell_chain()
 	await _test_real_motion()
 	print("Path judgement: %d passed, %d failed" % [passed, failed])
 	quit(1 if failed else 0)
@@ -541,6 +542,50 @@ func _test_bell_judgement() -> void:
 
 ## Real Input.parse_input_event delivery, including viewport stretch and GUI
 ## input, instead of calling _input or assigning the cached cursor directly.
+## 扫键串：一次扫过去时，后面的铃可以提前锁上，到自己的判定线才结算。
+func _test_bell_chain() -> void:
+	var chart := DemoChart.make_empty({"bpm": 257.0})
+	chart.notes.clear()
+	var bells: Array[Note] = []
+	var angles := [0.0, 45.0, 90.0, 135.0]
+	for i in 4:
+		var bell := Note.new("bell", 0.125 * float(i), angles[i], 30.0)
+		bell.id = i + 1
+		bell.center_u = angles[i] / 360.0
+		bell.bell_radius = 1.0
+		chart.notes.append(bell)
+		bells.append(bell)
+	var far := Note.new("bell", 1.25, 0.0, 30.0)
+	far.id = 5
+	far.center_u = 0.0
+	far.bell_radius = 1.0
+	chart.notes.append(far)
+	var run := Playtest.new()
+	run.path_input_logging = false
+	root.add_child(run)
+	await process_frame
+	run.setup(chart, 0.0, "")
+	run.set_process(false)
+	var first_target: float = run._states[bells[0].id]["target_ms"]
+	var last := bells[3]
+	var last_target: float = run._states[last.id]["target_ms"]
+	run._preview.prepare_playtest_frame(last.beat, 0.0)
+	var point: Vector2 = run._preview.bell_screen(last, last.beat)["center"]
+	var early := first_target - 120.0
+	check(early < last_target - 130.0, "the early contact is outside the note's own window")
+	run._judge_bell(last, early, last.beat, point)
+	check(bool(run._states[last.id]["armed"]), "a sweep chain arms later bells early")
+	run._judge_bell(last, last_target, last.beat, point)
+	check(bool(run._states[last.id]["done"]), "the early-armed chain bell still resolves on its line")
+	run._preview.prepare_playtest_frame(far.beat, 0.0)
+	var far_point: Vector2 = run._preview.bell_screen(far, far.beat)["center"]
+	var far_target: float = run._states[far.id]["target_ms"]
+	run._judge_bell(far, far_target - 200.0, far.beat, far_point)
+	check(not bool(run._states[far.id]["armed"]), "a bell away from the chain keeps its own window")
+	run.queue_free()
+	await process_frame
+
+
 func _test_real_motion() -> void:
 	var app := root.get_node("App")
 	app.playtest_offset_ms = -49.0
