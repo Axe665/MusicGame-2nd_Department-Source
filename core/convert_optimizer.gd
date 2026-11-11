@@ -38,12 +38,15 @@ const SWEEP_MIN_NOTES := 3
 const SWEEP_MIN_SPAN := 45.0
 ## 每颗至少移动这么多角度才算“在扫”；同角度连爆会在这一步断开。
 const SWEEP_MIN_STEP := 10.0
+## 同角度连爆：间隔 ≤60ms（≥16.7 颗/秒）就开始隔一颗删一颗，保留 Tap。
+const THIN_GAP_MS := 60.0
+const THIN_MIN_NOTES := 3
 
 
 static func optimize_maimai(chart: Chart, counts: Dictionary) -> Dictionary:
 	var stats := {
 		"dropped": 0, "chords": 0, "snapped": 0, "shortened": 0,
-		"degraded": 0, "off_track": 0, "relaxed": 0, "locked": 0, "stacked": 0, "rebuilt": 0, "bells_moved": 0, "swept": 0,
+		"degraded": 0, "off_track": 0, "relaxed": 0, "locked": 0, "stacked": 0, "rebuilt": 0, "bells_moved": 0, "swept": 0, "thinned": 0,
 	}
 	_resolve_chords(chart, counts, stats)
 	_fit_path_overlaps(chart, counts, stats)
@@ -56,6 +59,8 @@ static func optimize_maimai(chart: Chart, counts: Dictionary) -> Dictionary:
 	# 压角/Hold 降级会新造出 45° 邻键来回；补一遍只叠不改别的，别留下“看着能叠却没叠”。
 	_lock_interaction_runs(chart, stats, true, locked)
 	_snap_bells_to_press_notes(chart, stats)
+	# 同角度连爆先降密度，再转扫动段；两者按“是否真的在移动”区分，不会打架。
+	_thin_same_angle_runs(chart, stats)
 	# 放在 Bell 吸附之后：转出来的扫键串不该再被吸回旁边的 Tap/Hold，否则整条路线散掉。
 	_sweep_runs_to_bells(chart, stats)
 	chart.refresh_ids()
@@ -498,6 +503,37 @@ static func _snap_bells_to_press_notes(chart: Chart, stats: Dictionary) -> void:
 
 ## 快速扫键段：连续 Tap、间隔 ≤45ms、≥3 颗、角度跨度 ≥45°，一对一改成 Bell
 ## （时间和角度不变）。按键打不到 28 颗/秒，但鼠标沿这条路线扫过去能收。
+## 同角度、间隔 ≤60ms 的 Tap 连爆（典型 19 颗/秒）按键按不过来：
+## 隔一颗删一颗，降到 ~9–10 颗/秒，保持 Tap。角度真的在动的串不在这里处理。
+static func _thin_same_angle_runs(chart: Chart, stats: Dictionary) -> void:
+	var ordered := chart.sorted_notes()
+	var i := 0
+	while i < ordered.size():
+		if ordered[i].type != "tap":
+			i += 1
+			continue
+		var run: Array[Note] = [ordered[i]]
+		var j := i + 1
+		while j < ordered.size():
+			var next := ordered[j]
+			if next.type != "tap":
+				break
+			var prev := run[run.size() - 1]
+			var gap := chart.timing.beat_to_chart_ms(next.beat) - chart.timing.beat_to_chart_ms(prev.beat)
+			if gap > THIN_GAP_MS:
+				break
+			if absf(JudgeMath.angle_delta(next.angle, prev.angle)) >= SWEEP_MIN_STEP:
+				break
+			run.append(next)
+			j += 1
+		if run.size() >= THIN_MIN_NOTES:
+			for k in range(1, run.size(), 2):
+				chart.notes.erase(run[k])
+				stats["thinned"] = int(stats["thinned"]) + 1
+		i = j
+	chart.notes.sort_custom(func(a: Note, b: Note) -> bool: return a.beat < b.beat)
+
+
 static func _sweep_runs_to_bells(chart: Chart, stats: Dictionary) -> void:
 	var ordered := chart.sorted_notes()
 	var i := 0

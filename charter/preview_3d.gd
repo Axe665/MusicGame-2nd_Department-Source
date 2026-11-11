@@ -14,6 +14,8 @@ const PATH_SIZE_SCALE := 2.0
 const BELL_BAND_HALF := 10.0
 ## 光标离弧带（含两端）多少像素内算在场。
 const BELL_RADIAL_TOLERANCE := 55.0
+## 扫键串里的 Bell 放宽到这个半径，并在画面上画出同半径的淡金光圈。
+const BELL_CHAIN_TOLERANCE := 75.0
 ## 星头单独缩小（轨迹宽度不受影响）。
 const PATH_HEAD_SCALE := 0.62
 ## 接力高亮：等待处理的星在重叠时压到这个亮度。
@@ -4151,6 +4153,12 @@ func _draw_bell(canvas: Control, chart: Chart, note: Note, t: float) -> void:
 	_bell_capsule(canvas, note, t, q, -half - 2.0, half + 2.0, Color(0, 0, 0, 0.55))
 	_bell_capsule(canvas, note, t, q, -half, half, Color(1, 1, 1, 0.94))
 	_bell_capsule(canvas, note, t, q, -half * 0.62, half * 0.62, UITheme.KEY_YELLOW)
+	# 扫键串的铃判定放宽到 75px，就把这个范围画出来：看到多大 = 能打多大。
+	if bool(path_judgement_states.get(note.id, {}).get("sweep_chain", false)):
+		var halo := _bell_ring_point(chart, note.center_u * 360.0, t, q)
+		if halo.is_finite():
+			canvas.draw_arc(halo, BELL_CHAIN_TOLERANCE * _note_scale(), 0.0, TAU, 64,
+				Color(UITheme.KEY_YELLOW.r, UITheme.KEY_YELLOW.g, UITheme.KEY_YELLOW.b, 0.2), 1.6, true)
 
 
 ## 弧带 + 两端圆头：画成一根沿环的胶囊。
@@ -4233,32 +4241,32 @@ func bell_band_points(note: Note, beat: float, radius_scale: float = 1.0) -> Arr
 
 
 ## 在场判定：贴住画出来的位置算（Bell 到达前从圆心飞向环）；提前站在判定环上也算。
-func bell_contains(note: Note, beat: float, point: Vector2) -> bool:
+func bell_contains(note: Note, beat: float, point: Vector2, tolerance := BELL_RADIAL_TOLERANCE) -> bool:
 	var live := bell_live_band(note, beat)
-	if live.size() >= 2 and JudgeMath.trace_distance(point, live) <= BELL_RADIAL_TOLERANCE:
+	if live.size() >= 2 and JudgeMath.trace_distance(point, live) <= tolerance:
 		return true
 	var ring := bell_band_points(note, beat)
-	return ring.size() >= 2 and JudgeMath.trace_distance(point, ring) <= BELL_RADIAL_TOLERANCE
+	return ring.size() >= 2 and JudgeMath.trace_distance(point, ring) <= tolerance
 
 
 ## 扫过判定：这一帧光标走过的线段碰到金键带（或判定环）就算在场。
 ## 快速扫过时采样点可能整帧跨过金键，只看点会漏判整条路线上的铃。
-func bell_swept_contains(note: Note, beat: float, from: Vector2, to: Vector2) -> bool:
+func bell_swept_contains(note: Note, beat: float, from: Vector2, to: Vector2, tolerance := BELL_RADIAL_TOLERANCE) -> bool:
 	if from.distance_to(to) < 0.5:
-		return bell_contains(note, beat, to)
-	if _segment_near_band(bell_live_band(note, beat), from, to):
+		return bell_contains(note, beat, to, tolerance)
+	if _segment_near_band(bell_live_band(note, beat), from, to, tolerance):
 		return true
-	return _segment_near_band(bell_band_points(note, beat), from, to)
+	return _segment_near_band(bell_band_points(note, beat), from, to, tolerance)
 
 
-func _segment_near_band(band: Array[Vector2], from: Vector2, to: Vector2) -> bool:
+func _segment_near_band(band: Array[Vector2], from: Vector2, to: Vector2, tolerance := BELL_RADIAL_TOLERANCE) -> bool:
 	for i in band.size() - 1:
 		var a := band[i]
 		var b := band[i + 1]
 		if not a.is_finite() or not b.is_finite():
 			continue
 		var pair := Geometry2D.get_closest_points_between_segments(a, b, from, to)
-		if pair.size() >= 2 and pair[0].distance_to(pair[1]) <= BELL_RADIAL_TOLERANCE:
+		if pair.size() >= 2 and pair[0].distance_to(pair[1]) <= tolerance:
 			return true
 	return false
 
