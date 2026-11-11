@@ -73,7 +73,7 @@ static func import_maidata(path: String, difficulty_index: int = 0) -> Chart:
 	for note in chart.notes:
 		final[note.type] = int(final.get(note.type, 0)) + 1
 	var audio_note := "音频：未找到 track.*" if chart.audio_path.is_empty() else "音频：%s" % chart.audio_path.get_file()
-	last_report = "Simai 导入 Lv.%s：Tap %d，Hold %d，Slide→Path %d，Touch→Bell %d，跳过 %d（解析 %d + 优化 %d）。\nBPM %.1f，offset %.0fms，%s。\n优化：同刻去重 %d，尾判吸附 %d，缩短星星 %d，降级 %d，轨外删除 %d，交互段锁定 %d，交互段叠键 %d，逐颗压角 %d，Bell 吸附 %d，32 分扫键转 Bell %d。" % [
+	last_report = "Simai 导入 Lv.%s：Tap %d，Hold %d，Slide→Path %d，Touch→Bell %d，跳过 %d（解析 %d + 优化 %d）。\nBPM %.1f，offset %.0fms，%s。\n优化：同刻去重 %d，尾判吸附 %d，缩短星星 %d，降级 %d，轨外删除 %d，交互段锁定 %d，交互段叠键 %d，逐颗压角 %d，Bell 吸附 %d，扫键段转 Bell %d，同角度降密度 %d。" % [
 		String(meta.get("lv_%d" % difficulty_index, "?")),
 		final["tap"], final["hold"], final["path"], final["bell"], counts["dropped"],
 		base_dropped, stats.get("dropped", 0),
@@ -81,7 +81,7 @@ static func import_maidata(path: String, difficulty_index: int = 0) -> Chart:
 		stats.get("chords", 0), stats.get("snapped", 0), stats.get("shortened", 0),
 		stats.get("degraded", 0), stats.get("off_track", 0),
 		stats.get("locked", 0), stats.get("stacked", 0), stats.get("relaxed", 0),
-		stats.get("bells_moved", 0), stats.get("swept", 0),
+		stats.get("bells_moved", 0), stats.get("swept", 0), stats.get("thinned", 0),
 	]
 	return chart
 

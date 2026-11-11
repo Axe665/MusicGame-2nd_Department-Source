@@ -582,6 +582,17 @@ func _test_bell_chain() -> void:
 	var far_target: float = run._states[far.id]["target_ms"]
 	run._judge_bell(far, far_target - 200.0, far.beat, far_point)
 	check(not bool(run._states[far.id]["armed"]), "a bell away from the chain keeps its own window")
+	# 扫链里的铃空间容差放到 75px，链外仍是 55px。
+	var chain_bell := bells[2]
+	run._preview.prepare_playtest_frame(chain_bell.beat, 0.0)
+	var chain_point: Vector2 = run._preview.bell_screen(chain_bell, chain_bell.beat)["center"]
+	var center: Vector2 = run._preview.project_design(Vector2.ZERO)
+	var inward: Vector2 = (center - chain_point).normalized()
+	run._judge_bell(chain_bell, float(run._states[chain_bell.id]["target_ms"]) - 100.0,
+		chain_bell.beat, chain_point + inward * 70.0)
+	check(bool(run._states[chain_bell.id]["armed"]), "a chain bell tolerates 70px off the band")
+	run._judge_bell(far, far_target - 100.0, far.beat, far_point + (center - far_point).normalized() * 70.0)
+	check(not bool(run._states[far.id]["armed"]), "a bell outside the chain keeps the 55px band")
 	run.queue_free()
 	await process_frame
 

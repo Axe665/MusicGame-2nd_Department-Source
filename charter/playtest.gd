@@ -508,6 +508,8 @@ func _init_states() -> void:
 			var gap := float(state["target_ms"]) - float(previous["target_ms"])
 			var step := absf(JudgeMath.angle_delta(note.angle, previous_bell.angle))
 			if gap <= BELL_CHAIN_GAP_MS and step >= BELL_CHAIN_STEP_DEG:
+				state["sweep_chain"] = true
+				previous["sweep_chain"] = true
 				state["arm_from"] = float(previous.get("arm_from", float(previous["target_ms"]) - BELL_WINDOW_MS))
 		previous_bell = note
 	for region in chart.regions:
@@ -1444,8 +1446,9 @@ func _judge_bell(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 	# 一串 Bell，快速扫过时只要按点采样会整帧跨过金键、把整条路线判成漏。
 	var previous: Vector2 = state.get("last_mouse", mouse)
 	state["last_mouse"] = mouse
+	var tolerance := Preview3D.BELL_CHAIN_TOLERANCE if bool(state.get("sweep_chain", false)) else Preview3D.BELL_RADIAL_TOLERANCE
 	if not bool(state.get("armed", false)):
-		if _preview.bell_swept_contains(note, beat, previous, mouse):
+		if _preview.bell_swept_contains(note, beat, previous, mouse, tolerance):
 			state["armed"] = true
 			var lock: Dictionary = _preview.bell_screen(note, beat)
 			if not lock.is_empty():

@@ -2257,6 +2257,19 @@ func test_sweep_runs_to_bells() -> bool:
 	ConvertOptimizer.optimize_maimai(sext, {"tap": 4, "hold": 0, "path": 0, "bell": 0, "dropped": 0})
 	for note in sext.notes:
 		eq(note.type, "bell", "a 41.7ms sweep becomes bells")
+
+	# 同角度 19/s 连爆隔一颗删一颗，保持 Tap；角度在动的串不删。
+	var burst := DemoChart.make_empty({"bpm": 240.0})
+	burst.notes.clear()
+	for i in 6:
+		var note := Note.new("tap", 0.2 * float(i), 270.0, 60.0)
+		note.id = i + 1
+		burst.notes.append(note)
+	var burst_stats := ConvertOptimizer.optimize_maimai(burst, {"tap": 6, "hold": 0, "path": 0, "bell": 0, "dropped": 0})
+	eq(burst.notes.size(), 3, "a 19/s same-angle burst is thinned to half")
+	eq(int(burst_stats.get("thinned", 0)), 3, "thinning is reported")
+	for note in burst.notes:
+		eq(note.type, "tap", "thinning keeps taps")
 	return true
 
 
