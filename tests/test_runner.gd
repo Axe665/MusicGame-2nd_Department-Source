@@ -35,6 +35,10 @@ func _initialize() -> void:
 		"test_playability_validator",
 		"test_media_formats",
 		"test_lbp_export",
+		"test_note_color_palette",
+		"test_note_color_contrast",
+		"test_note_color_round_trip",
+		"test_note_color_lbp",
 		"test_osu_std_import",
 		"test_osu_std_curves",
 		"test_osu_std_slider_kinds",
@@ -877,6 +881,102 @@ func test_lbp_export() -> bool:
 	var read := FileAccess.get_file_as_string(path)
 	eq(read, text, "lbp file matches string")
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	return true
+
+
+func test_note_color_palette() -> bool:
+	var chart := DemoChart.make_demo()
+	eq(chart.palette_count(), 0, "palette starts empty")
+	var index := chart.add_palette_group()
+	eq(index, 1, "palette group is one based")
+	eq(chart.palette_count(), 1, "palette count grows")
+	eq(chart.palette_name(index), "配色 1", "palette fallback name")
+	chart.palette_group(index)["name"] = "冷色"
+	eq(chart.palette_name(index), "冷色", "palette keeps custom name")
+	eq(chart.palette_color(index, "tap"), Color("#ff6fae"), "palette default tap color")
+	eq(chart.palette_color(0, "tap").a, 0.0, "palette lookup misses cleanly")
+
+	var note := Note.new("tap", 4.0, 90.0, 60.0)
+	note.id = chart.next_note_id()
+	chart.notes.append(note)
+	eq(note.resolved_color(chart, UITheme.PINK), UITheme.PINK, "no group falls back to skin")
+	note.color = index
+	eq(note.resolved_color(chart, UITheme.PINK), Color("#ff6fae"), "group color wins over skin")
+	eq(chart.palette_usage(index), 1, "palette usage counts notes")
+
+	note.has_custom_color = true
+	note.custom_color = Color("#00ff00")
+	eq(note.resolved_color(chart, UITheme.PINK), Color("#00ff00"), "single note override wins")
+	note.has_custom_color = false
+
+	chart.remove_palette_group(index)
+	eq(chart.palette_count(), 0, "palette group removed")
+	eq(note.color, 0, "removing a group clears references")
+	eq(note.resolved_color(chart, UITheme.PINK), UITheme.PINK, "removed group falls back")
+	return true
+
+
+func test_note_color_contrast() -> bool:
+	eq(Note.contrast_ratio(Color.BLACK, Color.BLACK), 1.0, "same colors have ratio one")
+	ok(Note.contrast_ratio(Color.WHITE, Color.BLACK) > 20.0, "white on black is high contrast")
+	ok(Note.contrast_ratio(Color.BLACK, Color.WHITE) > 20.0, "contrast is symmetric")
+	ok(absf(Note.relative_luminance(Color.WHITE) - 1.0) < 0.001, "white luminance is one")
+	ok(Note.MIN_CONTRAST > 1.0, "minimum contrast above identity")
+
+	var note := Note.new("tap", 0.0, 0.0, 60.0)
+	ok(note.supports_custom_color(), "tap supports custom color")
+	ok(not Note.new("bell", 0.0, 0.0, 60.0).supports_custom_color(), "bell keeps fixed color")
+	ok(not Note.new("seek", 0.0, 0.0, 60.0).supports_custom_color(), "seek keeps fixed color")
+	return true
+
+
+func test_note_color_round_trip() -> bool:
+	var chart := DemoChart.make_demo()
+	var index := chart.add_palette_group("舞台冷色")
+	chart.palette_group(index)["tap"] = "#102030"
+	var note := chart.notes[0]
+	note.color = index
+
+	var plain := ChartIO.chart_to_dict(DemoChart.make_demo())
+	ok(not plain.has("palette"), "legacy chart writes no palette key")
+	ok(not plain.has("note_colors"), "legacy chart writes no note_colors key")
+
+	var restored := ChartIO.chart_from_dict(ChartIO.chart_to_dict(chart))
+	eq(restored.palette_count(), 1, "palette survives save")
+	eq(restored.palette_name(1), "舞台冷色", "palette name survives save")
+	eq(restored.palette_color(1, "tap"), Color("#102030"), "palette color survives save")
+	eq(restored.notes[0].color, index, "note group survives save")
+	eq(restored.notes[0].resolved_color(restored, UITheme.PINK), Color("#102030"), "resolved color survives save")
+
+	note.has_custom_color = true
+	note.custom_color = Color("#c0ffee")
+	var overridden := ChartIO.chart_from_dict(ChartIO.chart_to_dict(chart))
+	ok(overridden.notes[0].has_custom_color, "override survives save")
+	eq(overridden.notes[0].custom_color, Color("#c0ffee"), "override rgb survives save")
+	eq(overridden.notes[0].color, index, "group assignment survives alongside override")
+
+	var json := ChartIO.to_json(chart)
+	var parsed := ChartIO.from_json(json)
+	eq(parsed.palette_count(), 1, "palette survives json text")
+	return true
+
+
+func test_note_color_lbp() -> bool:
+	var chart := DemoChart.make_demo()
+	var index := chart.add_palette_group("冷色")
+	chart.palette_group(index)["path"] = "#123456"
+	var note := chart.notes[0]
+	note.has_custom_color = true
+	note.custom_color = Color("#abcdef")
+	var text := LBPIO.export_chart(chart)
+	ok(text.contains("[Palette]"), "lbp writes palette section")
+	ok(text.contains("group,1,冷色"), "lbp writes palette group row")
+	ok(text.contains("path=#123456"), "lbp writes palette colors")
+	ok(text.contains("rgb=#abcdef"), "lbp writes per note rgb")
+
+	chart.notes[0].has_custom_color = false
+	var plain := LBPIO.export_chart(chart)
+	ok(not plain.contains("[Palette]") or not plain.contains("rgb=#abcdef"), "lbp omits unused rgb")
 	return true
 
 

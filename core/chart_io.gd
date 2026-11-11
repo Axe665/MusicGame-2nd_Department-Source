@@ -51,10 +51,21 @@ static func chart_to_dict(chart: Chart) -> Dictionary:
 	var note_list: Array[String] = []
 	for entry in note_entries:
 		note_list.append(String(entry["code"]))
+	# 颜色不塞进紧凑代码，避免旧版本读到后缀后整条音符解析失败；
+	# 旁挂在 note_colors 里，旧版本会忽略，音符本身照常载入。
+	var note_colors := {}
+	for note in chart.notes:
+		var entry := {}
+		if note.color != 0:
+			entry["g"] = note.color
+		if note.has_custom_color:
+			entry["rgb"] = "#" + note.custom_color.to_html(false)
+		if not entry.is_empty():
+			note_colors[str(note.id)] = entry
 	var meta := {}
 	for key in ["title", "artist", "creator", "version", "tags", "license", "background"]:
 		meta[key] = String(chart.metadata.get(key, ""))
-	return {
+	var result := {
 		"format": FORMAT,
 		"version": VERSION,
 		"general": {
@@ -86,6 +97,61 @@ static func chart_to_dict(chart: Chart) -> Dictionary:
 			"flow_down": bool(chart.editor.get("flow_down", true)),
 		},
 	}
+	# 只有真的用了配色才写这两个键：老谱存盘结果保持逐字节不变。
+	if not chart.palette.is_empty():
+		result["palette"] = _palette_rows(chart)
+	if not note_colors.is_empty():
+		result["note_colors"] = note_colors
+	return result
+
+
+static func _palette_rows(chart: Chart) -> Array[Dictionary]:
+	var rows: Array[Dictionary] = []
+	for group in chart.palette:
+		var row := {"name": String(group.get("name", "")).strip_edges()}
+		for key in Chart.PALETTE_TYPES:
+			row[key] = _hex(String(group.get(key, String(Chart.PALETTE_DEFAULTS[key]))), key)
+		rows.append(row)
+	return rows
+
+
+static func _palette_row(raw: Dictionary) -> Dictionary:
+	var row := {"name": String(raw.get("name", "")).strip_edges()}
+	for key in Chart.PALETTE_TYPES:
+		row[key] = _hex(String(raw.get(key, String(Chart.PALETTE_DEFAULTS[key]))), key)
+	return row
+
+
+## 统一成 "#rrggbb"；非法颜色退回该类型的默认色。
+static func _hex(text: String, key: String) -> String:
+	var value := text.strip_edges()
+	if value.is_empty() or not Color.html_is_valid(value):
+		return String(Chart.PALETTE_DEFAULTS[key])
+	return "#" + Color(value).to_html(false)
+
+
+static func _apply_note_colors(chart: Chart, stored: Dictionary) -> void:
+	var by_id := {}
+	for note in chart.notes:
+		by_id[note.id] = note
+	for key in stored.keys():
+		var id_text := String(key)
+		if not id_text.is_valid_int():
+			continue
+		var note: Note = by_id.get(int(id_text), null)
+		if note == null:
+			continue
+		var raw: Variant = stored[key]
+		if raw is Dictionary:
+			if raw.has("g"):
+				note.color = maxi(0, int(raw.get("g", 0)))
+			if raw.has("rgb"):
+				var rgb_text := String(raw.get("rgb", ""))
+				if Color.html_is_valid(rgb_text):
+					note.custom_color = Color(rgb_text)
+					note.has_custom_color = true
+		elif raw is int or raw is float:
+			note.color = maxi(0, int(raw))
 
 
 static func _note_code(note: Note, by_id: Dictionary) -> String:
@@ -185,6 +251,12 @@ static func chart_from_dict(data: Dictionary) -> Chart:
 			var region := Region.from_code(raw)
 			if region != null:
 				chart.regions.append(region)
+	chart.palette.clear()
+	var palette_raw: Variant = data.get("palette", [])
+	if palette_raw is Array:
+		for raw in palette_raw:
+			if raw is Dictionary:
+				chart.palette.append(_palette_row(raw))
 	chart.notes.clear()
 	for raw in data.get("notes", []):
 		if raw is String:
@@ -197,6 +269,9 @@ static func chart_from_dict(data: Dictionary) -> Chart:
 					chart.notes.append(parsed)
 		elif raw is Dictionary and String(raw.get("type", "")) != "trace":
 			chart.notes.append(Note.from_dict(raw))
+	var stored_colors: Variant = data.get("note_colors", {})
+	if stored_colors is Dictionary:
+		_apply_note_colors(chart, stored_colors)
 	# Normalize legacy Path JSON to the new centrifuge/axis representation on
 	# every chart load, not just for the bundled demo.
 	for note in chart.notes:

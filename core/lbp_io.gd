@@ -100,6 +100,18 @@ static func export_chart(chart: Chart) -> String:
 				_num(region.angle), _num(region.width), suffix,
 			])
 		lines.append("")
+	if not chart.palette.is_empty():
+		lines.append("[Palette]")
+		for index in range(chart.palette.size()):
+			var group := chart.palette_group(index + 1)
+			var parts: Array[String] = ["group", str(index + 1), _clean(chart.palette_name(index + 1))]
+			for key in Chart.PALETTE_TYPES:
+				var text := String(group.get(key, String(Chart.PALETTE_DEFAULTS[key])))
+				if not Color.html_is_valid(text):
+					text = String(Chart.PALETTE_DEFAULTS[key])
+				parts.append("%s=%s" % [key, text])
+			lines.append(",".join(parts))
+		lines.append("")
 	lines.append("[Notes]")
 	var notes := chart.notes.duplicate()
 	notes.sort_custom(func(a: Note, b: Note) -> bool:
@@ -178,6 +190,9 @@ static func _note_options(note: Note) -> String:
 	var options: Array[String] = []
 	if note.color != 0:
 		options.append("color=%d" % note.color)
+	if note.has_custom_color:
+		# 自定义色：color 槽位没有 RGB，附加 rgb= 给能读的编辑器，不认识的会忽略。
+		options.append("rgb=#%s" % note.custom_color.to_html(false))
 	if note.lock:
 		options.append("lock=1")
 	if options.is_empty():

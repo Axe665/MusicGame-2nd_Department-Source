@@ -131,13 +131,16 @@ func refresh_tab_titles() -> void:
 	if _app == null:
 		return
 	var note_count: int = _app.selected_notes.size()
-	set_tab_title(0, "音符" if note_count == 0 else "音符 · %d" % note_count)
-	set_tab_title(1, "区域" if _app.selected_region_id < 0 else "区域 · %d" % _app.selected_region_id)
+	# 标题保持七个短名，避免 TabBar 溢出把「时间」「谱面」折叠进箭头后面。
+	set_tab_title(0, "音符")
+	set_tab_title(1, "区域" if _app.selected_region_id < 0 else "区域 %d" % _app.selected_region_id)
 	set_tab_title(2, "边界")
-	set_tab_title(3, "事件" if _app.selected_event_id.is_empty() else "事件 · %s" % _app.selected_event_id)
-	set_tab_title(4, "视图/设置")
+	set_tab_title(3, "事件" if _app.selected_event_id.is_empty() else "事件 %s" % _app.selected_event_id)
+	set_tab_title(4, "视图")
 	set_tab_title(5, "时间")
 	set_tab_title(6, "谱面")
+	if note_count > 0:
+		set_tab_title(0, "音符 %d" % note_count)
 
 
 func _empty(title: String, hint: String) -> void:
@@ -739,17 +742,35 @@ func _build_note_page_for(page: VBoxContainer, note: Note) -> void:
 	_label(seek_body, "里 = 滚轮上滑；外 = 滚轮下滑。", 11, UITheme.MUTED)
 
 	var misc := _note_group(page, "misc", "通用")
-	var color := _spin(misc, "颜色槽", note.color, 0.0, 15.0, 1.0, func(value: float) -> void:
+	var color_group := _option(misc, "配色组", ["默认"], 0, func(index: int) -> void:
 		if _active_note != null:
-			_active_note.color = int(value)
+			_active_note.color = index
 	)
-	_note_widgets["color"] = color
+	_note_widgets["color_group"] = color_group
+	var custom := ColorPickerButton.new()
+	custom.edit_alpha = false
+	custom.custom_minimum_size = Vector2(64, 24)
+	custom.color_changed.connect(func(value: Color) -> void:
+		if _applying or _active_note == null:
+			return
+		_apply(func() -> void:
+			_active_note.custom_color = value
+			_active_note.has_custom_color = true
+		)
+	)
+	_note_widgets["custom_color"] = custom
+	_note_rows["custom_color"] = _row(misc, "自定义色", custom)
 	var lock := _check(misc, "锁定（不可拖动）", note.lock, func(value: bool) -> void:
 		if _active_note != null:
 			_active_note.lock = value
 	)
 	_note_widgets["lock"] = lock
 	_buttons(misc, [
+		{"text": "清除自定义色", "callback": func() -> void:
+			if _active_note != null:
+				_apply(func() -> void: _active_note.has_custom_color = false)},
+		{"text": "管理配色…", "callback": func() -> void:
+			current_tab = 6},
 		{"text": "定位播放头", "callback": func() -> void:
 			if _active_note != null:
 				_app.set_playhead(_active_note.beat)},
@@ -817,8 +838,19 @@ func _refresh_note_page() -> void:
 	_note_rows["length"].visible = false
 	_note_groups["common"].visible = true
 	_note_groups["misc"].visible = true
-	_note_widgets["color"].get_parent().visible = false
-	_note_widgets["lock"].get_parent().visible = false
+	var can_color := note.supports_custom_color()
+	var group_option: OptionButton = _note_widgets["color_group"]
+	group_option.clear()
+	group_option.add_item("默认")
+	for index in range(_app.chart.palette.size()):
+		group_option.add_item(_app.chart.palette_name(index + 1))
+	group_option.selected = clampi(note.color, 0, maxi(0, group_option.item_count - 1))
+	_note_widgets["color_group"].get_parent().visible = can_color
+	_note_rows["custom_color"].visible = can_color
+	var fallback := UITheme.PINK if note.type == "tap" else (UITheme.GOLD if note.type == "hold" else Note.DEFAULT_PATH_COLOR)
+	_note_widgets["custom_color"].color = note.resolved_color(_app.chart, fallback)
+	# 锁定是 _check 直接挂在组体上的，隐藏它本身，别把整组体一起藏掉。
+	_note_widgets["lock"].visible = false
 	_note_groups["tapsize"].visible = false
 	_note_groups["plane"].visible = false
 	_note_groups["bell"].visible = is_bell
@@ -872,7 +904,6 @@ func _refresh_note_page() -> void:
 	if note.type == "anchor":
 		_note_widgets["anchor_pair"].value = note.anchor_pair
 		_note_widgets["anchor_pair_id"].text = note.pair_id
-	_note_widgets["color"].value = note.color
 	_note_widgets["lock"].button_pressed = note.lock
 	_applying = false
 
@@ -1261,6 +1292,42 @@ func _build_chart_page(page: VBoxContainer) -> void:
 	_buttons(page, [
 		{"text": "保存谱面", "callback": func() -> void: _app.save_chart()},
 	])
+
+	_section(page, "配色分组")
+	_label(page, "Tap / Hold / Path 共用一组配色；单音符还能在“音符”页覆盖成任意颜色。选“默认”即回到皮肤色。", 11, UITheme.MUTED)
+	if chart.palette.is_empty():
+		_label(page, "还没有配色组，点下面的按钮新建一组。", 11, UITheme.MUTED)
+	for index in range(chart.palette.size()):
+		var group_index := index + 1
+		var group := chart.palette_group(group_index)
+		_text(page, "配色 %d 名称" % group_index, String(group.get("name", "")), func(value: String) -> void:
+			var target := chart.palette_group(group_index)
+			if not target.is_empty():
+				target["name"] = value.strip_edges()
+		)
+		for key in Chart.PALETTE_TYPES:
+			var picker := ColorPickerButton.new()
+			picker.edit_alpha = false
+			picker.custom_minimum_size = Vector2(56, 24)
+			picker.color = Color(String(group.get(key, String(Chart.PALETTE_DEFAULTS[key]))))
+			var type_key := key
+			picker.color_changed.connect(func(value: Color) -> void:
+				_app.mutate(func() -> void:
+					var target := chart.palette_group(group_index)
+					if not target.is_empty():
+						target[type_key] = "#" + value.to_html(false)
+				)
+			)
+			_row(page, type_key.capitalize(), picker)
+		_label(page, "使用该组的音符：%d 个" % chart.palette_usage(group_index), 11, UITheme.MUTED)
+		_buttons(page, [{"text": "删除这组", "callback": func() -> void:
+			_app.mutate(func() -> void: chart.remove_palette_group(group_index))
+			_rebuild()
+		}])
+	_buttons(page, [{"text": "新增配色组", "callback": func() -> void:
+		_app.mutate(func() -> void: chart.add_palette_group())
+		_rebuild()
+	}])
 
 
 func _build_timing_page(page: VBoxContainer) -> void:
