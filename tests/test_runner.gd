@@ -69,6 +69,7 @@ func _initialize() -> void:
 		"test_sentakki_slide_library",
 		"test_editor_tabs",
 		"test_convert_optimizer_fast_path",
+		"test_sweep_runs_to_bells",
 		"test_simai_bpm_jump_star_speed",
 		"test_ring_sector_and_tail_tier",
 		"test_path_sector_erase",
@@ -2206,6 +2207,46 @@ func test_slide_floor() -> bool:
 	eq(tiny.type, "hold", "tiny chord slide degrades to a hold (it still has length)")
 	eq(good.type, "path", "a normal slide survives the floor")
 	ok(int(stats["degraded"]) >= 2, "the floor reports two degradations")
+	return true
+
+
+## 32 分扫键段：按键按不过来，一对一转 Bell 用鼠标扫；同角度连打和慢串保持 Tap。
+func test_sweep_runs_to_bells() -> bool:
+	var chart := DemoChart.make_empty({"bpm": 257.0})
+	chart.notes.clear()
+	var angles := [0.0, 45.0, 90.0, 135.0]
+	for i in 4:
+		var note := Note.new("tap", 0.125 * float(i), angles[i], 60.0)
+		note.id = i + 1
+		chart.notes.append(note)
+	var stats := ConvertOptimizer.optimize_maimai(chart, {"tap": 4, "hold": 0, "path": 0, "bell": 0, "dropped": 0})
+	eq(int(stats.get("swept", 0)), 4, "the 32nd sweep is reported")
+	var ordered := chart.sorted_notes()
+	eq(ordered.size(), 4, "the sweep keeps its note count")
+	for i in ordered.size():
+		eq(ordered[i].type, "bell", "each swept tap becomes a bell")
+		near(ordered[i].angle, angles[i], 0.01, "the sweep keeps its angle")
+
+	var same := DemoChart.make_empty({"bpm": 257.0})
+	same.notes.clear()
+	for i in 4:
+		var note := Note.new("tap", 0.125 * float(i), 90.0, 60.0)
+		note.id = i + 1
+		same.notes.append(note)
+	ConvertOptimizer.optimize_maimai(same, {"tap": 4, "hold": 0, "path": 0, "bell": 0, "dropped": 0})
+	for note in same.notes:
+		eq(note.type, "tap", "a same-angle 32nd burst stays a tap")
+
+	var slow := DemoChart.make_empty({"bpm": 120.0})
+	slow.notes.clear()
+	for i in 4:
+		var note := Note.new("tap", 0.5 * float(i), 45.0 * float(i), 60.0)
+		note.id = i + 1
+		slow.notes.append(note)
+	ConvertOptimizer.optimize_maimai(slow, {"tap": 4, "hold": 0, "path": 0, "bell": 0, "dropped": 0})
+	for note in slow.notes:
+		eq(note.type, "tap", "a slow ring run still needs key presses")
+
 	return true
 
 
