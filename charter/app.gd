@@ -31,6 +31,10 @@ var audio_latency_ms: float = 0.0
 var flow_scale: float = 1.0
 var ffmpeg_path: String = "ffmpeg"
 var star_speed: float = 1.0
+## Path 等待阶段的启动提示（全局外观设置，不参与判定）。
+const PATH_WAIT_MODES: Array[String] = ["off", "fade", "color", "progress", "combined"]
+const PATH_WAIT_LABELS: Array[String] = ["关闭", "圆圈渐显", "圆圈变色", "环形进度", "组合效果"]
+var path_wait_indicator: String = "progress"
 ## 星星主色（舞萌蓝），所有 Path 共用；试玩设置里可改。
 var star_color: Color = Color(0.55, 0.75, 1.0)
 ## Trace 门框主色（默认银白）。
@@ -433,6 +437,8 @@ func _load_settings() -> void:
 			dynamic_offset = bool(data.get("dynamic_offset", dynamic_offset))
 			playtest_auto = bool(data.get("playtest_auto", playtest_auto))
 			last_bias_ms = float(data.get("last_bias_ms", last_bias_ms))
+			var wait_mode := String(data.get("path_wait_indicator", "progress"))
+			path_wait_indicator = wait_mode if wait_mode in PATH_WAIT_MODES else "progress"
 			cursor_scale = clampf(float(data.get("cursor_scale", cursor_scale)), 0.5, 2.0)
 	MediaIO.set_ffmpeg_exe(ffmpeg_path)
 	apply_frame_cap()
@@ -490,7 +496,7 @@ func effective_latency_sec() -> float:
 
 
 func save_settings() -> void:
-	var data := {"note_skin": note_skin, "hit_fx_style": hit_fx_style, "hit_sfx_style": hit_sfx_style, "ffmpeg": ffmpeg_path, "frame_cap": frame_cap, "audio_buffer_ms": audio_buffer_ms, "playtest_offset_ms": playtest_offset_ms, "audio_latency_ms": audio_latency_ms, "dynamic_offset": dynamic_offset, "playtest_auto": playtest_auto, "last_bias_ms": last_bias_ms, "cursor_scale": cursor_scale}
+	var data := {"path_wait_indicator": path_wait_indicator, "note_skin": note_skin, "hit_fx_style": hit_fx_style, "hit_sfx_style": hit_sfx_style, "ffmpeg": ffmpeg_path, "frame_cap": frame_cap, "audio_buffer_ms": audio_buffer_ms, "playtest_offset_ms": playtest_offset_ms, "audio_latency_ms": audio_latency_ms, "dynamic_offset": dynamic_offset, "playtest_auto": playtest_auto, "last_bias_ms": last_bias_ms, "cursor_scale": cursor_scale}
 	var file := FileAccess.open(SETTINGS_PATH, FileAccess.WRITE)
 	if file != null:
 		file.store_string(JSON.stringify(data, "\t"))

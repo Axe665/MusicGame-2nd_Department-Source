@@ -402,6 +402,8 @@ func _build_note_page_for(page: VBoxContainer, note: Note) -> void:
 		var n := _active_note
 		if n != null:
 			n.end_beat = maxf(n.beat + 0.25, value)
+			if n.type == "path":
+				n.wait_beat = clampf(n.wait_beat, 0.0, maxf(0.0, n.duration() - 0.001))
 	)
 	_note_widgets["end"] = end_edit
 	_remember_row("end", end_edit)
@@ -603,6 +605,14 @@ func _build_note_page_for(page: VBoxContainer, note: Note) -> void:
 	# New, minimal Path editor. The legacy controls above stay built for data
 	# compatibility but are hidden; authors now edit centrifuge + axis + parts.
 	var path_edit := _note_group(page, "path_edit", "Path")
+	var wait_edit := _spin(path_edit, "等待拍数", note.wait_beat, 0.0, maxf(0.0, note.duration() - 0.001), 0.125, func(value: float) -> void:
+		if _active_note != null:
+			_active_note.wait_beat = clampf(value, 0.0, maxf(0.0, _active_note.duration() - 0.001))
+	)
+	wait_edit.allow_greater = false
+	wait_edit.tooltip_text = "从头部落点到星星起划的拍数；包含在总时长内。0 表示立即起划。"
+	_note_widgets["path_wait"] = wait_edit
+	_label(path_edit, "等待包含在总时长内；增加等待会缩短滑动时间。链式 Path 的启动提示使用 part0 的等待。", 10, UITheme.MUTED)
 	var centrifuge := _spin_slider(path_edit, "尾部离心 centrifuge", note.path_centrifuge, 0.0, 1.0, 0.01, func(value: float) -> void:
 		var n := _active_note
 		if n != null:
@@ -848,6 +858,8 @@ func _refresh_note_page() -> void:
 		_note_widgets["path_counts"].text = "中间判定点：%d 个；平面点：%d 个" % [note.path_sample_beats().size(), note.trace_pts.size()]
 		_fill_visual_list(_note_widgets["path_list"], note)
 		_note_widgets["path_erase"].value = _path_erase_width(note) * 100.0
+		_note_widgets["path_wait"].max_value = maxf(0.0, note.duration() - 0.001)
+		_note_widgets["path_wait"].value = note.wait_beat
 		_note_widgets["path_centrifuge"].value = note.path_centrifuge
 		_note_widgets["path_centrifuge_slider"].value = note.path_centrifuge
 		_note_widgets["path_axis"].value = note.path_axis
@@ -1168,6 +1180,12 @@ func _build_view_page(page: VBoxContainer) -> void:
 	)
 	_label(page, "试玩中 F6 换皮肤、F7 换特效；音效只改打击音色，不改判定。", 11, UITheme.MUTED)
 	_section(page, "显示")
+	_setting_option(page, "Path 启动指示", App.PATH_WAIT_LABELS, maxi(0, App.PATH_WAIT_MODES.find(_app.path_wait_indicator)), func(index: int) -> void:
+		_app.path_wait_indicator = App.PATH_WAIT_MODES[index]
+		_app.save_settings()
+		_app.appearance_changed.emit()
+	)
+	_label(page, "从星星落点到等待结束计时；预览和试玩共用，试玩暂停菜单也可切换。", 11, UITheme.MUTED)
 	var cap_keys: Array[String] = ["60", "120", "vsync", "unlimited"]
 	var cap_labels: Array[String] = ["60 FPS", "120 FPS", "跟随显示器（vsync）", "无限制"]
 	_setting_option(page, "帧率上限", cap_labels, maxi(0, cap_keys.find(_app.frame_cap)), func(index: int) -> void:

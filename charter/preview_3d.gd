@@ -2303,6 +2303,11 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 	# 头部标记和轨迹一起淡入，避免轨迹还没亮就先蹦出一个满不透明的圆。
 	var head_fade := head_alpha * dim * trail_fade
 	var ring_mul := 0.5 if note.path_chain else 1.0
+	var wait_mode := String(_app.path_wait_indicator) if _app != null else "progress"
+	var wait_state := path_wait_indicator_state(chart.timing, note, t)
+	if wait_mode != "off" and wait_state.y > 0.0:
+		# The landing circle becomes the countdown and survives the head-hit fade.
+		head_fade = 0.0
 	if head_fade > 0.01 and _valid_point(ring_head):
 		_draw_path_circle(canvas, ring_head, ns * PATH_SIZE_SCALE * PATH_HEAD_SCALE, accent, head_fade, ring_mul)
 		# 重叠 Path 用不同明度的外环区分星头。
@@ -2328,7 +2333,7 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 	# 大号发光球 + 短拖尾：当前进度点始终比星头更亮，方向一目了然。
 	if t >= note.beat and t <= note.end_beat + end_span:
 		var ball_dim := dim * end_fade
-		var rel := progress * total
+		var rel := note.path_motion_beat(progress)
 		for trail_index in range(4, 0, -1):
 			var trail_rel := rel - float(trail_index) * 0.035 * total
 			if trail_rel < 0.0 or path_erased(note, trail_rel):
@@ -2344,6 +2349,39 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 			canvas.draw_circle(p, 16.0 * ns * PATH_SIZE_SCALE, Color(accent.r, accent.g, accent.b, ball_dim))
 			canvas.draw_circle(p, 10.0 * ns * PATH_SIZE_SCALE, Color(1, 1, 1, 0.96 * ball_dim))
 			canvas.draw_circle(p, 4.5 * ns * PATH_SIZE_SCALE, Color(UITheme.INK.r, UITheme.INK.g, UITheme.INK.b, ball_dim))
+	if wait_mode != "off" and wait_state.y > 0.0 and _valid_point(ring_head):
+		# Keep the countdown outside the guide ball, including half-size chain heads.
+		var wait_radius := maxf(28.0 * ns * PATH_SIZE_SCALE * PATH_HEAD_SCALE * ring_mul, 24.0 * ns * PATH_SIZE_SCALE)
+		_draw_path_wait_indicator(canvas, ring_head, wait_radius,
+			wait_state.x, wait_state.y * dim * trail_fade, wait_mode)
+
+
+## Use elapsed chart milliseconds so BPM changes inside the wait stay in sync.
+## x = completion, y = opacity; no countdown for zero wait or before landing.
+static func path_wait_indicator_state(timing: TimingMap, note: Note, beat: float) -> Vector2:
+	var wait := clampf(note.wait_beat, 0.0, maxf(0.0, note.duration() - 0.001))
+	if wait <= 0.0 or beat < note.beat:
+		return Vector2.ZERO
+	var start_ms := timing.beat_to_chart_ms(note.beat)
+	var end_ms := timing.beat_to_chart_ms(note.beat + wait)
+	var now_ms := timing.beat_to_chart_ms(beat)
+	var completion := clampf((now_ms - start_ms) / maxf(0.001, end_ms - start_ms), 0.0, 1.0)
+	var opacity := 1.0 - clampf((now_ms - end_ms) / 160.0, 0.0, 1.0)
+	return Vector2(completion, opacity)
+
+
+func _draw_path_wait_indicator(canvas: Control, center: Vector2, radius: float, completion: float, opacity: float, mode: String) -> void:
+	var ready := Color(0.35, 1.0, 0.62)
+	var waiting := Color(1.0, 0.58, 0.20)
+	var color := waiting.lerp(ready, completion) if mode in ["color", "combined"] else ready
+	color.a = opacity * (lerpf(0.12, 1.0, completion) if mode in ["fade", "combined"] else 0.95)
+	canvas.draw_arc(center, radius, 0.0, TAU, 64, Color(0.02, 0.03, 0.05, 0.65 * opacity), 6.0, true)
+	if mode in ["progress", "combined"]:
+		canvas.draw_arc(center, radius, 0.0, TAU, 64, Color(0.65, 0.75, 0.85, 0.22 * opacity), 2.4, true)
+		if completion > 0.001:
+			canvas.draw_arc(center, radius, -PI * 0.5, -PI * 0.5 + TAU * completion, 64, color, 3.2, true)
+	else:
+		canvas.draw_arc(center, radius, 0.0, TAU, 64, color, 3.0, true)
 
 
 func path_point(note: Note, relative_beat: float, beat: float) -> Vector2:
