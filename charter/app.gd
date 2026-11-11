@@ -31,8 +31,6 @@ var audio_latency_ms: float = 0.0
 var flow_scale: float = 1.0
 var ffmpeg_path: String = "ffmpeg"
 var star_speed: float = 1.0
-## 星星主色（舞萌蓝），所有 Path 共用；试玩设置里可改。
-var star_color: Color = Color(0.55, 0.75, 1.0)
 ## Trace 门框主色（默认银白）。
 var trace_color: Color = Color(0.78, 0.86, 1.0)
 var note_skin: String = "candy"

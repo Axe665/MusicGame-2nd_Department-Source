@@ -19,6 +19,8 @@ const PRESS_KEEP_MS := 34.0
 const KEY_DEBOUNCE_MS := 50.0
 ## 金键（黄键式）：判定线前后各 100ms 内光标在场就算，到线才结算。
 const BELL_WINDOW_MS := 100.0
+## 光标要在金键上连续停留这么久才算“在场”：扫过去一下不算，避免蹭到就自动命中。
+const BELL_DWELL_MS := 16.0
 const RED_LIMIT_SEC := 0.2
 const PATH_TAIL_RADIUS := 192.0
 ## 尾判半径最多占“头到尾直线距离”的多少（短滑条要跟着缩）。
@@ -41,6 +43,13 @@ const TRACE_CONTACT_PX := 56.0
 ## 位置判定：鼠标到音符图形边缘外还有这么多像素也算命中。
 ## Tap / Hold 头 / Path 头 / Anchor 共用这一把尺子（再各自加上图形半径）。
 const POSITION_TOLERANCE_PX := 120.0
+## 光标离图形中线这么近就算“指着这颗”：分配按键时优先于时间更近的邻键。
+const ON_SHAPE_PX := 20.0
+## 比较按键归属时给“晚于音符”的匹配加一点代价：漏掉前一颗后，
+## 下一按不会立刻被前一颗补判走（那是“蹭”的另一半）。
+const LATE_PENALTY_MS := 10.0
+## 刚命中一颗后这么短时间内的额外按键，不再允许提前吃下一颗（防手指蹭键）。
+const STRAY_GUARD_MS := 50.0
 const HOLD_ARC_PAD := 10.0
 ## Hold 中途短暂松手不算断：这个时间内补按回来就继续按住。
 const HOLD_RELEASE_GRACE_MS := 200.0
@@ -72,6 +81,8 @@ var _ui_accum: float = 0.0
 
 var _states: Dictionary = {}
 var _key_presses: Array[Dictionary] = []
+## 最近一次真正被按键命中的时间：用来识别“刚打完又蹭一下”的额外按键。
+var _last_hit_press_ms: float = -1.0e9
 var _seek_presses: Array[Dictionary] = []
 ## 每个键上一次按下的时间，用来吃掉手抖双击。
 var _last_press_ms: Dictionary = {}
@@ -268,6 +279,7 @@ func _set_paused(value: bool) -> void:
 		return
 	_paused = value
 	_key_presses.clear()
+	_last_hit_press_ms = -1.0e9
 	_reset_path_motion()
 	if _pause_overlay != null:
 		_pause_overlay.visible = value
@@ -407,6 +419,7 @@ func _init_states() -> void:
 	_states.clear()
 	_red_states.clear()
 	_key_presses.clear()
+	_last_hit_press_ms = -1.0e9
 	_seek_presses.clear()
 	_last_press_ms.clear()
 	_keys_held.clear()
@@ -1395,11 +1408,18 @@ func _judge_bell(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 	if ms < target - BELL_WINDOW_MS:
 		return
 	# 黄键式：窗口内光标在场只是“预备”，不提前结算，音符不会提前消失。
-	if not bool(state.get("armed", false)) and _preview.bell_contains(note, beat, mouse):
-		state["armed"] = true
-		var lock: Dictionary = _preview.bell_screen(note, beat)
-		if not lock.is_empty():
-			_preview.add_hit_pulse(lock["center"], UITheme.KEY_YELLOW, "", "lock")
+	# 必须连续停留 BELL_DWELL_MS 才 arm：光标只是扫过金键不算蹭到。
+	if not bool(state.get("armed", false)):
+		if _preview.bell_contains(note, beat, mouse):
+			if not state.has("dwell_start"):
+				state["dwell_start"] = ms
+			elif ms - float(state["dwell_start"]) >= BELL_DWELL_MS:
+				state["armed"] = true
+				var lock: Dictionary = _preview.bell_screen(note, beat)
+				if not lock.is_empty():
+					_preview.add_hit_pulse(lock["center"], UITheme.KEY_YELLOW, "", "lock")
+		else:
+			state.erase("dwell_start")
 	if ms < target:
 		return
 	if bool(state.get("armed", false)):
@@ -1518,18 +1538,29 @@ func _assign_presses(ms: float, beat: float) -> void:
 			var match := _match_press(press, target)
 			if not bool(match.get("ok", false)):
 				continue
+			var distance := float(match["distance"])
+			var note_target := float(target["target"])
+			var error := absf(stamp - note_target)
+			# 刚命中一颗后 50ms 内的额外按键：不许提前吃下一颗，避免手指蹭键把下一颗判成 GREAT。
+			if press_is_stray(stamp, note_target, _last_hit_press_ms):
+				continue
+			# 光标已经压在图形上的那颗优先：按住时长再近，也不能把玩家指着的音符抢走。
+			var on_shape := distance <= ON_SHAPE_PX
+			if bool(target.get("dense", false)):
+				var ring := maxf(1.0, float(target.get("ring_radius", 330.0)))
+				on_shape = distance <= rad_to_deg(ON_SHAPE_PX / ring)
+			var late := stamp > note_target
 			pairs.append({
 				"press": press_index,
 				"note": int(target["id"]),
-				"error": absf(stamp - float(target["target"])),
-				"distance": float(match["distance"]),
+				"error": error,
+				"rank": error + (LATE_PENALTY_MS if late else 0.0),
+				"distance": distance,
+				"on_shape": on_shape,
 			})
 	if pairs.is_empty():
 		return
-	pairs.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
-		if absf(float(a["error"]) - float(b["error"])) > 0.001:
-			return float(a["error"]) < float(b["error"])
-		return float(a["distance"]) < float(b["distance"]))
+	pairs.sort_custom(prefer_press_pair)
 	var used: Dictionary = {}
 	for pair in pairs:
 		var press_index := int(pair["press"])
@@ -1538,6 +1569,7 @@ func _assign_presses(ms: float, beat: float) -> void:
 			continue
 		used[press_index] = true
 		_press_assignments[note_id] = _key_presses[press_index]
+		_last_hit_press_ms = float(_key_presses[press_index].get("time", _last_hit_press_ms))
 	if used.is_empty():
 		return
 	var kept: Array[Dictionary] = []
@@ -1545,6 +1577,22 @@ func _assign_presses(ms: float, beat: float) -> void:
 		if not used.has(i):
 			kept.append(_key_presses[i])
 	_key_presses = kept
+
+
+## 刚命中后紧跟着的额外按键，不允许提前吃下一颗（防手指蹭键）。
+static func press_is_stray(stamp: float, target: float, last_hit: float) -> bool:
+	return stamp < target - PERFECT_MS and stamp > last_hit + 0.1 and stamp - last_hit < STRAY_GUARD_MS
+
+
+## 按键分配排序：光标压在图形上的那颗优先；否则按“时间误差 + 晚到代价”，再按距离。
+static func prefer_press_pair(a: Dictionary, b: Dictionary) -> bool:
+	if bool(a["on_shape"]) != bool(b["on_shape"]):
+		return bool(a["on_shape"])
+	var rank_a := float(a.get("rank", a.get("error", 0.0)))
+	var rank_b := float(b.get("rank", b.get("error", 0.0)))
+	if absf(rank_a - rank_b) > 0.001:
+		return rank_a < rank_b
+	return float(a["distance"]) < float(b["distance"])
 
 
 ## What press a note is waiting for this frame, or {} when it needs none.
