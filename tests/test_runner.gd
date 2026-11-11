@@ -18,6 +18,7 @@ func _initialize() -> void:
 		"test_legacy_path_chart_migration",
 		"test_seek_and_limit_code",
 		"test_compact_chart_code",
+		"test_path_judgement_label_pos",
 		"test_path_chain_code",
 		"test_path_chain_judgement",
 		"test_path_erase_overlap",
@@ -26,6 +27,7 @@ func _initialize() -> void:
 		"test_style_presets",
 		"test_position_judgement",
 		"test_press_assignment",
+		"test_press_space_priority",
 		"test_timing_stats",
 		"test_nearest_u",
 		"test_pre_read",
@@ -91,6 +93,7 @@ func _initialize() -> void:
 		"test_maimai_interaction_compress",
 		"test_interaction_run_lock",
 		"test_small_angle_stack",
+		"test_bell_snap_to_press_notes",
 		"test_note_pop_scale",
 		"test_background_cache",
 		"test_maimai_hold_clamp",
@@ -477,6 +480,29 @@ func test_seek_and_limit_code() -> bool:
 		eq(limit.kind, "limit", "limit code kind")
 		near(limit.width, 90.0, 0.001, "limit code width")
 		eq(limit.to_code(), "[4]red(1.0,2.0,90.0)", "limit code roundtrip")
+	var angled := Region.from_code("[5]red(26.0,28.0,100.0,270.0)")
+	ok(angled != null, "angled limit code parses")
+	if angled != null:
+		near(angled.angle, 270.0, 0.001, "limit code keeps angle")
+		eq(angled.to_code(), "[5]red(26.0,28.0,100.0,270.0)", "angled limit code roundtrip")
+	return true
+
+
+func test_path_judgement_label_pos() -> bool:
+	var bounds := Vector2(1600, 900)
+	var center := Vector2(800, 450)
+	var block := Vector2(120, 50)
+	var ascent := 25.0
+	var outside := Preview3D.path_label_pos(Vector2(1250, 450), center, bounds, block, ascent)
+	near(outside.x, 1382.0, 0.5, "star label is pushed past the burst ring")
+	near(outside.y, 450.0, 0.5, "star label keeps its radial line")
+	# 贴右边缘时外侧放不下，改画到环内侧。
+	var inward := Preview3D.path_label_pos(Vector2(1580, 450), center, bounds, block, ascent)
+	near(inward.x, 1448.0, 0.5, "star label flips inward near the edge")
+	# 两侧都放不下时仍夹在画面里。
+	var tight := Preview3D.path_label_pos(Vector2(1590, 450), center, Vector2(300, 200), block, ascent)
+	ok(tight.x >= 10.0 and tight.x + block.x <= 290.0, "star label stays inside a tight viewport")
+	ok(tight.y - ascent >= 10.0 and tight.y + block.y <= 190.0, "star label stays above the bottom edge")
 	return true
 
 
@@ -729,6 +755,31 @@ func test_press_assignment() -> bool:
 	ok(live._press_assignments.size() == 1, "one press cannot be spent twice in a frame")
 	live.free()
 	preview.free()
+	return true
+
+
+func test_press_space_priority() -> bool:
+	# 光标压在图形上的那颗优先：时间更近的邻键不能把它抢走（防蹭）。
+	var on_shape := {"on_shape": true, "error": 40.0, "distance": 3.0}
+	var neighbour := {"on_shape": false, "error": 5.0, "distance": 110.0}
+	ok(Playtest.prefer_press_pair(on_shape, neighbour), "the note under the cursor ranks first")
+	ok(not Playtest.prefer_press_pair(neighbour, on_shape), "the neighbour never outranks it")
+	var earlier := {"on_shape": false, "error": 10.0, "distance": 80.0}
+	var later := {"on_shape": false, "error": 30.0, "distance": 20.0}
+	ok(Playtest.prefer_press_pair(earlier, later), "off the shape, timing still decides")
+	ok(not Playtest.prefer_press_pair(later, earlier), "off the shape, the later press loses")
+	var closer := {"on_shape": false, "error": 20.0, "distance": 10.0}
+	var farther := {"on_shape": false, "error": 20.0, "distance": 90.0}
+	ok(Playtest.prefer_press_pair(closer, farther), "equal timing falls back to distance")
+	# 晚到的匹配加一点代价：漏掉前一颗后，下一按优先给后面那颗。
+	var late_steal := {"on_shape": false, "error": 35.0, "rank": 47.0, "distance": 0.0}
+	var upcoming := {"on_shape": false, "error": 40.0, "rank": 40.0, "distance": 0.0}
+	ok(Playtest.prefer_press_pair(upcoming, late_steal), "an upcoming note beats a late steal")
+	# 刚命中后的额外按键不能提前吃下一颗。
+	ok(Playtest.press_is_stray(2020.0, 2095.0, 2000.0), "a stray press right after a hit is ignored")
+	ok(not Playtest.press_is_stray(2020.0, 2095.0, -1.0e9), "a normal press is not treated as stray")
+	ok(not Playtest.press_is_stray(2060.0, 2095.0, 2000.0), "a press inside the perfect window is kept")
+	ok(not Playtest.press_is_stray(2095.0, 2095.0, 2000.0), "an on-time press is kept")
 	return true
 
 
@@ -2335,12 +2386,49 @@ func test_small_angle_stack() -> bool:
 	eq(int(stats.get("stacked", 0)), 1, "a fast 45-degree run is stacked")
 	for i in chart.notes.size():
 		near(chart.notes[i].angle, 0.0, 0.01, "stacked run note %d" % i)
+	# 三颗 A-B-A（舞萌邻键双手交互）也叠。
+	var three := Chart.new()
+	three.timing.points = [TimingPoint.new(0.0, 200.0, 4)]
+	var tri := [0.0, 45.0, 0.0]
+	for i in tri.size():
+		three.notes.append(Note.new("tap", float(i) * 0.25, tri[i], 62.0))
+	ConvertOptimizer.optimize_maimai(three, {"tap": 3, "hold": 0, "path": 0, "bell": 0, "dropped": 0})
+	for i in three.notes.size():
+		near(three.notes[i].angle, 0.0, 0.01, "three-note trill stacks note %d" % i)
+	# 前面一段大跳失败后，断点处的邻键子段仍要能叠。
+	var embedded := Chart.new()
+	embedded.timing.points = [TimingPoint.new(0.0, 200.0, 4)]
+	var mix := [0.0, 90.0, 0.0, 45.0, 0.0, 45.0]
+	for i in mix.size():
+		embedded.notes.append(Note.new("tap", float(i) * 0.25, mix[i], 62.0))
+	ConvertOptimizer.optimize_maimai(embedded, {"tap": 6, "hold": 0, "path": 0, "bell": 0, "dropped": 0})
+	near(embedded.notes[2].angle, 0.0, 0.01, "an embedded trill after a failed run stacks")
+	near(embedded.notes[3].angle, 0.0, 0.01, "embedded trill second")
+	near(embedded.notes[4].angle, 0.0, 0.01, "embedded trill middle")
+	near(embedded.notes[5].angle, 0.0, 0.01, "embedded trill end")
 	var slow := Chart.new()
 	slow.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
 	for i in angles.size():
 		slow.notes.append(Note.new("tap", float(i), angles[i], 62.0))
 	ConvertOptimizer.optimize_maimai(slow, {"tap": 5, "hold": 0, "path": 0, "bell": 0, "dropped": 0})
 	near(slow.notes[1].angle, 45.0, 0.01, "a slow 45-degree run keeps both positions")
+	return true
+
+
+func test_bell_snap_to_press_notes() -> bool:
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 200.0, 4)]
+	var tap := Note.new("tap", 0.0, 0.0, 62.0)
+	var near_bell := Note.new("bell", 0.25, 180.0, 45.0)
+	near_bell.center_u = 0.5
+	near_bell.bell_radius = 1.0
+	var far_bell := Note.new("bell", 4.0, 180.0, 45.0)
+	far_bell.center_u = 0.5
+	far_bell.bell_radius = 1.0
+	chart.notes = [tap, near_bell, far_bell]
+	ConvertOptimizer.optimize_maimai(chart, {"tap": 1, "hold": 0, "path": 0, "bell": 2, "dropped": 0})
+	near(near_bell.center_u, 0.0, 0.01, "a bell within 100ms snaps onto the tap angle")
+	near(far_bell.center_u, 0.5, 0.01, "a far bell keeps its own angle")
 	return true
 
 
