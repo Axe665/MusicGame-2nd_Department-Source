@@ -101,6 +101,8 @@ func _run() -> void:
 		var stamp: float = chart.timing.beat_to_chart_ms(note.beat)
 		var point := playtest._preview.note_head_screen(note, note.beat)
 		playtest._key_presses.append({"time": stamp, "mouse": point, "angle": note.angle, "key": KEY_A})
+		# 判定只吃 _assign_presses() 分配出去的按键（#38 起），测试要照真实输入走一遍。
+		playtest._assign_presses(stamp, note.beat)
 		var before: int = playtest._sfx._index
 		capture.clear_buffer()
 		playtest._judge_tap(note, stamp, note.beat)
