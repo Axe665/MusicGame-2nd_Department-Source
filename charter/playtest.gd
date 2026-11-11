@@ -1061,6 +1061,7 @@ func _judge_path(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 				_write_path_input_log({"kind": "head", "note": note.id, "time_ms": ms,
 					"error_ms": head_error, "mouse": _path_log_point(press.get("mouse", Vector2.INF))})
 				_register_hit(tier)
+				_sfx.play(HitSfx.kind_for_note(note), randf_range(0.98, 1.02))
 				# 星头用实际的星头屏幕位置，平面星星（V / 折线）也能炸在正确的位置。
 				_pulse_at(note.angle, beat, _tier_color(tier), tier, note.arc_width(), "path", _timing_detail(head_error, tier), head_point)
 				_add_log("PATH #%d HEAD %s" % [note.id, tier])

@@ -99,8 +99,10 @@ func _run() -> void:
 		await process_frame
 		var note: Note = chart.notes[0]
 		var stamp: float = chart.timing.beat_to_chart_ms(note.beat)
+		playtest._preview.prepare_playtest_frame(note.beat, 0.016)
 		var point := playtest._preview.note_head_screen(note, note.beat)
 		playtest._key_presses.append({"time": stamp, "mouse": point, "angle": note.angle, "key": KEY_A})
+		playtest._assign_presses(stamp, note.beat)
 		var before: int = playtest._sfx._index
 		capture.clear_buffer()
 		playtest._judge_tap(note, stamp, note.beat)
@@ -108,6 +110,35 @@ func _run() -> void:
 		_check(playtest._sfx._index == before + 1, "playtest chart hit triggers sound")
 		await create_timer(0.2).timeout
 		_check(_capture_peak(capture) > 0.001, "playtest chart hit reaches SFX bus")
+	# Head contact and slide start are separate audible events during the wait.
+	for width in [60.0, 75.0]:
+		var chart := DemoChart.make_empty({"bpm": 120.0})
+		chart.notes.clear()
+		var note := Note.new("path", 2.0, 0.0, width)
+		note.end_beat = 6.0
+		note.wait_beat = 1.0
+		note.tail_angle = 180.0
+		note.generate_path_shape()
+		chart.notes.append(note)
+		playtest.setup(chart, 0.0, "")
+		playtest._preview.prepare_playtest_frame(2.0, 0.016)
+		var point := playtest._preview.note_head_screen(note, 2.0)
+		playtest._press_assignments[note.id] = {"time": 1000.0, "mouse": point}
+		var before: int = playtest._sfx._index
+		capture.clear_buffer()
+		playtest._judge_path(note, 1000.0, 2.0, point)
+		_check(playtest._sfx._index == before + 1, "Path head hit triggers exactly one sound")
+		var player: AudioStreamPlayer = playtest._sfx._players[before % playtest._sfx._players.size()]
+		_check(player.stream == playtest._sfx._streams[HitSfx.kind_for_note(note)], "Path head uses same sound as matching Tap")
+		await create_timer(0.2).timeout
+		_check(_capture_peak(capture) > 0.001, "Path head hit reaches SFX bus")
+		playtest._judge_path(note, 1010.0, 2.02, point)
+		_check(playtest._sfx._index == before + 1, "judged Path head never repeats its sound")
+		playtest._judge_path(note, 1500.0, 3.0, point)
+		_check(playtest._sfx._index == before + 2 and bool(playtest._states[note.id]["slide_cued"]), "waiting still ends with a separate slide cue")
+		app.set_chart(chart, "", false)
+		editor._build_sfx_events()
+		_check(editor._sfx_events[0]["kind"] == HitSfx.kind_for_note(note), "editor Path head matches Tap sound too")
 	AudioServer.remove_bus_effect(bus, 0)
 	playtest.free()
 	editor.free()
