@@ -2247,6 +2247,16 @@ func test_sweep_runs_to_bells() -> bool:
 	for note in slow.notes:
 		eq(note.type, "tap", "a slow ring run still needs key presses")
 
+	# 240BPM 的 24 分 = 41.7ms：这次游玩里最集中的漏点，也要转。
+	var sext := DemoChart.make_empty({"bpm": 240.0})
+	sext.notes.clear()
+	for i in 4:
+		var note := Note.new("tap", float(i) / 6.0, 45.0 * float(i), 60.0)
+		note.id = i + 1
+		sext.notes.append(note)
+	ConvertOptimizer.optimize_maimai(sext, {"tap": 4, "hold": 0, "path": 0, "bell": 0, "dropped": 0})
+	for note in sext.notes:
+		eq(note.type, "bell", "a 41.7ms sweep becomes bells")
 	return true
 
 

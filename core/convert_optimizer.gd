@@ -32,10 +32,12 @@ const ON_TRACK_R := 0.30
 ## 滑条底线：比这更短 / 头尾弦长更小的 Path 读不出“要滑”，降级。
 const MIN_SLIDE_MS := 160.0
 const MIN_SLIDE_CHORD_R := 0.6
-## 32 分扫键：间隔 ≤35ms（≈28 颗/秒）、至少 3 颗、角度真的在扫 ≥45°，按键按不过来。
-const SWEEP_GAP_MS := 35.0
+## 快速扫键：间隔 ≤45ms（≈22 颗/秒）、至少 3 颗、角度真的在扫 ≥45°，按键按不过来。
+const SWEEP_GAP_MS := 45.0
 const SWEEP_MIN_NOTES := 3
 const SWEEP_MIN_SPAN := 45.0
+## 每颗至少移动这么多角度才算“在扫”；同角度连爆会在这一步断开。
+const SWEEP_MIN_STEP := 10.0
 
 
 static func optimize_maimai(chart: Chart, counts: Dictionary) -> Dictionary:
@@ -494,7 +496,7 @@ static func _snap_bells_to_press_notes(chart: Chart, stats: Dictionary) -> void:
 		stats["bells_moved"] = int(stats["bells_moved"]) + 1
 
 
-## 32 分扫键段：连续 Tap、间隔 ≤35ms、≥3 颗、角度跨度 ≥45°，一对一改成 Bell
+## 快速扫键段：连续 Tap、间隔 ≤45ms、≥3 颗、角度跨度 ≥45°，一对一改成 Bell
 ## （时间和角度不变）。按键打不到 28 颗/秒，但鼠标沿这条路线扫过去能收。
 static func _sweep_runs_to_bells(chart: Chart, stats: Dictionary) -> void:
 	var ordered := chart.sorted_notes()
@@ -512,6 +514,8 @@ static func _sweep_runs_to_bells(chart: Chart, stats: Dictionary) -> void:
 			var prev := run[run.size() - 1]
 			var gap := chart.timing.beat_to_chart_ms(next.beat) - chart.timing.beat_to_chart_ms(prev.beat)
 			if gap > SWEEP_GAP_MS:
+				break
+			if absf(JudgeMath.angle_delta(next.angle, prev.angle)) < SWEEP_MIN_STEP:
 				break
 			run.append(next)
 			j += 1
