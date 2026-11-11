@@ -481,8 +481,8 @@ func _test_bell_judgement() -> void:
 	var point: Vector2 = screen["center"]
 	var center: Vector2 = run._preview.project_design(Vector2.ZERO)
 	var inward: Vector2 = (center - point).normalized()
-	check(run._preview.bell_contains(band, beat, point + inward * 39.0), "39px off the band still counts")
-	check(not run._preview.bell_contains(band, beat, point + inward * 41.0), "41px off the band is outside")
+	check(run._preview.bell_contains(band, beat, point + inward * 54.0), "54px off the band still counts")
+	check(not run._preview.bell_contains(band, beat, point + inward * 56.0), "56px off the band is outside")
 	# 旧的圆心 Bell（bell_radius = 0）也并到外环：圆心不算，环上才算。
 	var legacy: Dictionary = run._preview.bell_screen(dot, 4.0)
 	check(not legacy.is_empty(), "a legacy center bell still has a ring shape")
@@ -506,10 +506,10 @@ func _test_bell_judgement() -> void:
 		"a fast sweep across the gold band counts")
 	check(not run._preview.bell_swept_contains(band, beat, inner, point + inward * 300.0),
 		"a sweep that stays away from the band does not count")
-	run._judge_bell(band, target - 99.0, beat, inner)
+	run._judge_bell(band, target - 129.0, beat, inner)
 	check(not bool(run._states[1]["armed"]), "a cursor away from the gold note does not arm it")
 	# 一帧内从内侧跨到外侧：采样点没落在金键上，但扫过的线段穿过了。
-	run._judge_bell(band, target - 95.0, beat, outer)
+	run._judge_bell(band, target - 125.0, beat, outer)
 	check(bool(run._states[1]["armed"]) and not bool(run._states[1]["done"]),
 		"a single frame sweeping across the gold note arms it")
 	run._judge_bell(band, target, beat, point)
@@ -528,10 +528,10 @@ func _test_bell_judgement() -> void:
 	miss.set_process(false)
 	miss._preview.prepare_playtest_frame(beat, 0.0)
 	var far := point + (point - center) * 2.0
-	miss._judge_bell(band, target - 101.0, beat, far)
-	miss._judge_bell(band, target + 99.0, beat, far)
+	miss._judge_bell(band, target - 131.0, beat, far)
+	miss._judge_bell(band, target + 129.0, beat, far)
 	check(not bool(miss._states[1]["done"]), "the late window is still open")
-	miss._judge_bell(band, target + 101.0, beat, far)
+	miss._judge_bell(band, target + 131.0, beat, far)
 	check(bool(miss._states[1]["done"]) and miss._miss_count == 1, "an absent gold note misses after the window")
 	check(int(miss._tier_counts["MISS"]) == 1, "a missed gold note is judged")
 	check(miss._combo == 0, "a missed gold note breaks combo")

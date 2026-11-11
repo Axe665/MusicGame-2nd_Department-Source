@@ -13,7 +13,7 @@ const PATH_SIZE_SCALE := 2.0
 ## 金键（Bell）：环上一段白描边金键（圆头 + 金色核心 + 细金光环）。
 const BELL_BAND_HALF := 10.0
 ## 光标离弧带（含两端）多少像素内算在场。
-const BELL_RADIAL_TOLERANCE := 40.0
+const BELL_RADIAL_TOLERANCE := 55.0
 ## 星头单独缩小（轨迹宽度不受影响）。
 const PATH_HEAD_SCALE := 0.62
 ## 接力高亮：等待处理的星在重叠时压到这个亮度。
