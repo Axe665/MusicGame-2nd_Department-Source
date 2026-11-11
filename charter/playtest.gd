@@ -18,7 +18,7 @@ const PRESS_KEEP_MS := 34.0
 ## 同一个键 50ms 内的重复按下只算一次（手抖双击）。
 const KEY_DEBOUNCE_MS := 50.0
 ## 金键（黄键式）：判定线前后各 100ms 内光标在场就算，到线才结算。
-const BELL_WINDOW_MS := 100.0
+const BELL_WINDOW_MS := 130.0
 
 const RED_LIMIT_SEC := 0.2
 const PATH_TAIL_RADIUS := 192.0
