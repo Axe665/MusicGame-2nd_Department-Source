@@ -169,11 +169,7 @@ static func _note_code(note: Note, by_id: Dictionary) -> String:
 	var segments: Array[String] = []
 	for i in chain.size():
 		var part := chain[i]
-		segments.append("(part%d,%s,%s,%s,%s,%s,%s)" % [
-			part.path_part, Note._code_num(part.beat), Note._code_num(part.angle),
-			Note._code_num(part.end_beat), Note._code_num(part.tail_angle),
-			Note._code_num(part.path_centrifuge), Note._code_num(part.path_axis)
-		])
+		segments.append(part.path_part_code())
 	return "[%d]path{%s}" % [note.id, ";".join(segments)]
 
 

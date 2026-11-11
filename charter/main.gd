@@ -1261,7 +1261,7 @@ func _build_sfx_events() -> void:
 			"hold":
 				_add_sfx_event(note.beat, "don")
 			"path":
-				_add_sfx_event(note.beat, "path", 1.0)
+				_add_sfx_event(note.beat, HitSfx.kind_for_note(note))
 				_add_sfx_event(note.end_beat, "tail")
 			"anchor":
 				_add_sfx_event(note.beat, "anchor", 1.0)

@@ -171,6 +171,20 @@ func path_tail_local() -> Vector2:
 	return path_local_at(duration())
 
 
+## Imported traces encode the wait as coincident opening points. Animation
+## already applies wait_beat, so traverse only the moving part of that geometry.
+func path_motion_beat(progress: float) -> float:
+	var start := 0.0
+	if trace_pts.size() >= 2:
+		var head := Vector2(float(trace_pts[0].get("x", 0.0)), float(trace_pts[0].get("y", 0.0)))
+		for point in trace_pts:
+			var local := Vector2(float(point.get("x", 0.0)), float(point.get("y", 0.0)))
+			if local.distance_squared_to(head) > 0.00000001:
+				break
+			start = clampf(float(point.get("db", 0.0)), 0.0, duration())
+	return lerpf(start, duration(), clampf(progress, 0.0, 1.0))
+
+
 func path_head_point() -> Vector2:
 	if path_part > 0 and path_head_local.is_finite():
 		return path_head_local
@@ -575,11 +589,18 @@ func to_code() -> String:
 		"bell":
 			return "[%d]bell(%s,%s)" % [id, b, a]
 		"path":
-			return "[%d]path{(part%d,%s,%s,%s,%s,%s,%s)}" % [
-				id, path_part, b, a, _code_num(end_beat), _code_num(tail_angle),
-				_code_num(path_centrifuge), _code_num(path_axis)
-			]
+			return "[%d]path{%s}" % [id, path_part_code()]
 	return ""
+
+
+## Optional final field preserves waiting time while keeping old Path codes valid.
+func path_part_code() -> String:
+	var fields := "part%d,%s,%s,%s,%s,%s,%s" % [path_part, _code_num(beat),
+		_code_num(angle), _code_num(end_beat), _code_num(tail_angle),
+		_code_num(path_centrifuge), _code_num(path_axis)]
+	if wait_beat > 0.0:
+		fields += "," + _code_num(clampf(wait_beat, 0.0, maxf(0.0, duration() - 0.001)))
+	return "(" + fields + ")"
 
 
 static func from_code(code: String) -> Note:
@@ -656,12 +677,13 @@ static func path_parts_from_code(code: String) -> Array[Note]:
 		var fields := segment.split(",", true)
 		if fields.size() < 7:
 			continue
-		# fields[0] is `partN`; the remaining seven are the actual values.
+		# fields[0] is partN; fields[7] is optional waiting time in beats.
 		var number := int(fields[0].replace("part", ""))
 		var note := Note.new("path", float(fields[1]), float(fields[2]), 60.0)
 		note.id = root_id if index == 0 else root_id + 1000 * index
 		note.path_part = number
 		note.end_beat = float(fields[3])
+		note.wait_beat = clampf(float(fields[7]), 0.0, maxf(0.0, note.duration() - 0.001)) if fields.size() > 7 else 0.0
 		note.tail_angle = float(fields[4])
 		note.path_centrifuge = clampf(float(fields[5]), 0.0, 1.0)
 		note.path_axis = clampf(float(fields[6]), -2.0, 2.0)

@@ -250,6 +250,17 @@ func _build_pause_overlay() -> void:
 	_path_judgement_toggle.focus_mode = Control.FOCUS_NONE
 	_path_judgement_toggle.toggled.connect(_set_path_judgement_visible)
 	box.add_child(_path_judgement_toggle)
+	var wait_indicator := OptionButton.new()
+	for label in App.PATH_WAIT_LABELS:
+		wait_indicator.add_item("Path 启动指示：" + label)
+	wait_indicator.select(maxi(0, App.PATH_WAIT_MODES.find(_app.path_wait_indicator)))
+	wait_indicator.focus_mode = Control.FOCUS_NONE
+	wait_indicator.item_selected.connect(func(index: int) -> void:
+		_app.path_wait_indicator = App.PATH_WAIT_MODES[index]
+		_app.save_settings()
+		_app.appearance_changed.emit()
+	)
+	box.add_child(wait_indicator)
 	_add_pause_button(box, "继续游玩", func() -> void: _set_paused(false))
 	_add_pause_button(box, "重新开始", func() -> void:
 		_set_paused(false)
@@ -1063,6 +1074,7 @@ func _judge_path(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 				_write_path_input_log({"kind": "head", "note": note.id, "time_ms": ms,
 					"error_ms": head_error, "mouse": _path_log_point(press.get("mouse", Vector2.INF))})
 				_register_hit(tier)
+				_sfx.play(HitSfx.kind_for_note(note), randf_range(0.98, 1.02))
 				# 星头用实际的星头屏幕位置，平面星星（V / 折线）也能炸在正确的位置。
 				_pulse_at(note.angle, beat, _tier_color(tier), tier, note.arc_width(), "path", _timing_detail(head_error, tier), head_point)
 				# 星头是按键时机，和 Tap 同源，可以喂给动态校准与散布图。
@@ -1166,6 +1178,7 @@ func _update_path_progress(note: Note, state: Dictionary, tracker: PathProgress,
 		var wait := clampf(note.wait_beat, 0.0, total - 0.001)
 		var q := clampf((beat - note.beat - wait) / (total - wait), 0.0, 1.0)
 		var progress := 1.0 - pow(1.0 - q, maxf(0.05, note.path_speed))
+		progress = note.path_motion_beat(progress) / total
 		var finishing := ms >= tail_ms - 40.0
 		var index := int(state["path_auto_index"])
 		while ms >= start_ms and index < projected.size():
