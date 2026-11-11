@@ -75,11 +75,15 @@ func _run() -> void:
 	app.redo_chart()
 	note = app.chart.notes[0]
 	check(is_equal_approx(note.wait_beat, 1.25), "wait edits support redo")
-	app.path_wait_indicator = "combined"
+	app.path_wait_indicator = "shrink"
 	app.save_settings()
 	app.path_wait_indicator = "off"
 	app._load_settings()
-	check(app.path_wait_indicator == "combined", "indicator choice survives settings reload")
+	check(app.path_wait_indicator == "shrink", "indicator choice survives settings reload")
+	app.path_wait_indicator = "combined"
+	app.save_settings()
+	app._load_settings()
+	check(app.path_wait_indicator == "progress", "removed modes fall back to progress on settings reload")
 	var preview := Preview3D.new()
 	preview.follow_app = false
 	preview.chart_override = app.chart

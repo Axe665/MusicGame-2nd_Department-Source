@@ -2350,8 +2350,10 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 			canvas.draw_circle(p, 10.0 * ns * PATH_SIZE_SCALE, Color(1, 1, 1, 0.96 * ball_dim))
 			canvas.draw_circle(p, 4.5 * ns * PATH_SIZE_SCALE, Color(UITheme.INK.r, UITheme.INK.g, UITheme.INK.b, ball_dim))
 	if wait_mode != "off" and wait_state.y > 0.0 and _valid_point(ring_head):
-		# Keep the countdown outside the guide ball, including half-size chain heads.
-		var wait_radius := maxf(28.0 * ns * PATH_SIZE_SCALE * PATH_HEAD_SCALE * ring_mul, 24.0 * ns * PATH_SIZE_SCALE)
+		# Shrinking mode lands exactly on the original blue head ring; the progress
+		# arc retains its larger radius so it remains readable outside the guide ball.
+		var head_radius := 28.0 * ns * PATH_SIZE_SCALE * PATH_HEAD_SCALE * ring_mul
+		var wait_radius := head_radius if wait_mode == "shrink" else maxf(head_radius, 24.0 * ns * PATH_SIZE_SCALE)
 		_draw_path_wait_indicator(canvas, ring_head, wait_radius,
 			wait_state.x, wait_state.y * dim * trail_fade, wait_mode)
 
@@ -2371,17 +2373,17 @@ static func path_wait_indicator_state(timing: TimingMap, note: Note, beat: float
 
 
 func _draw_path_wait_indicator(canvas: Control, center: Vector2, radius: float, completion: float, opacity: float, mode: String) -> void:
-	var ready := Color(0.35, 1.0, 0.62)
-	var waiting := Color(1.0, 0.58, 0.20)
-	var color := waiting.lerp(ready, completion) if mode in ["color", "combined"] else ready
-	color.a = opacity * (lerpf(0.12, 1.0, completion) if mode in ["fade", "combined"] else 0.95)
+	if mode == "shrink":
+		var ring_radius := radius * lerpf(2.5, 1.0, completion)
+		var alpha := opacity * completion
+		canvas.draw_arc(center, ring_radius, 0.0, TAU, 64, Color(0.55, 0.75, 1.0, 0.16 * alpha), 7.0, true)
+		canvas.draw_arc(center, ring_radius, 0.0, TAU, 64, Color(0.55, 0.75, 1.0, 0.95 * alpha), 2.4, true)
+		return
+	var color := Color(0.35, 1.0, 0.62, 0.95 * opacity)
 	canvas.draw_arc(center, radius, 0.0, TAU, 64, Color(0.02, 0.03, 0.05, 0.65 * opacity), 6.0, true)
-	if mode in ["progress", "combined"]:
-		canvas.draw_arc(center, radius, 0.0, TAU, 64, Color(0.65, 0.75, 0.85, 0.22 * opacity), 2.4, true)
-		if completion > 0.001:
-			canvas.draw_arc(center, radius, -PI * 0.5, -PI * 0.5 + TAU * completion, 64, color, 3.2, true)
-	else:
-		canvas.draw_arc(center, radius, 0.0, TAU, 64, color, 3.0, true)
+	canvas.draw_arc(center, radius, 0.0, TAU, 64, Color(0.65, 0.75, 0.85, 0.22 * opacity), 2.4, true)
+	if completion > 0.001:
+		canvas.draw_arc(center, radius, -PI * 0.5, -PI * 0.5 + TAU * completion, 64, color, 3.2, true)
 
 
 func path_point(note: Note, relative_beat: float, beat: float) -> Vector2:

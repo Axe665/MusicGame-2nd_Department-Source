@@ -32,8 +32,8 @@ var flow_scale: float = 1.0
 var ffmpeg_path: String = "ffmpeg"
 var star_speed: float = 1.0
 ## Path 等待阶段的启动提示（全局外观设置，不参与判定）。
-const PATH_WAIT_MODES: Array[String] = ["off", "fade", "color", "progress", "combined"]
-const PATH_WAIT_LABELS: Array[String] = ["关闭", "圆圈渐显", "圆圈变色", "环形进度", "组合效果"]
+const PATH_WAIT_MODES: Array[String] = ["off", "progress", "shrink"]
+const PATH_WAIT_LABELS: Array[String] = ["关闭", "环形进度", "淡蓝收缩圆环"]
 var path_wait_indicator: String = "progress"
 ## 星星主色（舞萌蓝），所有 Path 共用；试玩设置里可改。
 var star_color: Color = Color(0.55, 0.75, 1.0)
