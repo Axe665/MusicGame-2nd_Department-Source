@@ -19,8 +19,7 @@ const PRESS_KEEP_MS := 34.0
 const KEY_DEBOUNCE_MS := 50.0
 ## 金键（黄键式）：判定线前后各 100ms 内光标在场就算，到线才结算。
 const BELL_WINDOW_MS := 100.0
-## 光标要在金键上连续停留这么久才算“在场”：扫过去一下不算，避免蹭到就自动命中。
-const BELL_DWELL_MS := 16.0
+
 const RED_LIMIT_SEC := 0.2
 const PATH_TAIL_RADIUS := 192.0
 ## 尾判半径最多占“头到尾直线距离”的多少（短滑条要跟着缩）。
@@ -1410,18 +1409,16 @@ func _judge_bell(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 	if ms < target - BELL_WINDOW_MS:
 		return
 	# 黄键式：窗口内光标在场只是“预备”，不提前结算，音符不会提前消失。
-	# 必须连续停留 BELL_DWELL_MS 才 arm：光标只是扫过金键不算蹭到。
+	# 判定用这一帧光标扫过的线段，进入即收：设计文档 §5.2 的示例就是沿线扫过
+	# 一串 Bell，快速扫过时只要按点采样会整帧跨过金键、把整条路线判成漏。
+	var previous: Vector2 = state.get("last_mouse", mouse)
+	state["last_mouse"] = mouse
 	if not bool(state.get("armed", false)):
-		if _preview.bell_contains(note, beat, mouse):
-			if not state.has("dwell_start"):
-				state["dwell_start"] = ms
-			elif ms - float(state["dwell_start"]) >= BELL_DWELL_MS:
-				state["armed"] = true
-				var lock: Dictionary = _preview.bell_screen(note, beat)
-				if not lock.is_empty():
-					_preview.add_hit_pulse(lock["center"], UITheme.KEY_YELLOW, "", "lock")
-		else:
-			state.erase("dwell_start")
+		if _preview.bell_swept_contains(note, beat, previous, mouse):
+			state["armed"] = true
+			var lock: Dictionary = _preview.bell_screen(note, beat)
+			if not lock.is_empty():
+				_preview.add_hit_pulse(lock["center"], UITheme.KEY_YELLOW, "", "lock")
 	if ms < target:
 		return
 	if bool(state.get("armed", false)):

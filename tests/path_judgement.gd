@@ -500,15 +500,18 @@ func _test_bell_judgement() -> void:
 	check(not run._preview.bell_contains(band, early, ring_center + inward * 120.0),
 		"far inside the ring is still outside")
 	run._preview.prepare_playtest_frame(beat, 0.0)
-	run._judge_bell(band, target - 99.0, beat, point)
-	check(not bool(run._states[1]["armed"]), "one frame of presence does not arm the gold note")
-	var far_point := point + (point - center) * 2.0
-	run._judge_bell(band, target - 90.0, beat, far_point)
-	run._judge_bell(band, target - 85.0, beat, point)
-	check(not bool(run._states[1]["armed"]), "sweeping across resets the dwell")
-	run._judge_bell(band, target - 60.0, beat, point)
+	var inner := point + inward * 200.0
+	var outer := point - inward * 200.0
+	check(run._preview.bell_swept_contains(band, beat, inner, outer),
+		"a fast sweep across the gold band counts")
+	check(not run._preview.bell_swept_contains(band, beat, inner, point + inward * 300.0),
+		"a sweep that stays away from the band does not count")
+	run._judge_bell(band, target - 99.0, beat, inner)
+	check(not bool(run._states[1]["armed"]), "a cursor away from the gold note does not arm it")
+	# 一帧内从内侧跨到外侧：采样点没落在金键上，但扫过的线段穿过了。
+	run._judge_bell(band, target - 95.0, beat, outer)
 	check(bool(run._states[1]["armed"]) and not bool(run._states[1]["done"]),
-		"staying on the gold note arms it")
+		"a single frame sweeping across the gold note arms it")
 	run._judge_bell(band, target, beat, point)
 	check(bool(run._states[1]["done"]), "the gold note resolves on the judgement line")
 	check(int(run._tier_counts["PERFECT"]) == 1, "presence scores a PERFECT")

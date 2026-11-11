@@ -4201,6 +4201,28 @@ func bell_contains(note: Note, beat: float, point: Vector2) -> bool:
 	return ring.size() >= 2 and JudgeMath.trace_distance(point, ring) <= BELL_RADIAL_TOLERANCE
 
 
+## 扫过判定：这一帧光标走过的线段碰到金键带（或判定环）就算在场。
+## 快速扫过时采样点可能整帧跨过金键，只看点会漏判整条路线上的铃。
+func bell_swept_contains(note: Note, beat: float, from: Vector2, to: Vector2) -> bool:
+	if from.distance_to(to) < 0.5:
+		return bell_contains(note, beat, to)
+	if _segment_near_band(bell_live_band(note, beat), from, to):
+		return true
+	return _segment_near_band(bell_band_points(note, beat), from, to)
+
+
+func _segment_near_band(band: Array[Vector2], from: Vector2, to: Vector2) -> bool:
+	for i in band.size() - 1:
+		var a := band[i]
+		var b := band[i + 1]
+		if not a.is_finite() or not b.is_finite():
+			continue
+		var pair := Geometry2D.get_closest_points_between_segments(a, b, from, to)
+		if pair.size() >= 2 and pair[0].distance_to(pair[1]) <= BELL_RADIAL_TOLERANCE:
+			return true
+	return false
+
+
 ## 金键的屏幕形态：外圈取弧带中点，圆心取圆心金点。
 func bell_screen(note: Note, beat: float) -> Dictionary:
 	var points := bell_live_band(note, beat)
