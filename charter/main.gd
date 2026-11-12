@@ -2097,6 +2097,9 @@ func _show_import_progress() -> void:
 		_import_progress = AcceptDialog.new()
 		_import_progress.title = "媒体处理"
 		_import_progress.min_size = Vector2i(460, 150)
+		# 进度条只是告知，不抢独占焦点：否则试玩/设置对话框开着时会报
+		# "already has another exclusive child"。
+		_import_progress.exclusive = false
 		var box := VBoxContainer.new()
 		box.add_theme_constant_override("separation", 12)
 		_import_progress.add_child(box)
