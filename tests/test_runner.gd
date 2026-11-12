@@ -2420,16 +2420,26 @@ func test_maimai_interaction_compress() -> bool:
 
 
 func test_interaction_run_lock() -> bool:
+	# 83ms 的 90° 来回：锁到 45° 后仍然是 3031px/s，超过鼠标上限，整段收成一个位置。
 	var chart := Chart.new()
 	chart.timing.points = [TimingPoint.new(0.0, 180.0, 4)]
 	var angles := [90.0, 0.0, 90.0, 0.0, 90.0, 0.0]
 	for i in angles.size():
 		chart.notes.append(Note.new("tap", float(i) * 0.25, angles[i], 62.0))
 	var stats := ConvertOptimizer.optimize_maimai(chart, {"tap": 6, "hold": 0, "path": 0, "bell": 0, "dropped": 0})
-	eq(int(stats.get("locked", 0)), 1, "a fast A-B-A-B run is locked as one")
+	eq(int(stats.get("stacked", 0)), 1, "a run that is too fast even at 45 degrees collapses to one spot")
 	for i in chart.notes.size():
+		near(chart.notes[i].angle, 90.0, 0.01, "collapsed run note %d" % i)
+	# 166ms 的 90° 来回：锁到 45° 之后是 1520px/s，鼠标追得上，保留一对位置。
+	var medium := Chart.new()
+	medium.timing.points = [TimingPoint.new(0.0, 180.0, 4)]
+	for i in angles.size():
+		medium.notes.append(Note.new("tap", float(i) * 0.5, angles[i], 62.0))
+	var medium_stats := ConvertOptimizer.optimize_maimai(medium, {"tap": 6, "hold": 0, "path": 0, "bell": 0, "dropped": 0})
+	eq(int(medium_stats.get("locked", 0)), 1, "a medium A-B-A-B run is locked as one")
+	for i in medium.notes.size():
 		var expect := 90.0 if i % 2 == 0 else 45.0
-		near(chart.notes[i].angle, expect, 0.01, "locked run note %d" % i)
+		near(medium.notes[i].angle, expect, 0.01, "locked run note %d" % i)
 	var slow := Chart.new()
 	slow.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
 	for i in angles.size():
