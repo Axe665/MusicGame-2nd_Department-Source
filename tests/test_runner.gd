@@ -121,6 +121,7 @@ func _initialize() -> void:
 		"test_osu_filters",
 		"test_osu_pill_rows",
 		"test_audio_clock",
+		"test_audio_clock_rate",
 		"test_calibration_offset",
 		"test_chart_offset_for_bias",
 		"test_audio_buffer_override",
@@ -1109,6 +1110,18 @@ func test_media_formats() -> bool:
 	near(MediaIO.progress_seconds("out_time_us=2500000\nprogress=continue\n"), 2.5, 0.01, "ffmpeg progress microseconds")
 	near(MediaIO.progress_seconds("out_time=00:00:03.500000\n"), 3.5, 0.01, "ffmpeg progress timecode")
 	eq(MediaIO.prepare_audio("res://audio/demo_click.wav"), "res://audio/demo_click.wav", "native audio passes through")
+	var rate2 := MediaIO.rate_audio_cache_path("res://audio/demo_click.wav", 2.0)
+	ok(rate2.ends_with(".ogg"), "rate cache is ogg")
+	ok(rate2 != MediaIO.rate_audio_cache_path("res://audio/demo_click.wav", 0.5), "rate cache key includes the rate")
+	eq(MediaIO.prepare_audio_at_rate("res://audio/demo_click.wav", 1.0), "res://audio/demo_click.wav",
+		"1x rate passes the original audio through")
+	if MediaIO.has_ffmpeg():
+		var rendered := MediaIO.prepare_audio_at_rate("res://audio/demo_click.wav", 2.0)
+		ok(FileAccess.file_exists(rendered), "atempo renders a rate cache")
+		var rendered_stream := ChartIO.audio_stream_from_path(rendered)
+		ok(rendered_stream != null, "rate cache loads as an audio stream")
+		if rendered_stream != null:
+			near(rendered_stream.get_length(), 9.0, 0.6, "2x atempo halves the duration")
 	return true
 
 
@@ -3103,6 +3116,32 @@ func test_hold_seam_interval() -> bool:
 	near(JudgeMath.total_length(full), 360.0, 0.001, "full circle covers the ring")
 	return true
 ## 结算页散布图：只收合法样本，等级颜色互不相同。
+func test_audio_clock_rate() -> bool:
+	var wall := AudioClock.new()
+	wall.start(0.0, 0)
+	near(wall.update(16000, false, 0.0, 0.0, 0.0, 0.0, 2.0), 32.0, 0.01,
+		"the wall clock advances at the playback rate")
+	var fast := AudioClock.new()
+	fast.start(0.0, 0)
+	var now := 0
+	for i in 40:
+		now += 16000
+		fast.update(now, true, float(now) / 1000000.0 * 2.0, 0.0, 0.0, 0.0, 2.0)
+	near(fast.clock_ms, float(now) / 1000.0 * 2.0, 8.0,
+		"the clock follows 2x audio without falling behind")
+	# 延迟和混音间隔是真实秒数，2× 下换算成流位置要翻倍。
+	var latency := AudioClock.new()
+	latency.start(380.0, 0)
+	near(latency.update(16000, true, 0.5, 0.0, 0.05, 0.0, 2.0), 400.0, 0.01,
+		"output latency is scaled by the playback rate")
+	# 预拉伸的 2× 流：流里 0.5s 对应谱面 1s，延迟 50ms 也按 2× 换成谱面 100ms。
+	var stretched := AudioClock.new()
+	stretched.start(900.0, 0)
+	near(stretched.update(16000, true, 0.5, 0.0, 0.05, 0.0, 2.0, 2.0), 900.0, 0.01,
+		"a pre-stretched stream maps stream time and latency back to chart time")
+	return true
+
+
 func test_calibration_offset() -> bool:
 	var samples: Array[float] = [-40.0, -20.0, -10.0, 0.0, 10.0, 20.0, 30.0, 40.0]
 	near(CalibrationDialog.offset_for_errors(samples), -10.0, 0.01, "late taps produce a negative offset")

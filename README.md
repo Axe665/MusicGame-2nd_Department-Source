@@ -75,6 +75,7 @@ godot --path .
 - 编辑器播放打击音：运输条「音频」弹出里的“打击音”开关，播放时按音符时间触发 Tap、Hold 头/尾、Path 头/尾、Anchor、Bell、Trace；不影响试玩
 - 光标：Estella 风格白色环 + 青色内环 + 旋转弧 + 深色描边 + 拖尾；预览内始终隐藏系统光标并绘制自定义光标
 - 流速：运输条“流速”0.05×–3.0×，步进 0.01，只缩放预读速度（`pre_read_ms ÷ flow_scale`），不改判定窗口；试玩沿用当前设置
+- 倍速：试玩设置（F5，或暂停菜单 →「试玩设置」）里的“倍速”0.5×–2.0×（步进 0.05），试玩和编辑器试听都按这个速度走；**声音不变调**——用 ffmpeg `atempo` 预生成该倍速的音频并缓存（音质最好；每个新倍速首次等约 2–5 秒，之后秒开），BGA 视频跟速，READY 倒计时仍按真实 2 秒；没有 ffmpeg 时回退成变调并在日志/提示里说明；局中修改在重开本局后生效；倍速本身只对本次运行有效
 - 星速：运输条“星速”0.75×–1.5×，同时缩放滑条引导星移动速度与所需跟随距离
 - 视角：视图页“正对镜头（忽略倾斜）”默认开启，试玩时环面始终正对相机；需要作者镜头时可关闭
 - 打击音：新增 Hold / Path / Anchor 分层音色（合成 WAV，瞬态 + 音体 + 短尾）；Trace 离开轨迹超过 250ms 会重置累计距离（FRAY）
@@ -148,7 +149,7 @@ godot --path .
 - **转谱窗口**：导入 `.osz` / `maidata.txt`，或者从「在线舞萌谱面」下载完成，都会先把来源里的**所有难度都转好并存成一个套组文件**（`user://sets/<曲名> [导入].set.json`），再**另开一个窗口**（`--open-set=<set.json> --child-window`）专门编辑它；父窗口的谱面原样不动。新窗口和普通编辑器一样，只是顶部左侧多一个「难度」下拉框，可以在套组里的所有难度之间直接切换（`<曲名> · <难度>` 会显示在标题栏）。在线谱面下载后不再在浏览器里选难度，统一在新窗口切。自动保存写到 `user://autosave_import.json`，不碰主窗口的 `autosave.json`。
 - **难度套组 `.set.json`**：一个文件装一首歌的所有难度（`{"format":"tamaki3-set","difficulties":[{"name","chart"}]}`）；`ChartIO.load_set/save_set` 读写，`文件 → 打开` 会自动识别，Ctrl+S 存回整个套组；`文件 → 新增难度（复制当前）` 加一份，`文件 → 另存为` 则把当前难度单独存成普通 `.json`。
 - **在线舞萌谱面**：卡片列表（封面 / 曲名 / 艺术家 / 难度色块 / 收藏 / 详情），adxdls 与 majdata 用搜索栏旁的分段按钮切换；majdata 接口固定 30 条/页，底部可上一页 / 下一页 / 输入页码；点卡片任意位置看详情（谱师、上传者、全部难度、BGA 状态与大小），下载时询问「带 BGA / 不带 BGA」，没有 BGA 的谱面直接下非 BGA；BGA 失败只提示，不阻断谱面导入。adxdls 首次打开按当前页懒加载封面（bg.webp）和难度等级（maidata），落盘到 `user://chart_cache/` 后再次打开秒开；收藏写入 `user://chart_favorites.json`，「只看收藏」只筛当前源。osu! 仍是独立窗口。
-- **在线 osu! 谱面**：`文件 → 在线 osu! 谱面…` 独立窗口，交互和舞萌浏览器对齐——卡片式列表（封面 / 曲名 / 艺术家 / 前 4 个“星数 + 难度名”药丸，超过 4 个时末尾“+N ▾”在卡片内展开），**点卡片进详情页**（封面、原文曲名、谱师/来源/tags、全部难度星数、BPM/时长/游玩/收藏/状态、包体大小）；详情页按谱面是否带视频给 **「带视频下载 / 不带视频下载」**（实测镜像的“去视频包”和完整包是同一个文件，「不带」= 导入后删除视频文件、不绑定 BGA）；**30 条/页**，底部是「上一页 / 页码 / 下一页」（搜索镜像不给总数，所以只显示第 N 页，翻回已加载页不再请求）。搜索走 `osu.direct` 镜像（只列带 osu!std 难度的谱面包），封面来自 `assets.ppy.sh` 并缓存到 `user://osu_covers/`；下载走 sayobot（失败退回 `osu.direct`），下载中显示已下/总量/速度，拿到 `.osz` 后与本地导入走完全相同的转谱管线。点卡片右侧 ☆ 收藏谱面包（写进 `settings.json`）；漏斗按钮展开一行 **类型 / 语言 / 标签 / 只看收藏** 过滤：类型与语言用的就是 osu! 官网的枚举（`genre_id` / `language_id`），标签按 `tags` + 曲名 + 艺术家做 token 匹配（空格或逗号分隔，token 之间 AND，忽略大小写），因为 osu.direct 的搜索接口会忽略 `genre` / `language` 参数，所以每页 30 条候选在本地过滤；封面同时最多 3 个请求、按需倒入，已经下过的存在 `user://osu_covers/<id>.jpg`；搜索框也接受 `beatmapsets/<id>`、`beatmaps/<id>`、`/s/<id>` 链接或纯数字 ID（直接打开详情页；谱面 ID 会经 `osu.ppy.sh/osu/<id>` 的 `BeatmapSetID` 解析成谱面包，不需要 OAuth）。osu 包里的 BGA 是 `.m4v`，已加入直解表，不再转码。
+- **在线 osu! 谱面**：`文件 → 在线 osu! 谱面…` 独立窗口，**打开即显示「最新上架」**（镜像空搜索返回 ranked 时间倒序；第一次打开且没有列表时才拉，不在编辑器启动时打网络；清空搜索框回到第 1 页），交互和舞萌浏览器对齐——卡片式列表（封面 / 曲名 / 艺术家 / 前 4 个“星数 + 难度名”药丸，超过 4 个时末尾“+N ▾”在卡片内展开），**点卡片进详情页**（封面、原文曲名、谱师/来源/tags、全部难度星数、BPM/时长/游玩/收藏/状态、包体大小）；详情页按谱面是否带视频给 **「带视频下载 / 不带视频下载」**（实测镜像的“去视频包”和完整包是同一个文件，「不带」= 导入后删除视频文件、不绑定 BGA）；**30 条/页**，底部是「上一页 / 页码 / 下一页」（搜索镜像不给总数，所以只显示第 N 页，翻回已加载页不再请求）。搜索走 `osu.direct` 镜像（只列带 osu!std 难度的谱面包），封面来自 `assets.ppy.sh` 并缓存到 `user://osu_covers/`；下载走 sayobot（失败退回 `osu.direct`），下载中显示已下/总量/速度，拿到 `.osz` 后与本地导入走完全相同的转谱管线。点卡片右侧 ☆ 收藏谱面包（写进 `settings.json`）；漏斗按钮展开一行 **类型 / 语言 / 标签 / 只看收藏** 过滤：类型与语言用的就是 osu! 官网的枚举（`genre_id` / `language_id`），标签按 `tags` + 曲名 + 艺术家做 token 匹配（空格或逗号分隔，token 之间 AND，忽略大小写），因为 osu.direct 的搜索接口会忽略 `genre` / `language` 参数，所以每页 30 条候选在本地过滤；封面同时最多 3 个请求、按需倒入，已经下过的存在 `user://osu_covers/<id>.jpg`；搜索框也接受 `beatmapsets/<id>`、`beatmaps/<id>`、`/s/<id>` 链接或纯数字 ID（直接打开详情页；谱面 ID 会经 `osu.ppy.sh/osu/<id>` 的 `BeatmapSetID` 解析成谱面包，不需要 OAuth）。osu 包里的 BGA 是 `.m4v`，已加入直解表，不再转码。
 - **导入 `.osz`**：支持 osu!std 与 osu!taiko；circle → Tap、slider → Slide Trace/Hold、drumroll → Hold；spinner 跳过；多难度包会弹窗选择 `.osu`；导入报告列出保留/丢弃原因。
 - **导入 Simai**：支持舞萌 `maidata.txt`（`.zip` 或 `.txt`）；Tap/Hold/Slide→Path/Break→加宽 Tap/Touch→Bell 会导入；p/q=U、pp/qq=Cup、s/z=闪电、V=经过点、w=扇形中轴、`1-3q5-7` 链式拼成一条 Path、`1-4*-6` 同头多星只留尾部落点最顺的一条；Touch 的 A/B/D/E 全部落外圈（C 圆心），连续铃铛沿同一个圆扫；双押按星星 > Hold > Tap > Bell 只留一颗。导入后只做鼠标保护：重叠星星缩短/降 Tap、超速轨迹压短、>45° 快折返压 45°、≥5 颗的 A-B-A-B 交互整段锁 45°（45° 仍超速就整段收成一处）、≤45° 邻键的快速 Tap 来回（≥3 颗）整段收成叠键、压角后再补一遍叠键、Bell 撞上 100ms 内 Tap/Hold 时吸到同角度、星星期间只留轨上音符、Hold 撞下一颗时缩短
 - **osu!std 混合层**：circle → 环上 Tap（连续 u）；slider 按 Sentakki 段库转成**环内平面 Path**（星头按键 + 沿轨迹移动，尾部进入尾区后判定），lazy/短 → Hold；没有 8 轨吸附，也没有全平面模式。
@@ -234,11 +235,11 @@ BGA 走 gdffmpeg 直解（见下一条）；音频仍按下面的表转码，结
 
 BGA 默认**直接解码、不转码**：`addons/ffmpeg` 里带了 [EIRTeam.FFmpeg](https://github.com/EIRTeam/EIRTeam.FFmpeg)（MIT，GDExtension + libav），仓库里已提交 Windows / Linux x86_64 的库和 FFmpeg 运行时，克隆下来就能用。`.ogv` 仍走引擎自带的 Theora，mp4 / webm / mov / mkv / avi 直接交给 gdffmpeg 解码，**导入带 BGA 的谱面不再冻结、也不产生转码缓存**。检测到 BGA 时不再叠加谱面的静图背景。
 
-兜底：如果平台没有对应二进制（macOS / Android / arm64），或解码库加载失败，会自动退回原来的 ffmpeg 后台转码（540p30、带进度、写 `user://media`），`.ogv` 之外仍能播。要补平台：把上游 release 里对应目录放进 `addons/ffmpeg/`，在 `ffmpeg.gdextension` 的 `[libraries]` / `[dependencies]` 补两行即可。设置 → 转码缓存 可以看占用并一键清理。
+兜底：如果平台没有对应二进制（macOS / Android / arm64），或解码库加载失败，会自动退回原来的 ffmpeg 后台转码（540p30、带进度、写 `user://media`），`.ogv` 之外仍能播。要补平台：把上游 release 里对应目录放进 `addons/ffmpeg/`，在 `ffmpeg.gdextension` 的 `[libraries]` / `[dependencies]` 补两行即可。设置 →「转码 / 变速缓存」可以看占用并一键清理。
 
 ## 已知限制
 
-- 非原生音频/视频格式依赖 `ffmpeg` 在 PATH 中；没有 ffmpeg 时原生 WAV/OGG/MP3 与 OGV 仍可用，其他格式会给出明确提示。转码缓存位于 `user://media/`，谱面保存的是原始路径，便于重新链接。
+- 非原生音频/视频格式依赖 `ffmpeg` 在 PATH 中；**变速不变调的 `atempo` 预生成也需要 ffmpeg**，没有时倍速会回退成变调并提示。原生 WAV/OGG/MP3 与 OGV 在没有 ffmpeg 时仍可用。转码 / 变速缓存位于 `user://media/`，谱面保存的是原始路径，便于重新链接。
 - 自动识别 BPM/offset 需要能拿到 PCM：WAV 直接解析，其余格式（含 mp3/ogg）要用 ffmpeg 解成 11 kHz 单声道并缓存到 `user://analysis/`；可在导入弹窗里指定 ffmpeg 路径（存于 `user://editor.cfg`）。识别结果是初值，半速/倍速、弱起前奏仍要人工确认。
 - 分音 UI 已隐藏，`GridDivisions` 仅保留内部兼容/其他吸附；音符固定使用当前小节线与竖线交点；拍号分母仍固定 4。
 - 预览默认开启 3D 环网格；环/舞台/刻度是 GPU 网格，音符与 HUD 仍是 2D 叠加（按本轮取舍，保证编辑精度）。旧机器或集显可在“视图”页关闭 3D 环网格回退到投影环线。
