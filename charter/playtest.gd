@@ -158,6 +158,8 @@ var _bias_label: Label
 var _apply_bias_button: Button
 ## 暂停菜单（ESC）。
 var _pause_overlay: Control = null
+var _pause_status: Label
+var _pause_style: Label
 var _path_judgement_toggle: CheckButton
 var _paused: bool = false
 
@@ -268,6 +270,14 @@ func _build_pause_overlay() -> void:
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	UITheme.style_section(title)
 	box.add_child(title)
+	# 本局状态：原来压在游玩画面上的调试信息，全部搬到这里。
+	_pause_status = Label.new()
+	UITheme.style_mono(_pause_status, 12, UITheme.CYAN)
+	box.add_child(_pause_status)
+	_pause_style = Label.new()
+	UITheme.style_mono(_pause_style, 11, UITheme.MUTED)
+	box.add_child(_pause_style)
+	box.add_child(HSeparator.new())
 	_path_judgement_toggle = CheckButton.new()
 	_path_judgement_toggle.text = "显示 Path 判定区域（F10）"
 	_path_judgement_toggle.focus_mode = Control.FOCUS_NONE
@@ -291,6 +301,25 @@ func _build_pause_overlay() -> void:
 	)
 	_add_pause_button(box, "退出游玩", func() -> void: _exit())
 	_add_pause_button(box, "设置", func() -> void: settings_requested.emit())
+	var hints := Label.new()
+	hints.text = "任意有效键：Tap / Hold / Anchor；Path / Bell 用鼠标定位；Seek 用滚轮上/下接住；Limit 停留 200ms 断连；[ / ] 判定偏移；F9 日志 / F10 判定区域。"
+	hints.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	hints.custom_minimum_size = Vector2(380, 0)
+	hints.add_theme_font_size_override("font_size", 10)
+	hints.add_theme_color_override("font_color", Color(UITheme.MUTED.r, UITheme.MUTED.g, UITheme.MUTED.b, 0.8))
+	box.add_child(hints)
+
+
+## 暂停页的「本局状态」：offset / 平均偏差 / LIMIT 断连 / 连击 / 皮肤与特效。
+func _refresh_pause_status() -> void:
+	if _pause_status == null or chart == null:
+		return
+	var offset := float(_app.playtest_offset_ms if _app != null else 0.0)
+	_pause_status.text = "OFF %+.0fms   平均偏差 %+.2fms   LIMIT 断连 %d   连击 %d / 最大 %d" % [
+		offset, _mean_error(), _red_breaks, _combo, _max_combo]
+	var skin_label := String(Preview3D.skin_presets().get(_preview.note_skin, {}).get("label", _preview.note_skin))
+	var fx_label := String(Preview3D.hit_fx_presets().get(_preview.hit_fx_style, _preview.hit_fx_style))
+	_pause_style.text = "皮肤 %s · 特效 %s%s" % [skin_label, fx_label, " · AUTO" if auto_play else ""]
 
 
 func _add_pause_button(parent: VBoxContainer, text: String, callback: Callable) -> void:
@@ -320,6 +349,7 @@ func _set_paused(value: bool) -> void:
 	if _audio_available and _audio != null:
 		_audio.stream_paused = value
 	if value:
+		_refresh_pause_status()
 		Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
 	else:
 		_clock.resume(Time.get_ticks_usec())
