@@ -613,11 +613,13 @@ func _process(_delta: float) -> void:
 	if use_3d_ring:
 		var animate_3d := playing or playtest_mode or _tilt.distance_to(_tilt_target) > 0.01
 		if playtest_mode and animate_3d:
-			# 3D 环只在形变/视角变化或每 16ms 重画一次；2D 与游戏逻辑不受影响。
+			# 3D 环只在形变/视角真的变化时重画，并限制到 ring_3d_hz。
+			# 之前每 16ms 无条件重画一帧：120fps 下每隔一帧就多一次 3D 渲染，
+			# 那一帧超预算就掉到 16ms/22ms，2D 音符看起来像卡了一下。
 			var now3 := Time.get_ticks_usec()
 			var changed_3d := view_changed or _mesh_dirty or mesh_key != _last_mesh_key
 			var frame_gap := 16000 if ring_3d_hz >= 60 else 33000
-			if changed_3d or now3 - _last_3d_usec >= frame_gap:
+			if changed_3d and now3 - _last_3d_usec >= frame_gap:
 				_last_3d_usec = now3
 				_subviewport.render_target_update_mode = SubViewport.UPDATE_ONCE
 				_render_mode = SubViewport.UPDATE_ONCE
