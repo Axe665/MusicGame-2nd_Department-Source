@@ -17,6 +17,9 @@ const EARLY_MS := 115.0
 const PRESS_KEEP_MS := 34.0
 ## 同一个键 50ms 内的重复按下只算一次（手抖双击）。
 const KEY_DEBOUNCE_MS := 50.0
+## 鼠标左右键当成两个独立“按键”（和键盘两键一样），用负数避开 Key 枚举。
+const MOUSE_KEY_LEFT := -2
+const MOUSE_KEY_RIGHT := -3
 ## Godot 4 的 InputEvent 不带时间戳：按键只可能在“上次输入刷新 → 现在”之间按下。
 ## 这段时间就是判定时的不确定度，区间长度上限取这一值（≈17fps，更慢就不再加长）。
 const INPUT_SPAN_MAX_MS := 60.0
@@ -483,7 +486,7 @@ func _build_pause_overlay() -> void:
 	_add_pause_button(box, "退出游玩", func() -> void: _exit())
 	_add_pause_button(box, "设置", func() -> void: settings_requested.emit())
 	var hints := Label.new()
-	hints.text = "任意有效键：Tap / Hold / Anchor；Path / Bell 用鼠标定位；Seek 用滚轮上/下接住；Limit 停留 200ms 断连；[ / ] 判定偏移；F9 日志 / F10 判定区域。"
+	hints.text = "任意有效键或鼠标左右键：Tap / Hold / Anchor；Path / Bell 用鼠标定位；Seek 用滚轮上/下接住；Limit 停留 200ms 断连；[ / ] 判定偏移；F9 日志 / F10 判定区域。"
 	hints.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	hints.custom_minimum_size = Vector2(380, 0)
 	hints.add_theme_font_size_override("font_size", 10)
@@ -2235,6 +2238,39 @@ func _input_interval(now_ms: float) -> Vector2:
 	return Vector2(now_ms - span, now_ms)
 
 
+## 鼠标按钮 → 合成键位；不是左右键返回 0。
+static func mouse_button_key(button_index: int) -> int:
+	match button_index:
+		MOUSE_BUTTON_LEFT:
+			return MOUSE_KEY_LEFT
+		MOUSE_BUTTON_RIGHT:
+			return MOUSE_KEY_RIGHT
+	return 0
+
+
+## 记一次“按下”：键盘和鼠标左右键走同一套逻辑（防抖、命中采样、按住状态）。
+## point 为 INF 时用当前光标位置。
+func _register_press(key: int, point: Vector2 = Vector2.INF) -> void:
+	var at := _preview.mouse_screen if not point.is_finite() else point
+	var span := _input_interval(_chart_ms() + float(_app.playtest_offset_ms if _app != null else 0.0))
+	var stamp := (span.x + span.y) * 0.5
+	# 同一个键的手抖双击只算一次；和弦用不同键，不受影响。
+	var repeated := stamp - float(_last_press_ms.get(key, -INF)) < KEY_DEBOUNCE_MS
+	_last_press_ms[key] = stamp
+	if not repeated:
+		_key_presses.append({
+			"time": stamp,
+			"lo": span.x,
+			"hi": span.y,
+			"mouse": at,
+			"angle": _preview.screen_angle_deg(at),
+			"u": _preview.cursor_u,
+			"valid": _preview.cursor_valid,
+			"key": key,
+		})
+	_keys_held[key] = true
+
+
 func _input(event: InputEvent) -> void:
 	if _ready_layer != null and _ready_layer.visible:
 		# 倒计时期间只认 Esc：取消回编辑器，不写成绩；其他键不提前开打。
@@ -2255,6 +2291,25 @@ func _input(event: InputEvent) -> void:
 			"hi": span.y,
 			"orien": 0 if event.button_index == MOUSE_BUTTON_WHEEL_UP else 1,
 		})
+		get_viewport().set_input_as_handled()
+		return
+	if event is InputEventMouseButton and (event.button_index == MOUSE_BUTTON_LEFT or event.button_index == MOUSE_BUTTON_RIGHT):
+		var click := mouse_button_key(event.button_index)
+		if click == 0:
+			return
+		if not _running or _paused or _finished or auto_play:
+			# 暂停/结算/自动演示时，点击交给 UI 或忽略。
+			return
+		if event.pressed and get_viewport().gui_get_hovered_control() is BaseButton:
+			# HUD 上的按钮（试玩设置、HUD 开关）自己处理这次点击。
+			return
+		var point: Vector2 = _preview.get_global_transform_with_canvas().affine_inverse() * event.position
+		if event.pressed:
+			_register_press(click, point)
+			# 点下去也算一次轨迹接触，和移动一样喂给 Path 判定。
+			_queue_path_motion(point, _chart_ms() + float(_app.playtest_offset_ms if _app != null else 0.0))
+		else:
+			_keys_held.erase(click)
 		get_viewport().set_input_as_handled()
 		return
 	if not (event is InputEventKey):
@@ -2307,23 +2362,7 @@ func _input(event: InputEvent) -> void:
 			if not _running or _paused or _finished:
 				return
 			var key: int = event.physical_keycode if event.physical_keycode != 0 else event.keycode
-			var span := _input_interval(_chart_ms() + float(_app.playtest_offset_ms if _app != null else 0.0))
-			var stamp := (span.x + span.y) * 0.5
-			# 同一个键的手抖双击只算一次；和弦用不同键，不受影响。
-			var repeated := stamp - float(_last_press_ms.get(key, -INF)) < KEY_DEBOUNCE_MS
-			_last_press_ms[key] = stamp
-			if not repeated:
-				_key_presses.append({
-					"time": stamp,
-					"lo": span.x,
-					"hi": span.y,
-					"mouse": _preview.mouse_screen,
-					"angle": _preview.screen_angle_deg(_preview.mouse_screen),
-					"u": _preview.cursor_u,
-					"valid": _preview.cursor_valid,
-					"key": key,
-				})
-			_keys_held[key] = true
+			_register_press(key)
 			get_viewport().set_input_as_handled()
 		elif not event.pressed:
 			var key: int = event.physical_keycode if event.physical_keycode != 0 else event.keycode
