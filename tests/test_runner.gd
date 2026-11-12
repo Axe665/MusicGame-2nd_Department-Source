@@ -113,6 +113,7 @@ func _initialize() -> void:
 		"test_replay_dispatch",
 		"test_replay_scrub",
 		"test_replay_file_name",
+		"test_playtest_ui_builds",
 	]
 	for test_name in tests:
 		if call(test_name) != true:
@@ -3021,6 +3022,20 @@ func test_replay_file_name() -> bool:
 	eq(run._sanitize_file_name("Sakura_紫"), "Sakura_紫", "normal names are kept")
 	run.free()
 	return true
+
+
+## 试玩界面构建冒烟测试：控件属性名写错时 _build_ui 会中途报错，
+## 这种错误单测和空跑都抓不到，只有真开一局试玩才会暴露。
+func test_playtest_ui_builds() -> bool:
+	var run := Playtest.new()
+	run._build_ui()
+	eq(run._replay_button.text, "回放本局", "results screen has a replay button")
+	eq(run._save_replay_button.text, "保存回放", "results screen has a save button")
+	eq(run._replay_bar != null and not run._replay_bar.visible, true, "replay bar is built but hidden")
+	eq(run._results != null, true, "results panel is built")
+	run.free()
+	return true
+
 
 
 

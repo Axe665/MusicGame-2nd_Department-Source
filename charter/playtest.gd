@@ -539,21 +539,21 @@ func _build_ui() -> void:
 	_apply_bias_button.pressed.connect(_apply_bias_to_chart)
 	_apply_bias_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_apply_bias_button.clip_text = true
-	_apply_bias_button.stretch_ratio = 2.0
+	_apply_bias_button.size_flags_stretch_ratio = 2.0
 	action_row.add_child(_apply_bias_button)
 	_replay_button = Button.new()
 	_replay_button.text = "回放本局"
 	_replay_button.tooltip_text = "用刚录下的输入重放这一局；判定结果与刚才一致（回放中再点 = 从头再放一遍）"
 	_replay_button.pressed.connect(_request_replay)
 	_replay_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_replay_button.stretch_ratio = 1.0
+	_replay_button.size_flags_stretch_ratio = 1.0
 	action_row.add_child(_replay_button)
 	_save_replay_button = Button.new()
 	_save_replay_button.text = "保存回放"
 	_save_replay_button.tooltip_text = "把这一局的输入存成 .tmkrpl 文件，可以留着以后重看"
 	_save_replay_button.pressed.connect(_save_replay)
 	_save_replay_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_save_replay_button.stretch_ratio = 1.0
+	_save_replay_button.size_flags_stretch_ratio = 1.0
 	action_row.add_child(_save_replay_button)
 	_results_text = RichTextLabel.new()
 	_results_text.bbcode_enabled = false
