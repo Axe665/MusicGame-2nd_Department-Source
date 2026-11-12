@@ -49,6 +49,7 @@ func _initialize() -> void:
 		"test_osu_std_chain_no_conflict",
 		"test_note_span_defaults",
 		"test_judgement_text_font",
+		"test_hold_stack_alpha",
 		"test_osu_taiko_import",
 		"test_osu_taiko_flow",
 		"test_osu_bpm_change",
@@ -1382,6 +1383,15 @@ func test_note_span_defaults() -> bool:
 	near(hold.end_beat, 2.0, 0.001, "hold end_beat starts at its beat")
 	hold.end_beat = 4.5
 	near(hold.duration(), 2.5, 0.001, "hold duration uses explicit end_beat")
+	return true
+
+
+func test_hold_stack_alpha() -> bool:
+	near(Preview3D.hold_stack_alpha(0.0, 1.0), 1.0, 0.001, "the next hold stays fully opaque")
+	near(Preview3D.hold_stack_alpha(-2.0, 1.0), 1.0, 0.001, "a held hold does not fade")
+	near(Preview3D.hold_stack_alpha(2.0, 1.0), 0.65, 0.001, "a hold two pre-reads away reaches the floor")
+	var mid := Preview3D.hold_stack_alpha(1.0, 1.0)
+	ok(mid < 1.0 and mid > 0.65, "mid-distance holds fade between the two bounds")
 	return true
 
 

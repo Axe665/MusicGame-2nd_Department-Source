@@ -2984,10 +2984,11 @@ func _draw_hold_tail_band(canvas: Control, band_a: Vector2, band_b: Vector2, fad
 	canvas.draw_circle(band_b, band_w * 0.17, Color(1, 1, 1, 0.30 * fade))
 
 
-func _draw_hold_sector(canvas: Control, chart: Chart, note: Note, t: float, pre: float, fade: float, hide_head: bool = false, tint: Color = UITheme.GOLD) -> void:
+func _draw_hold_sector(canvas: Control, chart: Chart, note: Note, t: float, pre: float, fade: float, hide_head: bool = false, tint: Color = UITheme.GOLD, part: int = 0, highlight: bool = false) -> void:
 	# 直长条 = 一个从圆心张开的扇形。整根条按**同一个径向速度**往判定环落：
 	# 头部（外缘）在 pre 拍内从圆心走到环上，尾部（内缘）晚 duration 拍跟随，
 	# 所以看起来是匀速下落，而不是"先快速长出来再慢慢收"。
+	# part 0 = 身体，1 = 头/尾/高亮；分两遍画，同角度的 Hold 头永远压在身体上层。
 	var width := maxf(4.0, note.arc_width())
 	var half := width * 0.5
 	var steps := clampi(int(width / 3.0), 8, 48)
@@ -3015,42 +3016,122 @@ func _draw_hold_sector(canvas: Control, chart: Chart, note: Note, t: float, pre:
 		inner.append(center.lerp(edge, inner_scale))
 	if outer.size() < 2:
 		return
-	var polygon := PackedVector2Array()
-	polygon.append_array(outer)
-	for i in range(inner.size() - 1, -1, -1):
-		polygon.append(inner[i])
-	# 头亮尾暗：从内缘到外缘分 10 段渐亮（世界计划式）。 
-	var slices := 10
-	for s in slices:
-		var s0 := lerpf(inner_scale, outer_scale, float(s) / float(slices))
-		var s1 := lerpf(inner_scale, outer_scale, float(s + 1) / float(slices))
-		if s1 - s0 < 0.004 or edges.size() < 2:
-			continue
-		var quad := PackedVector2Array()
-		for k in edges.size():
-			quad.append(center.lerp(edges[k], s1))
-		for k in range(edges.size() - 1, -1, -1):
-			quad.append(center.lerp(edges[k], s0))
-		var alpha := lerpf(0.07, 0.42, float(s) / float(maxi(1, slices - 1)))
-		canvas.draw_colored_polygon(quad, Color(tint.r, tint.g, tint.b, alpha * fade))
-	# 外弧：贴着判定环的高亮边。
-	canvas.draw_polyline(outer, Color(1, 1, 1, 0.72 * fade), 2.0, false)
-	canvas.draw_polyline(outer, Color(tint.r, tint.g, tint.b, 0.95 * fade), 1.0, false)
-	# 内弧：长条尾端，往判定环方向收缩；越窄越亮。
-	if inner.size() > 1 and inner_scale > 0.002:
-		var tail_alpha := lerpf(0.35, 1.0, clampf(inner_scale, 0.0, 1.0))
-		canvas.draw_polyline(inner, Color(tint.r, tint.g, tint.b, tail_alpha * fade), 3.0, false)
-		canvas.draw_polyline(inner, Color(1, 1, 1, 0.28 * tail_alpha * fade), 1.2, false)
-	# 两侧的径向边，让扇形边界清楚。
-	if outer.size() == inner.size() and outer.size() > 1:
-		var edge_alpha := 0.30 * fade
-		canvas.draw_line(outer[0], inner[0], Color(1, 1, 1, edge_alpha), 1.0, false)
-		canvas.draw_line(outer[-1], inner[-1], Color(1, 1, 1, edge_alpha), 1.0, false)
+	if part == 0:
+		var polygon := PackedVector2Array()
+		polygon.append_array(outer)
+		for i in range(inner.size() - 1, -1, -1):
+			polygon.append(inner[i])
+		# 头亮尾暗：从内缘到外缘分 10 段渐亮（世界计划式）。
+		var slices := 10
+		for s in slices:
+			var s0 := lerpf(inner_scale, outer_scale, float(s) / float(slices))
+			var s1 := lerpf(inner_scale, outer_scale, float(s + 1) / float(slices))
+			if s1 - s0 < 0.004 or edges.size() < 2:
+				continue
+			var quad := PackedVector2Array()
+			for k in edges.size():
+				quad.append(center.lerp(edges[k], s1))
+			for k in range(edges.size() - 1, -1, -1):
+				quad.append(center.lerp(edges[k], s0))
+			var alpha := lerpf(0.07, 0.42, float(s) / float(maxi(1, slices - 1)))
+			canvas.draw_colored_polygon(quad, Color(tint.r, tint.g, tint.b, alpha * fade))
+		# 外弧：贴着判定环的高亮边。
+		canvas.draw_polyline(outer, Color(1, 1, 1, 0.72 * fade), 2.0, false)
+		canvas.draw_polyline(outer, Color(tint.r, tint.g, tint.b, 0.95 * fade), 1.0, false)
+		# 内弧：长条尾端，往判定环方向收缩；越窄越亮。
+		if inner.size() > 1 and inner_scale > 0.002:
+			var tail_alpha := lerpf(0.35, 1.0, clampf(inner_scale, 0.0, 1.0))
+			canvas.draw_polyline(inner, Color(tint.r, tint.g, tint.b, tail_alpha * fade), 3.0, false)
+			canvas.draw_polyline(inner, Color(1, 1, 1, 0.28 * tail_alpha * fade), 1.2, false)
+		# 两侧的径向边，让扇形边界清楚。
+		if outer.size() == inner.size() and outer.size() > 1:
+			var edge_alpha := 0.30 * fade
+			canvas.draw_line(outer[0], inner[0], Color(1, 1, 1, edge_alpha), 1.0, false)
+			canvas.draw_line(outer[-1], inner[-1], Color(1, 1, 1, edge_alpha), 1.0, false)
+		return
 	# 头部：圆角金条 + 白色内高光（世界计划式的圆润端头）；尾部虚化。
 	if outer.size() > 1 and not hide_head:
+		if highlight:
+			# 下一颗要按的 Hold：头带外再垫一层柔光，叠在一起时先看它。
+			canvas.draw_line(outer[0], outer[outer.size() - 1], Color(tint.r, tint.g, tint.b, 0.22 * fade), 30.0 * _note_scale(), false)
+			canvas.draw_line(outer[0], outer[outer.size() - 1], Color(1, 1, 1, 0.30 * fade), 24.0 * _note_scale(), false)
 		_draw_hold_cap_band(canvas, outer[0], outer[outer.size() - 1], fade, tint)
 	if inner.size() > 1 and inner_scale > 0.002:
 		_draw_hold_tail_band(canvas, inner[0], inner[inner.size() - 1], fade, tint)
+
+
+## 同角度多颗 Hold 的深度：越晚到越淡，先到的保持实心；下限 0.65 保证还看得见。
+static func hold_stack_alpha(lead_beats: float, pre_beats: float) -> float:
+	var k := clampf(lead_beats / maxf(0.5, pre_beats * 2.0), 0.0, 1.0)
+	return lerpf(1.0, 0.65, k)
+
+
+func _draw_bent_hold(canvas: Control, chart: Chart, note: Note, t: float, pre: float, fade: float, hide_head: bool, tint: Color, part: int = 0, highlight: bool = false) -> void:
+	var ns := _note_scale()
+	var center := project_design(Vector2.ZERO)
+	var body := PackedVector2Array()
+	if not note.visual_pts.is_empty():
+		# Hold 体节点：和 Path 共用 visual_pts，节点只改画面，不改头部判定。
+		var design_points: Array[Dictionary] = [{"db": 0.0, "da": 0.0}]
+		design_points.append_array(note.visual_pts)
+		design_points.append({"db": note.duration(), "da": 0.0})
+		design_points.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return float(a.get("db", 0.0)) < float(b.get("db", 0.0)))
+		for point in design_points:
+			var p := _hold_node_screen(chart, note, float(point.get("db", 0.0)), float(point.get("da", 0.0)), t)
+			if _valid_point(p):
+				body.append(center.lerp(p, _approach(chart, note.beat, t)))
+	if body.size() < 2:
+		return
+	var boundary: Vector2 = body[-1]
+	var hs := ns * float(_skin()["scale"])
+	var cs := ns
+	var direction := (boundary - body[maxi(0, body.size() - 2)]).normalized()
+	if direction.length_squared() < 0.5:
+		direction = (boundary - center).normalized()
+	var normal := Vector2(-direction.y, direction.x)
+	if part == 0:
+		canvas.draw_polyline(body, Color(0, 0, 0, 0.55 * fade), 11.0 * cs, false)
+		canvas.draw_polyline(body, Color(1, 1, 1, 0.90 * fade), 6.0 * cs, false)
+		canvas.draw_polyline(body, Color(tint.r, tint.g, tint.b, 0.92 * fade), 3.0 * cs, false)
+		# 尾端同为虚化：柔光层代替实心金点。
+		canvas.draw_circle(body[0], 9.0 * cs, Color(tint.r, tint.g, tint.b, 0.10 * fade))
+		canvas.draw_circle(body[0], 6.0 * cs, Color(tint.r, tint.g, tint.b, 0.20 * fade))
+		canvas.draw_circle(body[0], 3.0 * cs, Color(tint.r, tint.g, tint.b, 0.70 * fade))
+		canvas.draw_circle(body[0], 1.6 * cs, Color(1, 1, 1, 0.30 * fade))
+		return
+	# 按住中的白点也放在这一遍：同角度有后续 Hold 时不会被身体盖住。
+	if t >= note.beat and t <= note.end_beat:
+		var progress := clampf((t - note.beat) / maxf(0.001, note.duration()), 0.0, 1.0)
+		var marker_index := progress * float(body.size() - 1)
+		var lower := clampi(int(marker_index), 0, body.size() - 1)
+		var upper := mini(lower + 1, body.size() - 1)
+		var marker := body[lower].lerp(body[upper], marker_index - float(lower))
+		canvas.draw_circle(marker, 12.0 * hs, Color(1, 1, 1, 0.28))
+		canvas.draw_circle(marker, 8.0 * hs, Color(1, 1, 1, 0.96))
+		canvas.draw_circle(marker, 4.0 * hs, tint)
+	# 外端：一小段横杆当"头"，宽度随整体一起放大。
+	var knob := 9.0 * cs
+	if not hide_head:
+		if highlight:
+			canvas.draw_line(boundary - normal * knob, boundary + normal * knob, Color(tint.r, tint.g, tint.b, 0.22 * fade), 15.0 * cs, false)
+			canvas.draw_line(boundary - normal * knob, boundary + normal * knob, Color(1, 1, 1, 0.30 * fade), 11.0 * cs, false)
+		canvas.draw_line(boundary - normal * knob, boundary + normal * knob, Color(0, 0, 0, 0.55 * fade), 7.0 * cs, false)
+		canvas.draw_line(boundary - normal * knob, boundary + normal * knob, Color(1, 1, 1, 0.95 * fade), 5.0 * cs, false)
+		canvas.draw_line(boundary - normal * knob, boundary + normal * knob, Color(tint.r, tint.g, tint.b, 0.95 * fade), 2.6 * cs, false)
+	if show_debug and t < note.beat + 0.02:
+		var head := _flying_position(chart, note.angle, note.beat, t, pre)
+		if _valid_point(head):
+			canvas.draw_string(UITheme.bold_font(), head + Vector2(-14, -22), "HOLD", HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(tint.r, tint.g, tint.b, 0.85))
+	if not hide_head and t >= note.beat and t <= note.end_beat:
+		var glow := 0.5 + 0.5 * sin(t * PI)
+		canvas.draw_arc(boundary, 28.0 * hs, 0.0, TAU, 32, Color(tint.r, tint.g, tint.b, 0.28 * glow), 2.6, false)
+	if _app != null and not note.visual_pts.is_empty():
+		var selected: Note = _app.get_selected_note()
+		if selected != null and selected.id == note.id:
+			for point in note.visual_pts:
+				var marker := _hold_node_screen(chart, note, float(point.get("db", 0.0)), float(point.get("da", 0.0)), t)
+				if _valid_point(marker):
+					_draw_diamond(canvas, marker, 5.5, tint)
 
 
 func _draw_holds(canvas: Control, chart: Chart, t: float, pre: float) -> void:
@@ -3063,11 +3144,12 @@ func _draw_holds(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 		if t >= _spawn_beat(chart, note.beat) and t <= note.end_beat + maxf(0.3, fade_beats):
 			visible.append(note)
 	visible.sort_custom(func(a: Note, b: Note) -> bool: return a.beat > b.beat)
+	var draw: Dictionary = {}
+	var next_id := -1
+	var next_lead := INF
 	for note in visible:
 		var state := note_state(note.id)
 		var tint := _note_tint(note, UITheme.GOLD)
-		# 尾判命中后尾巴停在判定环上再淡出 0.1s，不再当帧消失。
-		# 早松手 / 头判 MISS 从判定那一拍起淡，不强行贴到环上。
 		var fade_beats := end_fade_beats(chart.timing.bpm_at(note.beat))
 		var fade := 1.0
 		if state == "hit":
@@ -3078,85 +3160,44 @@ func _draw_holds(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 			fade = clampf(1.0 - (t - float(note_state_beats[note.id])) / 0.24, 0.0, 1.0)
 		elif t > note.end_beat:
 			fade = clampf(1.0 - (t - note.end_beat) / fade_beats, 0.0, 1.0)
-		# 松手补按窗口内整条变暗：明确告诉玩家“手松了”，但没有断。
 		if state == "slip":
 			fade *= HOLD_SLIP_DIM
 		if fade <= 0.01:
 			continue
-		# 头部命中后只收起头部，长条继续表示“正在按住”；尾巴压到环上时头尾重合，也收起来。
 		var hide_head := state == "holding" or state == "slip" or t >= note.end_beat
-		var grow_raw := _approach(chart, note.beat, t)
-		# 与 Tap 同一套接近表现：环心处只有 1/6 长，飞近时长大到 1。
-		var grow := lerpf(Note.SPAWN_LENGTH_RATIO, 1.0, grow_raw)
-		# 直长条：扇形 → 扇环 → 收到判定线上消失（WACCA 玩家的读法）。
-		# 弯长条已移除，体节点只在真的把身体掰弯（da≠0）时才走折线分支。
 		var straight := true
 		for point in note.visual_pts:
 			if absf(float(point.get("da", 0.0))) > 0.5:
 				straight = false
 				break
-		if straight:
-			_draw_hold_sector(canvas, chart, note, t, pre, fade, hide_head, tint)
+		var lead := note.beat - t
+		var depth := hold_stack_alpha(lead, pre)
+		draw[note.id] = {
+			"fade": fade, "hide_head": hide_head, "tint": tint, "straight": straight,
+			"body_fade": fade * depth,
+			"cap_fade": fade * lerpf(1.0, 0.85, clampf(lead / maxf(0.5, pre * 2.0), 0.0, 1.0)),
+		}
+		if lead >= -0.02 and lead < next_lead:
+			next_lead = lead
+			next_id = note.id
+	# 身体按 beat 降序：先到的最后画，叠在上面；后到的整体更淡。
+	for note in visible:
+		var d: Dictionary = draw.get(note.id, {})
+		if d.is_empty():
 			continue
-		var center := project_design(Vector2.ZERO)
-		var body := PackedVector2Array()
-		if not note.visual_pts.is_empty():
-			# Hold 体节点：和 Path 共用 visual_pts，节点只改画面，不改头部判定。
-			var design_points: Array[Dictionary] = [{"db": 0.0, "da": 0.0}]
-			design_points.append_array(note.visual_pts)
-			design_points.append({"db": note.duration(), "da": 0.0})
-			design_points.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return float(a.get("db", 0.0)) < float(b.get("db", 0.0)))
-			for point in design_points:
-				var p := _hold_node_screen(chart, note, float(point.get("db", 0.0)), float(point.get("da", 0.0)), t)
-				if _valid_point(p):
-					body.append(center.lerp(p, grow))
-		if body.size() < 2:
+		if bool(d["straight"]):
+			_draw_hold_sector(canvas, chart, note, t, pre, float(d["body_fade"]), bool(d["hide_head"]), d["tint"], 0, false)
+		else:
+			_draw_bent_hold(canvas, chart, note, t, pre, float(d["body_fade"]), bool(d["hide_head"]), d["tint"], 0, false)
+	# 头/尾/按住标记统一最后画：同角度叠在一起时，每个 Hold 的头都看得见。
+	for note in visible:
+		var d: Dictionary = draw.get(note.id, {})
+		if d.is_empty():
 			continue
-		var boundary: Vector2 = body[-1]
-		var hs := ns * float(_skin()["scale"])
-		# 体节点把身体掰弯时的折线画法。
-		var cs := ns
-		var direction := (boundary - body[maxi(0, body.size() - 2)]).normalized()
-		if direction.length_squared() < 0.5:
-			direction = (boundary - center).normalized()
-		var normal := Vector2(-direction.y, direction.x)
-		canvas.draw_polyline(body, Color(0, 0, 0, 0.55 * fade), 11.0 * cs, false)
-		canvas.draw_polyline(body, Color(1, 1, 1, 0.90 * fade), 6.0 * cs, false)
-		canvas.draw_polyline(body, Color(tint.r, tint.g, tint.b, 0.92 * fade), 3.0 * cs, false)
-		# 尾端同为虚化：柔光层代替实心金点。
-		canvas.draw_circle(body[0], 9.0 * cs, Color(tint.r, tint.g, tint.b, 0.10 * fade))
-		canvas.draw_circle(body[0], 6.0 * cs, Color(tint.r, tint.g, tint.b, 0.20 * fade))
-		canvas.draw_circle(body[0], 3.0 * cs, Color(tint.r, tint.g, tint.b, 0.70 * fade))
-		canvas.draw_circle(body[0], 1.6 * cs, Color(1, 1, 1, 0.30 * fade))
-		# 外端：一小段横杆当"头"，宽度随整体一起放大。
-		var knob := 9.0 * cs
-		if not hide_head:
-			canvas.draw_line(boundary - normal * knob, boundary + normal * knob, Color(0, 0, 0, 0.55 * fade), 7.0 * cs, false)
-			canvas.draw_line(boundary - normal * knob, boundary + normal * knob, Color(1, 1, 1, 0.95 * fade), 5.0 * cs, false)
-			canvas.draw_line(boundary - normal * knob, boundary + normal * knob, Color(tint.r, tint.g, tint.b, 0.95 * fade), 2.6 * cs, false)
-		if t >= note.beat and t <= note.end_beat:
-			var progress := clampf((t - note.beat) / maxf(0.001, note.duration()), 0.0, 1.0)
-			var marker_index := progress * float(body.size() - 1)
-			var lower := clampi(int(marker_index), 0, body.size() - 1)
-			var upper := mini(lower + 1, body.size() - 1)
-			var marker := body[lower].lerp(body[upper], marker_index - float(lower))
-			canvas.draw_circle(marker, 12.0 * hs, Color(1, 1, 1, 0.28))
-			canvas.draw_circle(marker, 8.0 * hs, Color(1, 1, 1, 0.96))
-			canvas.draw_circle(marker, 4.0 * hs, tint)
-		if show_debug and t < note.beat + 0.02:
-			var head := _flying_position(chart, note.angle, note.beat, t, pre)
-			if _valid_point(head):
-				canvas.draw_string(UITheme.bold_font(), head + Vector2(-14, -22), "HOLD", HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(tint.r, tint.g, tint.b, 0.85))
-		if not hide_head and t >= note.beat and t <= note.end_beat:
-			var glow := 0.5 + 0.5 * sin(t * PI)
-			canvas.draw_arc(boundary, 28.0 * hs, 0.0, TAU, 32, Color(tint.r, tint.g, tint.b, 0.28 * glow), 2.6, false)
-		if _app != null and not note.visual_pts.is_empty():
-			var selected: Note = _app.get_selected_note()
-			if selected != null and selected.id == note.id:
-				for point in note.visual_pts:
-					var marker := _hold_node_screen(chart, note, float(point.get("db", 0.0)), float(point.get("da", 0.0)), t)
-					if _valid_point(marker):
-						_draw_diamond(canvas, marker, 5.5, tint)
+		if bool(d["straight"]):
+			_draw_hold_sector(canvas, chart, note, t, pre, float(d["cap_fade"]), bool(d["hide_head"]), d["tint"], 1, note.id == next_id)
+		else:
+			_draw_bent_hold(canvas, chart, note, t, pre, float(d["cap_fade"]), bool(d["hide_head"]), d["tint"], 1, note.id == next_id)
 
 
 func _draw_notes(canvas: Control, chart: Chart, t: float, pre: float) -> void:
