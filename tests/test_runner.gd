@@ -19,6 +19,7 @@ func _initialize() -> void:
 		"test_seek_and_limit_code",
 		"test_compact_chart_code",
 		"test_path_judgement_label_pos",
+		"test_judge_label_geometry",
 		"test_path_chain_code",
 		"test_path_chain_judgement",
 		"test_path_erase_overlap",
@@ -506,6 +507,24 @@ func test_path_judgement_label_pos() -> bool:
 	var tight := Preview3D.path_label_pos(Vector2(1590, 450), center, Vector2(300, 200), block, ascent)
 	ok(tight.x >= 10.0 and tight.x + block.x <= 290.0, "star label stays inside a tight viewport")
 	ok(tight.y - ascent >= 10.0 and tight.y + block.y <= 190.0, "star label stays above the bottom edge")
+	return true
+
+
+func test_judge_label_geometry() -> bool:
+	var center := Vector2(800, 450)
+	var ring := Vector2(1250, 450)
+	var outer := Preview3D.judge_label_anchor(ring, center, 450.0, 30.0, true)
+	var inner := Preview3D.judge_label_anchor(ring, center, 450.0, 30.0, false)
+	near(outer.x, 1280.0, 0.5, "ring-out label sits outside the note")
+	near(inner.x, 1220.0, 0.5, "ring-in label sits inside the note")
+	near(outer.y, 450.0, 0.5, "ring label keeps the note angle")
+	# 同角度的第二条判定沿半径继续外推，不叠在第一条上。
+	var stacked := Preview3D.judge_label_anchor(ring, center, 450.0, 30.0, true, 22.0)
+	near(stacked.x, 1302.0, 0.5, "stacked ring label moves outward")
+	# 落点在圆心时退回环半径，不把字画到中心。
+	var fallback := Preview3D.judge_label_anchor(center, center, 100.0, 20.0, true)
+	near(fallback.x, 800.0, 0.5, "center fallback keeps x")
+	near(fallback.y, 330.0, 0.5, "center fallback uses ring radius and points up")
 	return true
 
 

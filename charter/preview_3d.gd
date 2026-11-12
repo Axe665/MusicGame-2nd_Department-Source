@@ -1818,6 +1818,9 @@ func draw_overlay(canvas: Control) -> void:
 	_draw_red_regions(canvas, chart, t)
 	_perf_sections[6] += Time.get_ticks_usec() - t_bar
 	# 图层顺序：滑条底带 → Path → Hold → Tap/Anchor/Bell，命中目标始终在上层。
+	# Combo 单独压在音符层下面，下落音符可以盖住它；左右两列仍在 HUD 层。
+	if playtest_mode and show_hud:
+		_draw_play_combo_layer(canvas)
 	var sec_usec := Time.get_ticks_usec()
 	_draw_seeks(canvas, chart, t)
 	var sec2 := Time.get_ticks_usec()
@@ -3818,7 +3821,7 @@ func _draw_pulses(canvas: Control) -> void:
 	var judge_anchor := Vector2.ZERO
 	var center_label_index := -1
 	if playtest_mode:
-		judge_mode = String(hud_options.get("judge_position", "note"))
+		judge_mode = String(hud_options.get("judge_position", "ring_out"))
 		if judge_mode == "center":
 			judge_anchor = _screen_affine()[0] + Vector2(0, -90.0 * clampf(size.y / 900.0, 0.8, 1.8))
 			# 居中固定位只画最新一条判定，否则 0.42s 内的脉冲会叠成一团。
@@ -3853,8 +3856,6 @@ func _draw_pulses(canvas: Control) -> void:
 			_draw_fx_path_head(canvas, fx_point, color, age)
 		elif kind == "lock":
 			_draw_fx_lock(canvas, fx_point, age)
-		elif kind == "miss":
-			_draw_fx_miss(canvas, fx_point, age, color)
 		else:
 			match hit_fx_style:
 				"ring":
@@ -3893,14 +3894,18 @@ func _draw_pulses(canvas: Control) -> void:
 			font_size = _path_label_font_size()
 			detail_size = 14
 			outline_size = maxi(4, int(font_size * 0.24))
-			pos = _path_label_point(point, canvas.size, label, detail, font_size, detail_size)
-			pos.y += label_y
-		if judge_mode == "center":
+			if judge_mode == "note":
+				pos = _path_label_point(point, canvas.size, label, detail, font_size, detail_size)
+				pos.y += label_y
+		if judge_mode == "ring_in" or judge_mode == "ring_out":
+			# 所有音符类型统一贴判定环：内侧/外侧由同一个偏移和缩放决定。
+			pos = _ring_judge_label_point(point, canvas.size, label, detail, font_size, detail_size, judge_mode == "ring_out", label_y)
+		elif judge_mode == "center":
 			if index != center_label_index:
 				continue
 			pos = judge_anchor + Vector2(0, -age * 30.0)
 			pos.x -= UITheme.bold_font().get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x * 0.5
-		if judge_mode == "off":
+		elif judge_mode == "off":
 			continue
 		canvas.draw_string_outline(UITheme.bold_font(), pos, label, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, outline_size, Color(0, 0, 0, outline_alpha))
 		canvas.draw_string(UITheme.bold_font(), pos, label, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, Color(color.r, color.g, color.b, label_alpha))
@@ -3925,6 +3930,39 @@ func _path_label_point(point: Vector2, bounds: Vector2, label: String, detail: S
 	if not _valid_point(center):
 		center = bounds * 0.5
 	return path_label_pos(point, center, bounds, block, float(font_size) * 0.82)
+
+
+## 环内/环外判定字：以音符落点为方向，贴判定环内侧或外侧。
+## 偏移随字号和环半径缩放；同角度的多条判定沿半径方向错开。
+func _ring_judge_label_point(point: Vector2, bounds: Vector2, label: String, detail: String, font_size: int, detail_size: int, outward: bool, stack: float) -> Vector2:
+	var center := project_design(Vector2.ZERO)
+	if not _valid_point(center):
+		center = bounds * 0.5
+	var offset := clampf(maxf(float(font_size) * 1.2, _avg_radius_cache * 0.08), 26.0, 90.0)
+	var anchor := judge_label_anchor(point, center, _avg_radius_cache, offset, outward, stack)
+	var width := UITheme.bold_font().get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x
+	if not detail.is_empty():
+		width = maxf(width, UITheme.FONT_REGULAR.get_string_size(detail, HORIZONTAL_ALIGNMENT_LEFT, -1, detail_size).x)
+	var block_h := float(font_size) + float(detail_size) + 6.0
+	var pos := anchor - Vector2(width * 0.5, float(font_size) * 0.36)
+	var margin := 8.0
+	pos.x = clampf(pos.x, margin, maxf(margin, bounds.x - width - margin))
+	pos.y = clampf(pos.y, float(font_size) * 0.8 + margin, maxf(float(font_size) * 0.8 + margin, bounds.y - block_h - margin))
+	return pos
+
+
+## 判定字锚点：方向取音符落点，半径取落点到环心；落点在圆心时退回环半径。
+static func judge_label_anchor(point: Vector2, center: Vector2, fallback_radius: float, offset: float, outward: bool, stack: float = 0.0) -> Vector2:
+	var dir := point - center
+	var dist := dir.length()
+	if dist < 4.0:
+		dir = Vector2.UP
+		dist = maxf(1.0, fallback_radius)
+	else:
+		dir /= dist
+	var radius := maxf(dist, maxf(1.0, fallback_radius) * 0.55)
+	var signed := (offset + stack) if outward else -(offset + stack)
+	return center + dir * (radius + signed)
 
 
 ## 星头爆环半径 116px：优先推到外侧，放不下就换内侧，最后夹进画面避免裁切。
@@ -3980,13 +4018,6 @@ func _draw_fx_lock(canvas: Control, point: Vector2, age: float) -> void:
 	canvas.draw_arc(point, lerpf(30.0, 12.0, t), 0.0, TAU, 32,
 		Color(UITheme.KEY_YELLOW.r, UITheme.KEY_YELLOW.g, UITheme.KEY_YELLOW.b, 0.9 * fade), 2.0 + 2.0 * fade, false)
 	canvas.draw_circle(point, 3.0 * fade, Color(1, 1, 1, 0.85 * fade))
-
-
-func _draw_fx_miss(canvas: Control, point: Vector2, age: float, color: Color) -> void:
-	# 漏掉的 Bell：灰色收缩环，不抢连击/判定的注意力。
-	var t := clampf(age / 0.34, 0.0, 1.0)
-	var fade := 1.0 - t
-	canvas.draw_arc(point, lerpf(46.0, 16.0, t), 0.0, TAU, 32, Color(color.r, color.g, color.b, 0.70 * fade), 2.0 + 1.0 * fade, false)
 
 
 func _draw_fx_burst(canvas: Control, point: Vector2, color: Color, age: float, sparks: Array) -> void:
@@ -4170,6 +4201,37 @@ func _draw_editor_hud(canvas: Control, chart: Chart, t: float) -> void:
 	_draw_cached_text(canvas, "hud_preview", mono, Vector2(cx - 34, baseline_y + 20), "预览 / 非正式", 10, UITheme.MUTED)
 
 
+## Combo 单独走一层：在音符之前绘制，下落 Tap/Hold/Path 会盖住它。
+## 左右两列仍在 HUD 层，不受影响。
+func _draw_play_combo_layer(canvas: Control) -> void:
+	var bounds := size
+	if bounds.x < 320.0 or bounds.y < 240.0:
+		return
+	var op := clampf(float(hud_options.get("opacity", 100)) / 100.0, 0.3, 1.0)
+	var hs := clampf(bounds.y / 900.0, 0.8, 1.8)
+	var s := hs * clampf(float(hud_options.get("scale", 100)) / 100.0, 0.5, 2.0)
+	var center := project_design(Vector2.ZERO)
+	if not _valid_point(center):
+		center = bounds * 0.5
+	var combo_mode := String(hud_options.get("combo_mode", "center"))
+	if combo_mode == "off":
+		return
+	if combo_mode == "center":
+		_draw_combo(canvas, UITheme.bold_font(), center, s, 78.0 * s, 2, op)
+		return
+	# 右侧：和 _draw_hud_score_column 同一套列起点与纵向排布。
+	var margin := 14.0 * s
+	var ring_r := _hud_ring_radius(get_time_beat()) * 1.2
+	var gap := 20.0 * s
+	var right_x := center.x + ring_r + gap
+	var acc_size := int(round(38.0 * s))
+	var label_row := 24.0 * s
+	var height := label_row + float(acc_size) + 8.0 * s + 50.0 * s
+	var top_y := center.y - height * 0.5
+	var combo_y := top_y + label_row + float(acc_size) + 8.0 * s + 34.0 * s
+	_draw_combo(canvas, UITheme.bold_font(), Vector2(right_x, combo_y), s, 34.0 * s, 0, op)
+
+
 ## 试玩 HUD v3：信息贴着环的左右两侧，垂直居中。
 ## 左：TRACK / 曲名 / 难度 / 可选进度与用时；右：ACCURACY / 大字准度 / 评级章 / 连击。
 ## 判定字仍在音符处；五档计数只在暂停页和结算页显示。
@@ -4199,10 +4261,8 @@ func _draw_play_hud(canvas: Control, chart: Chart, t: float) -> void:
 	_draw_hud_track_column(canvas, left_x + col_w, col_w, center.y, s, op, progress, bold, mono)
 	_draw_hud_score_column(canvas, right_x, col_w, center.y, s, op, accuracy, bold, mono)
 	var combo_mode := String(hud_options.get("combo_mode", "center"))
-	if combo_mode == "center":
-		_draw_combo(canvas, bold, center, s, 78.0 * s, 2, op)
-		if hud_auto:
-			_draw_hud_text(canvas, "p_auto", mono, Vector2(center.x, center.y + 74.0 * s), "AUTO", _hud_small(s), _hud_tint(UITheme.AMBER, op), 2)
+	if combo_mode == "center" and hud_auto:
+		_draw_hud_text(canvas, "p_auto", mono, Vector2(center.x, center.y + 74.0 * s), "AUTO", _hud_small(s), _hud_tint(UITheme.AMBER, op), 2)
 	if bool(hud_options.get("show_watermark", false)):
 		_draw_hud_text(canvas, "p_watermark", mono, Vector2(margin, bounds.y - margin), "试玩 · 预览 / 非正式", _hud_small(s), _hud_tint(UITheme.MUTED, op))
 
@@ -4263,8 +4323,7 @@ func _draw_hud_score_column(canvas: Control, x: float, col_w: float, center_y: f
 	y += label_row
 	_draw_hud_text(canvas, "p_acc", bold, Vector2(x, y), acc_text, acc_size, _hud_tint(UITheme.INK, op))
 	y += acc_size + 8.0 * s
-	if reserve_combo:
-		_draw_combo(canvas, bold, Vector2(x, y + 34.0 * s), s, 34.0 * s, 0, op)
+	# Combo 已在音符层下面单独绘制；这里只保留占位高度，避免准度/评级压到连击。
 
 
 ## 环的横向像素半径（取进度带所在的那一圈）；侧栏据此贴住环的切线。
