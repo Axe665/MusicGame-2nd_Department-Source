@@ -132,7 +132,8 @@ var _last_3d_usec: int = 0
 var _perf_draw_usec: int = 0
 var _perf_frames: int = 0
 ## 分项耗时：[traces, paths, holds, notes, fx, 其他]（微秒）。
-var _perf_sections: Array[int] = [0, 0, 0, 0, 0, 0]
+## [seeks, paths, holds, notes, fx, hud, bar, cursor, audio] 的累计微秒。
+var _perf_sections: Array[int] = [0, 0, 0, 0, 0, 0, 0, 0, 0]
 var _perf_proc_usec: int = 0
 var _perf_mesh_usec: int = 0
 var _perf_since_usec: int = 0
@@ -544,17 +545,23 @@ func _process(_delta: float) -> void:
 		elif perf_now - _perf_since_usec >= 2000000 and _perf_frames > 0:
 			var per := float(maxi(1, _perf_frames)) * 1000.0
 			if OS.is_debug_build():
-				print("[perf] fps=%.0f draw=%.2fms proc=%.2fms pulses=%d | note=%.1f fx=%.1f" % [
+				print("[perf] fps=%.0f draw=%.2f proc=%.2f mesh=%.2f | path=%.2f hold=%.2f note=%.2f fx=%.2f hud=%.2f bar=%.2f cursor=%.2f audio=%.2f" % [
 					Engine.get_frames_per_second(),
 					float(_perf_draw_usec) / float(maxi(1, _perf_frames)) / 1000.0,
 					float(_perf_proc_usec) / float(maxi(1, _perf_frames)) / 1000.0,
-					_pulses.size(),
+					float(_perf_mesh_usec) / per,
+					float(_perf_sections[1]) / per,
+					float(_perf_sections[2]) / per,
 					float(_perf_sections[3]) / per,
 					float(_perf_sections[4]) / per,
+					float(_perf_sections[5]) / per,
+					float(_perf_sections[6]) / per,
+					float(_perf_sections[7]) / per,
+					float(_perf_sections[8]) / per,
 				])
 			_perf_draw_usec = 0
 			_perf_frames = 0
-			_perf_sections = [0, 0, 0, 0, 0, 0]
+			_perf_sections = [0, 0, 0, 0, 0, 0, 0, 0, 0]
 			_perf_proc_usec = 0
 			_perf_mesh_usec = 0
 			_perf_since_usec = perf_now
@@ -1760,8 +1767,10 @@ func draw_overlay(canvas: Control) -> void:
 		_draw_flat_ring(canvas, chart, t)
 	if not use_3d_ring:
 		_draw_bezel(canvas, chart, t)
+	var t_bar := Time.get_ticks_usec()
 	_draw_bar_lines(canvas, chart, t, pre)
 	_draw_red_regions(canvas, chart, t)
+	_perf_sections[6] += Time.get_ticks_usec() - t_bar
 	# 图层顺序：滑条底带 → Path → Hold → Tap/Anchor/Bell，命中目标始终在上层。
 	var sec_usec := Time.get_ticks_usec()
 	_draw_seeks(canvas, chart, t)
@@ -1779,9 +1788,11 @@ func draw_overlay(canvas: Control) -> void:
 	_draw_note_pops(canvas)
 	sec_usec = Time.get_ticks_usec()
 	_perf_sections[3] += sec_usec - sec2
+	var t_hud := Time.get_ticks_usec()
 	_draw_boundary_controls(canvas, chart)
 	if show_hud:
 		_draw_hud(canvas, chart, t)
+	_perf_sections[5] += Time.get_ticks_usec() - t_hud
 	sec2 = Time.get_ticks_usec()
 	_draw_arc_flashes(canvas)
 	_draw_pulses(canvas)
@@ -1797,7 +1808,14 @@ func draw_cursor_overlay(canvas: Control) -> void:
 	var chart := get_chart()
 	if chart == null:
 		return
+	var t_cursor := Time.get_ticks_usec()
 	_draw_cursor(canvas, chart, get_time_beat())
+	_perf_sections[7] += Time.get_ticks_usec() - t_cursor
+
+
+## 试玩把 _chart_ms 的耗时（含每次按键查询）累加进来，便于判断音频是不是瓶颈。
+func note_audio_usec(usec: int) -> void:
+	_perf_sections[8] += usec
 
 
 ## Match the timeline's bar grid, including local time-signature changes.
