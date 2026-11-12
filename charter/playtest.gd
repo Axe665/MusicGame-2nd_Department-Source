@@ -3,6 +3,7 @@ extends Control
 
 signal exit_requested
 signal settings_requested
+signal playtest_settings_requested
 
 const PERFECT_MS := 65.0
 const GREAT_MS := 115.0
@@ -509,6 +510,7 @@ func _build_pause_overlay() -> void:
 		setup(chart, 0.0, chart_path)
 	)
 	_add_pause_button(box, "退出游玩", func() -> void: _exit())
+	_add_pause_button(box, "试玩设置", func() -> void: playtest_settings_requested.emit())
 	_add_pause_button(box, "设置", func() -> void: settings_requested.emit())
 	var hints := Label.new()
 	hints.text = "任意有效键或鼠标左右键：Tap / Hold / Anchor；Path / Bell 用鼠标定位；Seek 用滚轮上/下接住；Limit 停留 200ms 断连；[ / ] 判定偏移；F9 日志 / F10 判定区域。"

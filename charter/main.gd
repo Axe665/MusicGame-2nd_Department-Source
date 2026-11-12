@@ -2705,6 +2705,7 @@ func _start_playtest(from_start: bool) -> void:
 	_playtest.setup(_app.chart, 0.0 if from_start else _app.playhead_beat, _app.chart_path)
 	_playtest.exit_requested.connect(_end_playtest)
 	_playtest.settings_requested.connect(_open_settings)
+	_playtest.playtest_settings_requested.connect(func() -> void: _open_playtest_setup(false))
 
 
 func _end_playtest() -> void:
