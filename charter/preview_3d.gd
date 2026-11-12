@@ -2866,8 +2866,9 @@ func _stroke_band(canvas: Control, points: PackedVector2Array, color: Color, wid
 	var gloss := float(skin["gloss"])
 	var shadow := float(skin["shadow"])
 	var w := width * k * band
-	if glow > 0.01:
+	if glow > 0.01 and glow_mul > 0.01:
 		# 柔光层很宽、对比低，关掉 AA 省下的三角形很可观，观感几乎不变。
+		# glow_mul = 0 表示画质项关了柔光：只跳这一层，描边/白边/色带照画。
 		canvas.draw_polyline(points, Color(color.r, color.g, color.b, 0.10 * glow * glow_mul * alpha), w + 18.0 * glow_mul, false)
 	if shadow > 0.01:
 		var offset := PackedVector2Array()
@@ -3215,7 +3216,8 @@ func _draw_length_band(canvas: Control, chart: Chart, angle: float, width: float
 		if _valid_point(dot):
 			canvas.draw_circle(dot, 7.0 * ns, Color(color.r, color.g, color.b, 0.90 * alpha))
 		return dot
-	var steps := clampi(int(width / (4.0 if note_detail_fine else 6.0)), 10, 96)
+	# 省电档也只是降采样，不能再低到把长条画成折线。
+	var steps := clampi(int(width / (4.0 if note_detail_fine else 6.0)), 16, 96)
 	var points := PackedVector2Array()
 	for i in steps + 1:
 		var sample_angle := angle - width * 0.5 + width * float(i) / float(steps)
@@ -3227,9 +3229,9 @@ func _draw_length_band(canvas: Control, chart: Chart, angle: float, width: float
 			points.append(p)
 	if points.size() < 2:
 		return Vector2(INF, INF)
-	# Tap 的粉色柔光压低：保留一点氛围，但不抢白边和色带（画质项可关）。
-	if note_glow:
-		_stroke_band(canvas, points, color, 18.0 * ns, alpha, -1.0, 0.35)
+	# 胶囊本体（黑描边 + 白边 + 色带 + 高光）永远画；画质项只决定最外层柔光。
+	# 之前把整次 _stroke_band 塞进 if note_glow，关光晕时 Tap / Hold 头只剩几个点。
+	_stroke_band(canvas, points, color, 18.0 * ns, alpha, -1.0, 0.35 if note_glow else 0.0)
 	var cap_scale := ns * float(_skin()["scale"])
 	var center_point := points[points.size() / 2]
 	# 两端圆头：让长条读成一根胶囊，而不是一段没有边界的弧。
