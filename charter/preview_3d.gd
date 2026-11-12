@@ -226,7 +226,7 @@ func _exit_tree() -> void:
 		Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
 
 
-## 画质档：0 = 全开，1 = 省电（3D 分辨率降一档、去掉音符柔光、弧带采样减半）。
+## 画质档：0 = 全开，1 = 省电（只降 3D 背景的渲染分辨率，音符永远按全画质画）。
 ## 试玩里由实测帧时自动降档，只为让弱机也能稳住节奏。
 var quality_level: int = 0
 
@@ -3162,7 +3162,7 @@ func _draw_length_band(canvas: Control, chart: Chart, angle: float, width: float
 		if _valid_point(dot):
 			canvas.draw_circle(dot, 7.0 * ns, Color(color.r, color.g, color.b, 0.90 * alpha))
 		return dot
-	var steps := clampi(int(width / (4.0 if quality_level == 0 else 6.0)), 8, 96)
+	var steps := clampi(int(width / 4.0), 10, 96)
 	var points := PackedVector2Array()
 	for i in steps + 1:
 		var sample_angle := angle - width * 0.5 + width * float(i) / float(steps)
@@ -3175,8 +3175,7 @@ func _draw_length_band(canvas: Control, chart: Chart, angle: float, width: float
 	if points.size() < 2:
 		return Vector2(INF, INF)
 	# Tap 的粉色柔光压低：保留一点氛围，但不抢白边和色带。
-	if quality_level == 0:
-		_stroke_band(canvas, points, color, 18.0 * ns, alpha, -1.0, 0.35)
+	_stroke_band(canvas, points, color, 18.0 * ns, alpha, -1.0, 0.35)
 	var cap_scale := ns * float(_skin()["scale"])
 	var center_point := points[points.size() / 2]
 	# 两端圆头：让长条读成一根胶囊，而不是一段没有边界的弧。
@@ -3705,19 +3704,18 @@ func _draw_note_pops(canvas: Control) -> void:
 
 
 func _draw_pulses(canvas: Control) -> void:
-	# 脉冲多时只给最新的 4 个画完整特效，其余降级成一个细环。
-	var crowded := _pulses.size() > 4
+	# 脉冲多时只给最新的 6 个画完整特效，其余降级成一个细环。
+	var crowded := _pulses.size() > 6
 	for index in _pulses.size():
 		var pulse: Dictionary = _pulses[index]
 		var age := float(pulse.get("age", 0.0))
 		var alpha := clampf(1.0 - age / 0.42, 0.0, 1.0)
 		var point: Vector2 = pulse["pos"]
 		var color: Color = pulse["color"]
-		# 只有最新那个脉冲画碎片，旧的只留环：密集段每帧少几十次多边形绘制。
-		var sparks: Array = pulse.get("sparks", []) if index == _pulses.size() - 1 else []
+		var sparks: Array = pulse.get("sparks", [])
 		var kind := String(pulse.get("kind", "tap"))
 		# 星头单独一套 osu!std 式发散：密度再高也不降级，否则根本看不见。
-		if kind != "path" and crowded and index < _pulses.size() - 4:
+		if kind != "path" and crowded and index < _pulses.size() - 6:
 			canvas.draw_arc(point, 16.0 + age * 30.0, 0.0, TAU, 16, Color(color.r, color.g, color.b, 0.5 * alpha), 2.0, false)
 			continue
 		# 档位越差，爆点越小；位置按脉冲缩放，文字不缩。
