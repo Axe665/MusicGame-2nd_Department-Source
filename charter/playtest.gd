@@ -213,6 +213,7 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	_preview.hud_auto = auto_play
 	_preview.hud_combo = 0
 	_preview.hud_tiers = {}
+	_preview.hud_options = _app.hud_options() if _app != null else {}
 	_update_hud_state()
 	# 画质选项（视图 → 画质）：试玩用自己的 Preview3D，要单独推一份。
 	if _app != null:
@@ -1809,6 +1810,8 @@ func _update_hud_state() -> void:
 	_preview.hud_max_combo = _max_combo
 	_preview.hud_tiers = _tier_counts.duplicate()
 	_preview.hud_auto = auto_play
+	_preview.hud_ms = _chart_ms()
+	_preview.hud_total_ms = chart.timing.beat_to_chart_ms(chart.duration_beats())
 
 
 func _accuracy() -> float:
