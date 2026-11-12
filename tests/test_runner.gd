@@ -47,6 +47,11 @@ func _initialize() -> void:
 		"test_note_color_contrast",
 		"test_note_color_round_trip",
 		"test_note_color_lbp",
+		"test_palette_preset_round_trip",
+		"test_palette_preset_validation",
+		"test_palette_preset_append",
+		"test_palette_preset_library",
+		"test_palette_preset_builtin",
 		"test_osu_std_import",
 		"test_osu_std_curves",
 		"test_osu_std_slider_kinds",
@@ -1262,6 +1267,114 @@ func test_note_color_lbp() -> bool:
 	chart.notes[0].has_custom_color = false
 	var plain := LBPIO.export_chart(chart)
 	ok(not plain.contains("[Palette]") or not plain.contains("rgb=#abcdef"), "lbp omits unused rgb")
+	return true
+
+
+func test_palette_preset_round_trip() -> bool:
+	var chart := DemoChart.make_demo()
+	var first := chart.add_palette_group("冷色")
+	chart.palette_group(first)["tap"] = "#33d0ff"
+	var second := chart.add_palette_group("暖色")
+	chart.palette_group(second)["path"] = "#ffb066"
+
+	var rows := chart.palette_to_rows()
+	eq(rows.size(), 2, "palette rows keep every group")
+	var text := PaletteIO.encode("冷色系", rows)
+	ok(text.contains("\"format\": \"tamaki3-palette\""), "preset writes format")
+	var parsed := PaletteIO.parse(JSON.parse_string(text))
+	ok(bool(parsed.get("ok", false)), "preset parses back")
+	eq(String(parsed.get("name", "")), "冷色系", "preset keeps name")
+	var groups: Array = parsed.get("groups", [])
+	eq(groups.size(), 2, "preset keeps group count")
+	eq(String(groups[0].get("name", "")), "冷色", "preset keeps group name")
+	eq(Color(String(groups[0].get("tap", ""))), Color("#33d0ff"), "preset keeps tap color")
+	eq(Color(String(groups[1].get("path", ""))), Color("#ffb066"), "preset keeps path color")
+	return true
+
+
+func test_palette_preset_validation() -> bool:
+	ok(not bool(PaletteIO.parse({}).get("ok", false)), "missing format rejected")
+	ok(not bool(PaletteIO.parse({"format": "other"}).get("ok", false)), "wrong format rejected")
+	ok(not bool(PaletteIO.parse({"format": PaletteIO.FORMAT, "version": 99, "groups": []}).get("ok", false)), "future version rejected")
+	ok(not bool(PaletteIO.parse({"format": PaletteIO.FORMAT, "version": 1, "groups": []}).get("ok", false)), "empty groups rejected")
+	ok(not bool(PaletteIO.parse({"format": PaletteIO.FORMAT, "version": 1, "groups": [1, 2]}).get("ok", false)), "junk groups rejected")
+
+	var parsed := PaletteIO.parse({"format": PaletteIO.FORMAT, "version": 1, "groups": [{"name": "  ", "tap": "nope", "hold": "#00ff00"}]})
+	ok(bool(parsed.get("ok", false)), "partial group survives")
+	var group: Dictionary = Array(parsed.get("groups", []))[0]
+	eq(String(group.get("name", "")), "配色 1", "blank name falls back")
+	eq(String(group.get("tap", "")), String(Chart.PALETTE_DEFAULTS["tap"]), "bad color falls back to default")
+	eq(String(group.get("hold", "")), "#00ff00", "valid color kept")
+	return true
+
+
+func test_palette_preset_append() -> bool:
+	var chart := DemoChart.make_demo()
+	var base := chart.add_palette_group("原组")
+	chart.palette_group(base)["tap"] = "#123456"
+	var note := chart.notes[0]
+	note.color = base
+	var added := chart.append_palette_groups([
+		{"name": "A", "tap": "#ffffff", "hold": "#ffffff", "path": "#ffffff"},
+		{"name": "B", "path": "#000000"},
+	])
+	eq(added, 2, "appending returns count")
+	eq(chart.palette_count(), 3, "append keeps existing groups")
+	eq(chart.palette_name(1), "原组", "existing group stays first")
+	eq(note.color, base, "note group index unchanged")
+	eq(note.resolved_color(chart, Color.BLACK), Color("#123456"), "existing notes keep their color")
+	eq(Color(String(chart.palette_group(3).get("tap", ""))), Color(String(Chart.PALETTE_DEFAULTS["tap"])), "missing colors normalized")
+	var many: Array = []
+	for i in 100:
+		many.append({"name": "x%d" % i})
+	chart.append_palette_groups(many)
+	eq(chart.palette_count(), Chart.MAX_PALETTE_GROUPS, "append stops at the cap")
+	var leaky := ChartIO.chart_to_dict(chart)
+	var rows: Array = []
+	for i in 100:
+		rows.append({"name": "p%d" % i})
+	leaky["palette"] = rows
+	var reloaded := ChartIO.chart_from_dict(leaky)
+	eq(reloaded.palette.size(), Chart.MAX_PALETTE_GROUPS, "loading caps the palette")
+	return true
+
+
+func test_palette_preset_library() -> bool:
+	var chart := DemoChart.make_demo()
+	var index := chart.add_palette_group("库组")
+	chart.palette_group(index)["hold"] = "#abcdef"
+	var title := "test_preset_%d" % Time.get_ticks_usec()
+	var saved := PaletteIO.save_preset(title, chart.palette_to_rows())
+	ok(bool(saved.get("ok", false)), "preset saves to library")
+	ok(PaletteIO.has_preset(title), "saved preset is found")
+	var path := String(saved.get("path", ""))
+	var loaded := PaletteIO.load_file(path)
+	ok(bool(loaded.get("ok", false)), "library preset loads")
+	eq(Color(String(Array(loaded.get("groups", []))[0].get("hold", ""))), Color("#abcdef"), "library preset keeps colors")
+	var found := false
+	for preset in PaletteIO.list_presets():
+		if String(preset.get("name", "")) == title:
+			found = true
+	ok(found, "library listing contains the preset")
+	ok(bool(PaletteIO.delete_preset(path).get("ok", false)), "preset deletes")
+	ok(not PaletteIO.has_preset(title), "deleted preset is gone")
+	return true
+
+
+func test_palette_preset_builtin() -> bool:
+	var presets := PaletteIO.list_presets()
+	var rainbow := -1
+	for i in presets.size():
+		if String(presets[i].get("name", "")) == "彩虹":
+			rainbow = i
+	ok(rainbow >= 0, "builtin rainbow preset is listed")
+	ok(bool(presets[rainbow].get("builtin", false)), "rainbow is marked builtin")
+	eq(int(presets[rainbow].get("count", 0)), 7, "rainbow has seven groups")
+	var id := String(presets[rainbow].get("path", ""))
+	var loaded := PaletteIO.load_preset(id)
+	ok(bool(loaded.get("ok", false)), "builtin preset loads")
+	eq(Array(loaded.get("groups", [])).size(), 7, "builtin loads seven groups")
+	ok(not bool(PaletteIO.delete_preset(id).get("ok", false)), "builtin cannot be deleted")
 	return true
 
 

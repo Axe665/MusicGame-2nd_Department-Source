@@ -31,6 +31,7 @@ var editor: Dictionary = {}
 ## 配色分组：每组 {name, tap, hold, path}，颜色存 "#rrggbb" 字符串。
 ## Note.color 是 1 起的组号，0 = 跟随各类型的默认皮肤色。
 const PALETTE_TYPES: Array[String] = ["tap", "hold", "path"]
+const MAX_PALETTE_GROUPS := 64
 const PALETTE_DEFAULTS := {
 	"tap": "#ff6fae",
 	"hold": "#f0c36a",
@@ -263,3 +264,34 @@ func has_custom_note_colors() -> bool:
 		if note.has_custom_color or note.color > 0:
 			return true
 	return false
+
+
+## 规范化一个配色组字典：缺字段用默认色，非法颜色回落，名字为空时补“配色 N”。
+static func normalize_palette_group(raw: Variant, fallback_index: int = 1) -> Dictionary:
+	var source: Dictionary = raw if raw is Dictionary else {}
+	var group := {}
+	var title := String(source.get("name", "")).strip_edges().substr(0, 40)
+	group["name"] = title if not title.is_empty() else "配色 %d" % fallback_index
+	for key in PALETTE_TYPES:
+		var text := String(source.get(key, String(PALETTE_DEFAULTS[key]))).strip_edges()
+		group[key] = text.to_lower() if Color.html_is_valid(text) else String(PALETTE_DEFAULTS[key])
+	return group
+
+
+## 当前配色组导出成干净的行（用于存取预设）。
+func palette_to_rows() -> Array[Dictionary]:
+	var rows: Array[Dictionary] = []
+	for group in palette:
+		rows.append(normalize_palette_group(group, rows.size() + 1))
+	return rows
+
+
+## 追加若干组（应用预设）；返回实际追加数量。已有组号保持不变。
+func append_palette_groups(raw: Array) -> int:
+	var added := 0
+	for item in raw:
+		if palette.size() >= MAX_PALETTE_GROUPS:
+			break
+		palette.append(normalize_palette_group(item, palette.size() + 1))
+		added += 1
+	return added

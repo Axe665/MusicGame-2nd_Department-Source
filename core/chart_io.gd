@@ -274,6 +274,8 @@ static func chart_from_dict(data: Dictionary) -> Chart:
 	var palette_raw: Variant = data.get("palette", [])
 	if palette_raw is Array:
 		for raw in palette_raw:
+			if chart.palette.size() >= Chart.MAX_PALETTE_GROUPS:
+				break
 			if raw is Dictionary:
 				chart.palette.append(_palette_row(raw))
 	chart.notes.clear()
