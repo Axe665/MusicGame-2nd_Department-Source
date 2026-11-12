@@ -1316,10 +1316,14 @@ func _restore_after_capture() -> void:
 	_running = false
 	_finished = true
 	set_process_input(true)
-	for node_name in ["TopBar", "StatsBar", "PlaytestHint", "PauseOverlay"]:
+	for node_name in ["TopBar", "StatsBar", "PlaytestHint"]:
 		var node := get_node_or_null(node_name)
 		if node is CanvasItem:
 			node.visible = true
+	# 暂停层盖在最上面，导出完必须明确藏掉，否则会卡在「暂停」画面。
+	_paused = false
+	if _pause_overlay != null:
+		_pause_overlay.visible = false
 	if _replay_bar != null:
 		_replay_bar.visible = false
 	var root_window := get_window()
