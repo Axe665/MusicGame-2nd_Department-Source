@@ -1068,8 +1068,9 @@ func _start_mai_download(meta: Dictionary, include_bga: bool) -> void:
 	_status.text = "下载完成 100% · 开始转谱…"
 	if bool(result.get("bga_failed", false)):
 		warning.emit("BGA 下载失败，已导入无 BGA 版本")
-	source_ready.emit(String(result.get("maidata", "")))
+	# 先关浏览器再交棒：导入过程会弹进度/报告对话框，两个独占子窗口会打架。
 	hide()
+	source_ready.emit(String(result.get("maidata", "")))
 
 
 func _download_adx(meta: Dictionary, include_bga: bool) -> Dictionary:

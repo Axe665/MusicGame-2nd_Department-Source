@@ -125,6 +125,14 @@ var _mesh_dirty: bool = true
 var _last_chart_ref: Chart = null
 var _last_video_path: String = ""
 var _video_load_failed: bool = false
+## 静图默认 32% 不透明度；改成全局系数后由设置推动。
+const BACKGROUND_ALPHA := 0.32
+## 背景明暗系数（1.0 = 现在观感）；静图和 BGA 共用。
+var background_brightness: float = 1.0
+## 暂停时把 BGA 一起停住，恢复后由 _update_video 重新对齐位置。
+var video_paused: bool = false
+## 异步转码的令牌：换谱/换视频后旧结果直接丢掉。
+var _video_job_token: int = 0
 var _last_cursor_emit: Vector2 = Vector2(-999, -999)
 var _cursor_cache_key: String = ""
 var _sorted_notes_cache: Array[Note] = []
@@ -917,38 +925,66 @@ func _update_background(chart: Chart) -> void:
 		if image != null and image.get_width() > 0 and image.get_height() > 0:
 			texture = ImageTexture.create_from_image(image)
 	_background_image.texture = texture
-	_background_image.visible = texture != null
+	_background_image.visible = background_image_visible(texture != null, _video != null and _video.stream != null)
+	_background_image.modulate = Color(1, 1, 1, background_alpha(background_brightness))
+
+
+## 静图基准不透明度 32%；明暗系数是全局乘数（1.0 = 默认）。
+static func background_alpha(brightness: float) -> float:
+	return BACKGROUND_ALPHA * maxf(0.0, brightness)
+
+
+## 有 BGA 时不叠加谱面背景图：两张背景一起画既脏又浪费。
+static func background_image_visible(has_texture: bool, has_video: bool) -> bool:
+	return has_texture and not has_video
+
+
+## BGA 的不透明度：谱面自己的 opacity × 全局明暗系数。
+static func video_alpha(chart_opacity: float, brightness: float) -> float:
+	return clampf(chart_opacity, 0.0, 1.0) * maxf(0.0, brightness)
+
+
+## 背景明暗：静图和 BGA 共用一个系数（1.0 = 默认观感）。
+func set_background_brightness(value: float) -> void:
+	# 设置项封顶 100%；这里再钳一次，防止别处直接赋值绕过上限。
+	background_brightness = clampf(value, 0.0, 1.0)
+	if _background_image != null:
+		_background_image.modulate = Color(1, 1, 1, background_alpha(background_brightness))
+
+
+## 暂停时连 BGA 一起停；恢复后 _update_video 会把播放位置重新对齐。
+func set_video_paused(value: bool) -> void:
+	video_paused = value
+	if _video != null:
+		_video.paused = value
 
 
 func _update_video(chart: Chart, beat: float) -> void:
 	var path := chart.video_path
 	if path.is_empty():
+		_video_job_token += 1
 		_video.visible = false
+		_video.stream = null
+		_refresh_background_layering()
 		return
 	if path != _last_video_path:
 		_last_video_path = path
 		_video_load_failed = false
+		_video.stream = null
+		_video.visible = false
+		_video_job_token += 1
 		var resolved := path
 		if not path.begins_with("res://") and not path.begins_with("user://") and not path.is_absolute_path():
 			if _app != null and not _app.chart_path.is_empty():
 				resolved = ChartIO.resolve_path(_app.chart_path, path)
-		var prepared := MediaIO.prepare_video(resolved)
-		if prepared.is_empty():
-			_video_load_failed = true
-			_video.visible = false
-			notice.emit("视频不可用：%s" % MediaIO.last_error, "warning")
-			return
-		var stream := ChartIO.video_stream_from_path(prepared)
-		if stream == null:
-			_video_load_failed = true
-			_video.visible = false
-			notice.emit("视频无法解码；保留路径，不影响编辑。", "warning")
-			return
-		_video.stream = stream
-		_video.visible = true
-		_video.play()
+		_start_video_load(resolved, _video_job_token)
+	_refresh_background_layering()
+	if _video.stream == null:
+		return
+	_video.modulate = Color(1, 1, 1, video_alpha(chart.video_opacity, background_brightness))
+	if video_paused:
 		_video.paused = true
-	_video.modulate = Color(1, 1, 1, clampf(chart.video_opacity, 0.0, 1.0))
+		return
 	var ms := chart.timing.beat_to_chart_ms(beat) - chart.offset_ms + chart.video_offset_ms
 	var seconds := maxf(0.0, ms / 1000.0)
 	if not playing:
@@ -962,6 +998,51 @@ func _update_video(chart: Chart, beat: float) -> void:
 		_video.stream_position = seconds
 	elif absf(_video.stream_position - seconds) > 0.20:
 		_video.stream_position = seconds
+
+
+## 有 BGA 时不叠加谱面背景图：两张背景一起画既脏又浪费。
+func _refresh_background_layering() -> void:
+	_background_image.visible = background_image_visible(_background_image.texture != null, _video.stream != null)
+
+
+## 优先直接解码（gdffmpeg）：mp4 / webm 等不再转码；解码库缺失才退回转码缓存。
+func _start_video_load(resolved: String, token: int) -> void:
+	var direct := ChartIO.video_stream_from_path(resolved)
+	if direct != null:
+		_attach_video(direct)
+		return
+	if MediaIO.is_native_video(resolved):
+		_video_load_failed = true
+		notice.emit("视频无法解码：%s" % resolved.get_file(), "warning")
+		return
+	if FileAccess.file_exists(MediaIO.video_cache_path(resolved)):
+		_attach_video(ChartIO.video_stream_from_path(MediaIO.video_cache_path(resolved)))
+		return
+	var tree := get_tree()
+	if tree == null:
+		return
+	notice.emit("没有直接解码库，后台转码中（不阻塞编辑）：%s" % resolved.get_file(), "info")
+	var result := await MediaIO.prepare_video_async(resolved, tree)
+	if token != _video_job_token or not is_inside_tree():
+		return
+	if result.is_empty():
+		_video_load_failed = true
+		notice.emit("视频不可用：%s" % MediaIO.last_error, "warning")
+		return
+	_attach_video(ChartIO.video_stream_from_path(result))
+
+
+func _attach_video(stream: VideoStream) -> void:
+	if stream == null:
+		_video_load_failed = true
+		_video.visible = false
+		notice.emit("视频无法解码；保留路径，不影响编辑。", "warning")
+		return
+	_video.stream = stream
+	_video.visible = true
+	_video.play()
+	_video.paused = true
+	_refresh_background_layering()
 
 
 ## 每次进试玩都从干净的轨迹开始（上一局的擦除不能留到下局）。
@@ -1027,6 +1108,8 @@ func _on_chart_changed() -> void:
 	_max_design_radius = -1.0
 	_mesh_dirty = true
 	_last_video_path = ""
+	_video_job_token += 1
+	video_paused = false
 	_last_background_path = ""
 	_last_fit_key = ""
 	_last_mesh_key = ""

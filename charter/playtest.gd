@@ -89,6 +89,8 @@ var _clock := AudioClock.new()
 var _timeline_start_beat: float = 0.0
 var _timeline_start_ms: float = -INF
 var _loaded_audio: AudioStream = null
+## 时间轴退到音频 0 秒之前时，音频要等这么久再起播（ms）。
+var _audio_delay_ms: float = 0.0
 const COUNTDOWN_SEC := 2.0
 var _ready_layer: Control = null
 var _ready_phase: String = "idle"     # load / fill / countdown / done
@@ -179,6 +181,7 @@ var _pause_status: Label
 var _pause_style: Label
 var _pause_tiers: Label
 var _path_judgement_toggle: CheckButton
+var _mouse_keys_toggle: CheckButton
 var _paused: bool = false
 
 
@@ -255,6 +258,7 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 		_preview.ring_3d_scale = String(_app.ring_3d_scale)
 		_preview.ring_3d_hz = int(_app.ring_3d_hz)
 		_preview.bar_lines_visible = bool(_app.bar_lines)
+		_preview.set_background_brightness(float(_app.background_brightness) / 100.0)
 		_preview.apply_ring_quality()
 	_preview.auto_cursor = Vector2.INF
 	if auto_play:
@@ -292,11 +296,17 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	_open_path_input_log()
 
 
-## 开始拍之前退一个预读 + 0.5s（按 BPM 换算成拍）；夹在 0 以上。
+## 开始拍之前退一个预读 + 0.5s（按 BPM 换算成拍）。
+## 允许退到负拍：osu 谱的第一颗常在音频 2–5 秒处，退到负拍才看得到飞入过程。
 static func timeline_start_beat(chart: Chart, start_beat: float, pre_read_ms: float, extra_ms: float = 500.0) -> float:
 	if chart == null:
-		return maxf(0.0, start_beat)
-	return maxf(0.0, chart.timing.spawn_beat(maxf(0.0, start_beat), maxf(0.0, pre_read_ms) + extra_ms))
+		return start_beat
+	return chart.timing.spawn_beat(start_beat, maxf(0.0, pre_read_ms) + extra_ms)
+
+
+## 时间轴起点早于音频 0 秒时，音频要延后多少毫秒起播；0 = 立刻起播。
+static func audio_delay_ms(start_chart_ms: float, offset_ms: float) -> float:
+	return maxf(0.0, offset_ms - start_chart_ms)
 
 
 ## 倒计时数字：2s 分三格 → 3 / 2 / 1 / 0（0 = GO）。
@@ -467,6 +477,15 @@ func _build_pause_overlay() -> void:
 	_path_judgement_toggle.focus_mode = Control.FOCUS_NONE
 	_path_judgement_toggle.toggled.connect(_set_path_judgement_visible)
 	box.add_child(_path_judgement_toggle)
+	_mouse_keys_toggle = CheckButton.new()
+	_mouse_keys_toggle.text = "鼠标左右键算 Tap"
+	_mouse_keys_toggle.tooltip_text = "关掉后左右键不参与判定；鼠标移动、滚轮 Seek 照常"
+	_mouse_keys_toggle.focus_mode = Control.FOCUS_NONE
+	_mouse_keys_toggle.toggled.connect(func(value: bool) -> void:
+		_app.mouse_keys = value
+		_app.save_settings()
+	)
+	box.add_child(_mouse_keys_toggle)
 	var wait_indicator := OptionButton.new()
 	for label in App.PATH_WAIT_LABELS:
 		wait_indicator.add_item("Path 启动指示：" + label)
@@ -501,6 +520,8 @@ func _refresh_pause_status() -> void:
 	var offset := float(_app.playtest_offset_ms if _app != null else 0.0)
 	_pause_status.text = "OFF %+.0fms   平均偏差 %+.2fms   LIMIT 断连 %d   连击 %d / 最大 %d" % [
 		offset, _mean_error(), _red_breaks, _combo, _max_combo]
+	if _mouse_keys_toggle != null:
+		_mouse_keys_toggle.set_pressed_no_signal(bool(_app.mouse_keys))
 	var skin_label := String(Preview3D.skin_presets().get(_preview.note_skin, {}).get("label", _preview.note_skin))
 	var fx_label := String(Preview3D.hit_fx_presets().get(_preview.hit_fx_style, _preview.hit_fx_style))
 	_pause_style.text = "皮肤 %s · 特效 %s%s" % [skin_label, fx_label, " · AUTO" if auto_play else ""]
@@ -536,6 +557,7 @@ func _set_paused(value: bool) -> void:
 		_pause_overlay.visible = value
 	if _audio_available and _audio != null:
 		_audio.stream_paused = value
+	_preview.set_video_paused(value)
 	if value:
 		_refresh_pause_status()
 		Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
@@ -762,6 +784,7 @@ func _prepare_audio() -> void:
 func _start_audio() -> void:
 	_last_chart_ms = -INF
 	_clock = AudioClock.new()
+	_audio_delay_ms = 0.0
 	var bench_audio := bench_mode and "--bench-audio" in OS.get_cmdline_user_args()
 	_start_chart_ms = chart.timing.beat_to_chart_ms(_timeline_start_beat)
 	# 重开/重进时先停掉旧播放器，避免音频叠加。
@@ -787,7 +810,11 @@ func _start_audio() -> void:
 	_audio.stream = _loaded_audio
 	_audio.finished.connect(_finish)
 	var lead_sec := (_start_chart_ms - chart.offset_ms) / 1000.0
-	_audio.play(maxf(0.0, lead_sec))
+	if lead_sec >= 0.0:
+		_audio.play(lead_sec)
+	else:
+		# 时间轴比音频更长：先跑前奏静音，等时间轴走到音频 0 秒再起播。
+		_audio_delay_ms = audio_delay_ms(_start_chart_ms, chart.offset_ms)
 	# 起播时刻交给 AudioClock：等音频真的出声后，用它自己的播放位置锚定，
 	# 不再预测「下一次 mix + 驱动延迟」（那个值一次采样就能偏 40ms）。
 	_clock.start(_start_chart_ms, Time.get_ticks_usec())
@@ -800,6 +827,9 @@ func _process(delta: float) -> void:
 	if not _running or chart == null or _paused:
 		return
 	var chart_ms := _chart_ms()
+	if _audio_delay_ms > 0.0 and _audio != null and chart_ms >= chart.offset_ms:
+		_audio_delay_ms = 0.0
+		_audio.play(0.0)
 	_last_frame_ms = clampf(delta * 1000.0, 1.0, 200.0)
 	var judge_ms := chart_ms + float(_app.playtest_offset_ms if _app != null else 0.0)
 	_judge_ms_now = judge_ms
@@ -2296,6 +2326,9 @@ func _input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and (event.button_index == MOUSE_BUTTON_LEFT or event.button_index == MOUSE_BUTTON_RIGHT):
 		var click := mouse_button_key(event.button_index)
 		if click == 0:
+			return
+		# 「禁用鼠标按键」：左右键不算 Tap，但鼠标移动 / 滚轮照常。
+		if _app != null and not bool(_app.mouse_keys):
 			return
 		if not _running or _paused or _finished or auto_play:
 			# 暂停/结算/自动演示时，点击交给 UI 或忽略。

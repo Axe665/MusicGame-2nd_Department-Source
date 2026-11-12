@@ -214,14 +214,20 @@ func _populate() -> void:
 		if _app != null and _app.chart != null:
 			_bpm_spin.set_value_no_signal(_app.chart.timing.bpm_at(0.0))
 			_offset_spin.set_value_no_signal(_app.chart.offset_ms)
-	_measure_playback()
+	await _measure_playback()
 	_refresh_checks()
 
 
 func _measure_playback() -> void:
 	_stream_ms = -1.0
 	_stream_error = ""
-	var prepared := MediaIO.prepare_audio(_path)
+	var prepared := _path
+	if not MediaIO.is_native_audio(_path) and not FileAccess.file_exists(MediaIO.audio_cache_path(_path)):
+		# 非原生格式先带状态栏异步转码，别把主线程压在 ffmpeg 上。
+		_status.text = "转码音频：%s" % _path.get_file()
+		prepared = await MediaIO.prepare_audio_async(_path, get_tree())
+	else:
+		prepared = MediaIO.prepare_audio(_path)
 	if prepared.is_empty():
 		_stream_error = MediaIO.last_error
 		return

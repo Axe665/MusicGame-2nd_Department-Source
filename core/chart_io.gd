@@ -500,16 +500,42 @@ static func audio_stream_from_path(path: String) -> AudioStream:
 	return load(path) as AudioStream
 
 
+## 视频流：.ogv 走引擎自带 Theora；其他格式用 gdffmpeg 直接解码（不转码）。
+## 没装解码扩展时返回 null，调用方再退回 ffmpeg 转码缓存。
 static func video_stream_from_path(path: String) -> VideoStream:
 	if path.is_empty():
 		return null
-	if path.begins_with("res://"):
-		return load(path) as VideoStream
-	if path.get_extension().to_lower() == "ogv":
+	var ext := path.get_extension().to_lower()
+	if ext == "ogv":
+		if path.begins_with("res://"):
+			return load(path) as VideoStream
 		var theora := VideoStreamTheora.new()
 		theora.file = ProjectSettings.globalize_path(path) if path.begins_with("user://") else path
 		return theora
-	return null
+	if not ffmpeg_video_available() or not FileAccess.file_exists(path):
+		return null
+	if not (ext in MediaIO.SUPPORTED_VIDEO):
+		return null
+	var stream: Variant = ClassDB.instantiate("FFmpegVideoStream")
+	if stream == null:
+		return null
+	stream.set("file", ProjectSettings.globalize_path(path) if path.begins_with("user://") else path)
+	return stream as VideoStream
+
+
+## gdffmpeg 扩展是否加载成功（addons/ffmpeg）。
+static func ffmpeg_video_available() -> bool:
+	return ClassDB.class_exists("FFmpegVideoStream")
+
+
+## 能否不转码直接播：原生 ogv，或装了 gdffmpeg 且扩展名在支持表里。
+static func can_decode_video_directly(path: String) -> bool:
+	if path.is_empty():
+		return false
+	var ext := path.get_extension().to_lower()
+	if ext == "ogv":
+		return true
+	return ffmpeg_video_available() and ext in MediaIO.SUPPORTED_VIDEO
 
 
 static func resolve_path(_chart_path: String, path: String) -> String:

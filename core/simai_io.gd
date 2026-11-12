@@ -493,16 +493,8 @@ static func _extract_assets(path: String, chart: Chart) -> void:
 				file.store_buffer(data)
 				file.close()
 		zip.close()
-		if not chart.audio_path.is_empty() and chart.audio_path.get_extension().to_lower() != "ogg":
-			# MP3 在部分音频驱动/解码器上会静音；解包时转成 OGG 更稳。
-			var ogg_path := folder + "track.ogg"
-			if FileAccess.file_exists(ogg_path):
-				chart.audio_path = ogg_path
-			else:
-				var output: Array = []
-				var code := OS.execute("ffmpeg", ["-y", "-i", ProjectSettings.globalize_path(chart.audio_path), "-vn", "-acodec", "libvorbis", "-q:a", "5", ProjectSettings.globalize_path(ogg_path)], output, true, false)
-				if code == 0 and FileAccess.file_exists(ogg_path):
-					chart.audio_path = ogg_path
+		# mp3 → ogg 以前在这里同步跑 ffmpeg，导入整包时会冻结界面；
+		# 现在导入完由主窗口带着进度条异步转（见 Main._prepare_import_media）。
 		return
 	# 直接选择 maidata.txt 或解压后的文件夹时，直接用同目录的 track 文件，不复制。
 	folder = path.get_base_dir() if not DirAccess.dir_exists_absolute(path) else path

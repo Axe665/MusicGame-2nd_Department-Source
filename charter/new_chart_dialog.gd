@@ -249,7 +249,15 @@ func _on_confirmed() -> void:
 	if _audio.text.strip_edges().is_empty():
 		_error.text = "音频为必填项。"
 		return
-	var prepared := MediaIO.prepare_audio(_audio.text.strip_edges())
+	var audio_path := _audio.text.strip_edges()
+	var prepared := audio_path
+	if not MediaIO.is_native_audio(audio_path) and not FileAccess.file_exists(MediaIO.audio_cache_path(audio_path)):
+		_error.text = "正在转码音频…"
+		prepared = await MediaIO.prepare_audio_async(audio_path, get_tree())
+	else:
+		prepared = MediaIO.prepare_audio(audio_path)
+	if not is_inside_tree():
+		return
 	if prepared.is_empty():
 		_error.text = "无法读取音频：%s（%s）" % [_audio.text, MediaIO.last_error]
 		return
