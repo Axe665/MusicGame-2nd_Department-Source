@@ -3,7 +3,7 @@ extends Control
 
 signal exit_requested
 signal settings_requested
-## 结算页点「打开回放」时把本局录制发出去，由主场景重开一局回放。
+## 结算页点「回放本局」时把本局录制发出去，由主场景重开一局回放。
 signal replay_requested(data: Replay)
 
 const PERFECT_MS := 65.0
@@ -542,8 +542,8 @@ func _build_ui() -> void:
 	_apply_bias_button.stretch_ratio = 2.0
 	action_row.add_child(_apply_bias_button)
 	_replay_button = Button.new()
-	_replay_button.text = "打开回放"
-	_replay_button.tooltip_text = "用刚录下的输入重放这一局；判定结果与刚才一致"
+	_replay_button.text = "回放本局"
+	_replay_button.tooltip_text = "用刚录下的输入重放这一局；判定结果与刚才一致（回放中再点 = 从头再放一遍）"
 	_replay_button.pressed.connect(_request_replay)
 	_replay_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_replay_button.stretch_ratio = 1.0
