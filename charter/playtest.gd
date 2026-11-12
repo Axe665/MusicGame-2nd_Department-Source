@@ -204,6 +204,7 @@ var _export_avi: String = ""
 var _export_mp4: String = ""
 var _export_timer: float = 0.0
 var _export_ffmpeg: String = "ffmpeg"
+var _export_elapsed: float = 0.0
 var _toast_label: Label = null
 var _toast_tween: Tween = null
 ## 暂停菜单（ESC）。
@@ -997,7 +998,7 @@ func _export_video() -> void:
 	if data == null or _export_stage != 0:
 		return
 	if _ffmpeg_path().is_empty():
-		_show_toast("没找到 ffmpeg，先装一个：winget install Gyan.FFmpeg")
+		_notify_result("没找到 ffmpeg，先装一个：winget install Gyan.FFmpeg")
 		return
 	if _export_dialog == null:
 		_export_dialog = FileDialog.new()
@@ -1050,37 +1051,49 @@ func _start_video_export(path: String) -> void:
 	_export_mp4 = path
 	_export_avi = path.get_basename() + ".avi"
 	_export_ffmpeg = _ffmpeg_path()
+	var exe := OS.get_executable_path()
+	# 从编辑器里跑的（含 F5）子进程不带 --path 会直接进项目管理器，什么都不渲。
+	# 导出成 exe 之后 res:// 在 pck 里，这个目录不存在，就不加。
+	var project_dir := ProjectSettings.globalize_path("res://")
 	var args: Array[String] = []
-	if OS.has_feature("editor"):
-		args.append_array(["--path", ProjectSettings.globalize_path("res://")])
+	if DirAccess.dir_exists_absolute(project_dir):
+		args.append_array(["--path", project_dir])
 	args.append_array([
 		"--write-movie", _export_avi,
 		"--fixed-fps", "60",
 		"--", "--replay=" + tmp, "--export-quit",
 	])
-	_export_pid = OS.create_process(OS.get_executable_path(), args)
+	print("[export] ", exe, " ", args)
+	_export_pid = OS.create_process(exe, args)
 	if _export_pid <= 0:
-		_show_toast("渲染进程没起来")
+		_notify_result("导出失败：渲染进程没起来")
 		return
 	_export_stage = 1
 	_export_timer = 0.0
-	_show_toast("正在渲染（中间文件很大，转完自动删）")
+	_export_elapsed = 0.0
+	_notify_result("开始渲染视频，播完会自动转码（中间文件很大，转完自动删）")
 
 
 ## 每 0.5 秒看一眼子进程：渲染完 → 转码，转码完 → 删 AVI。
 func _tick_export(delta: float) -> void:
 	if _export_stage == 0:
 		return
+	_export_elapsed += delta
 	_export_timer += delta
 	if _export_timer < 0.5:
 		return
 	_export_timer = 0.0
 	if _export_stage == 1:
 		if OS.is_process_running(_export_pid):
+			# 子进程活着但迟迟没建出文件，多半是没带 --path 进了项目管理器。
+			if not FileAccess.file_exists(_export_avi) and _export_elapsed > 20.0:
+				OS.kill(_export_pid)
+				_export_stage = 0
+				_notify_result("导出失败：渲染进程没开始写文件（看控制台的 [export] 行）")
 			return
 		if not FileAccess.file_exists(_export_avi):
 			_export_stage = 0
-			_show_toast("渲染失败：没有生成视频文件")
+			_notify_result("导出失败：没有生成视频文件")
 			return
 		var args := PackedStringArray([
 			"-y", "-i", _export_avi,
@@ -1094,7 +1107,8 @@ func _tick_export(delta: float) -> void:
 			_show_toast("ffmpeg 启动失败，AVI 留在 %s" % _export_avi)
 			return
 		_export_stage = 2
-		_show_toast("转码中…")
+		print("[export] ffmpeg ", _export_ffmpeg)
+		_notify_result("渲染完成，正在转码…")
 		return
 	if OS.is_process_running(_export_pid):
 		return
@@ -1102,7 +1116,7 @@ func _tick_export(delta: float) -> void:
 		DirAccess.remove_absolute(_export_avi)
 	DirAccess.remove_absolute(ProjectSettings.globalize_path("user://export_replay.tmkrpl"))
 	_export_stage = 0
-	_show_toast("视频已保存：%s" % _export_mp4.get_file())
+	_notify_result("视频已保存：%s" % _export_mp4)
 
 
 ## 当前可保存的回放：回放中看的是 replay_source，刚打完看的是本局录制。
