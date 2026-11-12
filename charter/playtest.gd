@@ -190,6 +190,11 @@ var _bias_label: Label
 var _apply_bias_button: Button
 ## 结算页：重放本局录制。
 var _replay_button: Button
+## 结算页：把本局回放另存到本地。
+var _save_replay_button: Button
+var _save_replay_dialog: FileDialog = null
+var _toast_label: Label = null
+var _toast_tween: Tween = null
 ## 暂停菜单（ESC）。
 var _pause_overlay: Control = null
 var _path_judgement_toggle: CheckButton
@@ -535,6 +540,11 @@ func _build_ui() -> void:
 	_replay_button.tooltip_text = "用刚录下的输入重放这一局；判定结果与刚才一致（F8 可切 AUTO）"
 	_replay_button.pressed.connect(_request_replay)
 	box.add_child(_replay_button)
+	_save_replay_button = Button.new()
+	_save_replay_button.text = "保存回放…"
+	_save_replay_button.tooltip_text = "把这一局的输入存成 .tmkrpl 文件，可以留着以后重看"
+	_save_replay_button.pressed.connect(_save_replay)
+	box.add_child(_save_replay_button)
 	_results_text = RichTextLabel.new()
 	_results_text.bbcode_enabled = false
 	_results_text.fit_content = false
@@ -950,6 +960,90 @@ func _active_offset() -> float:
 	if not is_nan(_offset_override):
 		return _offset_override
 	return float(_app.playtest_offset_ms if _app != null else 0.0)
+
+
+## 当前可保存的回放：回放中看的是 replay_source，刚打完看的是本局录制。
+func _current_replay() -> Replay:
+	if replay_mode:
+		return replay_source
+	return _record
+
+
+## 手动另存为：只有点了才写文件，平时磁盘上不会多出任何东西。
+func _save_replay() -> void:
+	var data := _current_replay()
+	if data == null:
+		return
+	if _save_replay_dialog == null:
+		_save_replay_dialog = FileDialog.new()
+		_save_replay_dialog.use_native_dialog = true
+		_save_replay_dialog.file_mode = FileDialog.FILE_MODE_SAVE_FILE
+		_save_replay_dialog.access = FileDialog.ACCESS_FILESYSTEM
+		_save_replay_dialog.title = "保存回放"
+		_save_replay_dialog.add_filter("*.tmkrpl", "Tamaki 回放")
+		_save_replay_dialog.file_selected.connect(_on_replay_saved_to)
+		add_child(_save_replay_dialog)
+	_save_replay_dialog.current_dir = OS.get_system_dir(OS.SYSTEM_DIR_DOWNLOADS)
+	_save_replay_dialog.current_file = _replay_file_name()
+	_save_replay_dialog.popup_centered()
+
+
+func _on_replay_saved_to(path: String) -> void:
+	var data := _current_replay()
+	if data == null:
+		return
+	if not path.to_lower().ends_with(".tmkrpl"):
+		path += ".tmkrpl"
+	var err := data.save_to(path)
+	if err == OK:
+		_add_log("回放已保存：%s" % path)
+		_show_toast("已保存回放：%s" % path.get_file())
+	else:
+		_show_toast("保存失败（错误码 %d）" % err)
+
+
+func _replay_file_name() -> String:
+	var title := "回放"
+	if chart != null:
+		var meta_title := String(chart.metadata.get("title", ""))
+		if not meta_title.is_empty():
+			title = meta_title
+	var version := String(chart.metadata.get("version", "")) if chart != null else ""
+	var stamp := Time.get_datetime_string_from_system().replace(":", "").replace("-", "").replace("T", "-")
+	var name := title
+	if not version.is_empty():
+		name += "_" + version
+	return _sanitize_file_name(name + "_" + stamp) + ".tmkrpl"
+
+
+## Windows 不允许这几个字符出现在文件名里。
+func _sanitize_file_name(text: String) -> String:
+	var out := ""
+	for ch in text:
+		out += "_" if ch in "/\\:*?\"<>|" else ch
+	out = out.strip_edges()
+	return out if not out.is_empty() else "replay"
+
+
+func _show_toast(message: String) -> void:
+	if _toast_label == null:
+		_toast_label = Label.new()
+		_toast_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		_toast_label.add_theme_font_size_override("font_size", 13)
+		_toast_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		add_child(_toast_label)
+		_toast_label.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
+		_toast_label.offset_left = -420
+		_toast_label.offset_right = 420
+		_toast_label.offset_top = -96
+		_toast_label.offset_bottom = -66
+	_toast_label.text = message
+	_toast_label.modulate.a = 1.0
+	if _toast_tween != null and _toast_tween.is_valid():
+		_toast_tween.kill()
+	_toast_tween = create_tween()
+	_toast_tween.tween_interval(2.5)
+	_toast_tween.tween_property(_toast_label, "modulate:a", 0.0, 0.6)
 
 
 func _request_replay() -> void:
@@ -2566,6 +2660,8 @@ func _finish() -> void:
 			can_replay = _record != null and _record.event_count() > 0
 		_replay_button.disabled = not can_replay
 		_replay_button.text = "再看一遍" if replay_mode else "重看本局"
+	if _save_replay_button != null:
+		_save_replay_button.disabled = _current_replay() == null
 	if _apply_bias_button != null:
 		var delta := -average_error
 		var can_apply: bool = not auto_play and not replay_mode and _errors.size() >= 8 and absf(delta) >= 1.0 \

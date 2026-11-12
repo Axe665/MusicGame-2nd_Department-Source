@@ -112,6 +112,7 @@ func _initialize() -> void:
 		"test_replay_round_trip",
 		"test_replay_dispatch",
 		"test_replay_scrub",
+		"test_replay_file_name",
 	]
 	for test_name in tests:
 		if call(test_name) != true:
@@ -3010,5 +3011,16 @@ func test_replay_scrub() -> bool:
 	near(run._replay_fraction(), 0.0, 0.001, "empty span does not divide by zero")
 	run.free()
 	return true
+
+
+## 回放文件名：Windows 非法字符要替换，空名字要有兜底。
+func test_replay_file_name() -> bool:
+	var run := Playtest.new()
+	eq(run._sanitize_file_name("a/b:c*?"), "a_b_c__", "file name replaces illegal characters")
+	eq(run._sanitize_file_name("  "), "replay", "blank file name falls back")
+	eq(run._sanitize_file_name("Sakura_紫"), "Sakura_紫", "normal names are kept")
+	run.free()
+	return true
+
 
 
