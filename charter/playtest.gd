@@ -191,8 +191,6 @@ var _apply_bias_button: Button
 ## 结算页：重放本局录制。
 var _replay_button: Button
 ## 结算页：把本局回放另存到本地。
-var _save_replay_button: Button
-var _save_replay_dialog: FileDialog = null
 ## 导出视频：先让子进程用 Movie Maker 渲染 AVI，再用 ffmpeg 转 mp4。
 ## export_mode 只在子进程里为 true：放完自动退出，不录结算画面。
 var export_mode: bool = false
@@ -576,13 +574,13 @@ func _build_ui() -> void:
 	_replay_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_replay_button.size_flags_stretch_ratio = 1.0
 	action_row.add_child(_replay_button)
-	_save_replay_button = Button.new()
-	_save_replay_button.text = "保存回放"
-	_save_replay_button.tooltip_text = "把这一局的输入存成 .tmkrpl 文件，可以留着以后重看"
-	_save_replay_button.pressed.connect(_save_replay)
-	_save_replay_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_save_replay_button.size_flags_stretch_ratio = 1.0
-	action_row.add_child(_save_replay_button)
+	_export_button = Button.new()
+	_export_button.text = "导出视频"
+	_export_button.tooltip_text = "把这一局渲染成 720p 的 mp4（需要电脑上装了 ffmpeg）"
+	_export_button.pressed.connect(_export_video)
+	_export_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_export_button.size_flags_stretch_ratio = 1.0
+	action_row.add_child(_export_button)
 	_results_text = RichTextLabel.new()
 	_results_text.bbcode_enabled = false
 	_results_text.fit_content = false
@@ -593,12 +591,6 @@ func _build_ui() -> void:
 	var result_buttons := HBoxContainer.new()
 	result_buttons.add_theme_constant_override("separation", 12)
 	box.add_child(result_buttons)
-	_export_button = Button.new()
-	_export_button.text = "导出视频…"
-	_export_button.tooltip_text = "把这一局渲染成 mp4（需要电脑上装了 ffmpeg）"
-	_export_button.pressed.connect(_export_video)
-	_export_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	result_buttons.add_child(_export_button)
 	var retry_button := Button.new()
 	retry_button.text = "重试"
 	retry_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -1400,39 +1392,6 @@ func _current_replay() -> Replay:
 	if replay_mode:
 		return replay_source
 	return _record
-
-
-## 手动另存为：只有点了才写文件，平时磁盘上不会多出任何东西。
-func _save_replay() -> void:
-	var data := _current_replay()
-	if data == null:
-		return
-	if _save_replay_dialog == null:
-		_save_replay_dialog = FileDialog.new()
-		_save_replay_dialog.use_native_dialog = true
-		_save_replay_dialog.file_mode = FileDialog.FILE_MODE_SAVE_FILE
-		_save_replay_dialog.access = FileDialog.ACCESS_FILESYSTEM
-		_save_replay_dialog.title = "保存回放"
-		_save_replay_dialog.add_filter("*.tmkrpl", "Tamaki 回放")
-		_save_replay_dialog.file_selected.connect(_on_replay_saved_to)
-		add_child(_save_replay_dialog)
-	_save_replay_dialog.current_dir = OS.get_system_dir(OS.SYSTEM_DIR_DOWNLOADS)
-	_save_replay_dialog.current_file = _replay_file_name()
-	_save_replay_dialog.popup_centered()
-
-
-func _on_replay_saved_to(path: String) -> void:
-	var data := _current_replay()
-	if data == null:
-		return
-	if not path.to_lower().ends_with(".tmkrpl"):
-		path += ".tmkrpl"
-	var err := data.save_to(path)
-	if err == OK:
-		_add_log("回放已保存：%s" % path)
-		_show_toast("已保存回放：%s" % path.get_file())
-	else:
-		_show_toast("保存失败（错误码 %d）" % err)
 
 
 func _replay_file_name() -> String:
@@ -3095,8 +3054,8 @@ func _finish() -> void:
 		else:
 			can_replay = _record != null and _record.event_count() > 0
 		_replay_button.disabled = not can_replay
-	if _save_replay_button != null:
-		_save_replay_button.disabled = _current_replay() == null
+	if _export_button != null:
+		_export_button.disabled = _current_replay() == null
 	if _apply_bias_button != null:
 		var delta := -average_error
 		var can_apply: bool = not auto_play and not replay_mode and _errors.size() >= 8 and absf(delta) >= 1.0 \
