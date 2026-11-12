@@ -504,7 +504,7 @@ func _load_settings() -> void:
 			hud_show_percent = bool(data.get("hud_show_percent", hud_show_percent))
 			hud_show_time = bool(data.get("hud_show_time", hud_show_time))
 			hud_show_watermark = bool(data.get("hud_show_watermark", hud_show_watermark))
-			background_brightness = clampi(int(data.get("background_brightness", background_brightness)), 0, 150)
+			background_brightness = clampi(int(data.get("background_brightness", background_brightness)), 0, 100)
 			mouse_keys = bool(data.get("mouse_keys", mouse_keys))
 			preview_width = clampf(float(data.get("preview_width", preview_width)), 280.0, 720.0)
 			preview_collapsed = bool(data.get("preview_collapsed", preview_collapsed))

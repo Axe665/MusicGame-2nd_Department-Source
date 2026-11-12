@@ -827,7 +827,7 @@ static func _extract_assets(zip: ZIPReader, files: PackedStringArray, chart: Cha
 				var target := target_dir + "/" + found.get_file()
 				_write_zip_file(zip, found, target)
 				chart.video_path = target
-				report.append("视频：%s（预览时按需转码）" % target)
+				report.append("视频：%s（直接解码）" % target)
 			break
 	return report
 

@@ -9,7 +9,7 @@ const NATIVE_AUDIO := ["wav", "ogg", "mp3"]
 const SUPPORTED_AUDIO := ["wav", "ogg", "mp3", "flac"]
 const NATIVE_VIDEO := ["ogv"]
 ## 文件对话框和导入入口认这些；非 ogv 统一用 ffmpeg 转成 ogv 再预览。
-const SUPPORTED_VIDEO := ["ogv", "mp4", "webm", "mov", "mkv", "avi"]
+const SUPPORTED_VIDEO := ["ogv", "mp4", "m4v", "webm", "mov", "mkv", "avi"]
 
 ## Executable used for every conversion. The editor keeps this in sync with its
 ## own setting so a bundled or non-PATH ffmpeg also works for audio analysis.

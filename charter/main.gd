@@ -34,7 +34,7 @@ const QUALITY_OPTIONS := [
 	{"key": "ring_3d_scale", "label": "3D 环分辨率", "choices": [["高", 73], ["中", 74], ["低", 75]]},
 	{"key": "ring_3d_hz", "label": "3D 环刷新", "choices": [["60Hz", 76], ["30Hz", 77]]},
 	{"key": "bar_lines", "label": "小节线", "choices": [["开", 78], ["关", 79]]},
-	{"key": "background_brightness", "label": "背景明暗", "choices": [["关", 96], ["25%", 97], ["50%", 98], ["75%", 99], ["100%（默认）", 100], ["125%", 101], ["150%", 102]]},
+	{"key": "background_brightness", "label": "背景明暗", "choices": [["关", 96], ["25%", 97], ["50%", 98], ["75%", 99], ["100%（默认）", 100]]},
 ]
 
 ## 界面（HUD）选项：和 视图 → 画质 同样的菜单结构，只影响显示。
@@ -1088,7 +1088,7 @@ func _quality_index(key: String) -> int:
 		"bar_lines":
 			return 0 if _app.bar_lines else 1
 		"background_brightness":
-			return [0, 25, 50, 75, 100, 125, 150].find(_app.background_brightness)
+			return [0, 25, 50, 75, 100].find(_app.background_brightness)
 	return -1
 
 
@@ -1118,7 +1118,7 @@ func _set_quality_index(key: String, index: int) -> void:
 		"bar_lines":
 			_app.bar_lines = index == 0
 		"background_brightness":
-			_app.background_brightness = [0, 25, 50, 75, 100, 125, 150][clampi(index, 0, 6)]
+			_app.background_brightness = [0, 25, 50, 75, 100][clampi(index, 0, 4)]
 			# 背景明暗不是画质参数，别把预设打成「自定义」。
 			return
 	_app.quality_preset = "custom"
@@ -1438,7 +1438,7 @@ func _build_dialogs() -> void:
 	add_child(_chart_browser)
 	_osu_browser = OsuBrowser.new()
 	_osu_browser.source_ready.connect(func(source_path: String) -> void:
-		_on_import_osz_selected(source_path)
+		_on_import_osz_selected(source_path, _osu_browser.take_include_video())
 	)
 	add_child(_osu_browser)
 	_lbp_dialog = FileDialog.new()
@@ -1961,7 +1961,7 @@ func _close_tab_now(index: int) -> void:
 	_refresh_tabs()
 
 
-func _on_import_osz_selected(path: String) -> void:
+func _on_import_osz_selected(path: String, include_video: bool = true) -> void:
 	# 转谱：把来源里的所有难度转好，作为一个新标签页打开，不覆盖当前谱面。
 	if _app == null:
 		return
@@ -1970,6 +1970,9 @@ func _on_import_osz_selected(path: String) -> void:
 		_app.restore_active_tab()
 		_show_toast("导入失败：%s" % _import_error_text(), "error")
 		return
+	if not include_video:
+		# osu 详情页选了「不带视频」：先清掉再转码，别为不要的视频干活。
+		_drop_import_video()
 	await _prepare_import_media()
 	var count: int = _app.difficulties.size()
 	var title: String = _app.set_path.get_file().get_basename()
@@ -1979,6 +1982,24 @@ func _on_import_osz_selected(path: String) -> void:
 	_sync_from_app()
 	_refresh_tabs()
 	_show_report("转谱完成：%d 个难度已放进新标签页「%s」，顶部可以切换难度。" % [count, title])
+
+
+## 「不带视频」：解绑所有难度的 BGA，并删掉导入目录里的视频副本（源 .osz 不动）。
+func _drop_import_video() -> void:
+	if _app == null:
+		return
+	var removed := 0
+	for entry in _app.difficulties:
+		var chart: Chart = entry.get("chart", null)
+		if chart == null or chart.video_path.is_empty():
+			continue
+		var path := chart.video_path
+		chart.video_path = ""
+		removed += 1
+		if path.begins_with("user://imports/"):
+			DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	if removed > 0:
+		_app.save_set_file()
 
 
 ## 导入时先把 BGA / 需要转码的音频转好：带百分比进度，UI 不冻结。

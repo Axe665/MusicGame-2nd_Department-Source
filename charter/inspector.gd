@@ -1244,7 +1244,7 @@ func _build_view_page(page: VBoxContainer) -> void:
 		{"text": "选择视频…", "callback": func() -> void: _pick_video()},
 		{"text": "移除", "callback": func() -> void: _app.mutate(func() -> void: _app.chart.video_path = "")},
 	])
-	_label(page, "支持 OGV / MP4 / WebM / MOV / MKV / AVI；非 OGV 导入时转码到 user://media 缓存。", 11, UITheme.MUTED)
+	_label(page, "支持 OGV / MP4 / M4V / WebM / MOV / MKV / AVI；mp4 等默认直接解码（不转码），只有缺少解码库时才转码到 user://media 缓存。", 11, UITheme.MUTED)
 	_spin(page, "videoOffset ms", _app.chart.video_offset_ms, -10000.0, 10000.0, 1.0, func(value: float) -> void: _app.chart.video_offset_ms = value)
 	_spin(page, "FPS 提示", _app.chart.video_fps, 1.0, 240.0, 1.0, func(value: float) -> void: _app.chart.video_fps = value)
 	_spin(page, "不透明度", _app.chart.video_opacity, 0.0, 1.0, 0.01, func(value: float) -> void: _app.chart.video_opacity = value)
@@ -1731,9 +1731,14 @@ func _start_video_import(path: String) -> void:
 	if not MediaIO.is_supported_video(path):
 		_app.notice.emit("不支持的视频格式：.%s" % path.get_extension(), "error")
 		return
-	if MediaIO.is_native_video(path) or FileAccess.file_exists(MediaIO.video_cache_path(path)):
+	# 有 gdffmpeg 就直接解码，不转码、不弹进度；只有缺解码库/格式不支持才走兜底转码。
+	if ChartIO.can_decode_video_directly(path):
 		_apply_video_path(path)
-		_app.notice.emit("视频已导入", "info")
+		_app.notice.emit("视频已导入（直接解码，不转码）", "info")
+		return
+	if FileAccess.file_exists(MediaIO.video_cache_path(path)):
+		_apply_video_path(path)
+		_app.notice.emit("视频已导入（使用已有转码缓存）", "info")
 		return
 	var target_chart: Chart = _app.chart
 	_show_video_progress()
@@ -1743,10 +1748,10 @@ func _start_video_import(path: String) -> void:
 		_app.notice.emit("视频导入失败：%s" % MediaIO.last_error, "error")
 		return
 	if _app.chart != target_chart:
-		_app.notice.emit("视频已转码；谱面已切换，请在目标谱面重新选择同一个视频（缓存已就绪）", "warning")
+		_app.notice.emit("视频已转码缓存；谱面已切换，请在目标谱面重新选择同一个视频（缓存已就绪）", "warning")
 		return
 	_apply_video_path(path)
-	_app.notice.emit("视频已导入并转码", "info")
+	_app.notice.emit("视频已导入（没有直解库，已转码缓存）", "info")
 
 
 func _apply_video_path(path: String) -> void:
@@ -1764,7 +1769,7 @@ func _show_video_progress() -> void:
 		box.add_theme_constant_override("separation", 12)
 		_video_progress.add_child(box)
 		_video_progress_label = Label.new()
-		_video_progress_label.text = "正在转码视频…"
+		_video_progress_label.text = "没有直解库，正在转码视频…"
 		box.add_child(_video_progress_label)
 		_video_progress_bar = ProgressBar.new()
 		_video_progress_bar.max_value = 100.0
@@ -1776,7 +1781,7 @@ func _show_video_progress() -> void:
 		if ok != null:
 			ok.visible = false
 	_video_progress_bar.value = 0.0
-	_video_progress_label.text = "正在转码视频…"
+	_video_progress_label.text = "没有直解库，正在转码视频…"
 	_video_progress.popup_centered(Vector2i(500, 170))
 
 
@@ -1790,7 +1795,7 @@ func _on_video_progress(ratio: float, seconds: float) -> void:
 		return
 	if ratio >= 0.0:
 		_video_progress_bar.value = clampf(ratio, 0.0, 1.0) * 100.0
-		_video_progress_label.text = "正在转码视频… %d%%（已转 %.0f 秒）" % [roundi(ratio * 100.0), seconds]
+		_video_progress_label.text = "没有直解库，正在转码… %d%%（已转 %.0f 秒）" % [roundi(ratio * 100.0), seconds]
 	else:
 		_video_progress_bar.value = fmod(float(Time.get_ticks_msec()) * 0.05, 100.0)
-		_video_progress_label.text = "正在转码视频… 已转 %.0f 秒" % seconds
+		_video_progress_label.text = "没有直解库，正在转码… 已转 %.0f 秒" % seconds

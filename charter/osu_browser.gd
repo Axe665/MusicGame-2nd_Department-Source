@@ -17,14 +17,14 @@ const COVER_DIR := "user://osu_covers"
 const GENRES := ["任何", "电子游戏", "动画", "J-Pop", "J-Rock", "同人", "纯音乐", "K-Pop", "电子", "摇滚", "嘻哈", "流行", "金属", "古典", "民谣", "爵士"]
 const LANGUAGES := ["任何", "英语", "中文", "日语", "韩语", "西班牙语", "法语", "德语", "意大利语", "俄语", "波兰语", "葡萄牙语"]
 const LANGUAGE_OTHER := -1
-const PAGE_SIZE := 50
+const PAGE_SIZE := 30
 const CARD_HEIGHT := 118.0
 const CARD_SEP := 10.0
 const COVER_SIZE := 88.0
 const COVER_CONCURRENCY := 3
+const SET_INFO_URL := "https://osu.direct/api/v2/s/%d"
 
 var _search: LineEdit
-var _favorites_button: Button
 var _cards: VBoxContainer
 var _scroll: ScrollContainer
 var _status: Label
@@ -32,10 +32,20 @@ var _progress: ProgressBar
 var _progress_label: Label
 var _progress_bar: ProgressBar
 var _progress_window: AcceptDialog
+var _prev_button: Button
+var _next_button: Button
+var _page_edit: LineEdit
 
-var _items: Array = []
 var _query := ""
+## 当前页（0 起）；搜索结果按页缓存，翻回去不重新请求。
+var _page := 0
+var _page_items: Dictionary = {}
+## 拉到不满一页就说明到底了。
+var _exhausted := false
+var _fetch_error := false
+var _page_loading := false
 var _favorites_only := false
+var _favorites_check: CheckBox
 var _filter_open := false
 var _genre_filter := 0
 var _language_filter := 0
@@ -43,18 +53,21 @@ var _tag_filter: LineEdit
 var _filters_row: HBoxContainer
 var _filter_button: Button
 var _filtered_count := 0
-var _offset := 0
-var _has_more := false
-var _loading_more := false
-var _fetch_error := false
 var _shown_count := 0
-var _more_button: Button
 var _busy := false
 var _cover_pending: Dictionary = {}
 ## 封面下载队列（同时最多 COVER_CONCURRENCY 个 HTTPRequest，避免一次开几百个）。
 var _cover_queue: Array = []
 var _cover_active := 0
 var _tag_timer: Timer = null
+## 收藏：settings 里只存 id，元数据在内存缓存；切到「只看收藏」时按页取。
+var _fav_meta: Dictionary = {}
+var _fav_items: Array = []
+var _include_video := true
+var _detail: AcceptDialog
+var _detail_box: VBoxContainer
+var _detail_serial := 0
+var _debounce: Timer = null
 
 
 func _ready() -> void:
@@ -67,10 +80,10 @@ func _ready() -> void:
 
 func _build() -> void:
 	var root := VBoxContainer.new()
-	root.add_theme_constant_override("separation", 10)
+	root.add_theme_constant_override("separation", 8)
 	add_child(root)
 
-	# 搜索行：圆角输入框 + 只看收藏
+	# 搜索行：圆角输入框 + 漏斗筛选（和舞萌浏览器同一套控件）
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 8)
 	root.add_child(row)
@@ -82,25 +95,19 @@ func _build() -> void:
 	_search.text_submitted.connect(func(_t: String) -> void: _refresh())
 	_search.text_changed.connect(_on_search_changed)
 	row.add_child(_search)
-	_favorites_button = Button.new()
-	_favorites_button.text = "☆ 收藏"
-	_favorites_button.toggle_mode = true
-	_favorites_button.custom_minimum_size = Vector2(96, 34)
-	_favorites_button.tooltip_text = "只看已收藏的谱面"
-	_favorites_button.toggled.connect(func(on: bool) -> void:
-		_favorites_only = on
-		_fill_cards()
-	)
-	row.add_child(_favorites_button)
 	_filter_button = Button.new()
-	_filter_button.text = "筛选"
 	_filter_button.toggle_mode = true
-	_filter_button.custom_minimum_size = Vector2(88, 34)
-	_filter_button.tooltip_text = "按 osu! 官方的类型 / 语言 / 标签过滤"
+	_filter_button.focus_mode = Control.FOCUS_NONE
+	_filter_button.custom_minimum_size = Vector2(44, 34)
+	_filter_button.tooltip_text = "类型 / 语言 / 标签 / 只看收藏"
 	_filter_button.toggled.connect(_on_filter_toggled)
+	var filter_icon := ChartBrowser.FunnelIcon.new()
+	filter_icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_filter_button.add_child(filter_icon)
+	filter_icon.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	row.add_child(_filter_button)
 
-	# 筛选行：类型 / 语言 / 标签（默认收起）
+	# 筛选行：类型 / 语言 / 标签 / 只看收藏（默认收起）
 	_filters_row = HBoxContainer.new()
 	_filters_row.add_theme_constant_override("separation", 8)
 	_filters_row.visible = false
@@ -112,6 +119,8 @@ func _build() -> void:
 	genre_box.select(0)
 	genre_box.item_selected.connect(func(index: int) -> void:
 		_genre_filter = index
+		_filtered_count = 0
+		_shown_count = 0
 		_fill_cards()
 	)
 	_filters_row.add_child(genre_box)
@@ -123,6 +132,8 @@ func _build() -> void:
 	language_box.select(0)
 	language_box.item_selected.connect(func(index: int) -> void:
 		_language_filter = index if index < LANGUAGES.size() else LANGUAGE_OTHER
+		_filtered_count = 0
+		_shown_count = 0
 		_fill_cards()
 	)
 	_filters_row.add_child(language_box)
@@ -135,20 +146,28 @@ func _build() -> void:
 			_tag_timer = Timer.new()
 			_tag_timer.one_shot = true
 			_tag_timer.wait_time = 0.25
-			_tag_timer.timeout.connect(_fill_cards)
+			_tag_timer.timeout.connect(func() -> void:
+				_filtered_count = 0
+				_shown_count = 0
+				_fill_cards()
+			)
 			add_child(_tag_timer)
 		_tag_timer.start()
 	)
 	_filters_row.add_child(_tag_filter)
-
-	_more_button = Button.new()
-	_more_button.text = "加载更多"
-	_more_button.visible = false
-	_more_button.custom_minimum_size = Vector2(0, 32)
-	_more_button.pressed.connect(_load_more)
-	root.add_child(_more_button)
+	_favorites_check = CheckBox.new()
+	_favorites_check.text = "只看收藏"
+	_favorites_check.add_theme_font_size_override("font_size", 12)
+	_favorites_check.toggled.connect(func(on: bool) -> void:
+		_favorites_only = on
+		_page = 0
+		_fill_cards()
+		_ensure_favorites_loaded()
+	)
+	_filters_row.add_child(_favorites_check)
 
 	_scroll = ScrollContainer.new()
+	_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	root.add_child(_scroll)
@@ -156,12 +175,6 @@ func _build() -> void:
 	_cards.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_cards.add_theme_constant_override("separation", int(CARD_SEP))
 	_scroll.add_child(_cards)
-	# 滚到底自动加载下一页（信号里不能直接 await 协程，用 call_deferred 起一个）。
-	_scroll.get_v_scroll_bar().value_changed.connect(func(value: float) -> void:
-		var bar := _scroll.get_v_scroll_bar()
-		if _has_more and not _loading_more and value >= bar.max_value - bar.page - 120.0:
-			_load_more.call_deferred()
-	)
 
 	_progress = ProgressBar.new()
 	_progress.max_value = 100.0
@@ -170,16 +183,44 @@ func _build() -> void:
 	_progress.visible = false
 	root.add_child(_progress)
 
+	# 分页行：状态 / 上一页 / 页码 / 下一页（osu 搜索接口没有总数）
+	var page_row := HBoxContainer.new()
+	page_row.add_theme_constant_override("separation", 6)
+	root.add_child(page_row)
 	_status = Label.new()
+	_status.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_status.add_theme_font_size_override("font_size", 12)
 	_status.add_theme_color_override("font_color", UITheme.MUTED)
-	root.add_child(_status)
+	page_row.add_child(_status)
+	_prev_button = Button.new()
+	_prev_button.text = "上一页"
+	_prev_button.add_theme_font_size_override("font_size", 11)
+	_prev_button.pressed.connect(func() -> void: _go_page(_page - 1))
+	page_row.add_child(_prev_button)
+	_page_edit = LineEdit.new()
+	_page_edit.alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_page_edit.custom_minimum_size = Vector2(48, 0)
+	_page_edit.add_theme_font_size_override("font_size", 11)
+	_page_edit.text_submitted.connect(func(text: String) -> void:
+		var wanted := int(text.strip_edges()) - 1
+		if text.strip_edges().is_valid_int():
+			_go_page(wanted)
+		else:
+			_page_edit.text = str(_page + 1)
+	)
+	page_row.add_child(_page_edit)
+	_next_button = Button.new()
+	_next_button.text = "下一页"
+	_next_button.add_theme_font_size_override("font_size", 11)
+	_next_button.pressed.connect(func() -> void: _go_page(_page + 1))
+	page_row.add_child(_next_button)
 
 
 func _on_filter_toggled(on: bool) -> void:
 	_filter_open = on
 	_filters_row.visible = on
-	_filter_button.text = "筛选 ●" if on and _has_filters() else "筛选"
+	_filtered_count = 0
+	_shown_count = 0
 	_fill_cards()
 
 
@@ -191,7 +232,7 @@ func _on_search_changed(_text: String) -> void:
 	# 输入防抖交给定时器，避免每个字符都打一次网络。
 	if not is_inside_tree():
 		return
-	if _search.text.strip_edges().length() >= 3 or not _search.text.strip_edges().is_empty():
+	if not _search.text.strip_edges().is_empty():
 		if _debounce == null:
 			_debounce = Timer.new()
 			_debounce.one_shot = true
@@ -199,9 +240,6 @@ func _on_search_changed(_text: String) -> void:
 			_debounce.timeout.connect(func() -> void: await _refresh())
 			add_child(_debounce)
 		_debounce.start()
-
-
-var _debounce: Timer = null
 
 
 # ---------------------------------------------------------------- 搜索
@@ -215,53 +253,69 @@ func _refresh() -> void:
 		# 只填了标签：拿标签当搜索词去捞候选，再在本地按标签过滤。
 		query = tags_text
 	if query.is_empty():
+		_page_items.clear()
+		_page = 0
+		_exhausted = false
 		_cards_box_clear()
+		_update_page_bar()
 		_status.text = "输入曲名 / 作者 / ID，或粘贴 osu! 谱面链接"
 		return
 	var direct := parse_osu_input(query)
 	if not direct.is_empty():
-		_items = []
-		_cards_box_clear()
-		var kind_text := "谱面包" if String(direct.get("kind", "set")) == "set" else "单谱面（自动找所属谱面包）"
-		_has_more = false
-		_update_more_button()
-		_status.text = "识别为%s #%d — 回车或点击卡片开始下载" % [kind_text, int(direct.get("id", 0))]
-		_add_card({
-			"id": int(direct.get("id", 0)),
-			"title": "直接下载 " + kind_text,
-			"artist": "#%d" % int(direct.get("id", 0)),
-			"beatmaps": [],
-			"covers": {},
-			"_direct": direct,
-		})
+		await _open_direct(direct)
 		return
-	if query == _query and not _items.is_empty():
+	if query == _query and _page_items.has(0):
+		_page = 0
+		_favorites_only = false
+		if _favorites_check != null:
+			_favorites_check.set_pressed_no_signal(false)
 		_fill_cards()
 		return
 	_busy = true
-	_items = []
-	_offset = 0
-	_has_more = false
+	_query = query
+	_page = 0
+	_exhausted = false
+	_page_items.clear()
+	_favorites_only = false
 	_cards_box_clear()
 	_status.text = "正在搜索「%s」…" % query
-	await _fetch_page(query)
+	await _fetch_page(query, 0)
 	_busy = false
 	if _fetch_error:
 		_status.text = "搜索失败（网络不通或镜像超时）"
 		return
-	_query = query
 	_fill_cards()
-	_update_more_button()
 
 
-## 拉一页（amount=PAGE_SIZE, offset=_offset），把新的谱面包追加进 _items。
-## 返回新增条数；-1 表示请求失败。
-## 拉一页（amount=PAGE_SIZE, offset=_offset），新谱面包追加进 _items 并返回它们。
-## 失败时置 _fetch_error 并返回空数组。
-func _fetch_page(query: String) -> Array:
+## 粘贴链接 / 纯 ID：先取谱面包详情再开详情页；取不到就退回直接下载卡片。
+func _open_direct(direct: Dictionary) -> void:
+	var kind := String(direct.get("kind", "set"))
+	var id := int(direct.get("id", 0))
+	var set_id := id
+	if kind == "beatmap":
+		_status.text = "解析谱面 #%d…" % id
+		set_id = await _resolve_set_id(id)
+	if set_id <= 0:
+		_status.text = "解析谱面 #%d 失败" % id
+		return
+	_status.text = "读取谱面包 #%d…" % set_id
+	var entry := await _fetch_set_meta(set_id)
+	if entry.is_empty():
+		_page_items = {0: [{"id": set_id, "title": "谱面包 #%d" % set_id, "artist": "", "beatmaps": [], "covers": {}, "_direct": direct}]}
+	else:
+		_page_items = {0: [entry]}
+	_page = 0
+	_exhausted = true
+	_fill_cards()
+	if not entry.is_empty():
+		_open_detail(entry)
+
+
+## 拉第 page 页（0 起）并缓存；返回本页条目。失败时置 _fetch_error 并返回空数组。
+func _fetch_page(query: String, page: int) -> Array:
 	_fetch_error = false
 	var url := SEARCH_URL % query.uri_encode()
-	url = url.replace("amount=25", "amount=%d" % PAGE_SIZE) + "&offset=%d" % _offset
+	url = url.replace("amount=25", "amount=%d" % PAGE_SIZE) + "&offset=%d" % (page * PAGE_SIZE)
 	var bytes := await _http_get(url, "搜索 osu!")
 	if bytes.is_empty():
 		_fetch_error = true
@@ -270,72 +324,79 @@ func _fetch_page(query: String) -> Array:
 	if not parsed is Array:
 		_fetch_error = true
 		return []
-	var raw_count := 0
-	var added: Array = []
+	var raw := 0
+	var entries: Array = []
 	for item in parsed:
 		if not item is Dictionary:
 			continue
-		raw_count += 1
-		var entry: Dictionary = item
-		if osu_std_count(entry) <= 0:
+		raw += 1
+		if osu_std_count(item) <= 0:
 			continue
-		var set_id := int(entry.get("id", 0))
-		if _items.any(func(existing: Dictionary) -> bool: return int(existing.get("id", 0)) == set_id):
-			continue
-		_items.append(entry)
-		added.append(entry)
-	_offset += PAGE_SIZE
-	# 这一页不满 → 数据库见底了
-	_has_more = raw_count >= PAGE_SIZE
-	return added
+		entries.append(item)
+	_page_items[page] = entries
+	_exhausted = raw < PAGE_SIZE
+	return entries
 
 
-func _load_more() -> void:
-	if _busy or _loading_more or not _has_more:
+func _go_page(wanted: int) -> void:
+	if wanted < 0 or _busy or _page_loading:
+		_update_page_bar()
 		return
-	_loading_more = true
-	var query := _query if not _query.is_empty() else _search.text.strip_edges()
-	_set_more_button("正在加载…")
-	var added: Array = await _fetch_page(query)
-	_loading_more = false
+	if _favorites_only:
+		var pages := maxi(1, int(ceil(float(_fav_items.size()) / float(PAGE_SIZE))))
+		_page = clampi(wanted, 0, pages - 1)
+		_fill_cards()
+		return
+	if _page_items.has(wanted):
+		_page = wanted
+		_fill_cards()
+		return
+	if _exhausted and wanted > _page:
+		_update_page_bar()
+		return
+	_page_loading = true
+	_status.text = "加载第 %d 页…" % (wanted + 1)
+	await _fetch_page(_query, wanted)
+	_page_loading = false
 	if _fetch_error:
-		_set_more_button("加载失败，点我再试")
+		_status.text = "第 %d 页加载失败（网络不通或镜像超时）" % (wanted + 1)
+		_update_page_bar()
 		return
-	# 只追加新卡片：不重建整张列表，已经加载好的封面不会被打回队列。
-	_append_cards(added)
-	_update_more_button()
+	_page = wanted
+	_fill_cards()
 
 
-func _update_more_button() -> void:
-	if _more_button == null:
+func _update_page_bar() -> void:
+	if _page_edit == null:
 		return
-	_more_button.visible = _has_more
-	if _has_more:
-		_more_button.text = "加载更多（已加载 %d 个）" % _items.size()
+	_page_edit.text = str(_page + 1)
+	_prev_button.disabled = _page <= 0
+	if _favorites_only:
+		var pages := maxi(1, int(ceil(float(_fav_items.size()) / float(PAGE_SIZE))))
+		_next_button.disabled = _page >= pages - 1
+	else:
+		_next_button.disabled = _exhausted and not _page_items.has(_page + 1)
 
 
-func _set_more_button(text: String) -> void:
-	if _more_button == null:
-		return
-	_more_button.visible = true
-	_more_button.text = text
+func _current_items() -> Array:
+	if _favorites_only:
+		return _fav_items
+	var page: Variant = _page_items.get(_page, [])
+	return page if page is Array else []
 
 
-## 全量重建（搜索 / 筛选 / 收藏变化时用）。
+## 全量重建当前页（搜索 / 筛选 / 收藏 / 翻页后都用它）。
 func _fill_cards() -> void:
 	_cards_box_clear()
 	_shown_count = 0
 	_filtered_count = 0
-	for entry in _items:
+	for entry in _current_items():
 		_append_card_if_visible(entry)
+	if _filter_button != null:
+		# 有筛选项时给漏斗一点颜色，和舞萌浏览器一致。
+		_filter_button.modulate = UITheme.ACCENT if (_has_filters() or _favorites_only) else Color.WHITE
 	_update_status()
-
-
-## 追加新一页（“加载更多”用）。
-func _append_cards(entries: Array) -> void:
-	for entry in entries:
-		_append_card_if_visible(entry)
-	_update_status()
+	_update_page_bar()
 
 
 func _append_card_if_visible(entry: Dictionary) -> bool:
@@ -351,25 +412,26 @@ func _append_card_if_visible(entry: Dictionary) -> bool:
 
 
 func _update_status() -> void:
-	if _filter_button != null:
-		_filter_button.text = "筛选 ●" if _filter_open and _has_filters() else "筛选"
 	if _shown_count == 0:
 		if _favorites_only:
-			_status.text = "没有收藏的谱面（点卡片右侧的 ☆ 收藏）"
+			_status.text = "还没有收藏（点卡片右侧的 ☆ 收藏）"
 		elif _filtered_count > 0:
-			_status.text = "当前筛选项把 %d 个结果全过滤掉了" % _filtered_count
+			_status.text = "当前筛选项把本页 %d 个结果全过滤掉了" % _filtered_count
 		else:
 			_status.text = "没有结果"
 		return
 	var suffix := "，筛选掉 %d 个" % _filtered_count if _filtered_count > 0 else ""
-	var more := "（还有更多，滚到底或点下面按钮继续）" if _has_more else ""
-	_status.text = "%d 个谱面包%s%s（点卡片下载整包，导入后能切难度）" % [_shown_count, suffix, more]
+	_status.text = "%d 个谱面包%s · 第 %d 页（点卡片看详情）" % [_shown_count, suffix, _page + 1]
 
 
 func _cards_box_clear() -> void:
+	var keep: Array = []
 	for job in _cover_queue:
-		_cover_pending.erase(int(job.get("id", 0)))
-	_cover_queue.clear()
+		if job.get("target") != null:
+			keep.append(job)
+		else:
+			_cover_pending.erase(int(job.get("id", 0)))
+	_cover_queue = keep
 	for child in _cards.get_children():
 		_cards.remove_child(child)
 		child.queue_free()
@@ -379,15 +441,11 @@ func _add_card(entry: Dictionary) -> void:
 	var card := BeatmapCard.new()
 	card.setup(entry, _is_favorite(int(entry.get("id", 0))))
 	card.custom_minimum_size = Vector2(0, CARD_HEIGHT)
-	card.activated.connect(func(_id: int, direct: Dictionary) -> void:
-		if direct.is_empty():
-			_download_osu({"kind": "set", "id": int(entry.get("id", 0))})
-		else:
-			_download_osu(direct)
+	card.activated.connect(func(_id: int, _direct: Dictionary) -> void:
+		_open_detail(entry)
 	)
 	card.favorite_toggled.connect(func(set_id: int) -> void:
 		_toggle_favorite(set_id)
-		_fill_cards()
 	)
 	_cards.add_child(card)
 	_load_cover(card, entry)
@@ -410,9 +468,61 @@ func _toggle_favorite(set_id: int) -> void:
 	var at := list.find(set_id)
 	if at >= 0:
 		list.remove_at(at)
+		_fav_meta.erase(set_id)
 	else:
 		list.append(set_id)
+		var entry := _entry_by_id(set_id)
+		if not entry.is_empty():
+			_fav_meta[set_id] = entry
 	app.save_settings()
+	if _favorites_only:
+		_page = 0
+		await _ensure_favorites_loaded()
+		_fill_cards()
+
+
+## 收藏列表：settings 里只有 id，缺元数据的用 /api/v2/s/<id> 补。
+func _ensure_favorites_loaded() -> void:
+	var app := _app()
+	if app == null:
+		return
+	_fav_items.clear()
+	var pending: Array = []
+	for value in app.osu_favorites:
+		var set_id := int(value)
+		if _fav_meta.has(set_id):
+			_fav_items.append(_fav_meta[set_id])
+		else:
+			pending.append(set_id)
+	if not pending.is_empty():
+		_status.text = "读取收藏（%d 个）…" % pending.size()
+		for set_id in pending:
+			var entry := await _fetch_set_meta(int(set_id))
+			if entry.is_empty():
+				continue
+			_fav_meta[int(set_id)] = entry
+			_fav_items.append(entry)
+	_fill_cards()
+
+
+func _fetch_set_meta(set_id: int) -> Dictionary:
+	if set_id <= 0:
+		return {}
+	var bytes := await _http_get(SET_INFO_URL % set_id, "信息 #%d" % set_id, 25.0)
+	if bytes.is_empty():
+		return {}
+	var parsed: Variant = JSON.parse_string(bytes.get_string_from_utf8())
+	return parsed if parsed is Dictionary else {}
+
+
+func _entry_by_id(set_id: int) -> Dictionary:
+	for page in _page_items.values():
+		if page is Array:
+			for entry in page:
+				if entry is Dictionary and int(entry.get("id", 0)) == set_id:
+					return entry
+	var cached: Variant = _fav_meta.get(set_id, {})
+	return cached if cached is Dictionary else {}
 
 
 func _app() -> Node:
@@ -444,6 +554,28 @@ func _load_cover(card: BeatmapCard, entry: Dictionary) -> void:
 	_pump_covers()
 
 
+## 详情页封面：和卡片共用缓存和请求队列，贴到 TextureRect 上。
+func _load_cover_into(entry: Dictionary, target: TextureRect, glyph: Label) -> void:
+	var set_id := int(entry.get("id", 0))
+	if set_id <= 0:
+		return
+	var path := _cover_path(set_id)
+	if FileAccess.file_exists(path):
+		var image := Image.load_from_file(ProjectSettings.globalize_path(path))
+		if image != null and not image.is_empty():
+			target.texture = ImageTexture.create_from_image(image)
+			if is_instance_valid(glyph):
+				glyph.visible = false
+			return
+	var covers: Dictionary = entry.get("covers", {})
+	var url := String(covers.get("list", covers.get("cover", "")))
+	if url.is_empty() or _cover_pending.has(set_id):
+		return
+	_cover_pending[set_id] = true
+	_cover_queue.append({"target": target, "glyph": glyph, "url": url, "path": path, "id": set_id})
+	_pump_covers()
+
+
 ## 同时最多 COVER_CONCURRENCY 个封面请求；完成一个再补一个。
 func _pump_covers() -> void:
 	while _cover_active < COVER_CONCURRENCY and not _cover_queue.is_empty():
@@ -462,6 +594,8 @@ func _start_cover(job: Dictionary) -> void:
 		_cover_pending.erase(int(job.get("id", 0)))
 		# 卡片可能已经被过滤/翻页重建时释放，先按 Variant 拿引用再判有效。
 		var card = job.get("card")
+		var target = job.get("target")
+		var glyph = job.get("glyph")
 		if code == 200 and body.size() >= 256:
 			DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(COVER_DIR))
 			var file := FileAccess.open(String(job.get("path")), FileAccess.WRITE)
@@ -470,8 +604,13 @@ func _start_cover(job: Dictionary) -> void:
 				file.close()
 			var image := Image.new()
 			if image.load_jpg_from_buffer(body) == OK or image.load_png_from_buffer(body) == OK:
+				var texture := ImageTexture.create_from_image(image)
 				if is_instance_valid(card):
-					card.set_cover(ImageTexture.create_from_image(image))
+					card.set_cover(texture)
+				elif is_instance_valid(target):
+					target.texture = texture
+					if is_instance_valid(glyph):
+						glyph.visible = false
 		_pump_covers()
 	)
 	http.request(String(job.get("url")))
@@ -479,12 +618,20 @@ func _start_cover(job: Dictionary) -> void:
 
 # ---------------------------------------------------------------- 下载
 
+## 详情页选了「不带视频」→ main 导入后把视频丢掉；读完自动复位。
+func take_include_video() -> bool:
+	var value := _include_video
+	_include_video = true
+	return value
+
+
 func _download_osu(entry: Dictionary) -> void:
 	if _busy:
 		return
 	var kind := String(entry.get("kind", "set"))
 	var set_id := int(entry.get("id", 0))
 	if set_id <= 0:
+		_include_video = true
 		return
 	_show_progress("准备下载 #%d…" % set_id)
 	_busy = true
@@ -493,6 +640,7 @@ func _download_osu(entry: Dictionary) -> void:
 		if resolved <= 0:
 			_finish_progress("解析谱面 #%d 失败" % set_id)
 			_busy = false
+			_include_video = true
 			return
 		set_id = resolved
 	var candidates: Array = [set_id]
@@ -514,6 +662,7 @@ func _download_osu(entry: Dictionary) -> void:
 	_busy = false
 	if target.is_empty():
 		_finish_progress("下载失败（两个镜像都没拿到）")
+		_include_video = true
 		return
 	_finish_progress("下载完成，开始转谱")
 	# 先关窗口再交棒：导入时会弹进度/报告对话框。
@@ -527,7 +676,7 @@ func _download_osz(set_id: int) -> String:
 	var target := folder + "chart.osz"
 	for template in DOWNLOAD_URLS:
 		_set_progress_text("下载 osu! 谱面（#%d）…" % set_id)
-		var bytes := await _http_get(String(template) % set_id, "下载 osu! 谱面", 120.0)
+		var bytes := await _http_get(String(template) % set_id, "下载 osu! 谱面", 120.0, true)
 		if bytes.size() < 2048:
 			continue
 		var file := FileAccess.open(target, FileAccess.WRITE)
@@ -555,7 +704,7 @@ func _resolve_set_id(beatmap_id: int) -> int:
 	return int(line) if line.is_valid_int() else 0
 
 
-func _http_get(url: String, label: String = "", timeout_sec: float = 40.0) -> PackedByteArray:
+func _http_get(url: String, label: String = "", timeout_sec: float = 40.0, show_progress: bool = false) -> PackedByteArray:
 	var http := HTTPRequest.new()
 	http.timeout = timeout_sec
 	add_child(http)
@@ -565,13 +714,38 @@ func _http_get(url: String, label: String = "", timeout_sec: float = 40.0) -> Pa
 	if err != OK:
 		http.queue_free()
 		return PackedByteArray()
-	var result: Array = await http.request_completed
+	var state := {"done": false, "code": 0, "body": PackedByteArray()}
+	http.request_completed.connect(func(_result: int, code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
+		state["done"] = true
+		state["code"] = code
+		state["body"] = body
+	)
+	var total := 0
+	var last_bytes := 0
+	var last_tick := Time.get_ticks_msec()
+	var speed_samples: Array = []
+	while not state["done"]:
+		await get_tree().process_frame
+		if not is_inside_tree():
+			break
+		if not show_progress:
+			continue
+		var got := http.get_downloaded_bytes()
+		if total <= 0:
+			total = http.get_body_size()
+		var now := Time.get_ticks_msec()
+		var dt := float(now - last_tick) / 1000.0
+		if dt >= 0.3:
+			speed_samples.append(float(got - last_bytes) / dt / 1048576.0)
+			if speed_samples.size() > 8:
+				speed_samples.pop_front()
+			last_bytes = got
+			last_tick = now
+		_update_download_progress(got, total, speed_samples)
 	http.queue_free()
-	if result.size() < 4:
+	if int(state["code"]) != 200:
 		return PackedByteArray()
-	if int(result[1]) != 200:
-		return PackedByteArray()
-	var body: PackedByteArray = result[3]
+	var body: PackedByteArray = state["body"]
 	return body
 
 
@@ -604,10 +778,25 @@ func _show_progress(text: String) -> void:
 func _set_progress_text(text: String) -> void:
 	if _progress_label != null:
 		_progress_label.text = text
-	if _progress_bar != null:
-		_progress_bar.value = fmod(_progress_bar.value + 12.0, 100.0)
 	if _status != null:
 		_status.text = text
+
+
+## 下载中：已下 / 总量 + 平均速度（最近 8 个采样）。
+func _update_download_progress(got: int, total: int, speed_samples: Array) -> void:
+	if _progress_label == null:
+		return
+	var text := "下载中 %.1f MB" % (float(got) / 1048576.0)
+	if total > 0:
+		text += " / %.1f MB" % (float(total) / 1048576.0)
+		if _progress_bar != null:
+			_progress_bar.value = clampf(float(got) / float(total), 0.0, 1.0) * 100.0
+	if not speed_samples.is_empty():
+		var speed := 0.0
+		for sample in speed_samples:
+			speed += float(sample)
+		text += " · %.1f MB/s" % (speed / float(speed_samples.size()))
+	_progress_label.text = text
 
 
 func _finish_progress(text: String) -> void:
@@ -615,6 +804,277 @@ func _finish_progress(text: String) -> void:
 		_progress_window.hide()
 	if _status != null:
 		_status.text = text
+
+
+# ---------------------------------------------------------------- 详情
+
+func _ensure_detail() -> AcceptDialog:
+	if _detail != null:
+		return _detail
+	_detail = AcceptDialog.new()
+	_detail.title = "谱面详情 · osu!"
+	_detail.ok_button_text = "关闭"
+	_detail.min_size = Vector2i(700, 560)
+	var scroll := ScrollContainer.new()
+	scroll.custom_minimum_size = Vector2(660, 510)
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	_detail.add_child(scroll)
+	_detail_box = VBoxContainer.new()
+	_detail_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_detail_box.add_theme_constant_override("separation", 10)
+	scroll.add_child(_detail_box)
+	add_child(_detail)
+	return _detail
+
+
+func _clear_detail() -> void:
+	if _detail_box == null:
+		return
+	for child in _detail_box.get_children():
+		_detail_box.remove_child(child)
+		child.queue_free()
+
+
+func _open_detail(entry: Dictionary) -> void:
+	_detail_serial += 1
+	var serial := _detail_serial
+	var dialog := _ensure_detail()
+	_clear_detail()
+
+	var top := HBoxContainer.new()
+	top.add_theme_constant_override("separation", 14)
+	_detail_box.add_child(top)
+	var cover_frame := Panel.new()
+	cover_frame.custom_minimum_size = Vector2(112, 112)
+	cover_frame.clip_contents = true
+	cover_frame.add_theme_stylebox_override("panel", UITheme._box(UITheme.PANEL, UITheme.BORDER, 10, 0, 0))
+	top.add_child(cover_frame)
+	var cover := TextureRect.new()
+	cover.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	cover.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+	cover_frame.add_child(cover)
+	cover.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	var glyph := Label.new()
+	glyph.text = "♪"
+	glyph.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	glyph.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	glyph.add_theme_font_size_override("font_size", 38)
+	glyph.add_theme_color_override("font_color", UITheme.FAINT)
+	cover_frame.add_child(glyph)
+	glyph.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_load_cover_into(entry, cover, glyph)
+
+	var info := VBoxContainer.new()
+	info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	info.add_theme_constant_override("separation", 4)
+	top.add_child(info)
+	var title := Label.new()
+	title.text = String(entry.get("title", ""))
+	title.add_theme_font_override("font", UITheme.bold_font())
+	title.add_theme_font_size_override("font_size", 20)
+	title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	info.add_child(title)
+	var unicode_title := String(entry.get("title_unicode", "")).strip_edges()
+	if not unicode_title.is_empty() and unicode_title != title.text:
+		var alt := Label.new()
+		alt.text = unicode_title
+		alt.add_theme_font_size_override("font_size", 12)
+		alt.add_theme_color_override("font_color", UITheme.MUTED)
+		info.add_child(alt)
+	var artist := Label.new()
+	artist.text = String(entry.get("artist", ""))
+	artist.add_theme_font_size_override("font_size", 13)
+	info.add_child(artist)
+	var meta := Label.new()
+	var creator := String(entry.get("creator", "")).strip_edges()
+	var source_text := String(entry.get("source", "")).strip_edges()
+	var bits: Array[String] = []
+	if not creator.is_empty():
+		bits.append("谱师 %s" % creator)
+	if not source_text.is_empty():
+		bits.append("来源 %s" % source_text)
+	meta.text = " · ".join(bits)
+	meta.add_theme_font_size_override("font_size", 11)
+	meta.add_theme_color_override("font_color", UITheme.MUTED)
+	info.add_child(meta)
+	var tags_text := String(entry.get("tags", "")).strip_edges()
+	if not tags_text.is_empty():
+		var tags := Label.new()
+		tags.text = tags_text.substr(0, 120)
+		tags.add_theme_font_size_override("font_size", 10)
+		tags.add_theme_color_override("font_color", UITheme.FAINT)
+		tags.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		info.add_child(tags)
+
+	var maps := _std_maps(entry)
+	var levels_label := Label.new()
+	levels_label.text = "难度（%d 个 osu!std）" % maps.size()
+	levels_label.add_theme_font_size_override("font_size", 12)
+	_detail_box.add_child(levels_label)
+	var flow := HFlowContainer.new()
+	flow.add_theme_constant_override("h_separation", 6)
+	flow.add_theme_constant_override("v_separation", 6)
+	_detail_box.add_child(flow)
+	for map in maps:
+		flow.add_child(_difficulty_chip(map))
+
+	var stats := Label.new()
+	stats.text = _stats_text(entry)
+	stats.add_theme_font_size_override("font_size", 11)
+	stats.add_theme_color_override("font_color", UITheme.MUTED)
+	_detail_box.add_child(stats)
+	_detail_box.add_child(HSeparator.new())
+
+	var has_video := bool(entry.get("video", false))
+	var note := Label.new()
+	note.add_theme_font_size_override("font_size", 11)
+	note.add_theme_color_override("font_color", UITheme.MUTED)
+	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	if has_video:
+		note.text = "这个谱面包带视频（BGA）。带/不带下载的是同一个包：「不带」会在导入后删除视频文件、不绑定 BGA。"
+	else:
+		note.text = "这个谱面包没有视频。"
+	_detail_box.add_child(note)
+
+	var size_label := Label.new()
+	size_label.text = "包体：检测中…"
+	size_label.add_theme_font_size_override("font_size", 11)
+	size_label.add_theme_color_override("font_color", UITheme.FAINT)
+	_detail_box.add_child(size_label)
+	_probe_entry_size(entry, size_label, serial)
+
+	var buttons := HBoxContainer.new()
+	buttons.add_theme_constant_override("separation", 10)
+	_detail_box.add_child(buttons)
+	if has_video:
+		var with_video := Button.new()
+		with_video.text = "带视频下载"
+		with_video.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		with_video.custom_minimum_size = Vector2(0, 42)
+		with_video.pressed.connect(func() -> void:
+			_include_video = true
+			dialog.hide()
+			_download_osu(entry)
+		)
+		buttons.add_child(with_video)
+		var without_video := Button.new()
+		without_video.text = "不带视频下载"
+		without_video.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		without_video.custom_minimum_size = Vector2(0, 42)
+		without_video.tooltip_text = "包体相同；导入后删除视频文件、不绑定 BGA"
+		without_video.pressed.connect(func() -> void:
+			_include_video = false
+			dialog.hide()
+			_download_osu(entry)
+		)
+		buttons.add_child(without_video)
+	else:
+		var download := Button.new()
+		download.text = "下载谱面"
+		download.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		download.custom_minimum_size = Vector2(0, 42)
+		download.pressed.connect(func() -> void:
+			dialog.hide()
+			_download_osu(entry)
+		)
+		buttons.add_child(download)
+
+	dialog.popup_centered(Vector2i(720, 580))
+
+
+func _std_maps(entry: Dictionary) -> Array:
+	var out: Array = []
+	for map in entry.get("beatmaps", []):
+		if map is Dictionary and int((map as Dictionary).get("mode_int", 0)) == 0:
+			out.append(map)
+	out.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return float(a.get("difficulty_rating", 0.0)) < float(b.get("difficulty_rating", 0.0))
+	)
+	return out
+
+
+func _difficulty_chip(map: Dictionary) -> PanelContainer:
+	var stars := float(map.get("difficulty_rating", 0.0))
+	var chip := PanelContainer.new()
+	var style := StyleBoxFlat.new()
+	style.bg_color = star_color(stars)
+	style.set_corner_radius_all(6)
+	chip.add_theme_stylebox_override("panel", style)
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 4)
+	var star_label := Label.new()
+	star_label.text = "%.1f" % stars
+	star_label.add_theme_font_size_override("font_size", 12)
+	star_label.add_theme_color_override("font_color", Color(0.06, 0.08, 0.10))
+	row.add_child(star_label)
+	var name := Label.new()
+	name.text = String(map.get("version", ""))
+	name.add_theme_font_size_override("font_size", 11)
+	name.add_theme_color_override("font_color", Color(0.06, 0.08, 0.10, 0.88))
+	row.add_child(name)
+	chip.add_child(row)
+	return chip
+
+
+func _stats_text(entry: Dictionary) -> String:
+	var bits: Array[String] = []
+	bits.append("BPM %d" % int(entry.get("bpm", 0)))
+	var longest := 0
+	for map in _std_maps(entry):
+		longest = maxi(longest, int(map.get("total_length", 0)))
+	if longest > 0:
+		bits.append("时长 %d:%02d" % [longest / 60, longest % 60])
+	bits.append("游玩 %s" % _thousands(int(entry.get("play_count", 0))))
+	bits.append("收藏 %s" % _thousands(int(entry.get("favourite_count", 0))))
+	var status := String(entry.get("status", "")).strip_edges()
+	if not status.is_empty():
+		bits.append(status)
+	return " · ".join(bits)
+
+
+static func _thousands(value: int) -> String:
+	var text := str(absi(value))
+	var out := ""
+	while text.length() > 3:
+		out = "," + text.substr(text.length() - 3) + out
+		text = text.substr(0, text.length() - 3)
+	return text + out
+
+
+## HEAD 拿包体大小；失败就显示「未知」。
+func _probe_entry_size(entry: Dictionary, label: Label, serial: int) -> void:
+	var set_id := int(entry.get("id", 0))
+	if set_id <= 0:
+		label.text = "包体：未知"
+		return
+	var url := String(DOWNLOAD_URLS[0]) % set_id
+	var http := HTTPRequest.new()
+	http.timeout = 15.0
+	add_child(http)
+	var err := http.request(url, PackedStringArray(), HTTPClient.METHOD_HEAD)
+	if err != OK:
+		http.queue_free()
+		label.text = "包体：未知"
+		return
+	var result: Array = await http.request_completed
+	http.queue_free()
+	if serial != _detail_serial or not is_instance_valid(label):
+		return
+	var size := 0
+	if result.size() >= 3:
+		for header in (result[2] as PackedStringArray):
+			var lower := String(header).to_lower()
+			if lower.begins_with("content-length:"):
+				var value := lower.substr(15).strip_edges()
+				if value.is_valid_int():
+					size = int(value)
+				break
+	if size <= 0:
+		label.text = "包体：未知"
+	elif size >= 1048576:
+		label.text = "包体：%.1f MB" % (float(size) / 1048576.0)
+	else:
+		label.text = "包体：%.0f KB" % (float(size) / 1024.0)
 
 
 # ---------------------------------------------------------------- 纯函数

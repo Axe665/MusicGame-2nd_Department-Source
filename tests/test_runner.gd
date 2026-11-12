@@ -58,6 +58,7 @@ func _initialize() -> void:
 		"test_playtest_countdown",
 		"test_background_layering",
 		"test_video_direct_decode",
+		"test_osu_browser_alignment",
 		"test_hold_stack_alpha",
 		"test_osu_taiko_import",
 		"test_osu_taiko_flow",
@@ -1627,6 +1628,8 @@ func test_video_direct_decode() -> bool:
 	ok(ChartIO.can_decode_video_directly("a.ogv"), "ogv is always decodable")
 	var has_ffmpeg := ChartIO.ffmpeg_video_available()
 	eq(ChartIO.can_decode_video_directly(mp4), has_ffmpeg, "mp4 decodes directly once gdffmpeg is loaded")
+	eq(ChartIO.can_decode_video_directly("x.m4v"), has_ffmpeg, "osu BGA (m4v) decodes directly too")
+	ok(MediaIO.SUPPORTED_VIDEO.has("m4v"), "m4v is in the supported video list")
 	ok(not ChartIO.can_decode_video_directly(""), "empty paths never decode")
 	# 没装扩展时必须返回 null，让预览退回转码而不是崩。
 	if has_ffmpeg:
@@ -1634,6 +1637,14 @@ func test_video_direct_decode() -> bool:
 		ok(stream == null, "non-video files do not become streams")
 	else:
 		ok(ChartIO.video_stream_from_path(mp4) == null, "no extension means no direct stream")
+	return true
+
+
+func test_osu_browser_alignment() -> bool:
+	eq(OsuBrowser.PAGE_SIZE, 30, "osu browser pages 30 at a time")
+	eq(OsuBrowser._thousands(168089), "168,089", "play counts get thousands separators")
+	eq(OsuBrowser._thousands(999), "999", "short counts stay as-is")
+	eq(OsuBrowser._thousands(0), "0", "zero stays zero")
 	return true
 
 
