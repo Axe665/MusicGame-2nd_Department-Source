@@ -144,9 +144,6 @@ var _combo: int = 0
 var _max_combo: int = 0
 var _sfx: HitSfx
 
-var _top_time: Label
-var _top_stats: Label
-var _style_label: Label
 var _results: PanelContainer
 var _results_text: RichTextLabel
 var _results_button: Button
@@ -208,6 +205,13 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	_preview.note_skin = String(_app.note_skin if _app != null else "candy")
 	_preview.hit_fx_style = String(_app.hit_fx_style if _app != null else "burst")
 	_preview.cursor_scale = float(_app.cursor_scale if _app != null else 1.0)
+	# HUD 左上角的曲目信息；成绩数据由 _update_hud_state() 每 50ms 推一次。
+	_preview.hud_title = String(chart.metadata.get("title", "")) if chart != null else ""
+	_preview.hud_difficulty = String(chart.difficulty) if chart != null else ""
+	_preview.hud_auto = auto_play
+	_preview.hud_combo = 0
+	_preview.hud_tiers = {}
+	_update_hud_state()
 	# 画质选项（视图 → 画质）：试玩用自己的 Preview3D，要单独推一份。
 	if _app != null:
 		_preview.note_detail_fine = bool(_app.note_detail_fine)
@@ -335,47 +339,6 @@ func _build_ui() -> void:
 	_preview.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_preview.notice.connect(func(message: String, level: String) -> void: _add_log("[%s] %s" % [level, message]))
 
-	var top := PanelContainer.new()
-	top.name = "TopBar"
-	top.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	add_child(top)
-	top.set_anchors_preset(Control.PRESET_TOP_LEFT)
-	top.offset_left = 16
-	top.offset_top = 14
-	top.offset_right = 560
-	top.offset_bottom = 58
-	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 18)
-	top.add_child(row)
-	var brand := Label.new()
-	brand.text = "试玩 · 预览/非正式"
-	UITheme.style_label(brand, 14, UITheme.CYAN)
-	row.add_child(brand)
-	_top_time = Label.new()
-	UITheme.style_mono(_top_time, 12, UITheme.MUTED)
-	row.add_child(_top_time)
-	var hint := Label.new()
-	hint.text = "Esc 暂停"
-	hint.add_theme_font_size_override("font_size", 11)
-	hint.add_theme_color_override("font_color", UITheme.MUTED)
-	row.add_child(hint)
-	_style_label = Label.new()
-	_style_label.add_theme_font_size_override("font_size", 11)
-	_style_label.add_theme_color_override("font_color", UITheme.ACCENT)
-	row.add_child(_style_label)
-
-	var stats_panel := PanelContainer.new()
-	stats_panel.name = "StatsBar"
-	stats_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	add_child(stats_panel)
-	stats_panel.set_anchors_preset(Control.PRESET_TOP_RIGHT)
-	stats_panel.offset_left = -620
-	stats_panel.offset_top = 14
-	stats_panel.offset_right = -16
-	stats_panel.offset_bottom = 58
-	_top_stats = Label.new()
-	UITheme.style_mono(_top_stats, 12, UITheme.INK)
-	stats_panel.add_child(_top_stats)
 
 	_results = PanelContainer.new()
 	_results.visible = false
@@ -432,17 +395,6 @@ func _build_ui() -> void:
 	_results_button.pressed.connect(func() -> void: _exit())
 	result_buttons.add_child(_results_button)
 
-	var bottom := Label.new()
-	bottom.text = "任意有效键：Tap / Hold / Anchor；Path / Bell 用鼠标定位；Seek 用滚轮上/下接住；Limit 停留 200ms 断连；[ / ] 判定偏移；F9 日志 / F10 判定区域。"
-	bottom.add_theme_font_size_override("font_size", 11)
-	bottom.add_theme_color_override("font_color", Color(UITheme.MUTED.r, UITheme.MUTED.g, UITheme.MUTED.b, 0.8))
-	bottom.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	bottom.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
-	bottom.offset_left = 24
-	bottom.offset_right = -24
-	bottom.offset_top = -30
-	bottom.offset_bottom = -10
-	add_child(bottom)
 
 
 func _init_states() -> void:
@@ -636,8 +588,7 @@ func _process(delta: float) -> void:
 	_ui_accum += delta
 	if _ui_accum >= 0.05:
 		_ui_accum = 0.0
-		_update_top_bar(chart_ms, beat)
-		_update_hud()
+		_update_hud_state()
 	if beat > chart.duration_beats() + 2.0:
 		_finish()
 	var keep_ms := PRESS_KEEP_MS
@@ -903,7 +854,7 @@ func _toggle_auto() -> void:
 	_auto_key_phase = 0
 	_add_log("AUTO %s" % ("ON" if auto_play else "OFF"))
 	if chart != null:
-		_update_top_bar(_chart_ms(), chart.timing.chart_ms_to_beat(_chart_ms()))
+		_update_hud_state()
 
 
 func _judge_all(ms: float, beat: float, delta: float) -> void:
@@ -1816,32 +1767,18 @@ func _add_log(line: String) -> void:
 	print("[playtest] %s" % line)
 
 
-func _update_top_bar(ms: float, beat: float) -> void:
-	var total := chart.timing.beat_to_chart_ms(chart.duration_beats())
-	_top_time.text = "%s / %s" % [_format_ms(ms), _format_ms(total)]
-	var accuracy := _accuracy()
-	var offset := float(_app.playtest_offset_ms if _app != null else 0.0)
-	var skin_label := String(Preview3D.skin_presets().get(_preview.note_skin, {}).get("label", _preview.note_skin))
-	var fx_label := String(Preview3D.hit_fx_presets().get(_preview.hit_fx_style, _preview.hit_fx_style))
-	if _style_label != null:
-		_style_label.text = "%s · %s" % [skin_label, fx_label]
-	_top_stats.text = "%sHIT %d  MISS %d  ACC %s  COMBO %d  |  LIMIT %d  |  BIA %+.1fms  OFF %+.0fms" % [
-		"[AUTO] " if auto_play else "",
-		_hit_count,
-		_miss_count,
-		"—" if accuracy < 0.0 else "%.1f%%" % accuracy,
-		_combo,
-		_red_breaks,
-		_mean_error(),
-		offset,
-	]
-
-
-func _update_hud() -> void:
+## 把本局状态推给 Preview3D 的 HUD（20Hz，和原来顶栏刷新同频）。
+func _update_hud_state() -> void:
+	if _preview == null or chart == null:
+		return
 	var accuracy := _accuracy()
 	_preview.hud_accuracy = accuracy
 	_preview.hud_rating = _rating(accuracy)
 	_preview.hud_errors = _errors.slice(maxi(0, _errors.size() - 64))
+	_preview.hud_combo = _combo
+	_preview.hud_max_combo = _max_combo
+	_preview.hud_tiers = _tier_counts.duplicate()
+	_preview.hud_auto = auto_play
 
 
 func _accuracy() -> float:
@@ -2121,7 +2058,7 @@ func _input(event: InputEvent) -> void:
 				if _app != null:
 					_app.playtest_offset_ms = clampf(float(_app.playtest_offset_ms) + delta, -200.0, 200.0)
 				var now_ms := _chart_ms()
-				_update_top_bar(now_ms, chart.timing.chart_ms_to_beat(now_ms))
+				_update_hud_state()
 				get_viewport().set_input_as_handled()
 				return
 			if not _running or _paused or _finished:
@@ -2257,7 +2194,7 @@ func _cycle_note_skin(step: int) -> void:
 	if _app != null:
 		_app.note_skin = _preview.note_skin
 		_app.save_settings()
-	_update_top_bar(_chart_ms(), chart.timing.chart_ms_to_beat(_chart_ms()))
+	_update_hud_state()
 
 
 func _cycle_hit_fx(step: int) -> void:
@@ -2267,7 +2204,7 @@ func _cycle_hit_fx(step: int) -> void:
 	if _app != null:
 		_app.hit_fx_style = _preview.hit_fx_style
 		_app.save_settings()
-	_update_top_bar(_chart_ms(), chart.timing.chart_ms_to_beat(_chart_ms()))
+	_update_hud_state()
 
 
 func _retry() -> void:

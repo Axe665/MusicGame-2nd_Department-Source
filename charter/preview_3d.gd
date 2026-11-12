@@ -69,6 +69,13 @@ var _app: Node = null
 var hud_accuracy: float = -1.0
 var hud_rating: String = "—"
 var hud_errors: Array[float] = []
+## 试玩 HUD：四角放数据、中心放连击、环外放进度/准度两条弧。
+var hud_combo: int = 0
+var hud_max_combo: int = 0
+var hud_tiers: Dictionary = {}
+var hud_title: String = ""
+var hud_difficulty: String = ""
+var hud_auto: bool = false
 
 var cursor_u: float = 0.0
 var cursor_valid: bool = false
@@ -3804,7 +3811,8 @@ func _draw_pulses(canvas: Control) -> void:
 			"trace":
 				canvas.draw_line(point - Vector2(52, 0), point + Vector2(52, 0), Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.5 * alpha), 9.0 * alpha + 1.0, false)
 		var label := String(pulse.get("label", ""))
-		var detail := String(pulse.get("detail", ""))
+		# 试玩 HUD 只留档位；偏差明细在结算页和暂停页看。
+		var detail := "" if playtest_mode else String(pulse.get("detail", ""))
 		var label_y := float(pulse.get("label_y", 0.0))
 		var pos := point + Vector2(30, -40 - age * 30 + label_y)
 		var label_alpha := alpha
@@ -4016,6 +4024,11 @@ func _draw_fx_ink(canvas: Control, point: Vector2, color: Color, age: float, spa
 
 ## draw_string 每帧都会重新排版（CJK 尤其贵）：缓存 TextLine，只在文字变化时重建。
 var _hud_text: Dictionary = {}
+## 连击动画：上一次的连击数 + 放大/断连的时间戳。
+var _hud_combo_prev: int = 0
+var _hud_combo_pop_at: int = -100000
+var _hud_combo_break_at: int = -100000
+var _hud_combo_broken: int = 0
 
 
 func _draw_cached_text(canvas: Control, key: String, font: Font, pos: Vector2, text: String, font_size: int, color: Color) -> void:
@@ -4029,6 +4042,14 @@ func _draw_cached_text(canvas: Control, key: String, font: Font, pos: Vector2, t
 
 
 func _draw_hud(canvas: Control, chart: Chart, t: float) -> void:
+	if playtest_mode:
+		_draw_play_hud(canvas, chart, t)
+		return
+	_draw_editor_hud(canvas, chart, t)
+
+
+## 编辑器预览的旧仪表：进度 / 评级 / 准度三段弧 + 误差条。
+func _draw_editor_hud(canvas: Control, chart: Chart, t: float) -> void:
 	var width := size.x
 	var cx := width * 0.5
 	var cy := minf(136.0, size.y * 0.20)
@@ -4076,6 +4097,140 @@ func _draw_hud(canvas: Control, chart: Chart, t: float) -> void:
 			color = UITheme.CYAN if error < 0.0 else UITheme.CORAL
 		canvas.draw_line(Vector2(x, baseline_y - 2.0), Vector2(x, baseline_y - 2.0 - length), color, 2.0, false)
 	_draw_cached_text(canvas, "hud_preview", mono, Vector2(cx - 34, baseline_y + 20), "预览 / 非正式", 10, UITheme.MUTED)
+
+
+const HUD_TIER_NAMES := ["PERFECT", "GREAT", "GOOD", "BAD", "MISS"]
+
+## 试玩 HUD：环外两条弧（进度、准度），左上曲名/难度，右上评级/准度/五档，中心连击。
+## 全部按窗口高度缩放，不写死像素，窄窗口也不会互相压。
+func _draw_play_hud(canvas: Control, chart: Chart, t: float) -> void:
+	var bounds := size
+	if bounds.x < 320.0 or bounds.y < 240.0:
+		return
+	var s := clampf(bounds.y / 900.0, 0.8, 1.8)
+	var margin := 18.0 * s
+	var bold := UITheme.bold_font()
+	var mono := UITheme.mono_font()
+	var center := project_design(Vector2.ZERO)
+	if not _valid_point(center):
+		center = bounds * 0.5
+	var accuracy := hud_accuracy
+	var progress := clampf(t / maxf(1.0, chart.duration_beats()), 0.0, 1.0)
+	# 环外仪表：进度顺时针、准度逆时针，起点都在 12 点，两条弧不重叠。
+	if _max_design_radius > 0.0:
+		var affine := _screen_affine()
+		# 设计坐标的 +90° 才是屏幕 12 点（y 轴朝上，屏幕朝下），别用 -90。
+		_hud_arc(canvas, affine, 90.0, 90.0 - 360.0 * progress, _max_design_radius * 1.01,
+			Color(1, 1, 1, 0.5), 2.4 * s)
+		if accuracy >= 0.0:
+			var acc_ratio := clampf(accuracy / 100.0, 0.0, 1.0)
+			_hud_arc(canvas, affine, 90.0, 90.0 + 360.0 * acc_ratio, _max_design_radius * 1.03,
+				Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.6), 1.5 * s)
+	# 左上：曲名 / 难度（替掉原来的皮肤/特效调试名）。
+	var left := Vector2(margin, margin)
+	if not hud_title.is_empty():
+		_draw_hud_text(canvas, "p_title", bold, left, hud_title, int(round(15.0 * s)), UITheme.INK)
+		left.y += 20.0 * s
+	if not hud_difficulty.is_empty():
+		_draw_hud_text(canvas, "p_difficulty", mono, left, hud_difficulty, int(round(11.0 * s)), UITheme.MUTED)
+	# 右上：评级 / 准度 / 五档计数。
+	var right := bounds.x - margin
+	_draw_hud_text(canvas, "p_rank", bold, Vector2(right, margin), hud_rating, int(round(30.0 * s)), _rank_color(hud_rating), 1)
+	_draw_hud_text(canvas, "p_acc", mono, Vector2(right, margin + 34.0 * s), "—" if accuracy < 0.0 else "%.2f%%" % accuracy, int(round(16.0 * s)), UITheme.INK, 1)
+	var tier_y := margin + 58.0 * s
+	for tier in HUD_TIER_NAMES:
+		_draw_hud_text(canvas, "p_tier_" + tier, mono, Vector2(right, tier_y), "%s %d" % [tier, int(hud_tiers.get(tier, 0))], maxi(10, int(round(11.0 * s))), _tier_color(tier), 1)
+		tier_y += 14.0 * s
+	# 中心：连击；AUTO 单独标在下面，避免和正式成绩混淆。
+	_draw_combo(canvas, bold, center, s)
+	if hud_auto:
+		_draw_hud_text(canvas, "p_auto", mono, Vector2(center.x, center.y + 96.0 * s), "AUTO", int(round(12.0 * s)), UITheme.AMBER, 2)
+
+
+## 连击：≥2 才出现；每命中轻微放大，断连变红闪 0.45s 后消失。
+func _draw_combo(canvas: Control, font: Font, center: Vector2, s: float) -> void:
+	var now := Time.get_ticks_msec()
+	if hud_combo > _hud_combo_prev:
+		_hud_combo_pop_at = now
+	elif hud_combo < _hud_combo_prev and _hud_combo_prev >= 2:
+		_hud_combo_break_at = now
+		_hud_combo_broken = _hud_combo_prev
+	_hud_combo_prev = hud_combo
+	var break_age := float(now - _hud_combo_break_at) / 1000.0
+	var flashing := break_age < 0.45
+	if hud_combo < 2 and not flashing:
+		return
+	var pop_age := float(now - _hud_combo_pop_at) / 1000.0
+	var pop := 1.0 + 0.10 * maxf(0.0, 1.0 - pop_age / 0.12)
+	var color := UITheme.INK
+	if flashing:
+		color = Color(UITheme.CORAL.r, UITheme.CORAL.g, UITheme.CORAL.b, 1.0 - break_age / 0.45)
+		pop = 1.06
+	var number_size := int(round(64.0 * s * pop))
+	# 断连时显示断掉时的连击数（比一个 0 更有信息），闪完自然消失。
+	var shown := _hud_combo_broken if flashing else hud_combo
+	_draw_hud_text(canvas, "p_combo", font, center + Vector2(0, -number_size * 0.58), str(shown), number_size, color, 2)
+	if not flashing:
+		_draw_hud_text(canvas, "p_combo_label", font, center + Vector2(0, float(number_size) * 0.50), "COMBO", maxi(11, int(round(12.0 * s))), UITheme.MUTED, 2)
+
+
+## HUD 文字：缓存 TextLine（CJK 每帧排版很贵），align 0=左 1=右 2=中。
+func _draw_hud_text(canvas: Control, key: String, font: Font, pos: Vector2, text: String, font_size: int, color: Color, align: int = 0) -> void:
+	var entry: Dictionary = _hud_text.get(key, {})
+	if entry.is_empty() or String(entry["text"]) != text or int(entry["size"]) != font_size:
+		var line := TextLine.new()
+		line.add_string(text, font, font_size)
+		entry = {"text": text, "size": font_size, "line": line, "width": line.get_size().x}
+		_hud_text[key] = entry
+	var at := pos
+	var width := float(entry["width"])
+	if align == 1:
+		at.x -= width
+	elif align == 2:
+		at.x -= width * 0.5
+	(entry["line"] as TextLine).draw(canvas.get_canvas_item(), at, color)
+
+
+## 环外仪表弧：按屏幕弧长取点，画满 360° 也不会堆出几千个点。
+func _hud_arc(canvas: Control, affine: Array, from_deg: float, to_deg: float, radius: float, color: Color, width: float) -> void:
+	var span := deg_to_rad(absf(to_deg - from_deg))
+	if span < 0.01:
+		return
+	var scale := (affine[1] as Vector2).length()
+	var steps := clampi(int(span * radius * scale / 3.0), 6, 240)
+	var points := PackedVector2Array()
+	for i in steps + 1:
+		var a := deg_to_rad(lerpf(from_deg, to_deg, float(i) / float(steps)))
+		points.append(_affine_point(Vector2(cos(a), sin(a)) * radius, affine))
+	canvas.draw_polyline(points, color, width, true)
+
+
+func _rank_color(rank: String) -> Color:
+	match rank:
+		"AAA":
+			return UITheme.GOLD
+		"AA":
+			return UITheme.CYAN
+		"A":
+			return UITheme.MINT
+		"B":
+			return UITheme.AMBER
+		"C":
+			return UITheme.CORAL
+	return UITheme.MUTED
+
+
+func _tier_color(tier: String) -> Color:
+	match tier:
+		"PERFECT":
+			return UITheme.GOLD
+		"GREAT":
+			return UITheme.CYAN
+		"GOOD":
+			return UITheme.MINT
+		"BAD":
+			return UITheme.AMBER
+	return UITheme.CORAL
 
 
 func _draw_debug(canvas: Control, chart: Chart, t: float) -> void:
