@@ -645,6 +645,14 @@ func _effective_latency() -> float:
 
 
 func _chart_ms() -> float:
+	var clock_start := Time.get_ticks_usec() if OS.is_debug_build() else 0
+	var value := _chart_ms_inner()
+	if clock_start > 0 and _preview != null:
+		_preview.note_audio_usec(Time.get_ticks_usec() - clock_start)
+	return value
+
+
+func _chart_ms_inner() -> float:
 	if _paused:
 		return _last_chart_ms
 	var now_usec := Time.get_ticks_usec()

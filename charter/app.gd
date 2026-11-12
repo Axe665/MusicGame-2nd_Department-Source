@@ -453,15 +453,16 @@ func _load_settings() -> void:
 	apply_frame_cap()
 
 
-## 帧率选项：60 / 120 关垂直同步；vsync 跟随显示器；unlimited 不限帧。
+## 帧率选项：60 / 120 保留垂直同步（跑不满就自动落到下一个整除，稳定优先）；
+## vsync 完全跟随显示器；unlimited 才关垂直同步、能吃多少吃多少。
 func apply_frame_cap() -> void:
 	match frame_cap:
 		"60":
 			Engine.max_fps = 60
-			DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
+			DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_ENABLED)
 		"120":
 			Engine.max_fps = 120
-			DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
+			DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_ENABLED)
 		"unlimited":
 			Engine.max_fps = 0
 			DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
