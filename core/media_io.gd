@@ -57,6 +57,11 @@ static func is_supported_video(path: String) -> bool:
 	return path.get_extension().to_lower() in SUPPORTED_VIDEO
 
 
+## 音频转码缓存（非原生格式）；命中时 prepare_audio 不阻塞。
+static func audio_cache_path(path: String) -> String:
+	return _cache_path(path, "ogg")
+
+
 ## 转码缓存的 .ogv 路径；键里带源文件 mtime + 大小，替换同路径视频会自动重转。
 static func video_cache_path(path: String) -> String:
 	var stamp := 0

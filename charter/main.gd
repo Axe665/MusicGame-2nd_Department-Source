@@ -83,6 +83,7 @@ var _stretch_error: Label
 var _stretch_syncing: bool = false
 var _audio: AudioStreamPlayer
 var _audio_path: String = ""
+var _audio_token: int = 0
 var _playing: bool = false
 var _rate: float = 1.0
 var _loop: bool = false
@@ -1543,12 +1544,25 @@ func _ensure_audio() -> void:
 	if path == _audio_path:
 		return
 	_audio_path = path
+	_audio_token += 1
+	var token := _audio_token
 	_audio.stop()
 	_playing = false
 	var resolved := path
 	if not path.begins_with("res://") and not path.begins_with("user://") and not path.is_absolute_path() and not _app.chart_path.is_empty():
 		resolved = ChartIO.resolve_path(_app.chart_path, path)
-	var prepared := MediaIO.prepare_audio(resolved)
+	var prepared := resolved
+	if MediaIO.is_native_audio(resolved) or FileAccess.file_exists(MediaIO.audio_cache_path(resolved)):
+		# 原生格式 / 已有缓存：立刻返回，不阻塞。
+		prepared = MediaIO.prepare_audio(resolved)
+	else:
+		# FLAC / M4A 等要跑 ffmpeg：带进度异步转，编辑界面不冻结。
+		_show_import_progress()
+		prepared = await MediaIO.prepare_audio_async(resolved, get_tree(), func(ratio: float, seconds: float) -> void:
+			_import_progress_text("转码音频：%s" % resolved.get_file(), ratio, seconds))
+		_hide_import_progress()
+		if token != _audio_token:
+			return
 	if prepared.is_empty():
 		_audio.stream = null
 		_show_toast("音频不可用：%s" % MediaIO.last_error, "warning")
