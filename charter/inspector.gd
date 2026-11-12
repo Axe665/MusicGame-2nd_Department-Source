@@ -39,6 +39,16 @@ var _tap_label: Label
 var _timing_base_spin: SpinBox
 var _timing_list: ItemList
 var _timing_chart: Chart
+var _preset_option: OptionButton = null
+var _preset_paths: Array[String] = []
+var _preset_prompt: ConfirmationDialog = null
+var _preset_prompt_edit: LineEdit = null
+var _preset_overwrite: ConfirmationDialog = null
+var _preset_open: FileDialog = null
+var _preset_save: FileDialog = null
+var _preset_message: AcceptDialog = null
+var _preset_pending_groups: Array = []
+var _preset_pending_title := ""
 
 
 func _ready() -> void:
@@ -1296,6 +1306,28 @@ func _build_chart_page(page: VBoxContainer) -> void:
 		{"text": "保存谱面", "callback": func() -> void: _app.save_chart()},
 	])
 
+	_section(page, "配色预设")
+	_label(page, "把整套配色存成预设，换谱面时一键追加；也可以把单个组存成素材。预设只含组定义，不含音符分配。", 11, UITheme.MUTED)
+	_ensure_preset_dialogs()
+	var presets := PaletteIO.list_presets()
+	_preset_paths.clear()
+	var preset_option := OptionButton.new()
+	preset_option.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	preset_option.add_item("选择预设…")
+	for preset in presets:
+		var suffix := " · 内置" if bool(preset.get("builtin", false)) else ""
+		preset_option.add_item("%s（%d 组%s）" % [String(preset.get("name", "")), int(preset.get("count", 0)), suffix])
+		_preset_paths.append(String(preset.get("path", "")))
+	_preset_option = preset_option
+	_row(page, "预设", preset_option)
+	_buttons(page, [
+		{"text": "应用", "callback": func() -> void: _apply_selected_preset()},
+		{"text": "保存为预设…", "callback": func() -> void: _ask_preset_name(_palette_rows_now(), _preset_default_title())},
+		{"text": "导入…", "callback": func() -> void: _import_preset()},
+		{"text": "导出…", "callback": func() -> void: _export_preset()},
+		{"text": "删除预设", "callback": func() -> void: _delete_selected_preset()},
+	])
+
 	_section(page, "配色分组")
 	_label(page, "Tap / Hold / Path 共用一组配色；单音符还能在“音符”页覆盖成任意颜色。选“默认”即回到皮肤色。", 11, UITheme.MUTED)
 	if chart.palette.is_empty():
@@ -1323,14 +1355,210 @@ func _build_chart_page(page: VBoxContainer) -> void:
 			)
 			_row(page, type_key.capitalize(), picker)
 		_label(page, "使用该组的音符：%d 个" % chart.palette_usage(group_index), 11, UITheme.MUTED)
-		_buttons(page, [{"text": "删除这组", "callback": func() -> void:
-			_app.mutate(func() -> void: chart.remove_palette_group(group_index))
-			_rebuild()
-		}])
+		_buttons(page, [
+			{"text": "存为预设", "callback": func() -> void: _ask_preset_name([group.duplicate(true)], String(group.get("name", "")))},
+			{"text": "删除这组", "callback": func() -> void:
+				_app.mutate(func() -> void: chart.remove_palette_group(group_index))
+				_rebuild()},
+		])
 	_buttons(page, [{"text": "新增配色组", "callback": func() -> void:
 		_app.mutate(func() -> void: chart.add_palette_group())
 		_rebuild()
 	}])
+
+
+func _ensure_preset_dialogs() -> void:
+	if _preset_prompt != null:
+		return
+	var host: Node = _app if _app != null else self
+
+	_preset_prompt = ConfirmationDialog.new()
+	_preset_prompt.title = "保存配色预设"
+	_preset_prompt.ok_button_text = "保存"
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 6)
+	var hint := Label.new()
+	hint.text = "预设名字（保存在 user://palettes）："
+	box.add_child(hint)
+	_preset_prompt_edit = LineEdit.new()
+	_preset_prompt_edit.placeholder_text = "例如：冷色系"
+	_preset_prompt_edit.custom_minimum_size = Vector2(300, 0)
+	box.add_child(_preset_prompt_edit)
+	_preset_prompt.add_child(box)
+	_preset_prompt.confirmed.connect(_on_preset_prompt_confirmed)
+	host.add_child(_preset_prompt)
+
+	_preset_overwrite = ConfirmationDialog.new()
+	_preset_overwrite.title = "覆盖预设"
+	_preset_overwrite.ok_button_text = "覆盖"
+	_preset_overwrite.confirmed.connect(_on_preset_overwrite_confirmed)
+	host.add_child(_preset_overwrite)
+
+	_preset_open = FileDialog.new()
+	_preset_open.title = "导入配色预设"
+	_preset_open.file_mode = FileDialog.FILE_MODE_OPEN_FILE
+	_preset_open.access = FileDialog.ACCESS_FILESYSTEM
+	_preset_open.add_filter(PaletteIO.FILE_FILTER)
+	_preset_open.file_selected.connect(_on_preset_import_selected)
+	host.add_child(_preset_open)
+
+	_preset_save = FileDialog.new()
+	_preset_save.title = "导出配色预设"
+	_preset_save.file_mode = FileDialog.FILE_MODE_SAVE_FILE
+	_preset_save.access = FileDialog.ACCESS_FILESYSTEM
+	_preset_save.add_filter(PaletteIO.FILE_FILTER)
+	_preset_save.file_selected.connect(_on_preset_export_selected)
+	host.add_child(_preset_save)
+
+	_preset_message = AcceptDialog.new()
+	_preset_message.title = "配色预设"
+	host.add_child(_preset_message)
+
+
+func _palette_rows_now() -> Array:
+	if _app == null or _app.chart == null:
+		return []
+	return _app.chart.palette_to_rows()
+
+
+func _preset_default_title() -> String:
+	if _app == null or _app.chart == null:
+		return "配色预设"
+	var title := String(_app.chart.metadata.get("title", "")).strip_edges()
+	if title.is_empty():
+		return "配色预设"
+	return title.substr(0, 30) + " 配色"
+
+
+func _ask_preset_name(groups: Array, suggested: String) -> void:
+	if groups.is_empty():
+		_show_preset_message("当前没有配色组可保存")
+		return
+	_ensure_preset_dialogs()
+	_preset_pending_groups = groups.duplicate(true)
+	_preset_pending_title = ""
+	_preset_prompt_edit.text = suggested
+	_preset_prompt.popup_centered(Vector2i(360, 0))
+	_preset_prompt_edit.grab_focus()
+	_preset_prompt_edit.select_all()
+
+
+func _on_preset_prompt_confirmed() -> void:
+	var title := _preset_prompt_edit.text.strip_edges()
+	if title.is_empty():
+		_show_preset_message("预设名字不能为空")
+		return
+	if PaletteIO.has_preset(title):
+		_preset_pending_title = title
+		_preset_overwrite.dialog_text = "预设「%s」已存在，要覆盖吗？" % title
+		_preset_overwrite.popup_centered(Vector2i(380, 0))
+		return
+	_save_preset_now(title)
+
+
+func _on_preset_overwrite_confirmed() -> void:
+	if not _preset_pending_title.is_empty():
+		_save_preset_now(_preset_pending_title)
+
+
+func _save_preset_now(title: String) -> void:
+	var result := PaletteIO.save_preset(title, _preset_pending_groups)
+	if not bool(result.get("ok", false)):
+		_show_preset_message(String(result.get("error", "保存预设失败")))
+		return
+	_preset_pending_groups = []
+	_preset_pending_title = ""
+	_app.notice.emit("已保存配色预设「%s」（%d 组）" % [title, int(result.get("count", 0))], "info")
+	_rebuild()
+
+
+func _apply_selected_preset() -> void:
+	if _preset_option == null or _app == null or _app.chart == null:
+		return
+	var index := _preset_option.selected
+	if index <= 0 or index > _preset_paths.size():
+		_show_preset_message("先在下拉里选一个预设")
+		return
+	var path := _preset_paths[index - 1]
+	var loaded := PaletteIO.load_preset(path)
+	if not bool(loaded.get("ok", false)):
+		_show_preset_message(String(loaded.get("error", "读取预设失败")))
+		return
+	var groups: Array = loaded.get("groups", [])
+	var before: int = _app.chart.palette.size()
+	_app.mutate(func() -> void:
+		_app.chart.append_palette_groups(groups)
+	)
+	var added: int = _app.chart.palette.size() - before
+	if added <= 0:
+		_show_preset_message("配色组已达上限（%d 组），先删掉一些再追加" % Chart.MAX_PALETTE_GROUPS)
+		return
+	_app.notice.emit("已追加 %d 组配色（%s）" % [added, String(loaded.get("name", path.get_file().get_basename()))], "info")
+	_rebuild()
+	# 追加后保持选中，方便连续应用同一份预设。
+	if _preset_option != null and index < _preset_option.item_count:
+		_preset_option.selected = index
+
+
+func _delete_selected_preset() -> void:
+	if _preset_option == null:
+		return
+	var index := _preset_option.selected
+	if index <= 0 or index > _preset_paths.size():
+		_show_preset_message("先在下拉里选一个预设")
+		return
+	var result := PaletteIO.delete_preset(_preset_paths[index - 1])
+	if not bool(result.get("ok", false)):
+		_show_preset_message(String(result.get("error", "删除失败")))
+		return
+	_app.notice.emit("已删除配色预设", "info")
+	_rebuild()
+
+
+func _import_preset() -> void:
+	_ensure_preset_dialogs()
+	_preset_open.popup_centered_ratio(0.75)
+
+
+func _on_preset_import_selected(path: String) -> void:
+	var loaded := PaletteIO.load_file(path)
+	if not bool(loaded.get("ok", false)):
+		_show_preset_message(String(loaded.get("error", "导入失败")))
+		return
+	if _app == null or _app.chart == null:
+		return
+	var groups: Array = loaded.get("groups", [])
+	var before: int = _app.chart.palette.size()
+	_app.mutate(func() -> void:
+		_app.chart.append_palette_groups(groups)
+	)
+	var added: int = _app.chart.palette.size() - before
+	_app.notice.emit("已导入「%s」，追加 %d 组配色" % [String(loaded.get("name", path.get_file().get_basename())), added], "info")
+	_rebuild()
+
+
+func _export_preset() -> void:
+	if _app == null or _app.chart == null or _app.chart.palette.is_empty():
+		_show_preset_message("当前谱面还没有配色组")
+		return
+	_ensure_preset_dialogs()
+	_preset_save.current_file = PaletteIO.file_name_for(_preset_default_title())
+	_preset_save.popup_centered_ratio(0.75)
+
+
+func _on_preset_export_selected(path: String) -> void:
+	var rows := _palette_rows_now()
+	var result := PaletteIO.save_file(path, path.get_file().get_basename(), rows)
+	if not bool(result.get("ok", false)):
+		_show_preset_message(String(result.get("error", "导出失败")))
+		return
+	_app.notice.emit("已导出 %d 组配色到 %s" % [rows.size(), path.get_file()], "info")
+
+
+func _show_preset_message(text: String) -> void:
+	_ensure_preset_dialogs()
+	_preset_message.dialog_text = text
+	_preset_message.popup_centered(Vector2i(420, 0))
 
 
 func _build_timing_page(page: VBoxContainer) -> void:
