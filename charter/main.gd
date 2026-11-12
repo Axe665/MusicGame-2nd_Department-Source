@@ -1412,13 +1412,8 @@ func _build_dialogs() -> void:
 	_chart_browser.source_ready.connect(func(source_path: String) -> void:
 		_on_import_osz_selected(source_path)
 	)
-	_chart_browser.chart_imported.connect(func(chart: Chart) -> void:
-		_app.ensure_tab()
-		_app.set_chart(chart, "", true)
-		_app.add_tab_from_current(String(chart.metadata.get("title", "在线导入")))
-		_sync_from_app()
-		_refresh_tabs()
-		_show_report("已从在线谱面导入：%d 个 note，%d 个 BPM 点。\n%s" % [chart.notes.size(), chart.timing.points.size(), SimaiIO.last_report])
+	_chart_browser.warning.connect(func(message: String) -> void:
+		_show_toast(message, "warning")
 	)
 	add_child(_chart_browser)
 	_osu_browser = ChartBrowser.new()
