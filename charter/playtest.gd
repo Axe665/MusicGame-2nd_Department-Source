@@ -205,6 +205,11 @@ var _export_mp4: String = ""
 var _export_timer: float = 0.0
 var _export_ffmpeg: String = "ffmpeg"
 var _export_elapsed: float = 0.0
+var _export_window: AcceptDialog = null
+var _export_label: Label = null
+var _export_bar: ProgressBar = null
+var _export_total_ms: float = 1.0
+var _export_write_timer: float = 0.0
 var _toast_label: Label = null
 var _toast_tween: Tween = null
 ## 暂停菜单（ESC）。
@@ -775,6 +780,16 @@ func _process(delta: float) -> void:
 	if replay_mode:
 		# 虚拟时钟：倍速只改画面快慢；判定只认事件时间戳，所以结果不变。
 		_replay_ms += clampf(delta, 0.0, 0.25) * 1000.0 * maxf(0.05, replay_rate)
+		if export_mode:
+			# 把播放进度写给主进程看，进度条才知道渲染到哪了。
+			_export_write_timer += delta
+			if _export_write_timer >= 0.5:
+				_export_write_timer = 0.0
+				var total := maxf(1.0, _replay_total_ms)
+				var file := FileAccess.open(ProjectSettings.globalize_path("user://export_progress.txt"), FileAccess.WRITE)
+				if file != null:
+					file.store_string("%.4f" % clampf(_replay_ms / total, 0.0, 1.0))
+					file.close()
 	var chart_ms := _chart_ms()
 	_last_frame_ms = clampf(delta * 1000.0, 1.0, 200.0)
 	var judge_ms := chart_ms + _active_offset()
@@ -1070,7 +1085,18 @@ func _start_video_export(path: String) -> void:
 	if not chart_ok:
 		_notify_result("导出失败：谱面快照写不进去")
 		return
-	DirAccess.remove_absolute(ProjectSettings.globalize_path("user://export_error.txt"))
+	for stale in ["export_error.txt", "export_progress.txt", "export_ffmpeg.txt"]:
+		DirAccess.remove_absolute(ProjectSettings.globalize_path("user://" + stale))
+	_export_total_ms = 1.0
+	if chart != null:
+		_export_total_ms = maxf(1.0, chart.timing.beat_to_chart_ms(chart.duration_beats()))
+	_ensure_export_window()
+	_export_bar.value = 0.0
+	_export_label.text = "准备渲染…"
+	var ok_button := _export_window.get_ok_button()
+	if ok_button != null:
+		ok_button.visible = false
+	_export_window.popup_centered(Vector2i(520, 170))
 	var exe := OS.get_executable_path()
 	# 从编辑器里跑的（含 F5）子进程不带 --path 会直接进项目管理器，什么都不渲。
 	# 导出成 exe 之后 res:// 在 pck 里，这个目录不存在，就不加。
@@ -1091,7 +1117,33 @@ func _start_video_export(path: String) -> void:
 	_export_stage = 1
 	_export_timer = 0.0
 	_export_elapsed = 0.0
+	_set_export_progress(0.0, "正在渲染")
 	_notify_result("开始渲染视频，播完会自动转码（中间文件很大，转完自动删）")
+
+
+## 导出进度窗：和「在线谱面」的下载进度窗一个样式。
+func _ensure_export_window() -> void:
+	if _export_window != null:
+		return
+	_export_window = AcceptDialog.new()
+	_export_window.title = "导出回放视频"
+	_export_window.min_size = Vector2i(460, 130)
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 12)
+	_export_window.add_child(box)
+	_export_label = Label.new()
+	_export_label.text = "准备渲染…"
+	box.add_child(_export_label)
+	_export_bar = ProgressBar.new()
+	_export_bar.max_value = 100.0
+	_export_bar.value = 0.0
+	_export_bar.show_percentage = true
+	_export_bar.custom_minimum_size = Vector2(420, 24)
+	box.add_child(_export_bar)
+	add_child(_export_window)
+	_export_window.get_ok_button().visible = false
+	_export_window.add_cancel_button("取消")
+	_export_window.canceled.connect(_cancel_export)
 
 
 ## 每 0.5 秒看一眼子进程：渲染完 → 转码，转码完 → 删 AVI。
@@ -1100,62 +1152,145 @@ func _tick_export(delta: float) -> void:
 		return
 	_export_elapsed += delta
 	_export_timer += delta
-	if _export_timer < 0.5:
+	if _export_timer < 0.4:
 		return
 	_export_timer = 0.0
 	if _export_stage == 1:
-		if OS.is_process_running(_export_pid):
-			# 子进程活着但迟迟没建出文件，多半是没带 --path 进了项目管理器。
-			if not FileAccess.file_exists(_export_avi) and _export_elapsed > 20.0:
-				OS.kill(_export_pid)
-				_export_stage = 0
-				_notify_result("导出失败：渲染进程没开始写文件（看控制台的 [export] 行）")
-			return
-		var error_path := ProjectSettings.globalize_path("user://export_error.txt")
-		if FileAccess.file_exists(error_path):
-			var reason := FileAccess.get_file_as_string(error_path).strip_edges()
-			DirAccess.remove_absolute(error_path)
-			if FileAccess.file_exists(_export_avi):
-				DirAccess.remove_absolute(_export_avi)
-			_export_stage = 0
-			_notify_result("导出失败：%s" % reason)
-			return
-		if not FileAccess.file_exists(_export_avi):
-			_export_stage = 0
-			_notify_result("导出失败：没有生成视频文件")
-			return
-		# 只有几帧的「视频」说明回放根本没载入，别转码了。
-		var probe := FileAccess.open(_export_avi, FileAccess.READ)
-		var avi_size := probe.get_length() if probe != null else 0
-		if probe != null:
-			probe.close()
-		if avi_size < 50000:
-			DirAccess.remove_absolute(_export_avi)
-			_export_stage = 0
-			_notify_result("导出失败：只录到 %.0f KB，回放没载入成功" % (avi_size / 1024.0))
-			return
-		var args := PackedStringArray([
-			"-y", "-i", _export_avi,
-			"-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "23",
-			"-c:a", "aac", "-b:a", "192k",
-			_export_mp4,
-		])
-		_export_pid = OS.create_process(_export_ffmpeg, args)
-		if _export_pid <= 0:
-			_export_stage = 0
-			_show_toast("ffmpeg 启动失败，AVI 留在 %s" % _export_avi)
-			return
-		_export_stage = 2
-		print("[export] ffmpeg ", _export_ffmpeg)
-		_notify_result("渲染完成，正在转码…")
-		return
+		_poll_render_stage()
+	elif _export_stage == 2:
+		_poll_encode_stage()
+
+
+## 渲染阶段：子进程每 0.5 秒把自己的播放进度写进 export_progress.txt。
+func _poll_render_stage() -> void:
 	if OS.is_process_running(_export_pid):
+		# 子进程活着但迟迟没建出文件，多半是没带 --path 进了项目管理器。
+		if not FileAccess.file_exists(_export_avi) and _export_elapsed > 20.0:
+			OS.kill(_export_pid)
+			_finish_export_error("渲染进程没开始写文件（看控制台的 [export] 行）")
+			return
+		_set_export_progress(_read_child_progress() * 0.8, "正在渲染")
 		return
+	var error_path := ProjectSettings.globalize_path("user://export_error.txt")
+	if FileAccess.file_exists(error_path):
+		var reason := FileAccess.get_file_as_string(error_path).strip_edges()
+		DirAccess.remove_absolute(error_path)
+		_finish_export_error(reason)
+		return
+	if not FileAccess.file_exists(_export_avi):
+		_finish_export_error("没有生成视频文件")
+		return
+	# 只有几帧的「视频」说明回放根本没载入，别转码了。
+	var probe := FileAccess.open(_export_avi, FileAccess.READ)
+	var avi_size := probe.get_length() if probe != null else 0
+	if probe != null:
+		probe.close()
+	if avi_size < 50000:
+		_finish_export_error("只录到 %.0f KB，回放没载入成功" % (avi_size / 1024.0))
+		return
+	var progress_file := ProjectSettings.globalize_path("user://export_ffmpeg.txt")
+	DirAccess.remove_absolute(progress_file)
+	var args := PackedStringArray([
+		"-y", "-progress", progress_file, "-nostats",
+		"-i", _export_avi,
+		"-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "23",
+		"-c:a", "aac", "-b:a", "192k",
+		_export_mp4,
+	])
+	_export_pid = OS.create_process(_export_ffmpeg, args)
+	if _export_pid <= 0:
+		_finish_export_error("ffmpeg 没起来（AVI 留在 %s）" % _export_avi)
+		return
+	_export_stage = 2
+	print("[export] ffmpeg ", _export_ffmpeg)
+	_set_export_progress(0.8, "渲染完成，正在转码")
+
+
+## 转码阶段：ffmpeg 的 -progress 文件里有 out_time_us，和总时长一比就是进度。
+func _poll_encode_stage() -> void:
+	if OS.is_process_running(_export_pid):
+		_set_export_progress(0.8 + _read_ffmpeg_progress() * 0.2, "正在转码")
+		return
+	_cleanup_export_files(false)
+	_export_stage = 0
+	if _export_bar != null:
+		_export_bar.value = 100.0
+	if _export_label != null:
+		_export_label.text = "已保存：%s" % _export_mp4.get_file()
+	if _export_window != null:
+		var ok := _export_window.get_ok_button()
+		if ok != null:
+			ok.visible = true
+	_notify_result("视频已保存：%s" % _export_mp4)
+	get_tree().create_timer(3.0).timeout.connect(func() -> void:
+		if _export_window != null and is_instance_valid(_export_window):
+			_export_window.hide())
+
+
+func _set_export_progress(fraction: float, label: String) -> void:
+	if _export_bar == null:
+		return
+	_export_bar.value = clampf(fraction, 0.0, 1.0) * 100.0
+	if _export_label != null:
+		_export_label.text = "%s %d%%" % [label, int(_export_bar.value)]
+
+
+func _read_child_progress() -> float:
+	var path := ProjectSettings.globalize_path("user://export_progress.txt")
+	if not FileAccess.file_exists(path):
+		return 0.0
+	return clampf(FileAccess.get_file_as_string(path).to_float(), 0.0, 1.0)
+
+
+func _read_ffmpeg_progress() -> float:
+	var path := ProjectSettings.globalize_path("user://export_ffmpeg.txt")
+	if not FileAccess.file_exists(path):
+		return 0.0
+	var text := FileAccess.get_file_as_string(path)
+	var index := text.rfind("out_time_us=")
+	if index < 0:
+		return 0.0
+	var value := float(text.substr(index + 12).get_slice("\n", 0).strip_edges())
+	return clampf(value / (maxf(1.0, _export_total_ms) * 1000.0), 0.0, 1.0)
+
+
+func _finish_export_error(message: String) -> void:
+	_export_stage = 0
+	_cleanup_export_files(true)
+	if _export_bar != null:
+		_export_bar.value = 0.0
+	if _export_label != null:
+		_export_label.text = "导出失败：%s" % message
+	if _export_window != null:
+		var ok := _export_window.get_ok_button()
+		if ok != null:
+			ok.visible = true
+	_notify_result("导出失败：%s" % message)
+
+
+## 收尾：删掉中间的 AVI 和临时文件；取消时连半成品 mp4 一起删。
+func _cleanup_export_files(remove_output: bool) -> void:
 	if FileAccess.file_exists(_export_avi):
 		DirAccess.remove_absolute(_export_avi)
-	DirAccess.remove_absolute(ProjectSettings.globalize_path("user://export_replay.tmkrpl"))
+	for name in ["export_replay.tmkrpl", "export_chart.json", "export_progress.txt", "export_ffmpeg.txt", "export_error.txt"]:
+		var path := ProjectSettings.globalize_path("user://" + name)
+		if FileAccess.file_exists(path):
+			DirAccess.remove_absolute(path)
+	if remove_output and not _export_mp4.is_empty() and FileAccess.file_exists(_export_mp4):
+		DirAccess.remove_absolute(_export_mp4)
+
+
+func _cancel_export() -> void:
+	if _export_stage == 0:
+		return
+	if _export_pid > 0 and OS.is_process_running(_export_pid):
+		OS.kill(_export_pid)
+	_export_pid = -1
 	_export_stage = 0
-	_notify_result("视频已保存：%s" % _export_mp4)
+	_notify_result("已取消导出")
+	# 进程刚被杀时文件还锁着，等一下再删，否则会留下一个上 GB 的 AVI。
+	get_tree().create_timer(0.8).timeout.connect(func() -> void:
+		_cleanup_export_files(true))
 
 
 ## 当前可保存的回放：回放中看的是 replay_source，刚打完看的是本局录制。
