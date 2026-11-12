@@ -115,8 +115,8 @@ var _import_dir_dialog: FileDialog
 var _audio_dialog: FileDialog
 var _song_dialog: SongImportDialog
 var _chart_browser: ChartBrowser
-## 独立的“在线 osu! 谱面”窗口（只列 osu!std）。
-var _osu_browser: ChartBrowser
+## 独立的“在线 osu! 谱面”窗口（卡片式，只列 osu!std）。
+var _osu_browser: OsuBrowser
 var _new_dialog: NewChartDialog
 var _playtest: Playtest
 ## 试玩前的设置窗口：倍速 / 流速 / 星速 / 星显。
@@ -131,7 +131,11 @@ var _playtest_latency: SpinBox = null
 var _playtest_dynamic: CheckBox = null
 var _playtest_auto: CheckBox = null
 var _playtest_bias: Label = null
+## 试玩设置底部的「从头开始玩」按钮（试玩中隐藏）。
+var _playtest_start_button: Button = null
 var _calibration_dialog: CalibrationDialog = null
+## 校准窗口关掉后要回到哪里："" / "settings" / "playtest"。
+var _calibration_return := ""
 var _playtest_from_start: bool = false
 ## 制谱界面保留的流速输入框（试玩设置改流速后要同步回来）。
 var _editor_flow_spin: SpinBox = null
@@ -381,6 +385,7 @@ func _build_ui() -> void:
 	_import_diff.visible = false
 	_import_diff.item_selected.connect(_on_import_difficulty_selected)
 	brand_row.add_child(_import_diff)
+	# 菜单和试玩按钮统一排到右上角：这里先放一个弹性占位，把它们顶过去。
 	var brand_spacer := Control.new()
 	brand_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	brand_row.add_child(brand_spacer)
@@ -405,9 +410,7 @@ func _build_ui() -> void:
 		["Tap", 30], ["Hold", 31], ["Path", 32], ["Seek", 33], ["Anchor", 34], ["Bell", 35], ["Limit", 36],
 		["-", 0], ["BoundaryEvent", 37], ["RingState 关键帧", 38],
 	]))
-	brand_row.add_child(_menu("试玩", [
-		["从播放头试玩（F5）", 50], ["从头试玩（Shift+F5）", 51], ["-", 0], ["校准判定偏移…", 52],
-	]))
+	# 试玩只保留一个黄色按钮；F5 / Shift+F5 快捷键照旧生效。
 	var playtest_button := Button.new()
 	playtest_button.text = "试玩 F5"
 	playtest_button.add_theme_color_override("font_color", UITheme.BG)
@@ -416,6 +419,7 @@ func _build_ui() -> void:
 	playtest_button.add_theme_stylebox_override("normal", UITheme._box(UITheme.ACCENT, UITheme.ACCENT, 3, 12, 5))
 	playtest_button.add_theme_stylebox_override("hover", UITheme._box(UITheme.ACCENT, Color.WHITE, 3, 12, 5))
 	playtest_button.add_theme_stylebox_override("pressed", UITheme._box(UITheme.ACCENT_DARK, UITheme.ACCENT_DARK, 3, 12, 5))
+	playtest_button.tooltip_text = "打开试玩设置：可选「继续游玩」（从播放头）或「从头开始玩」；F5 从播放头，Shift+F5 从头"
 	playtest_button.pressed.connect(func() -> void: _open_playtest_setup(false))
 	brand_row.add_child(playtest_button)
 
@@ -1416,8 +1420,7 @@ func _build_dialogs() -> void:
 		_show_toast(message, "warning")
 	)
 	add_child(_chart_browser)
-	_osu_browser = ChartBrowser.new()
-	_osu_browser.osu_only = true
+	_osu_browser = OsuBrowser.new()
 	_osu_browser.source_ready.connect(func(source_path: String) -> void:
 		_on_import_osz_selected(source_path)
 	)
@@ -2161,7 +2164,8 @@ func _save() -> void:
 		_sync_from_app()
 
 
-func _open_calibration() -> void:
+func _open_calibration(return_to: String = "") -> void:
+	_calibration_return = return_to
 	if _app == null:
 		return
 	if _calibration_dialog == null:
@@ -2172,7 +2176,12 @@ func _open_calibration() -> void:
 				_playtest_offset.value = float(_app.playtest_offset_ms)
 			if _playtest_latency != null:
 				_playtest_latency.value = float(_app.audio_latency_ms)
-			_open_playtest_setup(_playtest_from_start)
+			var target := _calibration_return
+			_calibration_return = ""
+			if target == "settings":
+				_open_settings()
+			elif target == "playtest":
+				_open_playtest_setup(_playtest_from_start)
 		)
 		add_child(_calibration_dialog)
 	if _playtest_dialog != null:
@@ -2189,7 +2198,15 @@ func _open_playtest_setup(from_start: bool) -> void:
 	if _playtest_dialog == null:
 		_build_playtest_dialog()
 	# 试玩中从暂停菜单打开时，确认键是"完成"而不是"开始"。
-	_playtest_dialog.ok_button_text = "完成" if _playtest != null else "开始"
+	if _playtest != null:
+		# 试玩中打开：只能应用设置并返回。
+		_playtest_dialog.ok_button_text = "完成"
+		if _playtest_start_button != null:
+			_playtest_start_button.visible = false
+	else:
+		_playtest_dialog.ok_button_text = "继续游玩"
+		if _playtest_start_button != null:
+			_playtest_start_button.visible = true
 	_playtest_rate.value = _rate
 	_playtest_flow.value = _app.flow_scale
 	_playtest_star.value = _app.star_speed
@@ -2205,7 +2222,7 @@ func _open_playtest_setup(from_start: bool) -> void:
 		_playtest_auto.button_pressed = bool(_app.playtest_auto)
 	if _playtest_bias != null:
 		_playtest_bias.text = "上次平均偏差 %+.1fms" % float(_app.last_bias_ms)
-	_playtest_dialog.popup_centered(Vector2i(470, 700))
+	_playtest_dialog.popup_centered(Vector2i(470, 520))
 
 
 ## 统一设置窗口：画质 / 界面 / 音频 / 校准。视图菜单只留显示开关。
@@ -2320,7 +2337,7 @@ func _build_calibration_rows(parent: Control) -> void:
 	open_cal.pressed.connect(func() -> void:
 		if _settings_dialog != null:
 			_settings_dialog.hide()
-		_open_calibration()
+		_open_calibration("settings")
 	)
 	parent.add_child(open_cal)
 
@@ -2332,7 +2349,7 @@ func _build_playtest_dialog() -> void:
 	_playtest_dialog.min_size = Vector2i(360, 220)
 	# 选项越加越多，内容放进滚动区，小窗口也不会把按钮挤出屏幕。
 	var scroll := ScrollContainer.new()
-	scroll.custom_minimum_size = Vector2(400, 540)
+	scroll.custom_minimum_size = Vector2(400, 350)
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	_playtest_dialog.add_child(scroll)
 	var box := VBoxContainer.new()
@@ -2346,11 +2363,12 @@ func _build_playtest_dialog() -> void:
 	_playtest_offset = _playtest_spin_row(box, "判定偏移", -200.0, 200.0, 1.0, 0.0, "ms")
 	_playtest_latency = _playtest_spin_row(box, "输出延迟", 0.0, 250.0, 1.0, 0.0, "ms")
 	_playtest_latency.tooltip_text = "0 = 用驱动报告值；>0 = 强制覆盖（可升可降）。驱动明显不准时才手动填"
-	var calibrate := Button.new()
-	calibrate.text = "校准判定偏移…"
-	calibrate.tooltip_text = "① 跟声音点 8 次 或 ② 跟脉冲点 8 次（二选一）→ 写「判定偏移」"
-	calibrate.pressed.connect(_open_calibration)
-	box.add_child(calibrate)
+	var calib_hint := Label.new()
+	calib_hint.text = "判定偏移校准在「设置 → 校准」里（8 次点击后自动写回）"
+	calib_hint.add_theme_font_size_override("font_size", 11)
+	calib_hint.add_theme_color_override("font_color", UITheme.MUTED)
+	calib_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	box.add_child(calib_hint)
 	_playtest_dynamic = CheckBox.new()
 	_playtest_dynamic.text = "动态 offset（局内自动校准，≤±50ms）"
 	_playtest_dynamic.tooltip_text = "至少 8 次命中后，每次命中按偏差的 5% 自动微调判定偏移"
@@ -2366,7 +2384,7 @@ func _build_playtest_dialog() -> void:
 	box.add_child(_playtest_bias)
 	box.add_child(HSeparator.new())
 	var open_settings := Button.new()
-	open_settings.text = "画质 / 界面 / 音频设置…"
+	open_settings.text = "画质 / 界面 / 音频 / 校准设置…"
 	open_settings.tooltip_text = "统一设置窗口：画质、界面、音频与校准"
 	open_settings.pressed.connect(_open_settings)
 	box.add_child(open_settings)
@@ -2383,8 +2401,17 @@ func _build_playtest_dialog() -> void:
 	_playtest_trace_color.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	trace_row.add_child(_playtest_trace_color)
 	trace_row.visible = false
+	# 底部只留两种开始方式：继续游玩（播放头）、从头开始玩；
+	# 试玩中从暂停菜单打开时只剩「完成」。
+	_playtest_start_button = _playtest_dialog.add_button("从头开始玩", true, "start_from_beginning")
 	add_child(_playtest_dialog)
 	_playtest_dialog.confirmed.connect(_begin_playtest_with_settings)
+	_playtest_dialog.custom_action.connect(func(action: StringName) -> void:
+		if String(action) == "start_from_beginning":
+			_playtest_from_start = true
+			_playtest_dialog.hide()
+			_begin_playtest_with_settings()
+	)
 	# × 或 Esc 关闭时同样保留设置（只保存，不开始试玩）。
 	_playtest_dialog.canceled.connect(_commit_playtest_settings)
 

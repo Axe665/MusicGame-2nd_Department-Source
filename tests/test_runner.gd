@@ -109,6 +109,10 @@ func _initialize() -> void:
 		"test_path_slide_start",
 		"test_hold_seam_interval",
 		"test_judge_scatter",
+		"test_mouse_button_input",
+		"test_osu_star_color",
+		"test_osu_filters",
+		"test_osu_pill_rows",
 		"test_audio_clock",
 		"test_calibration_offset",
 		"test_chart_offset_for_bias",
@@ -2836,23 +2840,23 @@ func test_osu_std_filter() -> bool:
 	var only_taps := {"title": "A", "artist": "a", "id": 1, "beatmaps": [{"mode_int": 0}, {"mode_int": 0}]}
 	var taiko_only := {"title": "B", "artist": "b", "id": 2, "beatmaps": [{"mode_int": 1}, {"mode_int": 3}]}
 	var mixed := {"title": "C", "artist": "c", "id": 3, "beatmaps": [{"mode_int": 1}, {"mode_int": 0}]}
-	eq(ChartBrowser.osu_std_count(only_taps), 2, "std count on a std set")
-	eq(ChartBrowser.osu_std_count(taiko_only), 0, "taiko/mania sets have no std difficulty")
-	eq(ChartBrowser.osu_std_count(mixed), 1, "mixed set counts only the std difficulty")
+	eq(OsuBrowser.osu_std_count(only_taps), 2, "std count on a std set")
+	eq(OsuBrowser.osu_std_count(taiko_only), 0, "taiko/mania sets have no std difficulty")
+	eq(OsuBrowser.osu_std_count(mixed), 1, "mixed set counts only the std difficulty")
 
-	var set_link := ChartBrowser.parse_osu_input("https://osu.ppy.sh/beatmapsets/2356114#osu/5073664")
+	var set_link := OsuBrowser.parse_osu_input("https://osu.ppy.sh/beatmapsets/2356114#osu/5073664")
 	eq(String(set_link.get("kind", "")), "set", "beatmapset link is a set download")
 	eq(int(set_link.get("id", 0)), 2356114, "beatmapset id parsed")
-	var map_link := ChartBrowser.parse_osu_input("https://osu.ppy.sh/beatmaps/5073664")
+	var map_link := OsuBrowser.parse_osu_input("https://osu.ppy.sh/beatmaps/5073664")
 	eq(String(map_link.get("kind", "")), "beatmap", "beatmap link needs resolving")
 	eq(int(map_link.get("id", 0)), 5073664, "beatmap id parsed")
-	var short_link := ChartBrowser.parse_osu_input("https://osu.ppy.sh/s/2356114")
+	var short_link := OsuBrowser.parse_osu_input("https://osu.ppy.sh/s/2356114")
 	eq(int(short_link.get("id", 0)), 2356114, "short /s/ link parsed")
-	var bare := ChartBrowser.parse_osu_input("5073664")
+	var bare := OsuBrowser.parse_osu_input("5073664")
 	eq(String(bare.get("kind", "")), "set", "bare number is tried as a set id")
 	eq(int(bare.get("id", 0)), 5073664, "bare number parsed")
-	ok(ChartBrowser.parse_osu_input("camellia").is_empty(), "plain text stays a search query")
-	ok(ChartBrowser.parse_osu_input("").is_empty(), "empty input is a no-op")
+	ok(OsuBrowser.parse_osu_input("camellia").is_empty(), "plain text stays a search query")
+	ok(OsuBrowser.parse_osu_input("").is_empty(), "empty input is a no-op")
 	return true
 ## “起划”音效的时刻 = 星星开始沿轨迹移动的拍（note.beat + wait），不是头部接住的时刻。
 func test_path_slide_start() -> bool:
@@ -3020,4 +3024,61 @@ func test_judge_scatter() -> bool:
 	chart.set_hits([])
 	eq(chart.hits.size(), 0, "clearing the plot works")
 	chart.free()
+	return true
+
+## 鼠标左右键当成两个独立键位，且不会和真实 Key 枚举相撞。
+func test_mouse_button_input() -> bool:
+	eq(Playtest.mouse_button_key(MOUSE_BUTTON_LEFT), Playtest.MOUSE_KEY_LEFT, "left button maps to its own key")
+	eq(Playtest.mouse_button_key(MOUSE_BUTTON_RIGHT), Playtest.MOUSE_KEY_RIGHT, "right button maps to its own key")
+	ok(Playtest.MOUSE_KEY_LEFT != Playtest.MOUSE_KEY_RIGHT, "left and right are distinct keys")
+	ok(Playtest.MOUSE_KEY_LEFT < 0 and Playtest.MOUSE_KEY_RIGHT < 0, "synthetic keys stay out of the Key enum")
+	eq(Playtest.mouse_button_key(MOUSE_BUTTON_MIDDLE), 0, "other buttons are not judgement input")
+	eq(Playtest.mouse_button_key(MOUSE_BUTTON_WHEEL_UP), 0, "wheel stays a seek input")
+	return true
+
+
+## osu 卡片药丸颜色：按星数分五档。
+func test_osu_star_color() -> bool:
+	var green := OsuBrowser.star_color(1.4)
+	var yellow := OsuBrowser.star_color(3.2)
+	var orange := OsuBrowser.star_color(4.4)
+	var red := OsuBrowser.star_color(6.0)
+	var violet := OsuBrowser.star_color(7.5)
+	ok(green == OsuBrowser.star_color(2.4), "green bucket is stable")
+	ok(green != yellow and yellow != orange and orange != red and red != violet, "each bucket has its own colour")
+	ok(violet == OsuBrowser.star_color(9.9), "purple bucket is stable")
+	return true
+
+
+## osu 官方筛选：类型 / 语言 / 标签（tags 是 AND）。
+func test_osu_filters() -> bool:
+	var tokens := OsuBrowser.tag_tokens("anime, JPop  Anime")
+	eq(tokens.size(), 2, "tokens are lowercased and deduped")
+	ok(tokens.has("anime") and tokens.has("jpop"), "both words are kept")
+	ok(OsuBrowser.tag_tokens("").is_empty(), "empty text has no tokens")
+	eq(OsuBrowser.tag_tokens("动画，电子").size(), 2, "full-width comma splits too")
+
+	var anime := {"genre_id": 2, "language_id": 3, "tags": "anime j-pop vocaloid", "title": "X", "artist": "Y"}
+	var rock := {"genre_id": 9, "language_id": 5, "tags": "rock guitar", "title": "Z", "artist": "W"}
+	ok(OsuBrowser.matches_filters(anime, 0, 0, []), "no filter keeps everything")
+	ok(OsuBrowser.matches_filters(anime, 2, 0, []), "genre matches")
+	ok(not OsuBrowser.matches_filters(rock, 2, 0, []), "genre mismatch drops")
+	ok(OsuBrowser.matches_filters(anime, 0, 3, []), "language matches")
+	ok(not OsuBrowser.matches_filters(rock, 0, 3, []), "language mismatch drops")
+	ok(not OsuBrowser.matches_filters(anime, 0, OsuBrowser.LANGUAGE_OTHER, []), "known language is not the other bucket")
+	ok(not OsuBrowser.matches_filters(rock, 0, OsuBrowser.LANGUAGE_OTHER, []), "known languages are not 'other'")
+	ok(OsuBrowser.matches_filters(anime, 0, 0, ["anime"]), "tag matches")
+	ok(not OsuBrowser.matches_filters(rock, 0, 0, ["anime"]), "tag mismatch drops")
+	ok(OsuBrowser.matches_filters(anime, 0, 0, ["anime", "vocaloid"]), "tags are AND")
+	ok(not OsuBrowser.matches_filters(anime, 0, 0, ["anime", "guitar"]), "AND fails on a missing tag")
+	ok(OsuBrowser.matches_filters(anime, 0, 0, ["J-POP"]), "tag matching ignores case")
+	return true
+
+
+## 展开后药丸的行数：宽卡片行数少，窄卡片行数多。
+func test_osu_pill_rows() -> bool:
+	eq(OsuBrowser.pill_rows(3, 1200), 1, "few difficulties stay on one row")
+	eq(OsuBrowser.pill_rows(19, 1300), 2, "wide card fits 19 on two rows")
+	ok(OsuBrowser.pill_rows(19, 700) > OsuBrowser.pill_rows(19, 1300), "narrower card needs more rows")
+	eq(OsuBrowser.pill_rows(0, 900), 1, "no difficulties still one row (the toggle chip)")
 	return true

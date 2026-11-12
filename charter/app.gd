@@ -88,6 +88,9 @@ var playtest_auto: bool = false
 ## 上一局的平均判定偏差，供试玩设置显示。
 var last_bias_ms: float = 0.0
 
+## 在线 osu! 谱面的星标收藏（谱面包 id）。
+var osu_favorites: Array[int] = []
+
 var selected_notes: Array[int] = []
 var clipboard_notes: Array[Dictionary] = []
 var selected_region_id: int = -1
@@ -508,6 +511,9 @@ func _load_settings() -> void:
 			audio_latency_ms = clampf(float(data.get("audio_latency_ms", audio_latency_ms)), 0.0, 250.0)
 			dynamic_offset = bool(data.get("dynamic_offset", dynamic_offset))
 			playtest_auto = bool(data.get("playtest_auto", playtest_auto))
+			osu_favorites.clear()
+			for value in data.get("osu_favorites", []):
+				osu_favorites.append(int(value))
 			last_bias_ms = float(data.get("last_bias_ms", last_bias_ms))
 			var wait_mode := String(data.get("path_wait_indicator", "progress"))
 			path_wait_indicator = wait_mode if wait_mode in PATH_WAIT_MODES else "progress"
@@ -652,7 +658,7 @@ func effective_latency_sec() -> float:
 
 
 func save_settings() -> void:
-	var data := {"path_wait_indicator": path_wait_indicator, "note_skin": note_skin, "hit_fx_style": hit_fx_style, "hit_sfx_style": hit_sfx_style, "ffmpeg": ffmpeg_path, "frame_cap": frame_cap, "audio_buffer_ms": audio_buffer_ms, "playtest_offset_ms": playtest_offset_ms, "audio_latency_ms": audio_latency_ms, "dynamic_offset": dynamic_offset, "playtest_auto": playtest_auto, "last_bias_ms": last_bias_ms, "cursor_scale": cursor_scale, "flow_scale": flow_scale, "star_speed": star_speed, "trace_color": trace_color.to_html(), "aa_2d_level": aa_2d_level, "note_detail_fine": note_detail_fine, "note_glow": note_glow, "cursor_trail": cursor_trail, "fx_budget": fx_budget, "ring_3d_scale": ring_3d_scale, "ring_3d_hz": ring_3d_hz, "bar_lines": bar_lines, "quality_preset": quality_preset,
+	var data := {"path_wait_indicator": path_wait_indicator, "note_skin": note_skin, "hit_fx_style": hit_fx_style, "hit_sfx_style": hit_sfx_style, "ffmpeg": ffmpeg_path, "frame_cap": frame_cap, "audio_buffer_ms": audio_buffer_ms, "playtest_offset_ms": playtest_offset_ms, "audio_latency_ms": audio_latency_ms, "dynamic_offset": dynamic_offset, "playtest_auto": playtest_auto, "osu_favorites": osu_favorites, "last_bias_ms": last_bias_ms, "cursor_scale": cursor_scale, "flow_scale": flow_scale, "star_speed": star_speed, "trace_color": trace_color.to_html(), "aa_2d_level": aa_2d_level, "note_detail_fine": note_detail_fine, "note_glow": note_glow, "cursor_trail": cursor_trail, "fx_budget": fx_budget, "ring_3d_scale": ring_3d_scale, "ring_3d_hz": ring_3d_hz, "bar_lines": bar_lines, "quality_preset": quality_preset,
 		"hud_scale": hud_scale, "hud_combo_mode": hud_combo_mode, "hud_progress_style": hud_progress_style,
 		"hud_judge_position": hud_judge_position, "hud_opacity": hud_opacity,
 		"hud_show_title": hud_show_title, "hud_show_difficulty": hud_show_difficulty,
