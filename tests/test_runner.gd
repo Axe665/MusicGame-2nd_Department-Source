@@ -49,6 +49,7 @@ func _initialize() -> void:
 		"test_osu_std_chain_no_conflict",
 		"test_note_span_defaults",
 		"test_judgement_text_font",
+		"test_playtest_countdown",
 		"test_hold_stack_alpha",
 		"test_osu_taiko_import",
 		"test_osu_taiko_flow",
@@ -1383,6 +1384,22 @@ func test_note_span_defaults() -> bool:
 	near(hold.end_beat, 2.0, 0.001, "hold end_beat starts at its beat")
 	hold.end_beat = 4.5
 	near(hold.duration(), 2.5, 0.001, "hold duration uses explicit end_beat")
+	return true
+
+
+func test_playtest_countdown() -> bool:
+	eq(Playtest.countdown_number(2.0, 2.0), 3, "countdown starts at 3")
+	eq(Playtest.countdown_number(1.34, 2.0), 3, "the first third still shows 3")
+	eq(Playtest.countdown_number(1.33, 2.0), 2, "the second third shows 2")
+	eq(Playtest.countdown_number(0.5, 2.0), 1, "the last third shows 1")
+	eq(Playtest.countdown_number(0.0, 2.0), 0, "zero means GO")
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	chart.pre_read_ms = 1000.0
+	near(Playtest.timeline_start_beat(chart, 8.0, 1000.0), 5.0, 0.26,
+		"a mid-chart start rewinds one pre-read plus half a second")
+	near(Playtest.timeline_start_beat(chart, 0.0, 1000.0), 0.0, 0.001,
+		"the chart start never goes negative")
 	return true
 
 
