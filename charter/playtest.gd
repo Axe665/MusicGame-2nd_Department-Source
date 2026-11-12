@@ -193,6 +193,17 @@ var _replay_button: Button
 ## 结算页：把本局回放另存到本地。
 var _save_replay_button: Button
 var _save_replay_dialog: FileDialog = null
+## 导出视频：先让子进程用 Movie Maker 渲染 AVI，再用 ffmpeg 转 mp4。
+## export_mode 只在子进程里为 true：放完自动退出，不录结算画面。
+var export_mode: bool = false
+var _export_button: Button
+var _export_dialog: FileDialog = null
+var _export_stage: int = 0
+var _export_pid: int = -1
+var _export_avi: String = ""
+var _export_mp4: String = ""
+var _export_timer: float = 0.0
+var _export_ffmpeg: String = "ffmpeg"
 var _toast_label: Label = null
 var _toast_tween: Tween = null
 ## 暂停菜单（ESC）。
@@ -565,6 +576,12 @@ func _build_ui() -> void:
 	var result_buttons := HBoxContainer.new()
 	result_buttons.add_theme_constant_override("separation", 12)
 	box.add_child(result_buttons)
+	_export_button = Button.new()
+	_export_button.text = "导出视频…"
+	_export_button.tooltip_text = "把这一局渲染成 mp4（需要电脑上装了 ffmpeg）"
+	_export_button.pressed.connect(_export_video)
+	_export_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	result_buttons.add_child(_export_button)
 	var retry_button := Button.new()
 	retry_button.text = "重试"
 	retry_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -751,6 +768,7 @@ func _start_audio() -> void:
 
 
 func _process(delta: float) -> void:
+	_tick_export(delta)
 	if not _running or chart == null or _paused:
 		return
 	if replay_mode:
@@ -970,6 +988,121 @@ func _active_offset() -> float:
 	if not is_nan(_offset_override):
 		return _offset_override
 	return float(_app.playtest_offset_ms if _app != null else 0.0)
+
+
+## 导出视频：弹保存框 → 子进程渲染 AVI → ffmpeg 转 mp4 → 删 AVI。
+## 渲染走 Godot 的 Movie Maker（--write-movie），逐帧输出，和回放的虚拟时钟天然同步。
+func _export_video() -> void:
+	var data := _current_replay()
+	if data == null or _export_stage != 0:
+		return
+	if _ffmpeg_path().is_empty():
+		_show_toast("没找到 ffmpeg，先装一个：winget install Gyan.FFmpeg")
+		return
+	if _export_dialog == null:
+		_export_dialog = FileDialog.new()
+		_export_dialog.use_native_dialog = true
+		_export_dialog.file_mode = FileDialog.FILE_MODE_SAVE_FILE
+		_export_dialog.access = FileDialog.ACCESS_FILESYSTEM
+		_export_dialog.title = "导出回放视频"
+		_export_dialog.add_filter("*.mp4", "MP4 视频")
+		_export_dialog.file_selected.connect(_start_video_export)
+		add_child(_export_dialog)
+	_export_dialog.current_dir = OS.get_system_dir(OS.SYSTEM_DIR_DOWNLOADS)
+	_export_dialog.current_file = _replay_file_name().get_basename() + ".mp4"
+	_export_dialog.popup_centered()
+
+
+## 找 ffmpeg：先看 PATH；winget 装完要重开终端才进 PATH，所以再兜一下它的安装位置。
+func _ffmpeg_path() -> String:
+	var out: Array = []
+	var tool := "where" if OS.get_name() == "Windows" else "which"
+	if OS.execute(tool, ["ffmpeg"], out, true) == 0:
+		return "ffmpeg"
+	if OS.get_name() == "Windows":
+		var local := OS.get_environment("LOCALAPPDATA")
+		var links := local.path_join("Microsoft/WinGet/Links/ffmpeg.exe")
+		if FileAccess.file_exists(links):
+			return links
+		# winget 的包目录：.../WinGet/Packages/Gyan.FFmpeg_*/ffmpeg-*/bin/ffmpeg.exe
+		var pkgs := local.path_join("Microsoft/WinGet/Packages")
+		for dir in DirAccess.get_directories_at(pkgs):
+			if not dir.begins_with("Gyan.FFmpeg"):
+				continue
+			var root := pkgs.path_join(dir)
+			for sub in DirAccess.get_directories_at(root):
+				var candidate := root.path_join(sub).path_join("bin/ffmpeg.exe")
+				if FileAccess.file_exists(candidate):
+					return candidate
+	return ""
+
+
+func _start_video_export(path: String) -> void:
+	var data := _current_replay()
+	if data == null:
+		return
+	if not path.to_lower().ends_with(".mp4"):
+		path += ".mp4"
+	var tmp := ProjectSettings.globalize_path("user://export_replay.tmkrpl")
+	if data.save_to(tmp) != OK:
+		_show_toast("临时回放写不进去，导出取消")
+		return
+	_export_mp4 = path
+	_export_avi = path.get_basename() + ".avi"
+	_export_ffmpeg = _ffmpeg_path()
+	var args: Array[String] = []
+	if OS.has_feature("editor"):
+		args.append_array(["--path", ProjectSettings.globalize_path("res://")])
+	args.append_array([
+		"--write-movie", _export_avi,
+		"--fixed-fps", "60",
+		"--", "--replay=" + tmp, "--export-quit",
+	])
+	_export_pid = OS.create_process(OS.get_executable_path(), args)
+	if _export_pid <= 0:
+		_show_toast("渲染进程没起来")
+		return
+	_export_stage = 1
+	_export_timer = 0.0
+	_show_toast("正在渲染（中间文件很大，转完自动删）")
+
+
+## 每 0.5 秒看一眼子进程：渲染完 → 转码，转码完 → 删 AVI。
+func _tick_export(delta: float) -> void:
+	if _export_stage == 0:
+		return
+	_export_timer += delta
+	if _export_timer < 0.5:
+		return
+	_export_timer = 0.0
+	if _export_stage == 1:
+		if OS.is_process_running(_export_pid):
+			return
+		if not FileAccess.file_exists(_export_avi):
+			_export_stage = 0
+			_show_toast("渲染失败：没有生成视频文件")
+			return
+		var args := PackedStringArray([
+			"-y", "-i", _export_avi,
+			"-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "23",
+			"-c:a", "aac", "-b:a", "192k",
+			_export_mp4,
+		])
+		_export_pid = OS.create_process(_export_ffmpeg, args)
+		if _export_pid <= 0:
+			_export_stage = 0
+			_show_toast("ffmpeg 启动失败，AVI 留在 %s" % _export_avi)
+			return
+		_export_stage = 2
+		_show_toast("转码中…")
+		return
+	if OS.is_process_running(_export_pid):
+		return
+	if FileAccess.file_exists(_export_avi):
+		DirAccess.remove_absolute(_export_avi)
+	DirAccess.remove_absolute(ProjectSettings.globalize_path("user://export_replay.tmkrpl"))
+	_export_stage = 0
+	_show_toast("视频已保存：%s" % _export_mp4.get_file())
 
 
 ## 当前可保存的回放：回放中看的是 replay_source，刚打完看的是本局录制。
@@ -2347,7 +2480,8 @@ func _probe_frame_time() -> void:
 			spikes += 1
 	# 弱机保护：连续两个统计窗口都装不下目标帧时降一档画质（只降不升，避免来回抖）。
 	var budget := _frame_budget_ms()
-	if budget > 0.0 and median > budget * 1.12:
+	# 导出视频时不要降档：渲染慢是因为在写视频，不是机器带不动。
+	if not export_mode and budget > 0.0 and median > budget * 1.12:
 		_slow_windows += 1
 		if _slow_windows >= 2 and _preview.quality_level == 0:
 			_preview.set_quality_level(1)
@@ -2687,6 +2821,10 @@ func _finish() -> void:
 	_results_text.text = "\n".join(lines)
 	_results.visible = true
 	Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
+	if export_mode:
+		# 录视频时不要把结算页录进去：藏起来，喘 0.4 秒让最后几帧写盘，然后退出。
+		_results.visible = false
+		get_tree().create_timer(0.4).timeout.connect(func() -> void: get_tree().quit(0))
 
 
 ## 一次修一张：把「本局平均偏差」反向加到这张谱面的 offset 并存盘。

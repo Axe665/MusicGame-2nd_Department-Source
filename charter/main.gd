@@ -95,6 +95,8 @@ var _chart_browser: ChartBrowser
 var _osu_browser: ChartBrowser
 var _new_dialog: NewChartDialog
 var _playtest: Playtest
+## 导出视频的子进程：放完自动退出。
+var _export_quit: bool = false
 ## 试玩前的设置窗口：倍速 / 流速 / 星速 / 星显。
 var _playtest_dialog: AcceptDialog = null
 var _playtest_rate: SpinBox = null
@@ -164,6 +166,10 @@ func _ready() -> void:
 	set_process(true)
 	if "--bench" in OS.get_cmdline_user_args():
 		call_deferred("_run_bench")
+	for arg in OS.get_cmdline_user_args():
+		if arg.begins_with("--replay="):
+			call_deferred("_open_replay_file", arg.get_slice("=", 1), "--export-quit" in OS.get_cmdline_user_args())
+			break
 
 
 ## 无人值守性能基准：载入 Apollo 谱，从扫圈段自动打 25 秒后退出。
@@ -2025,6 +2031,33 @@ func _commit_playtest_settings() -> void:
 		_editor_flow_spin.value = _app.flow_scale
 
 
+## 命令行打开一个 .tmkrpl：载入它记的谱面，然后直接进回放。
+## 导出视频时子进程会带 --export-quit，放完自动退出。
+func _open_replay_file(path: String, export_quit: bool) -> void:
+	var data := Replay.load_from(path)
+	if data == null:
+		print("[replay] 读不出回放：", path)
+		if export_quit:
+			get_tree().quit(1)
+		return
+	var chart_path := data.chart_path
+	if chart_path.is_empty() or not FileAccess.file_exists(chart_path):
+		print("[replay] 找不到谱面：", chart_path)
+		if export_quit:
+			get_tree().quit(1)
+		return
+	var chart: Chart = ChartIO.load_chart(chart_path)
+	if chart == null:
+		print("[replay] 谱面读取失败：", ChartIO.last_error)
+		if export_quit:
+			get_tree().quit(1)
+		return
+	_app.set_chart(chart, chart_path, false)
+	_sync_from_app()
+	_export_quit = export_quit
+	_start_replay(data)
+
+
 func _start_playtest(from_start: bool) -> void:
 	if _app == null or _app.chart == null or _playtest != null:
 		return
@@ -2064,6 +2097,7 @@ func _start_replay(data: Replay) -> void:
 		_show_toast("谱面在录制之后被改过，回放结果可能和当时不同", "error")
 	_playtest = Playtest.new()
 	_playtest.replay_source = data
+	_playtest.export_mode = _export_quit
 	add_child(_playtest)
 	_playtest.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_playtest.setup(_app.chart, data.start_beat, _app.chart_path)
