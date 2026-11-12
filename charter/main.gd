@@ -2045,14 +2045,19 @@ func _show_import_progress() -> void:
 		_import_progress.get_ok_button().visible = false
 		add_child(_import_progress)
 	_import_progress.popup_centered(Vector2i(460, 150))
+	_import_progress_bar.visible = true
+	_import_progress_bar.value = 0.0
 
 
 func _import_progress_text(label: String, ratio: float, seconds: float) -> void:
 	if _import_progress_label == null:
 		return
 	_import_progress_label.text = "%s · 已转 %d 秒" % [label, int(maxf(0.0, seconds))]
-	if ratio >= 0.0 and _import_progress_bar != null:
-		_import_progress_bar.value = clampf(ratio, 0.0, 1.0) * 100.0
+	if _import_progress_bar != null:
+		# 音频拿不到时长时只显示已转秒数，别把进度条钉在 0%。
+		_import_progress_bar.visible = ratio >= 0.0
+		if ratio >= 0.0:
+			_import_progress_bar.value = clampf(ratio, 0.0, 1.0) * 100.0
 
 
 func _hide_import_progress() -> void:

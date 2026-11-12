@@ -205,12 +205,10 @@ static func prepare_audio_async(path: String, tree: SceneTree, progress: Callabl
 		_jobs.erase(target)
 		last_error = "无法启动 ffmpeg。"
 		return ""
-	var duration := probe_video_duration(path)
+	# 不做 ffprobe：OS.execute 会卡主线程 ~80ms；音频这里只报已转秒数。
 	while OS.is_process_running(pid):
 		if progress.is_valid():
-			var seconds := read_progress_seconds(progress_path)
-			var ratio := -1.0 if duration <= 0.0 else clampf(seconds / duration, 0.0, 1.0)
-			progress.call(ratio, seconds)
+			progress.call(-1.0, read_progress_seconds(progress_path))
 		await tree.create_timer(0.2).timeout
 	_jobs.erase(target)
 	if FileAccess.file_exists(progress_path):
@@ -219,7 +217,7 @@ static func prepare_audio_async(path: String, tree: SceneTree, progress: Callabl
 		last_error = "音频转换失败：%s" % path.get_file()
 		return ""
 	if progress.is_valid():
-		progress.call(1.0, duration)
+		progress.call(1.0, 0.0)
 	return target
 
 
