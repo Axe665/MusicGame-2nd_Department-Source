@@ -946,7 +946,8 @@ static func video_alpha(chart_opacity: float, brightness: float) -> float:
 
 ## 背景明暗：静图和 BGA 共用一个系数（1.0 = 默认观感）。
 func set_background_brightness(value: float) -> void:
-	background_brightness = maxf(0.0, value)
+	# 设置项封顶 100%；这里再钳一次，防止别处直接赋值绕过上限。
+	background_brightness = clampf(value, 0.0, 1.0)
 	if _background_image != null:
 		_background_image.modulate = Color(1, 1, 1, background_alpha(background_brightness))
 

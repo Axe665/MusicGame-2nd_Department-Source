@@ -670,7 +670,7 @@ func save_settings() -> void:
 		"hud_show_title": hud_show_title, "hud_show_difficulty": hud_show_difficulty,
 		"hud_show_percent": hud_show_percent, "hud_show_time": hud_show_time,
 		"hud_show_watermark": hud_show_watermark,
-		"background_brightness": background_brightness, "mouse_keys": mouse_keys,
+		"background_brightness": clampi(background_brightness, 0, 100), "mouse_keys": mouse_keys,
 		"preview_width": preview_width, "preview_collapsed": preview_collapsed}
 	var file := FileAccess.open(SETTINGS_PATH, FileAccess.WRITE)
 	if file != null:
