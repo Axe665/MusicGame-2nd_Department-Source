@@ -50,6 +50,7 @@ func _initialize() -> void:
 		"test_note_span_defaults",
 		"test_judgement_text_font",
 		"test_playtest_countdown",
+		"test_hold_stack_alpha",
 		"test_osu_taiko_import",
 		"test_osu_taiko_flow",
 		"test_osu_bpm_change",
@@ -1399,6 +1400,15 @@ func test_playtest_countdown() -> bool:
 		"a mid-chart start rewinds one pre-read plus half a second")
 	near(Playtest.timeline_start_beat(chart, 0.0, 1000.0), 0.0, 0.001,
 		"the chart start never goes negative")
+	return true
+
+
+func test_hold_stack_alpha() -> bool:
+	near(Preview3D.hold_stack_alpha(0.0, 1.0), 1.0, 0.001, "the next hold stays fully opaque")
+	near(Preview3D.hold_stack_alpha(-2.0, 1.0), 1.0, 0.001, "a held hold does not fade")
+	near(Preview3D.hold_stack_alpha(2.0, 1.0), 0.65, 0.001, "a hold two pre-reads away reaches the floor")
+	var mid := Preview3D.hold_stack_alpha(1.0, 1.0)
+	ok(mid < 1.0 and mid > 0.65, "mid-distance holds fade between the two bounds")
 	return true
 
 

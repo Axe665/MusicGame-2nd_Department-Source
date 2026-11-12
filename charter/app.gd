@@ -40,8 +40,8 @@ var trace_color: Color = Color(0.78, 0.86, 1.0)
 var note_skin: String = "candy"
 ## 画质选项（视图 → 画质）。全部只影响渲染，不碰判定。
 var quality_preset: String = "high"
-## 0 = 关，1 = 2×，2 = 4×（2D 层的 MSAA）。
-var aa_2d_level: int = 2
+## 0 = 关，1 = 2×，2 = 4×（2D 层的 MSAA）。高画质用 2×，极高才上 4×。
+var aa_2d_level: int = 1
 var note_detail_fine: bool = true
 var note_glow: bool = true
 ## long / short / off
@@ -50,8 +50,8 @@ var cursor_trail: String = "long"
 var fx_budget: String = "full"
 ## high / mid / low（3D 背景渲染分辨率 0.8 / 0.65 / 0.5）
 var ring_3d_scale: String = "high"
-## 3D 背景刷新率 60 / 30（2D 与判定永远按游戏帧率）
-var ring_3d_hz: int = 60
+## 3D 背景刷新率上限 60 / 30（只在视角或形变变化时重画；2D 与判定永远按游戏帧率）
+var ring_3d_hz: int = 30
 var bar_lines: bool = true
 ## HUD 选项（视图 → 界面）。只影响显示，不碰判定。
 ## 80 / 100 / 120
@@ -75,8 +75,9 @@ var hit_fx_style: String = "burst"
 var hit_sfx_style: String = "default"
 ## 试玩光标大小倍率（1.0 = 默认）。
 var cursor_scale: float = 1.0
-## 帧率上限："60" / "120" / "vsync" / "unlimited"。
-var frame_cap: String = "vsync"
+## 帧率上限："60" / "120" / "144" / "240" / "vsync" / "unlimited"。
+## 默认 120：240Hz 屏上跑不满 240 会按 240/120 交替出帧，反而比稳定 120 更抖。
+var frame_cap: String = "120"
 ## 音频缓冲（ms）。Godot 只在启动时读它，改动写进 override.cfg，重启生效。
 var audio_buffer_ms: int = 3
 ## 局内动态校准判定偏移（默认关）。
@@ -478,7 +479,8 @@ func _load_settings() -> void:
 			ring_3d_scale = ring_scale if ring_scale in ["high", "mid", "low"] else "high"
 			ring_3d_hz = 30 if int(data.get("ring_3d_hz", ring_3d_hz)) == 30 else 60
 			bar_lines = bool(data.get("bar_lines", bar_lines))
-			quality_preset = String(data.get("quality_preset", "high"))
+			var preset := String(data.get("quality_preset", "high"))
+			quality_preset = preset if preset in ["ultra", "high", "mid", "low", "custom"] else "high"
 			hud_scale = int(data.get("hud_scale", hud_scale))
 			hud_scale = hud_scale if hud_scale in [80, 100, 120] else 100
 			var combo_mode := String(data.get("hud_combo_mode", hud_combo_mode))
@@ -548,10 +550,19 @@ func apply_visual_quality() -> void:
 			viewport.msaa_2d = Viewport.MSAA_4X
 
 
-## 预设：一次把八项调成一组常用组合（单项改动后预设显示为「自定义」）。
+## 预设：一次把画质项调成一组常用组合（单项改动后预设显示为「自定义」）。
 func apply_quality_preset(name: String) -> void:
 	quality_preset = name
 	match name:
+		"ultra":
+			aa_2d_level = 2
+			note_detail_fine = true
+			note_glow = true
+			cursor_trail = "long"
+			fx_budget = "full"
+			ring_3d_scale = "high"
+			ring_3d_hz = 60
+			bar_lines = true
 		"low":
 			aa_2d_level = 0
 			note_detail_fine = false
@@ -572,13 +583,13 @@ func apply_quality_preset(name: String) -> void:
 			bar_lines = true
 		_:
 			quality_preset = "high"
-			aa_2d_level = 2
+			aa_2d_level = 1
 			note_detail_fine = true
 			note_glow = true
 			cursor_trail = "long"
 			fx_budget = "full"
 			ring_3d_scale = "high"
-			ring_3d_hz = 60
+			ring_3d_hz = 30
 			bar_lines = true
 
 
@@ -591,6 +602,12 @@ func apply_frame_cap() -> void:
 			DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_ENABLED)
 		"120":
 			Engine.max_fps = 120
+			DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_ENABLED)
+		"144":
+			Engine.max_fps = 144
+			DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_ENABLED)
+		"240":
+			Engine.max_fps = 240
 			DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_ENABLED)
 		"unlimited":
 			Engine.max_fps = 0
