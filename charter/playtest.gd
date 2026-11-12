@@ -199,20 +199,28 @@ var export_mode: bool = false
 ## 渲染永远是 1600×900（Movie Maker 跟着窗口走，改不了），
 ## 成品统一缩到 720p：缩小等于超采样，比直接低分辨率渲染更清楚。
 const EXPORT_VIDEO_SIZE := Vector2i(1280, 720)
+## 逐帧截取的帧率；视频时间轴 = 帧号 / 帧率。
+const CAPTURE_FPS := 60
+const CAPTURE_DIR := "user://export_frames"
 var _export_button: Button
 var _export_dialog: FileDialog = null
 var _export_stage: int = 0
 var _export_pid: int = -1
-var _export_avi: String = ""
 var _export_mp4: String = ""
 var _export_timer: float = 0.0
 var _export_ffmpeg: String = "ffmpeg"
-var _export_elapsed: float = 0.0
+var _capture_mode: bool = false
+var _capture_grabber: Node = null
+var _capture_dir: String = ""
+var _capture_mp4: String = ""
+var _capture_audio: String = ""
+var _capture_audio_offset: float = 0.0
+var _capture_frames: int = 0
+var _capture_total: int = 0
 var _export_window: AcceptDialog = null
 var _export_label: Label = null
 var _export_bar: ProgressBar = null
 var _export_total_ms: float = 1.0
-var _export_write_timer: float = 0.0
 var _toast_label: Label = null
 var _toast_tween: Tween = null
 ## 暂停菜单（ESC）。
@@ -779,21 +787,16 @@ func _start_audio() -> void:
 
 func _process(delta: float) -> void:
 	_tick_export(delta)
+	if _capture_mode and _capture_grabber != null and _capture_grabber.busy:
+		# 上一帧还没存完，别推进时钟，否则视频会跳帧。
+		return
 	if not _running or chart == null or _paused:
 		return
 	if replay_mode:
 		# 虚拟时钟：倍速只改画面快慢；判定只认事件时间戳，所以结果不变。
-		_replay_ms += clampf(delta, 0.0, 0.25) * 1000.0 * maxf(0.05, replay_rate)
-		if export_mode:
-			# 把播放进度写给主进程看，进度条才知道渲染到哪了。
-			_export_write_timer += delta
-			if _export_write_timer >= 0.5:
-				_export_write_timer = 0.0
-				var total := maxf(1.0, _replay_total_ms)
-				var file := FileAccess.open(ProjectSettings.globalize_path("user://export_progress.txt"), FileAccess.WRITE)
-				if file != null:
-					file.store_string("%.4f" % clampf(_replay_ms / total, 0.0, 1.0))
-					file.close()
+		# 截帧导出时锁成 1/60 秒一步，帧号就是视频时间轴。
+		var step: float = (1.0 / float(CAPTURE_FPS)) if _capture_mode else delta
+		_replay_ms += clampf(step, 0.0, 0.25) * 1000.0 * maxf(0.05, replay_rate)
 	var chart_ms := _chart_ms()
 	_last_frame_ms = clampf(delta * 1000.0, 1.0, 200.0)
 	var judge_ms := chart_ms + _active_offset()
@@ -834,6 +837,12 @@ func _process(delta: float) -> void:
 		if absf(offset_now - _record_offset) > 0.01:
 			_record_offset = offset_now
 			_record.add_offset(judge_ms, offset_now)
+	if _capture_mode:
+		if _capture_grabber != null:
+			_set_export_progress(0.8 * float(_capture_grabber.grabbed) / float(maxi(1, _capture_total)), "正在渲染")
+		if _replay_ms >= _replay_total_ms:
+			_finish_capture()
+			return
 
 
 ## 开始录制本局输入。
@@ -1039,7 +1048,7 @@ func _export_video() -> void:
 		_export_dialog.access = FileDialog.ACCESS_FILESYSTEM
 		_export_dialog.title = "导出回放视频"
 		_export_dialog.add_filter("*.mp4", "MP4 视频")
-		_export_dialog.file_selected.connect(_start_video_export)
+		_export_dialog.file_selected.connect(_start_capture_export)
 		add_child(_export_dialog)
 	_export_dialog.current_dir = OS.get_system_dir(OS.SYSTEM_DIR_DOWNLOADS)
 	_export_dialog.current_file = _replay_file_name().get_basename() + ".mp4"
@@ -1070,43 +1079,27 @@ func _ffmpeg_path() -> String:
 	return ""
 
 
-func _start_video_export(path: String) -> void:
+func _start_capture_export(path: String) -> void:
 	var data := _current_replay()
-	if data == null:
+	if data == null or _export_stage != 0:
 		return
 	if not path.to_lower().ends_with(".mp4"):
 		path += ".mp4"
-	var tmp := ProjectSettings.globalize_path("user://export_replay.tmkrpl")
-	if data.save_to(tmp) != OK:
-		_show_toast("临时回放写不进去，导出取消")
+	if _ffmpeg_path().is_empty():
 		return
-	_export_mp4 = path
-	_export_avi = path.get_basename() + ".avi"
 	_export_ffmpeg = _ffmpeg_path()
-	# 子进程要自己读到谱面：从 osz 导入的谱 chart_path 是空的，所以这里存一份快照，
-	# 顺带把相对的音频路径转成绝对路径，免得快照换了目录就找不到声音。
-	var snapshot := ProjectSettings.globalize_path("user://export_chart.json")
-	var chart_ok := false
-	if chart != null:
-		var dict := ChartIO.chart_to_dict(chart)
-		var audio := String(dict.get("audio", ""))
-		if not audio.is_empty() and not audio.begins_with("res://") \
-				and not audio.begins_with("user://") and not audio.is_absolute_path() \
-				and not chart_path.is_empty():
-			dict["audio"] = ChartIO.resolve_path(chart_path, audio)
-		var file := FileAccess.open(snapshot, FileAccess.WRITE)
-		if file != null:
-			file.store_string(JSON.stringify(dict))
-			file.close()
-			chart_ok = true
-	if not chart_ok:
-		_notify_result("导出失败：谱面快照写不进去")
-		return
-	for stale in ["export_error.txt", "export_progress.txt", "export_ffmpeg.txt"]:
-		DirAccess.remove_absolute(ProjectSettings.globalize_path("user://" + stale))
-	_export_total_ms = 1.0
-	if chart != null:
-		_export_total_ms = maxf(1.0, chart.timing.beat_to_chart_ms(chart.duration_beats()))
+	_export_mp4 = path
+	_capture_mp4 = path
+	_capture_frames = 0
+	_capture_dir = ProjectSettings.globalize_path(CAPTURE_DIR)
+	_clear_capture_frames()
+	DirAccess.make_dir_recursive_absolute(_capture_dir)
+	_capture_audio = _export_audio_file()
+	_export_stage = 1
+	# 进度窗必须是独立系统窗口，否则它会被截进视频里。
+	var root_window := get_window()
+	if root_window != null:
+		root_window.gui_embed_subwindows = false
 	_ensure_export_window()
 	_export_window.title = "导出回放视频"
 	_export_bar.value = 0.0
@@ -1115,30 +1108,98 @@ func _start_video_export(path: String) -> void:
 	if ok_button != null:
 		ok_button.visible = false
 	_export_window.popup_centered(Vector2i(520, 170))
-	var exe := OS.get_executable_path()
-	# 从编辑器里跑的（含 F5）子进程不带 --path 会直接进项目管理器，什么都不渲。
-	# 导出成 exe 之后 res:// 在 pck 里，这个目录不存在，就不加。
-	var project_dir := ProjectSettings.globalize_path("res://")
-	var args: Array[String] = []
-	if DirAccess.dir_exists_absolute(project_dir):
-		args.append_array(["--path", project_dir])
-	args.append_array([
-		"--write-movie", _export_avi,
-		"--fixed-fps", "60",
-		# 渲染窗口挪到屏幕外：Movie Maker 必须有窗口，但没必要让人看见。
-		"--position", "-4000,-4000",
-		"--", "--replay=" + tmp, "--chart=" + snapshot, "--export-quit",
-	])
-	print("[export] ", exe, " ", args)
-	_export_pid = OS.create_process(exe, args)
-	if _export_pid <= 0:
-		_notify_result("导出失败：渲染进程没起来")
-		return
-	_export_stage = 1
-	_export_timer = 0.0
-	_export_elapsed = 0.0
+	# 同一进程里把这一局当回放重放一遍，逐帧截图——不再开第二个进程。
+	_restart_for_capture(data)
+	_capture_total = maxi(1, int(ceil((_replay_total_ms - _replay_start_ms) / 1000.0 * float(CAPTURE_FPS))))
+	_capture_audio_offset = maxf(0.0, (_replay_start_ms - chart.offset_ms) / 1000.0)
+	_export_total_ms = maxf(1.0, (_replay_total_ms - _replay_start_ms))
+	if _capture_grabber == null:
+		_capture_grabber = _FrameGrabber.new()
+		_capture_grabber.name = "ExportFrameGrabber"
+		_capture_grabber.process_priority = 100
+		add_child(_capture_grabber)
+	_capture_grabber.folder = _capture_dir
+	_capture_grabber.grabbed = 0
+	_capture_grabber.active = true
+	_capture_mode = true
+	print("[export] 逐帧截取 %d 帧 → %s" % [_capture_total, _export_mp4])
 	_set_export_progress(0.0, "正在渲染")
-	_notify_result("开始渲染视频，播完会自动转码（中间文件很大，转完自动删）")
+
+
+## 把这一局当回放重放一遍：状态全部重置，视觉参数沿用录制时的。
+func _restart_for_capture(data: Replay) -> void:
+	_finished = false
+	_paused = false
+	_running = true
+	modulate.a = 1.0
+	if _results != null:
+		_results.visible = false
+	if _pause_overlay != null:
+		_pause_overlay.visible = false
+	_init_states()
+	_last_chart_ms = -INF
+	_preview.reset_path_cuts()
+	_preview.playtest_mode = true
+	_preview.path_judgement_states = _states
+	_preview.custom_cursor_visible = true
+	_preview.show_hud = true
+	_preview.set_process(false)
+	export_mode = true
+	replay_source = data
+	_enter_replay(data)
+	_preview.time_beat = start_beat
+	_preview.prepare_playtest_frame(start_beat, 0.0)
+	# 视频里的声音由 ffmpeg 从谱面音频贴上去，这里别再放一遍。
+	if _audio != null:
+		_audio.stop()
+	Input.set_mouse_mode(Input.MOUSE_MODE_HIDDEN)
+
+
+## 导出用的音频文件：谱面的音频；没有或找不到就返回空（导出成无声视频）。
+func _export_audio_file() -> String:
+	if chart == null:
+		return ""
+	var path := chart.audio_path
+	if path.is_empty():
+		return ""
+	if not path.begins_with("res://") and not path.begins_with("user://") \
+			and not path.is_absolute_path() and not chart_path.is_empty():
+		path = ChartIO.resolve_path(chart_path, path)
+	var real := ProjectSettings.globalize_path(path)
+	return real if FileAccess.file_exists(real) else ""
+
+
+func _clear_capture_frames() -> void:
+	if _capture_dir.is_empty():
+		return
+	var folder := DirAccess.open(_capture_dir)
+	if folder == null:
+		return
+	for name in folder.get_files():
+		folder.remove(name)
+
+
+## 每渲染完一帧存一张 JPEG；它比 playtest 晚一帧跑（process_priority），
+## 所以拿到的正好是这一帧渲染出来的画面。
+class _FrameGrabber extends Node:
+	var folder := ""
+	var active := false
+	var busy := false
+	var grabbed := 0
+
+	func _process(_delta: float) -> void:
+		if not active or busy:
+			return
+		busy = true
+		await RenderingServer.frame_post_draw
+		if not active:
+			busy = false
+			return
+		var image := get_viewport().get_texture().get_image()
+		if image != null:
+			image.save_jpg("%s/%05d.jpg" % [folder, grabbed], 0.9)
+			grabbed += 1
+		busy = false
 
 
 ## 导出进度窗：和「在线谱面」的下载进度窗一个样式。
@@ -1168,73 +1229,72 @@ func _ensure_export_window() -> void:
 
 ## 每 0.5 秒看一眼子进程：渲染完 → 转码，转码完 → 删 AVI。
 func _tick_export(delta: float) -> void:
-	if _export_stage == 0:
+	if _export_stage != 2:
 		return
-	_export_elapsed += delta
 	_export_timer += delta
 	if _export_timer < 0.4:
 		return
 	_export_timer = 0.0
-	if _export_stage == 1:
-		_poll_render_stage()
-	elif _export_stage == 2:
-		_poll_encode_stage()
+	_poll_encode_stage()
 
 
-## 渲染阶段：子进程每 0.5 秒把自己的播放进度写进 export_progress.txt。
-func _poll_render_stage() -> void:
-	if OS.is_process_running(_export_pid):
-		# 子进程活着但迟迟没建出文件，多半是没带 --path 进了项目管理器。
-		if not FileAccess.file_exists(_export_avi) and _export_elapsed > 20.0:
-			OS.kill(_export_pid)
-			_finish_export_error("渲染进程没开始写文件（看控制台的 [export] 行）")
-			return
-		_set_export_progress(_read_child_progress() * 0.8, "正在渲染")
+## 截帧跑够了：停掉抓帧器，把 JPEG 序列交给 ffmpeg。
+func _finish_capture() -> void:
+	if not _capture_mode:
 		return
-	var error_path := ProjectSettings.globalize_path("user://export_error.txt")
-	if FileAccess.file_exists(error_path):
-		var reason := FileAccess.get_file_as_string(error_path).strip_edges()
-		DirAccess.remove_absolute(error_path)
-		_finish_export_error(reason)
+	_capture_mode = false
+	_running = false
+	if _capture_grabber != null:
+		_capture_grabber.active = false
+	# 最后一帧可能还在写盘。
+	await get_tree().create_timer(0.25).timeout
+	_capture_frames = _capture_grabber.grabbed if _capture_grabber != null else 0
+	if _capture_frames < 2:
+		_finish_export_error("一帧都没截到")
 		return
-	if not FileAccess.file_exists(_export_avi):
-		_finish_export_error("没有生成视频文件")
-		return
-	# 只有几帧的「视频」说明回放根本没载入，别转码了。
-	var probe := FileAccess.open(_export_avi, FileAccess.READ)
-	var avi_size := probe.get_length() if probe != null else 0
-	if probe != null:
-		probe.close()
-	if avi_size < 50000:
-		_finish_export_error("只录到 %.0f KB，回放没载入成功" % (avi_size / 1024.0))
-		return
+	_set_export_progress(0.8, "渲染完成，正在转码")
+	_start_encode()
+
+
+func _start_encode() -> void:
 	var progress_file := ProjectSettings.globalize_path("user://export_ffmpeg.txt")
 	DirAccess.remove_absolute(progress_file)
+	var seconds := maxf(0.1, float(_capture_frames) / float(CAPTURE_FPS))
+	_export_total_ms = seconds * 1000.0
 	var args := PackedStringArray([
 		"-y", "-progress", progress_file, "-nostats",
-		"-i", _export_avi,
-		# 1600×900 缩到 720p，顺便当超采样。
+		"-framerate", str(CAPTURE_FPS), "-i", _capture_dir.replace("\\", "/") + "/%05d.jpg",
+	])
+	if not _capture_audio.is_empty():
+		args.append_array([
+			"-ss", "%.3f" % _capture_audio_offset,
+			"-t", "%.3f" % seconds,
+			"-i", _capture_audio.replace("\\", "/"),
+		])
+	args.append_array([
+		# 截出来是 1600×900，缩到 720p 顺便当超采样。
 		"-vf", "scale=%d:%d:flags=lanczos" % [EXPORT_VIDEO_SIZE.x, EXPORT_VIDEO_SIZE.y],
 		"-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-crf", "23",
-		"-c:a", "aac", "-b:a", "192k",
-		_export_mp4,
 	])
+	if _capture_audio.is_empty():
+		args.append("-an")
+	else:
+		args.append_array(["-c:a", "aac", "-b:a", "192k", "-shortest"])
+	args.append(_capture_mp4)
 	_export_pid = OS.create_process(_export_ffmpeg, args)
 	if _export_pid <= 0:
-		_finish_export_error("ffmpeg 没起来（AVI 留在 %s）" % _export_avi)
+		_finish_export_error("ffmpeg 没起来")
 		return
 	_export_stage = 2
-	print("[export] ffmpeg ", _export_ffmpeg)
-	_set_export_progress(0.8, "渲染完成，正在转码")
+	print("[export] ffmpeg ", _export_ffmpeg, " frames=", _capture_frames)
 
-
-## 转码阶段：ffmpeg 的 -progress 文件里有 out_time_us，和总时长一比就是进度。
 func _poll_encode_stage() -> void:
 	if OS.is_process_running(_export_pid):
 		_set_export_progress(0.8 + _read_ffmpeg_progress() * 0.2, "正在转码")
 		return
 	_cleanup_export_files(false)
 	_export_stage = 0
+	_restore_after_capture()
 	if _export_bar != null:
 		_export_bar.value = 100.0
 	if _export_label != null:
@@ -1249,19 +1309,33 @@ func _poll_encode_stage() -> void:
 			_export_window.hide())
 
 
+## 导出结束后把界面恢复成结算页，用户可以接着重试/返回。
+func _restore_after_capture() -> void:
+	_capture_mode = false
+	export_mode = false
+	_running = false
+	_finished = true
+	set_process_input(true)
+	for node_name in ["TopBar", "StatsBar", "PlaytestHint", "PauseOverlay"]:
+		var node := get_node_or_null(node_name)
+		if node is CanvasItem:
+			node.visible = true
+	if _replay_bar != null:
+		_replay_bar.visible = false
+	var root_window := get_window()
+	if root_window != null:
+		root_window.gui_embed_subwindows = true
+	if _results != null:
+		_results.visible = true
+	Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
+
+
 func _set_export_progress(fraction: float, label: String) -> void:
 	if _export_bar == null:
 		return
 	_export_bar.value = clampf(fraction, 0.0, 1.0) * 100.0
 	if _export_label != null:
 		_export_label.text = "%s %d%%" % [label, int(_export_bar.value)]
-
-
-func _read_child_progress() -> float:
-	var path := ProjectSettings.globalize_path("user://export_progress.txt")
-	if not FileAccess.file_exists(path):
-		return 0.0
-	return clampf(FileAccess.get_file_as_string(path).to_float(), 0.0, 1.0)
 
 
 func _read_ffmpeg_progress() -> float:
@@ -1292,9 +1366,8 @@ func _finish_export_error(message: String) -> void:
 
 ## 收尾：删掉中间的 AVI 和临时文件；取消时连半成品 mp4 一起删。
 func _cleanup_export_files(remove_output: bool) -> void:
-	if FileAccess.file_exists(_export_avi):
-		DirAccess.remove_absolute(_export_avi)
-	for name in ["export_replay.tmkrpl", "export_chart.json", "export_progress.txt", "export_ffmpeg.txt", "export_error.txt"]:
+	_clear_capture_frames()
+	for name in ["export_ffmpeg.txt", "export_error.txt"]:
 		var path := ProjectSettings.globalize_path("user://" + name)
 		if FileAccess.file_exists(path):
 			DirAccess.remove_absolute(path)
@@ -1305,13 +1378,16 @@ func _cleanup_export_files(remove_output: bool) -> void:
 func _cancel_export() -> void:
 	if _export_stage == 0:
 		return
+	_capture_mode = false
+	if _capture_grabber != null:
+		_capture_grabber.active = false
 	if _export_pid > 0 and OS.is_process_running(_export_pid):
 		OS.kill(_export_pid)
 	_export_pid = -1
 	_export_stage = 0
+	_restore_after_capture()
 	_notify_result("已取消导出")
-	# 进程刚被杀时文件还锁着，等一下再删，否则会留下一个上 GB 的 AVI。
-	get_tree().create_timer(0.8).timeout.connect(func() -> void:
+	get_tree().create_timer(0.5).timeout.connect(func() -> void:
 		_cleanup_export_files(true))
 
 
@@ -3034,9 +3110,8 @@ func _finish() -> void:
 	_results.visible = true
 	Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
 	if export_mode:
-		# 录视频时不要把结算页录进去：藏起来，喘 0.4 秒让最后几帧写盘，然后退出。
+		# 导出途中被 _finish 撞上（正常不会）：别把结算页录进去。
 		_results.visible = false
-		get_tree().create_timer(0.4).timeout.connect(func() -> void: get_tree().quit(0))
 
 
 ## 一次修一张：把「本局平均偏差」反向加到这张谱面的 offset 并存盘。
