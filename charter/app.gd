@@ -60,8 +60,8 @@ var hud_scale: int = 100
 var hud_combo_mode: String = "center"
 ## ring / off
 var hud_progress_style: String = "ring"
-## note / center / off
-var hud_judge_position: String = "note"
+## note / ring_in / ring_out / center / off
+var hud_judge_position: String = "ring_out"
 ## 100 / 85 / 70
 var hud_opacity: int = 100
 var hud_show_title: bool = true
@@ -489,7 +489,7 @@ func _load_settings() -> void:
 			var progress_style := String(data.get("hud_progress_style", hud_progress_style))
 			hud_progress_style = progress_style if progress_style in ["ring", "off"] else "ring"
 			var judge_pos := String(data.get("hud_judge_position", hud_judge_position))
-			hud_judge_position = judge_pos if judge_pos in ["note", "center", "off"] else "note"
+			hud_judge_position = judge_pos if judge_pos in ["note", "ring_in", "ring_out", "center", "off"] else "ring_out"
 			hud_opacity = int(data.get("hud_opacity", hud_opacity))
 			hud_opacity = hud_opacity if hud_opacity in [100, 85, 70] else 100
 			hud_show_title = bool(data.get("hud_show_title", hud_show_title))

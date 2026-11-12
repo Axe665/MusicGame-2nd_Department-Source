@@ -1690,7 +1690,7 @@ func _judge_bell(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 		_combo = 0
 		var missed: Dictionary = _preview.bell_screen(note, beat)
 		if not missed.is_empty():
-			_preview.add_hit_pulse(missed["center"], UITheme.MUTED, "漏", "miss")
+			_pulse_at(note.center_u * 360.0, beat, UITheme.RED, "MISS", note.bell_width(), "tap", "", missed["center"])
 		_add_log("MISS Bell #%d @%.0fms" % [note.id, target])
 
 
