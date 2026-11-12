@@ -69,6 +69,17 @@ var _app: Node = null
 var hud_accuracy: float = -1.0
 var hud_rating: String = "—"
 var hud_errors: Array[float] = []
+## 试玩 HUD：四角放数据、中心放连击、环外放进度/准度两条弧。
+var hud_combo: int = 0
+var hud_max_combo: int = 0
+var hud_tiers: Dictionary = {}
+var hud_title: String = ""
+var hud_difficulty: String = ""
+var hud_auto: bool = false
+## HUD 选项（来自 App.hud_options()）：缩放 / 连击位置 / 进度仪表 / 判定字位置 / 档位计数 / 透明度 / 左上内容。
+var hud_options: Dictionary = {}
+var hud_ms: float = 0.0
+var hud_total_ms: float = 0.0
 
 var cursor_u: float = 0.0
 var cursor_valid: bool = false
@@ -602,11 +613,13 @@ func _process(_delta: float) -> void:
 	if use_3d_ring:
 		var animate_3d := playing or playtest_mode or _tilt.distance_to(_tilt_target) > 0.01
 		if playtest_mode and animate_3d:
-			# 3D 环只在形变/视角变化或每 16ms 重画一次；2D 与游戏逻辑不受影响。
+			# 3D 环只在形变/视角真的变化时重画，并限制到 ring_3d_hz。
+			# 之前每 16ms 无条件重画一帧：120fps 下每隔一帧就多一次 3D 渲染，
+			# 那一帧超预算就掉到 16ms/22ms，2D 音符看起来像卡了一下。
 			var now3 := Time.get_ticks_usec()
 			var changed_3d := view_changed or _mesh_dirty or mesh_key != _last_mesh_key
 			var frame_gap := 16000 if ring_3d_hz >= 60 else 33000
-			if changed_3d or now3 - _last_3d_usec >= frame_gap:
+			if changed_3d and now3 - _last_3d_usec >= frame_gap:
 				_last_3d_usec = now3
 				_subviewport.render_target_update_mode = SubViewport.UPDATE_ONCE
 				_render_mode = SubViewport.UPDATE_ONCE
@@ -2866,8 +2879,9 @@ func _stroke_band(canvas: Control, points: PackedVector2Array, color: Color, wid
 	var gloss := float(skin["gloss"])
 	var shadow := float(skin["shadow"])
 	var w := width * k * band
-	if glow > 0.01:
+	if glow > 0.01 and glow_mul > 0.01:
 		# 柔光层很宽、对比低，关掉 AA 省下的三角形很可观，观感几乎不变。
+		# glow_mul = 0 表示画质项关了柔光：只跳这一层，描边/白边/色带照画。
 		canvas.draw_polyline(points, Color(color.r, color.g, color.b, 0.10 * glow * glow_mul * alpha), w + 18.0 * glow_mul, false)
 	if shadow > 0.01:
 		var offset := PackedVector2Array()
@@ -2972,10 +2986,11 @@ func _draw_hold_tail_band(canvas: Control, band_a: Vector2, band_b: Vector2, fad
 	canvas.draw_circle(band_b, band_w * 0.17, Color(1, 1, 1, 0.30 * fade))
 
 
-func _draw_hold_sector(canvas: Control, chart: Chart, note: Note, t: float, pre: float, fade: float, hide_head: bool = false, tint: Color = UITheme.GOLD) -> void:
+func _draw_hold_sector(canvas: Control, chart: Chart, note: Note, t: float, pre: float, fade: float, hide_head: bool = false, tint: Color = UITheme.GOLD, part: int = 0, highlight: bool = false) -> void:
 	# 直长条 = 一个从圆心张开的扇形。整根条按**同一个径向速度**往判定环落：
 	# 头部（外缘）在 pre 拍内从圆心走到环上，尾部（内缘）晚 duration 拍跟随，
 	# 所以看起来是匀速下落，而不是"先快速长出来再慢慢收"。
+	# part 0 = 身体，1 = 头/尾/高亮；分两遍画，同角度的 Hold 头永远压在身体上层。
 	var width := maxf(4.0, note.arc_width())
 	var half := width * 0.5
 	var steps := clampi(int(width / 3.0), 8, 48)
@@ -3003,42 +3018,122 @@ func _draw_hold_sector(canvas: Control, chart: Chart, note: Note, t: float, pre:
 		inner.append(center.lerp(edge, inner_scale))
 	if outer.size() < 2:
 		return
-	var polygon := PackedVector2Array()
-	polygon.append_array(outer)
-	for i in range(inner.size() - 1, -1, -1):
-		polygon.append(inner[i])
-	# 头亮尾暗：从内缘到外缘分 10 段渐亮（世界计划式）。 
-	var slices := 10
-	for s in slices:
-		var s0 := lerpf(inner_scale, outer_scale, float(s) / float(slices))
-		var s1 := lerpf(inner_scale, outer_scale, float(s + 1) / float(slices))
-		if s1 - s0 < 0.004 or edges.size() < 2:
-			continue
-		var quad := PackedVector2Array()
-		for k in edges.size():
-			quad.append(center.lerp(edges[k], s1))
-		for k in range(edges.size() - 1, -1, -1):
-			quad.append(center.lerp(edges[k], s0))
-		var alpha := lerpf(0.07, 0.42, float(s) / float(maxi(1, slices - 1)))
-		canvas.draw_colored_polygon(quad, Color(tint.r, tint.g, tint.b, alpha * fade))
-	# 外弧：贴着判定环的高亮边。
-	canvas.draw_polyline(outer, Color(1, 1, 1, 0.72 * fade), 2.0, false)
-	canvas.draw_polyline(outer, Color(tint.r, tint.g, tint.b, 0.95 * fade), 1.0, false)
-	# 内弧：长条尾端，往判定环方向收缩；越窄越亮。
-	if inner.size() > 1 and inner_scale > 0.002:
-		var tail_alpha := lerpf(0.35, 1.0, clampf(inner_scale, 0.0, 1.0))
-		canvas.draw_polyline(inner, Color(tint.r, tint.g, tint.b, tail_alpha * fade), 3.0, false)
-		canvas.draw_polyline(inner, Color(1, 1, 1, 0.28 * tail_alpha * fade), 1.2, false)
-	# 两侧的径向边，让扇形边界清楚。
-	if outer.size() == inner.size() and outer.size() > 1:
-		var edge_alpha := 0.30 * fade
-		canvas.draw_line(outer[0], inner[0], Color(1, 1, 1, edge_alpha), 1.0, false)
-		canvas.draw_line(outer[-1], inner[-1], Color(1, 1, 1, edge_alpha), 1.0, false)
+	if part == 0:
+		var polygon := PackedVector2Array()
+		polygon.append_array(outer)
+		for i in range(inner.size() - 1, -1, -1):
+			polygon.append(inner[i])
+		# 头亮尾暗：从内缘到外缘分 10 段渐亮（世界计划式）。
+		var slices := 10
+		for s in slices:
+			var s0 := lerpf(inner_scale, outer_scale, float(s) / float(slices))
+			var s1 := lerpf(inner_scale, outer_scale, float(s + 1) / float(slices))
+			if s1 - s0 < 0.004 or edges.size() < 2:
+				continue
+			var quad := PackedVector2Array()
+			for k in edges.size():
+				quad.append(center.lerp(edges[k], s1))
+			for k in range(edges.size() - 1, -1, -1):
+				quad.append(center.lerp(edges[k], s0))
+			var alpha := lerpf(0.07, 0.42, float(s) / float(maxi(1, slices - 1)))
+			canvas.draw_colored_polygon(quad, Color(tint.r, tint.g, tint.b, alpha * fade))
+		# 外弧：贴着判定环的高亮边。
+		canvas.draw_polyline(outer, Color(1, 1, 1, 0.72 * fade), 2.0, false)
+		canvas.draw_polyline(outer, Color(tint.r, tint.g, tint.b, 0.95 * fade), 1.0, false)
+		# 内弧：长条尾端，往判定环方向收缩；越窄越亮。
+		if inner.size() > 1 and inner_scale > 0.002:
+			var tail_alpha := lerpf(0.35, 1.0, clampf(inner_scale, 0.0, 1.0))
+			canvas.draw_polyline(inner, Color(tint.r, tint.g, tint.b, tail_alpha * fade), 3.0, false)
+			canvas.draw_polyline(inner, Color(1, 1, 1, 0.28 * tail_alpha * fade), 1.2, false)
+		# 两侧的径向边，让扇形边界清楚。
+		if outer.size() == inner.size() and outer.size() > 1:
+			var edge_alpha := 0.30 * fade
+			canvas.draw_line(outer[0], inner[0], Color(1, 1, 1, edge_alpha), 1.0, false)
+			canvas.draw_line(outer[-1], inner[-1], Color(1, 1, 1, edge_alpha), 1.0, false)
+		return
 	# 头部：圆角金条 + 白色内高光（世界计划式的圆润端头）；尾部虚化。
 	if outer.size() > 1 and not hide_head:
+		if highlight:
+			# 下一颗要按的 Hold：头带外再垫一层柔光，叠在一起时先看它。
+			canvas.draw_line(outer[0], outer[outer.size() - 1], Color(tint.r, tint.g, tint.b, 0.22 * fade), 30.0 * _note_scale(), false)
+			canvas.draw_line(outer[0], outer[outer.size() - 1], Color(1, 1, 1, 0.30 * fade), 24.0 * _note_scale(), false)
 		_draw_hold_cap_band(canvas, outer[0], outer[outer.size() - 1], fade, tint)
 	if inner.size() > 1 and inner_scale > 0.002:
 		_draw_hold_tail_band(canvas, inner[0], inner[inner.size() - 1], fade, tint)
+
+
+## 同角度多颗 Hold 的深度：越晚到越淡，先到的保持实心；下限 0.65 保证还看得见。
+static func hold_stack_alpha(lead_beats: float, pre_beats: float) -> float:
+	var k := clampf(lead_beats / maxf(0.5, pre_beats * 2.0), 0.0, 1.0)
+	return lerpf(1.0, 0.65, k)
+
+
+func _draw_bent_hold(canvas: Control, chart: Chart, note: Note, t: float, pre: float, fade: float, hide_head: bool, tint: Color, part: int = 0, highlight: bool = false) -> void:
+	var ns := _note_scale()
+	var center := project_design(Vector2.ZERO)
+	var body := PackedVector2Array()
+	if not note.visual_pts.is_empty():
+		# Hold 体节点：和 Path 共用 visual_pts，节点只改画面，不改头部判定。
+		var design_points: Array[Dictionary] = [{"db": 0.0, "da": 0.0}]
+		design_points.append_array(note.visual_pts)
+		design_points.append({"db": note.duration(), "da": 0.0})
+		design_points.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return float(a.get("db", 0.0)) < float(b.get("db", 0.0)))
+		for point in design_points:
+			var p := _hold_node_screen(chart, note, float(point.get("db", 0.0)), float(point.get("da", 0.0)), t)
+			if _valid_point(p):
+				body.append(center.lerp(p, _approach(chart, note.beat, t)))
+	if body.size() < 2:
+		return
+	var boundary: Vector2 = body[-1]
+	var hs := ns * float(_skin()["scale"])
+	var cs := ns
+	var direction := (boundary - body[maxi(0, body.size() - 2)]).normalized()
+	if direction.length_squared() < 0.5:
+		direction = (boundary - center).normalized()
+	var normal := Vector2(-direction.y, direction.x)
+	if part == 0:
+		canvas.draw_polyline(body, Color(0, 0, 0, 0.55 * fade), 11.0 * cs, false)
+		canvas.draw_polyline(body, Color(1, 1, 1, 0.90 * fade), 6.0 * cs, false)
+		canvas.draw_polyline(body, Color(tint.r, tint.g, tint.b, 0.92 * fade), 3.0 * cs, false)
+		# 尾端同为虚化：柔光层代替实心金点。
+		canvas.draw_circle(body[0], 9.0 * cs, Color(tint.r, tint.g, tint.b, 0.10 * fade))
+		canvas.draw_circle(body[0], 6.0 * cs, Color(tint.r, tint.g, tint.b, 0.20 * fade))
+		canvas.draw_circle(body[0], 3.0 * cs, Color(tint.r, tint.g, tint.b, 0.70 * fade))
+		canvas.draw_circle(body[0], 1.6 * cs, Color(1, 1, 1, 0.30 * fade))
+		return
+	# 按住中的白点也放在这一遍：同角度有后续 Hold 时不会被身体盖住。
+	if t >= note.beat and t <= note.end_beat:
+		var progress := clampf((t - note.beat) / maxf(0.001, note.duration()), 0.0, 1.0)
+		var marker_index := progress * float(body.size() - 1)
+		var lower := clampi(int(marker_index), 0, body.size() - 1)
+		var upper := mini(lower + 1, body.size() - 1)
+		var marker := body[lower].lerp(body[upper], marker_index - float(lower))
+		canvas.draw_circle(marker, 12.0 * hs, Color(1, 1, 1, 0.28))
+		canvas.draw_circle(marker, 8.0 * hs, Color(1, 1, 1, 0.96))
+		canvas.draw_circle(marker, 4.0 * hs, tint)
+	# 外端：一小段横杆当"头"，宽度随整体一起放大。
+	var knob := 9.0 * cs
+	if not hide_head:
+		if highlight:
+			canvas.draw_line(boundary - normal * knob, boundary + normal * knob, Color(tint.r, tint.g, tint.b, 0.22 * fade), 15.0 * cs, false)
+			canvas.draw_line(boundary - normal * knob, boundary + normal * knob, Color(1, 1, 1, 0.30 * fade), 11.0 * cs, false)
+		canvas.draw_line(boundary - normal * knob, boundary + normal * knob, Color(0, 0, 0, 0.55 * fade), 7.0 * cs, false)
+		canvas.draw_line(boundary - normal * knob, boundary + normal * knob, Color(1, 1, 1, 0.95 * fade), 5.0 * cs, false)
+		canvas.draw_line(boundary - normal * knob, boundary + normal * knob, Color(tint.r, tint.g, tint.b, 0.95 * fade), 2.6 * cs, false)
+	if show_debug and t < note.beat + 0.02:
+		var head := _flying_position(chart, note.angle, note.beat, t, pre)
+		if _valid_point(head):
+			canvas.draw_string(UITheme.bold_font(), head + Vector2(-14, -22), "HOLD", HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(tint.r, tint.g, tint.b, 0.85))
+	if not hide_head and t >= note.beat and t <= note.end_beat:
+		var glow := 0.5 + 0.5 * sin(t * PI)
+		canvas.draw_arc(boundary, 28.0 * hs, 0.0, TAU, 32, Color(tint.r, tint.g, tint.b, 0.28 * glow), 2.6, false)
+	if _app != null and not note.visual_pts.is_empty():
+		var selected: Note = _app.get_selected_note()
+		if selected != null and selected.id == note.id:
+			for point in note.visual_pts:
+				var marker := _hold_node_screen(chart, note, float(point.get("db", 0.0)), float(point.get("da", 0.0)), t)
+				if _valid_point(marker):
+					_draw_diamond(canvas, marker, 5.5, tint)
 
 
 func _draw_holds(canvas: Control, chart: Chart, t: float, pre: float) -> void:
@@ -3051,11 +3146,12 @@ func _draw_holds(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 		if t >= _spawn_beat(chart, note.beat) and t <= note.end_beat + maxf(0.3, fade_beats):
 			visible.append(note)
 	visible.sort_custom(func(a: Note, b: Note) -> bool: return a.beat > b.beat)
+	var draw: Dictionary = {}
+	var next_id := -1
+	var next_lead := INF
 	for note in visible:
 		var state := note_state(note.id)
 		var tint := _note_tint(note, UITheme.GOLD)
-		# 尾判命中后尾巴停在判定环上再淡出 0.1s，不再当帧消失。
-		# 早松手 / 头判 MISS 从判定那一拍起淡，不强行贴到环上。
 		var fade_beats := end_fade_beats(chart.timing.bpm_at(note.beat))
 		var fade := 1.0
 		if state == "hit":
@@ -3066,85 +3162,44 @@ func _draw_holds(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 			fade = clampf(1.0 - (t - float(note_state_beats[note.id])) / 0.24, 0.0, 1.0)
 		elif t > note.end_beat:
 			fade = clampf(1.0 - (t - note.end_beat) / fade_beats, 0.0, 1.0)
-		# 松手补按窗口内整条变暗：明确告诉玩家“手松了”，但没有断。
 		if state == "slip":
 			fade *= HOLD_SLIP_DIM
 		if fade <= 0.01:
 			continue
-		# 头部命中后只收起头部，长条继续表示“正在按住”；尾巴压到环上时头尾重合，也收起来。
 		var hide_head := state == "holding" or state == "slip" or t >= note.end_beat
-		var grow_raw := _approach(chart, note.beat, t)
-		# 与 Tap 同一套接近表现：环心处只有 1/6 长，飞近时长大到 1。
-		var grow := lerpf(Note.SPAWN_LENGTH_RATIO, 1.0, grow_raw)
-		# 直长条：扇形 → 扇环 → 收到判定线上消失（WACCA 玩家的读法）。
-		# 弯长条已移除，体节点只在真的把身体掰弯（da≠0）时才走折线分支。
 		var straight := true
 		for point in note.visual_pts:
 			if absf(float(point.get("da", 0.0))) > 0.5:
 				straight = false
 				break
-		if straight:
-			_draw_hold_sector(canvas, chart, note, t, pre, fade, hide_head, tint)
+		var lead := note.beat - t
+		var depth := hold_stack_alpha(lead, pre)
+		draw[note.id] = {
+			"fade": fade, "hide_head": hide_head, "tint": tint, "straight": straight,
+			"body_fade": fade * depth,
+			"cap_fade": fade * lerpf(1.0, 0.85, clampf(lead / maxf(0.5, pre * 2.0), 0.0, 1.0)),
+		}
+		if lead >= -0.02 and lead < next_lead:
+			next_lead = lead
+			next_id = note.id
+	# 身体按 beat 降序：先到的最后画，叠在上面；后到的整体更淡。
+	for note in visible:
+		var d: Dictionary = draw.get(note.id, {})
+		if d.is_empty():
 			continue
-		var center := project_design(Vector2.ZERO)
-		var body := PackedVector2Array()
-		if not note.visual_pts.is_empty():
-			# Hold 体节点：和 Path 共用 visual_pts，节点只改画面，不改头部判定。
-			var design_points: Array[Dictionary] = [{"db": 0.0, "da": 0.0}]
-			design_points.append_array(note.visual_pts)
-			design_points.append({"db": note.duration(), "da": 0.0})
-			design_points.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return float(a.get("db", 0.0)) < float(b.get("db", 0.0)))
-			for point in design_points:
-				var p := _hold_node_screen(chart, note, float(point.get("db", 0.0)), float(point.get("da", 0.0)), t)
-				if _valid_point(p):
-					body.append(center.lerp(p, grow))
-		if body.size() < 2:
+		if bool(d["straight"]):
+			_draw_hold_sector(canvas, chart, note, t, pre, float(d["body_fade"]), bool(d["hide_head"]), d["tint"], 0, false)
+		else:
+			_draw_bent_hold(canvas, chart, note, t, pre, float(d["body_fade"]), bool(d["hide_head"]), d["tint"], 0, false)
+	# 头/尾/按住标记统一最后画：同角度叠在一起时，每个 Hold 的头都看得见。
+	for note in visible:
+		var d: Dictionary = draw.get(note.id, {})
+		if d.is_empty():
 			continue
-		var boundary: Vector2 = body[-1]
-		var hs := ns * float(_skin()["scale"])
-		# 体节点把身体掰弯时的折线画法。
-		var cs := ns
-		var direction := (boundary - body[maxi(0, body.size() - 2)]).normalized()
-		if direction.length_squared() < 0.5:
-			direction = (boundary - center).normalized()
-		var normal := Vector2(-direction.y, direction.x)
-		canvas.draw_polyline(body, Color(0, 0, 0, 0.55 * fade), 11.0 * cs, false)
-		canvas.draw_polyline(body, Color(1, 1, 1, 0.90 * fade), 6.0 * cs, false)
-		canvas.draw_polyline(body, Color(tint.r, tint.g, tint.b, 0.92 * fade), 3.0 * cs, false)
-		# 尾端同为虚化：柔光层代替实心金点。
-		canvas.draw_circle(body[0], 9.0 * cs, Color(tint.r, tint.g, tint.b, 0.10 * fade))
-		canvas.draw_circle(body[0], 6.0 * cs, Color(tint.r, tint.g, tint.b, 0.20 * fade))
-		canvas.draw_circle(body[0], 3.0 * cs, Color(tint.r, tint.g, tint.b, 0.70 * fade))
-		canvas.draw_circle(body[0], 1.6 * cs, Color(1, 1, 1, 0.30 * fade))
-		# 外端：一小段横杆当"头"，宽度随整体一起放大。
-		var knob := 9.0 * cs
-		if not hide_head:
-			canvas.draw_line(boundary - normal * knob, boundary + normal * knob, Color(0, 0, 0, 0.55 * fade), 7.0 * cs, false)
-			canvas.draw_line(boundary - normal * knob, boundary + normal * knob, Color(1, 1, 1, 0.95 * fade), 5.0 * cs, false)
-			canvas.draw_line(boundary - normal * knob, boundary + normal * knob, Color(tint.r, tint.g, tint.b, 0.95 * fade), 2.6 * cs, false)
-		if t >= note.beat and t <= note.end_beat:
-			var progress := clampf((t - note.beat) / maxf(0.001, note.duration()), 0.0, 1.0)
-			var marker_index := progress * float(body.size() - 1)
-			var lower := clampi(int(marker_index), 0, body.size() - 1)
-			var upper := mini(lower + 1, body.size() - 1)
-			var marker := body[lower].lerp(body[upper], marker_index - float(lower))
-			canvas.draw_circle(marker, 12.0 * hs, Color(1, 1, 1, 0.28))
-			canvas.draw_circle(marker, 8.0 * hs, Color(1, 1, 1, 0.96))
-			canvas.draw_circle(marker, 4.0 * hs, tint)
-		if show_debug and t < note.beat + 0.02:
-			var head := _flying_position(chart, note.angle, note.beat, t, pre)
-			if _valid_point(head):
-				canvas.draw_string(UITheme.bold_font(), head + Vector2(-14, -22), "HOLD", HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(tint.r, tint.g, tint.b, 0.85))
-		if not hide_head and t >= note.beat and t <= note.end_beat:
-			var glow := 0.5 + 0.5 * sin(t * PI)
-			canvas.draw_arc(boundary, 28.0 * hs, 0.0, TAU, 32, Color(tint.r, tint.g, tint.b, 0.28 * glow), 2.6, false)
-		if _app != null and not note.visual_pts.is_empty():
-			var selected: Note = _app.get_selected_note()
-			if selected != null and selected.id == note.id:
-				for point in note.visual_pts:
-					var marker := _hold_node_screen(chart, note, float(point.get("db", 0.0)), float(point.get("da", 0.0)), t)
-					if _valid_point(marker):
-						_draw_diamond(canvas, marker, 5.5, tint)
+		if bool(d["straight"]):
+			_draw_hold_sector(canvas, chart, note, t, pre, float(d["cap_fade"]), bool(d["hide_head"]), d["tint"], 1, note.id == next_id)
+		else:
+			_draw_bent_hold(canvas, chart, note, t, pre, float(d["cap_fade"]), bool(d["hide_head"]), d["tint"], 1, note.id == next_id)
 
 
 func _draw_notes(canvas: Control, chart: Chart, t: float, pre: float) -> void:
@@ -3215,7 +3270,8 @@ func _draw_length_band(canvas: Control, chart: Chart, angle: float, width: float
 		if _valid_point(dot):
 			canvas.draw_circle(dot, 7.0 * ns, Color(color.r, color.g, color.b, 0.90 * alpha))
 		return dot
-	var steps := clampi(int(width / (4.0 if note_detail_fine else 6.0)), 10, 96)
+	# 省电档也只是降采样，不能再低到把长条画成折线。
+	var steps := clampi(int(width / (4.0 if note_detail_fine else 6.0)), 16, 96)
 	var points := PackedVector2Array()
 	for i in steps + 1:
 		var sample_angle := angle - width * 0.5 + width * float(i) / float(steps)
@@ -3227,9 +3283,9 @@ func _draw_length_band(canvas: Control, chart: Chart, angle: float, width: float
 			points.append(p)
 	if points.size() < 2:
 		return Vector2(INF, INF)
-	# Tap 的粉色柔光压低：保留一点氛围，但不抢白边和色带（画质项可关）。
-	if note_glow:
-		_stroke_band(canvas, points, color, 18.0 * ns, alpha, -1.0, 0.35)
+	# 胶囊本体（黑描边 + 白边 + 色带 + 高光）永远画；画质项只决定最外层柔光。
+	# 之前把整次 _stroke_band 塞进 if note_glow，关光晕时 Tap / Hold 头只剩几个点。
+	_stroke_band(canvas, points, color, 18.0 * ns, alpha, -1.0, 0.35 if note_glow else 0.0)
 	var cap_scale := ns * float(_skin()["scale"])
 	var center_point := points[points.size() / 2]
 	# 两端圆头：让长条读成一根胶囊，而不是一段没有边界的弧。
@@ -3757,6 +3813,19 @@ func _draw_note_pops(canvas: Control) -> void:
 
 
 func _draw_pulses(canvas: Control) -> void:
+	# 判定字位置（试玩可切）：跟音符 / 屏幕中心 / 关。
+	var judge_mode := "note"
+	var judge_anchor := Vector2.ZERO
+	var center_label_index := -1
+	if playtest_mode:
+		judge_mode = String(hud_options.get("judge_position", "note"))
+		if judge_mode == "center":
+			judge_anchor = _screen_affine()[0] + Vector2(0, -90.0 * clampf(size.y / 900.0, 0.8, 1.8))
+			# 居中固定位只画最新一条判定，否则 0.42s 内的脉冲会叠成一团。
+			for i in range(_pulses.size() - 1, -1, -1):
+				if not String(_pulses[i].get("label", "")).is_empty():
+					center_label_index = i
+					break
 	# 脉冲多时只给最新的 6 个画完整特效，其余降级成一个细环。
 	# 画质项「精简」永远走降级分支，「关」只留判定字。
 	var crowded := fx_budget != "full" or _pulses.size() > 6
@@ -3804,15 +3873,18 @@ func _draw_pulses(canvas: Control) -> void:
 			"trace":
 				canvas.draw_line(point - Vector2(52, 0), point + Vector2(52, 0), Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.5 * alpha), 9.0 * alpha + 1.0, false)
 		var label := String(pulse.get("label", ""))
-		var detail := String(pulse.get("detail", ""))
+		# 试玩 HUD 只留档位；偏差明细在结算页和暂停页看。
+		var detail := "" if playtest_mode else String(pulse.get("detail", ""))
 		var label_y := float(pulse.get("label_y", 0.0))
 		var pos := point + Vector2(30, -40 - age * 30 + label_y)
 		var label_alpha := alpha
 		var detail_alpha := 0.72 * alpha
 		var outline_alpha := 0.55 * alpha
-		var font_size := int(16.0 * (1.0 + 0.28 * clampf(1.0 - age / 0.12, 0.0, 1.0)))
-		var detail_size := 11
-		var outline_size := 5
+		# 街机判定字：26px 基准（900 高），命中 0.1s 内从 1.25 倍缩回原大。
+		var judge_base := 26.0 * clampf(canvas.size.y / 900.0, 0.8, 1.8)
+		var font_size := int(round(judge_base * (1.0 + 0.25 * clampf(1.0 - age / 0.10, 0.0, 1.0))))
+		var detail_size := 12
+		var outline_size := 6
 		if kind == "path":
 			# 星星判定字：不跟命中特效一起淡；满亮 0.25s，0.55s 淡完；画到白爆环外面。
 			label_alpha = clampf((0.55 - age) / 0.30, 0.0, 1.0)
@@ -3823,6 +3895,13 @@ func _draw_pulses(canvas: Control) -> void:
 			outline_size = maxi(4, int(font_size * 0.24))
 			pos = _path_label_point(point, canvas.size, label, detail, font_size, detail_size)
 			pos.y += label_y
+		if judge_mode == "center":
+			if index != center_label_index:
+				continue
+			pos = judge_anchor + Vector2(0, -age * 30.0)
+			pos.x -= UITheme.bold_font().get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x * 0.5
+		if judge_mode == "off":
+			continue
 		canvas.draw_string_outline(UITheme.bold_font(), pos, label, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, outline_size, Color(0, 0, 0, outline_alpha))
 		canvas.draw_string(UITheme.bold_font(), pos, label, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, Color(color.r, color.g, color.b, label_alpha))
 		# 早/晚提示：Estella 被批评判定反馈不清，这里把偏差方向直接写在判定字下面。
@@ -4016,6 +4095,11 @@ func _draw_fx_ink(canvas: Control, point: Vector2, color: Color, age: float, spa
 
 ## draw_string 每帧都会重新排版（CJK 尤其贵）：缓存 TextLine，只在文字变化时重建。
 var _hud_text: Dictionary = {}
+## 连击动画：上一次的连击数 + 放大/断连的时间戳。
+var _hud_combo_prev: int = 0
+var _hud_combo_pop_at: int = -100000
+var _hud_combo_break_at: int = -100000
+var _hud_combo_broken: int = 0
 
 
 func _draw_cached_text(canvas: Control, key: String, font: Font, pos: Vector2, text: String, font_size: int, color: Color) -> void:
@@ -4029,6 +4113,14 @@ func _draw_cached_text(canvas: Control, key: String, font: Font, pos: Vector2, t
 
 
 func _draw_hud(canvas: Control, chart: Chart, t: float) -> void:
+	if playtest_mode:
+		_draw_play_hud(canvas, chart, t)
+		return
+	_draw_editor_hud(canvas, chart, t)
+
+
+## 编辑器预览的旧仪表：进度 / 评级 / 准度三段弧 + 误差条。
+func _draw_editor_hud(canvas: Control, chart: Chart, t: float) -> void:
 	var width := size.x
 	var cx := width * 0.5
 	var cy := minf(136.0, size.y * 0.20)
@@ -4076,6 +4168,282 @@ func _draw_hud(canvas: Control, chart: Chart, t: float) -> void:
 			color = UITheme.CYAN if error < 0.0 else UITheme.CORAL
 		canvas.draw_line(Vector2(x, baseline_y - 2.0), Vector2(x, baseline_y - 2.0 - length), color, 2.0, false)
 	_draw_cached_text(canvas, "hud_preview", mono, Vector2(cx - 34, baseline_y + 20), "预览 / 非正式", 10, UITheme.MUTED)
+
+
+## 试玩 HUD v3：信息贴着环的左右两侧，垂直居中。
+## 左：TRACK / 曲名 / 难度 / 可选进度与用时；右：ACCURACY / 大字准度 / 评级章 / 连击。
+## 判定字仍在音符处；五档计数只在暂停页和结算页显示。
+func _draw_play_hud(canvas: Control, chart: Chart, t: float) -> void:
+	var bounds := size
+	if bounds.x < 320.0 or bounds.y < 240.0:
+		return
+	var op := clampf(float(hud_options.get("opacity", 100)) / 100.0, 0.3, 1.0)
+	var hs := clampf(bounds.y / 900.0, 0.8, 1.8)
+	var s := hs * clampf(float(hud_options.get("scale", 100)) / 100.0, 0.5, 2.0)
+	var margin := 14.0 * s
+	var bold := UITheme.bold_font()
+	var mono := UITheme.mono_font()
+	var center := project_design(Vector2.ZERO)
+	if not _valid_point(center):
+		center = bounds * 0.5
+	var accuracy := hud_accuracy
+	var progress := clampf(t / maxf(1.0, chart.duration_beats()), 0.0, 1.0)
+	_draw_ring_gauge(canvas, progress, accuracy, s, op)
+	# 舞台外圈刻度大约在判定环的 1.19×；HUD 再退到 1.2×，避免压到装饰环。
+	var ring_r := _hud_ring_radius(t) * 1.2
+	var gap := 20.0 * s
+	var side := minf(center.x, bounds.x - center.x) - ring_r - margin - gap
+	var col_w := clampf(side, 90.0 * s, 320.0 * s)
+	var left_x := center.x - ring_r - gap - col_w
+	var right_x := center.x + ring_r + gap
+	_draw_hud_track_column(canvas, left_x + col_w, col_w, center.y, s, op, progress, bold, mono)
+	_draw_hud_score_column(canvas, right_x, col_w, center.y, s, op, accuracy, bold, mono)
+	var combo_mode := String(hud_options.get("combo_mode", "center"))
+	if combo_mode == "center":
+		_draw_combo(canvas, bold, center, s, 78.0 * s, 2, op)
+		if hud_auto:
+			_draw_hud_text(canvas, "p_auto", mono, Vector2(center.x, center.y + 74.0 * s), "AUTO", _hud_small(s), _hud_tint(UITheme.AMBER, op), 2)
+	if bool(hud_options.get("show_watermark", false)):
+		_draw_hud_text(canvas, "p_watermark", mono, Vector2(margin, bounds.y - margin), "试玩 · 预览 / 非正式", _hud_small(s), _hud_tint(UITheme.MUTED, op))
+
+
+## 左列：垂直居中，宽度随窗口收窄；长曲名截断成省略号。
+func _draw_hud_track_column(canvas: Control, right_x: float, col_w: float, center_y: float, s: float, op: float, progress: float, bold: Font, mono: Font) -> void:
+	var show_title := bool(hud_options.get("show_title", true))
+	var show_diff := bool(hud_options.get("show_difficulty", true)) and not hud_difficulty.is_empty()
+	var show_pct := bool(hud_options.get("show_percent", false))
+	var show_time := bool(hud_options.get("show_time", false))
+	var height := 0.0
+	if show_title:
+		height += 15.0 * s
+		if not hud_title.is_empty():
+			height += 25.0 * s
+	if show_diff:
+		height += 27.0 * s
+	if show_pct:
+		height += 15.0 * s
+	if show_time:
+		height += 15.0 * s
+	var y := center_y - height * 0.5
+	if show_title:
+		_draw_hud_text(canvas, "p_track", mono, Vector2(right_x, y), "TRACK", _hud_small(s), _hud_tint(UITheme.MUTED, 0.85 * op), 1)
+		y += 15.0 * s
+		if not hud_title.is_empty():
+			var title := _hud_fit_text(hud_title, bold, int(round(19.0 * s)), col_w)
+			_draw_hud_text(canvas, "p_title", bold, Vector2(right_x, y), title, int(round(19.0 * s)), _hud_tint(UITheme.INK, op), 1)
+			y += 25.0 * s
+	if show_diff:
+		_draw_chip(canvas, Vector2(right_x, y), hud_difficulty, s, op, UITheme.CYAN, 1)
+		y += 27.0 * s
+	if show_pct:
+		_draw_hud_text(canvas, "p_percent", mono, Vector2(right_x, y), "进度 %d%%" % roundi(progress * 100.0), _hud_small(s), _hud_tint(UITheme.MUTED, op), 1)
+		y += 15.0 * s
+	if show_time:
+		_draw_hud_text(canvas, "p_time", mono, Vector2(right_x, y), "%s / %s" % [_hud_time(hud_ms), _hud_time(hud_total_ms)], _hud_small(s), _hud_tint(UITheme.MUTED, op), 1)
+
+
+## 右列：准度是主体；评级章与 ACCURACY 同排右对齐，连击在下方。
+func _draw_hud_score_column(canvas: Control, x: float, col_w: float, center_y: float, s: float, op: float, accuracy: float, bold: Font, mono: Font) -> void:
+	var acc_text := "—" if accuracy < 0.0 else "%.2f%%" % accuracy
+	var acc_size := int(round(38.0 * s))
+	var combo_mode := String(hud_options.get("combo_mode", "center"))
+	var reserve_combo := combo_mode == "corner"
+	# 标签行要容得下 22px 的评级章，否则章底会压到准度数字顶部。
+	var label_row := 24.0 * s
+	var height := label_row + acc_size
+	if reserve_combo:
+		height += 8.0 * s + 50.0 * s
+	var y := center_y - height * 0.5
+	var small := _hud_small(s)
+	var label_w := mono.get_string_size("ACCURACY", HORIZONTAL_ALIGNMENT_LEFT, -1, small).x
+	var chip_w := mono.get_string_size(hud_rating, HORIZONTAL_ALIGNMENT_LEFT, -1, maxi(11, int(round(13.0 * s)))).x + 14.0 * s
+	_draw_hud_text(canvas, "p_acc_label", mono, Vector2(x, y), "ACCURACY", small, _hud_tint(UITheme.MUTED, 0.85 * op))
+	# 评级章贴着 ACCURACY 标签，不甩到列的最右边。
+	_draw_rank_chip(canvas, x + label_w + 10.0 * s + chip_w, y, hud_rating, s, op)
+	y += label_row
+	_draw_hud_text(canvas, "p_acc", bold, Vector2(x, y), acc_text, acc_size, _hud_tint(UITheme.INK, op))
+	y += acc_size + 8.0 * s
+	if reserve_combo:
+		_draw_combo(canvas, bold, Vector2(x, y + 34.0 * s), s, 34.0 * s, 0, op)
+
+
+## 环的横向像素半径（取进度带所在的那一圈）；侧栏据此贴住环的切线。
+func _hud_ring_radius(t: float) -> float:
+	if _max_design_radius > 0.0:
+		var affine := _screen_affine()
+		return _max_design_radius * (affine[1] as Vector2).length()
+	var center := project_design(Vector2.ZERO)
+	var radius := 0.0
+	for u in [0.0, 0.25, 0.5, 0.75]:
+		var edge := project_u(u, t)
+		if _valid_point(edge):
+			radius = maxf(radius, center.distance_to(edge))
+	return radius
+
+
+## 曲名太长时截成“前缀…”；按文字/字号/宽度缓存，避免每帧重排。
+var _hud_fit_cache: Dictionary = {}
+
+func _hud_fit_text(text: String, font: Font, font_size: int, max_width: float) -> String:
+	var key := "%s|%d|%d" % [text, font_size, int(max_width)]
+	if _hud_fit_cache.has(key):
+		return String(_hud_fit_cache[key])
+	var result := text
+	if font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x > max_width:
+		var cut := text
+		result = "…"
+		while cut.length() > 1:
+			cut = cut.substr(0, cut.length() - 1)
+			if font.get_string_size(cut + "…", HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x <= max_width:
+				result = cut + "…"
+				break
+	_hud_fit_cache[key] = result
+	return result
+
+
+func _hud_small(s: float) -> int:
+	return maxi(9, int(round(10.0 * s)))
+
+
+## 环量表：底轨 + 8px 进度带 + 亮点；准度 2px 在外侧。
+func _draw_ring_gauge(canvas: Control, progress: float, accuracy: float, s: float, op: float) -> void:
+	if _max_design_radius <= 0.0 or String(hud_options.get("progress_style", "ring")) != "ring":
+		return
+	var affine := _screen_affine()
+	var band_r := _max_design_radius * 1.012
+	_hud_arc(canvas, affine, 0.0, 360.0, band_r, _hud_tint(Color(1, 1, 1, 0.10), op), 8.0 * s)
+	_hud_arc(canvas, affine, 90.0, 90.0 - 360.0 * progress, band_r, _hud_tint(Color(1, 1, 1, 0.78), op), 8.0 * s)
+	var head := 90.0 - 360.0 * progress
+	var hp := _affine_point(Vector2(cos(deg_to_rad(head)), sin(deg_to_rad(head))) * band_r, affine)
+	canvas.draw_circle(hp, 9.0 * s, _hud_tint(Color(1, 1, 1, 0.16), op))
+	canvas.draw_circle(hp, 4.0 * s, _hud_tint(Color(1, 1, 1, 0.95), op))
+	if accuracy >= 0.0:
+		var acc_ratio := clampf(accuracy / 100.0, 0.0, 1.0)
+		_hud_arc(canvas, affine, 90.0, 90.0 + 360.0 * acc_ratio, _max_design_radius * 1.045,
+			_hud_tint(Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.55), op), 2.0 * s)
+
+
+## 难度胶囊：细边框 + 半透明底，比裸文字更像街机标签。
+func _draw_chip(canvas: Control, pos: Vector2, text: String, s: float, op: float, color: Color, align: int = 0) -> void:
+	var font := UITheme.mono_font()
+	var size := maxi(10, int(round(11.0 * s)))
+	var w := font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, size).x + 14.0 * s
+	var h := 19.0 * s
+	var at := pos
+	if align == 1:
+		at.x -= w
+	canvas.draw_rect(Rect2(at.x, at.y, w, h), _hud_tint(color, 0.14 * op))
+	canvas.draw_rect(Rect2(at.x, at.y, w, h), _hud_tint(color, 0.55 * op), false, 1.0)
+	_draw_hud_text(canvas, "p_chip", font, at + Vector2(7.0 * s, 2.0 * s), text, size, _hud_tint(UITheme.INK, op))
+
+
+func _draw_rank_chip(canvas: Control, right_x: float, top_y: float, rank: String, s: float, op: float) -> void:
+	var color := _rank_color(rank)
+	var font := UITheme.mono_font()
+	var size := maxi(11, int(round(13.0 * s)))
+	var w := font.get_string_size(rank, HORIZONTAL_ALIGNMENT_LEFT, -1, size).x + 14.0 * s
+	var h := 22.0 * s
+	canvas.draw_rect(Rect2(right_x - w, top_y, w, h), _hud_tint(color, 0.16 * op))
+	canvas.draw_rect(Rect2(right_x - w, top_y, w, h), _hud_tint(color, 0.75 * op), false, 1.0)
+	_draw_hud_text(canvas, "p_rank", font, Vector2(right_x - w * 0.5, top_y + 4.0 * s), rank, size, _hud_tint(color, op), 2)
+
+
+## 连击：≥2 才出现；命中轻微放大，断连变红、下沉、淡出。
+func _draw_combo(canvas: Control, font: Font, anchor: Vector2, s: float, base_px: float, align: int, op: float) -> void:
+	var now := Time.get_ticks_msec()
+	if hud_combo > _hud_combo_prev:
+		_hud_combo_pop_at = now
+	elif hud_combo < _hud_combo_prev and _hud_combo_prev >= 2:
+		_hud_combo_break_at = now
+		_hud_combo_broken = _hud_combo_prev
+	_hud_combo_prev = hud_combo
+	var break_age := float(now - _hud_combo_break_at) / 1000.0
+	var flashing := break_age < 0.45
+	if hud_combo < 2 and not flashing:
+		return
+	var pop_age := float(now - _hud_combo_pop_at) / 1000.0
+	var pop := 1.0 + 0.08 * maxf(0.0, 1.0 - pop_age / 0.12)
+	var color := _hud_tint(UITheme.INK, op)
+	var sink := 0.0
+	if flashing:
+		color = Color(UITheme.CORAL.r, UITheme.CORAL.g, UITheme.CORAL.b, (1.0 - break_age / 0.45) * op)
+		pop = 1.04
+		sink = 8.0 * s * clampf(break_age / 0.45, 0.0, 1.0)
+	var shown := _hud_combo_broken if flashing else hud_combo
+	var number_size := int(round(base_px * pop))
+	var number_top := anchor.y - number_size * 0.52 + sink
+	var label_size := maxi(10, int(round(11.0 * s)))
+	var key := "p_combo" if align == 2 else "p_combo_corner"
+	_draw_hud_text(canvas, key + "_label", font, Vector2(anchor.x, number_top - label_size - 5.0 * s), "COMBO", label_size, _hud_tint(UITheme.MUTED, 0.9 * op), align)
+	_draw_hud_text(canvas, key, font, Vector2(anchor.x, number_top), str(shown), number_size, color, align)
+
+
+func _hud_tint(color: Color, alpha: float) -> Color:
+	return Color(color.r, color.g, color.b, color.a * alpha)
+
+
+func _hud_time(ms: float) -> String:
+	var total := int(maxf(0.0, ms) / 1000.0)
+	return "%d:%02d" % [total / 60, total % 60]
+
+
+## HUD 文字：缓存 TextLine（CJK 每帧排版很贵），align 0=左 1=右 2=中。
+func _draw_hud_text(canvas: Control, key: String, font: Font, pos: Vector2, text: String, font_size: int, color: Color, align: int = 0) -> void:
+	var entry: Dictionary = _hud_text.get(key, {})
+	if entry.is_empty() or String(entry["text"]) != text or int(entry["size"]) != font_size:
+		var line := TextLine.new()
+		line.add_string(text, font, font_size)
+		entry = {"text": text, "size": font_size, "line": line, "width": line.get_size().x}
+		_hud_text[key] = entry
+	var at := pos
+	var width := float(entry["width"])
+	if align == 1:
+		at.x -= width
+	elif align == 2:
+		at.x -= width * 0.5
+	(entry["line"] as TextLine).draw(canvas.get_canvas_item(), at, color)
+
+
+## 环外仪表弧：按屏幕弧长取点，画满 360° 也不会堆出几千个点。
+func _hud_arc(canvas: Control, affine: Array, from_deg: float, to_deg: float, radius: float, color: Color, width: float) -> void:
+	var span := deg_to_rad(absf(to_deg - from_deg))
+	if span < 0.01:
+		return
+	var scale := (affine[1] as Vector2).length()
+	var steps := clampi(int(span * radius * scale / 3.0), 6, 240)
+	var points := PackedVector2Array()
+	for i in steps + 1:
+		var a := deg_to_rad(lerpf(from_deg, to_deg, float(i) / float(steps)))
+		points.append(_affine_point(Vector2(cos(a), sin(a)) * radius, affine))
+	canvas.draw_polyline(points, color, width, true)
+
+
+func _rank_color(rank: String) -> Color:
+	match rank:
+		"AAA":
+			return UITheme.GOLD
+		"AA":
+			return UITheme.CYAN
+		"A":
+			return UITheme.MINT
+		"B":
+			return UITheme.AMBER
+		"C":
+			return UITheme.CORAL
+	return UITheme.MUTED
+
+
+func _tier_color(tier: String) -> Color:
+	match tier:
+		"PERFECT":
+			return UITheme.GOLD
+		"GREAT":
+			return UITheme.CYAN
+		"GOOD":
+			return UITheme.MINT
+		"BAD":
+			return UITheme.AMBER
+	return UITheme.CORAL
 
 
 func _draw_debug(canvas: Control, chart: Chart, t: float) -> void:
