@@ -333,7 +333,8 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	_preview.prepare_playtest_frame(_timeline_start_beat, 0.0)
 	modulate.a = 1.0
 	# 无头测试/无头基准直接开打：没有屏幕可看，倒计时只会拖慢用例。
-	if DisplayServer.get_name() == "headless":
+	# 回放同样不倒计时：没有「准备」这回事，点了就直接开演。
+	if DisplayServer.get_name() == "headless" or replay_mode:
 		_prepare_audio()
 		_open_path_input_log()
 		_start_play()
