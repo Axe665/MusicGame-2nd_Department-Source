@@ -67,7 +67,7 @@ func _draw() -> void:
 		if is_active:
 			draw_line(Vector2(rect.position.x + 8, rect.position.y + 2), Vector2(rect.end.x - 14, rect.position.y + 2), UITheme.CARD_INK, 2.0, true)
 		var icon_center := rect.position + Vector2(rect.size.x * 0.5, rect.size.y * 0.40)
-		_draw_icon(type, icon_center, minf(rect.size.x * 0.34, 22.0), color)
+		_draw_icon(type, icon_center, minf(rect.size.x * 0.34, 28.0), color)
 		var label := String(card["label"]).to_upper()
 		var label_size := 11 if rect.size.x >= 46.0 else 9
 		var label_width := font.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, label_size).x
@@ -106,69 +106,62 @@ func _selected_type() -> String:
 	return ""
 
 
-func _bell_bar(center: Vector2, half_w: float, half_h: float, color: Color) -> void:
-	draw_rect(Rect2(center + Vector2(-half_w, -half_h), Vector2(half_w * 2.0, half_h * 2.0)), color)
-	draw_circle(center + Vector2(-half_w, 0.0), half_h, color)
-	draw_circle(center + Vector2(half_w, 0.0), half_h, color)
-
-
 func _draw_icon(type: String, center: Vector2, r: float, color: Color) -> void:
+	var rx := r
+	var ry := r * 0.80
+	# 卡片是浅色底：淡环用深色，七张卡才能读出同一条判定环。
+	NoteGlyph.ring(self, center, rx, ry, Color(0, 0, 0, 0.14), 1.2, 36)
 	match type:
 		"tap":
-			draw_line(center + Vector2(-r, 0), center + Vector2(r, 0), color, 8.0, true)
-			for i in 5:
-				var x := center.x - r + (2.0 * r) * float(i) / 4.0
-				draw_line(Vector2(x, center.y - 4), Vector2(x, center.y + 4), Color(0, 0, 0, 0.22), 1.0)
-			draw_line(center + Vector2(0, -8), center + Vector2(0, 8), UITheme.INK, 2.0)
+			var span := 50.0
+			NoteGlyph.stroke_arc(self, center, rx, ry, -span * 0.5, span * 0.5, color, 4.2, 14)
+			var p := NoteGlyph.ellipse_point(center, rx, ry, 0.0)
+			var n := NoteGlyph.ring_normal(center, rx, ry, 0.0)
+			draw_line(p - n * 5.0, p + n * 4.0, UITheme.CARD_INK, 1.6, true)
+			draw_circle(p, 1.5, UITheme.CARD_INK)
 		"hold":
-			var points := PackedVector2Array([
-				center + Vector2(-r * 0.8, -r * 0.45),
-				center + Vector2(0, -r * 0.8),
-				center + Vector2(r * 0.8, -r * 0.45),
-				center + Vector2(r * 0.8, r * 0.45),
-				center + Vector2(0, r * 0.8),
-				center + Vector2(-r * 0.8, r * 0.45),
-				center + Vector2(-r * 0.8, -r * 0.45),
-			])
-			draw_polyline(points, color, 3.0, true)
-			draw_line(center + Vector2(0, r * 0.8), center + Vector2(r * 0.55, r * 1.4), color, 5.0, true)
+			var span := 56.0
+			NoteGlyph.fill_sector(self, center, rx, ry, -span * 0.5, span * 0.5, Color(color.r, color.g, color.b, 0.30), 20)
+			NoteGlyph.stroke_arc(self, center, rx, ry, -span * 0.5, span * 0.5, color, 4.0, 18)
+			NoteGlyph.stroke_arc(self, center, rx, ry, -span * 0.5 + 1.0, span * 0.5 - 1.0, Color(1, 1, 1, 0.38), 1.1, 16)
+			NoteGlyph.stroke_arc(self, center, rx * 0.52, ry * 0.52, -span * 0.5 + 6.0, span * 0.5 - 6.0, Color(color.r, color.g, color.b, 0.58), 1.6, 14)
 		"path":
-			var star := PackedVector2Array()
-			for i in 11:
-				var angle := -PI * 0.5 + TAU * float(i) / 10.0
-				var radius := r if i % 2 == 0 else r * 0.45
-				star.append(center + Vector2(cos(angle), sin(angle)) * radius)
-			star.append(star[0])
-			draw_polyline(star, color, 2.5, true)
+			var head := NoteGlyph.ellipse_point(center, rx, ry, 0.0)
+			var tail := NoteGlyph.ellipse_point(center, rx * 0.60, ry * 0.60, 150.0)
+			var control := center + Vector2(rx * 0.50, -ry * 0.10)
+			var trail := PackedVector2Array()
+			for i in 13:
+				var t := float(i) / 12.0
+				var q0 := head.lerp(control, t)
+				var q1 := control.lerp(tail, t)
+				trail.append(q0.lerp(q1, t))
+			draw_polyline(trail, color, 2.0, true)
+			NoteGlyph.star(self, head, r * 0.34, color, 1.8)
+			draw_circle(tail, 2.0, color)
 		"seek":
-			draw_arc(center, r * 0.9, 0.0, TAU, 28, color, 2.2, true)
-			draw_arc(center, r * 0.5, 0.0, TAU, 20, Color(color.r, color.g, color.b, 0.55), 1.5, true)
-			for i in 6:
-				var a := TAU * float(i) / 6.0
-				var dir := Vector2(cos(a), sin(a))
-				var p0 := center + dir * r * 0.64
-				var p1 := center + dir * r * 0.44
-				draw_line(p0, p1, color, 1.6, true)
-				draw_circle(p0, 1.4, color)
+			NoteGlyph.stroke_arc(self, center, rx, ry, 0.0, 360.0, color, 2.2, 36)
+			for i in 8:
+				var a := float(i) * 45.0
+				var p := NoteGlyph.ellipse_point(center, rx, ry, a)
+				var n := NoteGlyph.ring_normal(center, rx, ry, a)
+				var tip := p - n * 4.0
+				var side := Vector2(-n.y, n.x) * 2.2
+				draw_colored_polygon(PackedVector2Array([tip, p + side, p - side]), color)
 		"anchor":
-			var diamond := PackedVector2Array([
-				center + Vector2(0, -r), center + Vector2(r, 0),
-				center + Vector2(0, r), center + Vector2(-r, 0),
-				center + Vector2(0, -r),
-			])
-			draw_polyline(diamond, color, 2.5, true)
-			draw_line(center + Vector2(0, -r * 0.35), center + Vector2(0, r * 0.2), color, 1.5, true)
-			draw_line(center + Vector2(0, r * 0.2), center + Vector2(r * 0.3, r * 0.45), color, 1.5, true)
+			var p := NoteGlyph.ellipse_point(center, rx, ry, 0.0)
+			NoteGlyph.diamond(self, p, r * 0.32, color, 1.8)
+			var q := p + Vector2(0, r * 0.50)
+			draw_line(p, q, Color(color.r, color.g, color.b, 0.75), 1.2, true)
+			draw_circle(q, 1.7, color)
 		"bell":
-			# 金键：白壳 + 金色核心 + 圆头（和 Tap/Hold 同一套语言）。
-			var kw := r * 0.86
-			var kh := r * 0.62
-			_bell_bar(center + Vector2(0, 2), kw + 2.0, kh + 2.0, Color(0, 0, 0, 0.5))
-			_bell_bar(center, kw, kh, Color(1, 1, 1, 0.94))
-			_bell_bar(center, kw * 0.62, kh * 0.62, UITheme.KEY_YELLOW)
+			var span := 60.0
+			NoteGlyph.bell_band(self, center, rx, ry, -span * 0.5, span * 0.5, 6.0, 3.0)
 		"limit":
-			draw_arc(center, r * 0.9, -PI * 0.8, PI * 0.1, 20, color, 7.0, true)
-			draw_line(center + Vector2(r * 0.3, -r * 0.9), center + Vector2(r * 0.3, r * 0.9), Color(color.r, color.g, color.b, 0.55), 1.5)
+			var span := 80.0
+			NoteGlyph.fill_sector(self, center, rx, ry, -span * 0.5, span * 0.5, Color(color.r, color.g, color.b, 0.22), 20)
+			NoteGlyph.stroke_arc(self, center, rx, ry, -span * 0.5, span * 0.5, color, 3.0, 18)
+			var top := NoteGlyph.ellipse_point(center, rx, ry, 0.0)
+			draw_dashed_line(center, top, Color(color.r, color.g, color.b, 0.55), 1.2, 3.0, true, true)
 
 
 func _gui_input(event: InputEvent) -> void:
