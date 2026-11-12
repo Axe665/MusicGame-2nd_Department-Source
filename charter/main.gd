@@ -1769,7 +1769,9 @@ func _process(_delta: float) -> void:
 	if _playing:
 		var chart_ms := 0.0
 		if _audio.stream != null and _audio.playing:
-			chart_ms = (_audio.get_playback_position() + AudioServer.get_time_since_last_mix() - AudioServer.get_output_latency()) * 1000.0 + _app.chart.offset_ms
+			# 播放位置按 pitch_scale 前进；驱动延迟/混音间隔是真实秒，换算要乘倍速。
+			chart_ms = (_audio.get_playback_position()
+				+ (AudioServer.get_time_since_last_mix() - AudioServer.get_output_latency()) * _rate) * 1000.0 + _app.chart.offset_ms
 		else:
 			chart_ms = _play_start_chart_ms + float(Time.get_ticks_usec() - _play_start_usec) / 1000.0 * _rate
 		var beat: float = _app.chart.timing.chart_ms_to_beat(chart_ms)
@@ -2550,6 +2552,7 @@ func _build_playtest_dialog() -> void:
 	box.add_theme_constant_override("separation", 10)
 	scroll.add_child(box)
 	_playtest_rate = _playtest_spin_row(box, "倍速", 0.5, 2.0, 0.05, 1.0, "×")
+	_playtest_rate.tooltip_text = "试玩和编辑器试听都按这个速度走；局中修改在重开本局后生效；只对本次运行有效"
 	_playtest_flow = _playtest_spin_row(box, "流速", 0.05, 3.0, 0.01, 1.0, "×")
 	_playtest_star = _playtest_spin_row(box, "星速", 0.5, 2.0, 0.05, 1.0, "×")
 	_playtest_cursor = _playtest_spin_row(box, "光标大小", 0.5, 2.0, 0.05, 1.0, "×")
@@ -2662,11 +2665,14 @@ func _commit_playtest_settings() -> void:
 	_app.save_settings()
 	_preview.flow_scale = _app.flow_scale
 	_preview.star_speed = _app.star_speed
+	_preview.playback_rate = _rate
 	_preview.trace_color = _app.trace_color
 	_preview.cursor_scale = _app.cursor_scale
 	_preview.request_redraw()
 	# 试玩中从暂停菜单改设置：直接应用到正在跑的预览。
 	if _playtest != null:
+		# 倍速不即时改：写进下一局，重开本局才换速度。
+		_playtest.next_playback_rate = _rate
 		_playtest._preview.flow_scale = _app.flow_scale
 		_playtest._preview.star_speed = _app.star_speed
 		_playtest._preview.trace_color = _app.trace_color
@@ -2693,6 +2699,7 @@ func _start_playtest(from_start: bool) -> void:
 	_playtest = Playtest.new()
 	_playtest.bench_mode = "--bench" in OS.get_cmdline_user_args()
 	_playtest.auto_play = bool(_app.playtest_auto) or "--auto" in OS.get_cmdline_user_args()
+	_playtest.next_playback_rate = _rate
 	add_child(_playtest)
 	_playtest.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_playtest.setup(_app.chart, 0.0 if from_start else _app.playhead_beat, _app.chart_path)

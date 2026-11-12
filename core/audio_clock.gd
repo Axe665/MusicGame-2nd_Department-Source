@@ -63,30 +63,34 @@ func consume_anchor_jump() -> bool:
 
 
 ## `audio_playing` = 播放器真的在放；`playback_sec <= 0` 表示音频还没开始出声。
+## `rate` = 播放倍速：播放位置按它前进，墙钟要跟上；驱动延迟/混音间隔是真实
+## 秒数，换算成流位置时也要乘 rate，否则 2× 下判定会整体偏几十毫秒。
 func update(now_usec: int, audio_playing: bool, playback_sec: float, chart_offset_ms: float,
-		latency_sec: float, mix_sec: float) -> float:
+		latency_sec: float, mix_sec: float, rate: float = 1.0) -> float:
 	if not _started:
 		return 0.0
+	var speed := maxf(0.01, rate)
 	var dt := clampf(float(now_usec - _last_usec) / 1000.0, 0.0, MAX_HITCH_MS)
 	_last_usec = now_usec
+	var step := dt * speed
 	if not audio_playing:
 		# 没有音频（基准模式 / 音频不可用）：退回墙钟。
-		if is_finite(clock_ms + dt):
-			clock_ms += dt
+		if is_finite(clock_ms + step):
+			clock_ms += step
 		return clock_ms
 	if playback_sec <= 0.0:
 		# 已经 play() 但混音还没开始：停在起点等它，避免起播前空跑。
 		return clock_ms
 	var mix := clampf(mix_sec, 0.0, MAX_MIX_SEC)
 	var latency := _latency_estimate(now_usec, latency_sec)
-	var audio_ms := (playback_sec + mix - latency) * 1000.0 + chart_offset_ms
+	var audio_ms := (playback_sec + (mix - latency) * speed) * 1000.0 + chart_offset_ms
 	if not anchored:
 		if absf(audio_ms - clock_ms) <= MAX_ANCHOR_JUMP_MS:
 			anchored = true
 			_anchor_jump = true
 			clock_ms = audio_ms
 		return clock_ms
-	var wall := clock_ms + dt
+	var wall := clock_ms + step
 	var error := audio_ms - wall
 	# 按经过时间缩放：鼠标事件会一帧调用多次，固定步长会把时钟推快。
 	var scale := clampf(dt / 16.0, 0.0, 4.0)

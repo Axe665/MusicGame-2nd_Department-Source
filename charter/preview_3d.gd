@@ -131,6 +131,8 @@ const BACKGROUND_ALPHA := 0.32
 var background_brightness: float = 1.0
 ## 暂停时把 BGA 一起停住，恢复后由 _update_video 重新对齐位置。
 var video_paused: bool = false
+## 播放倍速：BGA 跟着音频一起变速，否则画面会和音乐脱节。
+var playback_rate: float = 1.0
 ## 异步转码的令牌：换谱/换视频后旧结果直接丢掉。
 var _video_job_token: int = 0
 var _last_cursor_emit: Vector2 = Vector2(-999, -999)
@@ -982,6 +984,8 @@ func _update_video(chart: Chart, beat: float) -> void:
 	if _video.stream == null:
 		return
 	_video.modulate = Color(1, 1, 1, video_alpha(chart.video_opacity, background_brightness))
+	if not is_equal_approx(_video.speed_scale, playback_rate):
+		_video.speed_scale = maxf(0.1, playback_rate)
 	if video_paused:
 		_video.paused = true
 		return

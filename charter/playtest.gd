@@ -84,6 +84,10 @@ var _audio_available: bool = false
 var _start_chart_ms: float = 0.0
 var _last_chart_ms: float = -INF
 var _clock := AudioClock.new()
+## 本局倍速（setup 时从 next_playback_rate 取，跑起来后不再变）。
+var playback_rate: float = 1.0
+## 下次 setup 用的倍速：暂停菜单里改只写这里，重开本局才生效。
+var next_playback_rate: float = 1.0
 ## 开局缓冲：倒计时前的时间轴起点，比开始拍早一个预读 + 0.5s，
 ## 让 GO 之后第一颗音符仍有完整的飞入时间；早于这里的音符不计分。
 var _timeline_start_beat: float = 0.0
@@ -209,6 +213,7 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	chart = p_chart
 	start_beat = p_start_beat
 	chart_path = p_chart_path
+	playback_rate = clampf(next_playback_rate, 0.5, 2.0)
 	_finished = false
 	_running = false
 	_paused = false
@@ -240,6 +245,7 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	_preview.show_debug = false
 	_preview.flow_scale = flow
 	_preview.star_speed = float(_app.star_speed if _app != null else 1.0)
+	_preview.playback_rate = playback_rate
 	_preview.note_skin = String(_app.note_skin if _app != null else "candy")
 	_preview.hit_fx_style = String(_app.hit_fx_style if _app != null else "burst")
 	_preview.cursor_scale = float(_app.cursor_scale if _app != null else 1.0)
@@ -808,6 +814,7 @@ func _start_audio() -> void:
 	_audio.bus = "Music"
 	add_child(_audio)
 	_audio.stream = _loaded_audio
+	_audio.pitch_scale = playback_rate
 	_audio.finished.connect(_finish)
 	var lead_sec := (_start_chart_ms - chart.offset_ms) / 1000.0
 	if lead_sec >= 0.0:
@@ -889,7 +896,7 @@ func _chart_ms_inner() -> float:
 	var playback := _audio.get_playback_position() if playing else 0.0
 	var mix := AudioServer.get_time_since_last_mix() if playing else 0.0
 	var latency := _effective_latency() if playing else 0.0
-	var ms := _clock.update(now_usec, playing, playback, chart.offset_ms, latency, mix)
+	var ms := _clock.update(now_usec, playing, playback, chart.offset_ms, latency, mix, playback_rate)
 	# 起播锚定要把驱动延迟减掉，是一次真实的回跳；只允许这一帧不单调。
 	if _clock.consume_anchor_jump():
 		_last_chart_ms = -INF

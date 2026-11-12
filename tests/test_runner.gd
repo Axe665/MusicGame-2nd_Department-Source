@@ -121,6 +121,7 @@ func _initialize() -> void:
 		"test_osu_filters",
 		"test_osu_pill_rows",
 		"test_audio_clock",
+		"test_audio_clock_rate",
 		"test_calibration_offset",
 		"test_chart_offset_for_bias",
 		"test_audio_buffer_override",
@@ -3103,6 +3104,27 @@ func test_hold_seam_interval() -> bool:
 	near(JudgeMath.total_length(full), 360.0, 0.001, "full circle covers the ring")
 	return true
 ## 结算页散布图：只收合法样本，等级颜色互不相同。
+func test_audio_clock_rate() -> bool:
+	var wall := AudioClock.new()
+	wall.start(0.0, 0)
+	near(wall.update(16000, false, 0.0, 0.0, 0.0, 0.0, 2.0), 32.0, 0.01,
+		"the wall clock advances at the playback rate")
+	var fast := AudioClock.new()
+	fast.start(0.0, 0)
+	var now := 0
+	for i in 40:
+		now += 16000
+		fast.update(now, true, float(now) / 1000000.0 * 2.0, 0.0, 0.0, 0.0, 2.0)
+	near(fast.clock_ms, float(now) / 1000.0 * 2.0, 8.0,
+		"the clock follows 2x audio without falling behind")
+	# 延迟和混音间隔是真实秒数，2× 下换算成流位置要翻倍。
+	var latency := AudioClock.new()
+	latency.start(380.0, 0)
+	near(latency.update(16000, true, 0.5, 0.0, 0.05, 0.0, 2.0), 400.0, 0.01,
+		"output latency is scaled by the playback rate")
+	return true
+
+
 func test_calibration_offset() -> bool:
 	var samples: Array[float] = [-40.0, -20.0, -10.0, 0.0, 10.0, 20.0, 30.0, 40.0]
 	near(CalibrationDialog.offset_for_errors(samples), -10.0, 0.01, "late taps produce a negative offset")

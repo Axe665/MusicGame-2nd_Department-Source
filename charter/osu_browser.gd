@@ -55,6 +55,8 @@ var _filter_button: Button
 var _filtered_count := 0
 var _shown_count := 0
 var _busy := false
+## 上一次请求还没回来时又改了搜索词：等它回来再按最新输入搜一次。
+var _refresh_pending := false
 var _cover_pending: Dictionary = {}
 ## 封面下载队列（同时最多 COVER_CONCURRENCY 个 HTTPRequest，避免一次开几百个）。
 var _cover_queue: Array = []
@@ -75,7 +77,13 @@ func _ready() -> void:
 	ok_button_text = "关闭"
 	min_size = Vector2i(820, 700)
 	_build()
-	await _refresh()
+	# 不在编辑器启动时打网络：第一次打开且还没有列表时才拉「最新上架」。
+	about_to_popup.connect(_on_about_to_popup)
+
+
+func _on_about_to_popup() -> void:
+	if _page_items.is_empty():
+		await _refresh()
 
 
 func _build() -> void:
@@ -88,7 +96,7 @@ func _build() -> void:
 	row.add_theme_constant_override("separation", 8)
 	root.add_child(row)
 	_search = LineEdit.new()
-	_search.placeholder_text = "搜索 ID、曲名、罗马音、艺术家…（也可粘贴谱面链接/ID）"
+	_search.placeholder_text = "搜索 ID、曲名、罗马音、艺术家…（留空 = 最新上架；也可粘贴谱面链接/ID）"
 	_search.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_search.custom_minimum_size = Vector2(0, 34)
 	_search.add_theme_font_size_override("font_size", 14)
@@ -230,37 +238,30 @@ func _has_filters() -> bool:
 
 
 func _on_search_changed(_text: String) -> void:
-	# 输入防抖交给定时器，避免每个字符都打一次网络。
+	# 输入防抖交给定时器，避免每个字符都打一次网络；清空也回到最新上架。
 	if not is_inside_tree():
 		return
-	if not _search.text.strip_edges().is_empty():
-		if _debounce == null:
-			_debounce = Timer.new()
-			_debounce.one_shot = true
-			_debounce.wait_time = 0.45
-			_debounce.timeout.connect(func() -> void: await _refresh())
-			add_child(_debounce)
-		_debounce.start()
+	if _debounce == null:
+		_debounce = Timer.new()
+		_debounce.one_shot = true
+		_debounce.wait_time = 0.45
+		_debounce.timeout.connect(func() -> void: await _refresh())
+		add_child(_debounce)
+	_debounce.start()
 
 
 # ---------------------------------------------------------------- 搜索
 
 func _refresh() -> void:
 	if _busy:
+		_refresh_pending = true
 		return
 	var query := _search.text.strip_edges()
 	var tags_text := _tag_filter.text if _tag_filter != null else ""
 	if query.is_empty() and not tag_tokens(tags_text).is_empty():
 		# 只填了标签：拿标签当搜索词去捞候选，再在本地按标签过滤。
 		query = tags_text
-	if query.is_empty():
-		_page_items.clear()
-		_page = 0
-		_exhausted = false
-		_cards_box_clear()
-		_update_page_bar()
-		_status.text = "输入曲名 / 作者 / ID，或粘贴 osu! 谱面链接"
-		return
+	# 空搜索 = 浏览最新上架：镜像不传 query 就是 ranked 时间倒序。
 	var direct := parse_osu_input(query)
 	if not direct.is_empty():
 		await _open_direct(direct)
@@ -279,13 +280,19 @@ func _refresh() -> void:
 	_page_items.clear()
 	_favorites_only = false
 	_cards_box_clear()
-	_status.text = "正在搜索「%s」…" % query
+	_status.text = "正在加载最新上架…" if query.is_empty() else "正在搜索「%s」…" % query
 	await _fetch_page(query, 0)
 	_busy = false
+	var again := _refresh_pending
+	_refresh_pending = false
 	if _fetch_error:
-		_status.text = "搜索失败（网络不通或镜像超时）"
+		_status.text = "最新上架加载失败（网络不通或镜像超时）" if query.is_empty() else "搜索失败（网络不通或镜像超时）"
+		if again:
+			await _refresh()
 		return
 	_fill_cards()
+	if again:
+		await _refresh()
 
 
 ## 粘贴链接 / 纯 ID：先取谱面包详情再开详情页；取不到就退回直接下载卡片。
@@ -422,7 +429,8 @@ func _update_status() -> void:
 			_status.text = "没有结果"
 		return
 	var suffix := "，筛选掉 %d 个" % _filtered_count if _filtered_count > 0 else ""
-	_status.text = "%d 个谱面包%s · 第 %d 页（点卡片看详情）" % [_shown_count, suffix, _page + 1]
+	var prefix := "最新上架 · " if _query.is_empty() and not _favorites_only else ""
+	_status.text = "%s%d 个谱面包%s · 第 %d 页（点卡片看详情）" % [prefix, _shown_count, suffix, _page + 1]
 
 
 func _cards_box_clear() -> void:
