@@ -41,6 +41,17 @@ static func fill_sector(canvas: CanvasItem, center: Vector2, rx: float, ry: floa
 	canvas.draw_colored_polygon(sector_polygon(center, rx, ry, from_deg, to_deg, steps), color)
 
 
+## 环形扇区：外弧 + 内弧围成的带，Hold 的身体就是这一圈。
+static func annular_sector_polygon(center: Vector2, rx: float, ry: float, inner_scale: float, from_deg: float, to_deg: float, steps: int = 24) -> PackedVector2Array:
+	var polygon := ring_points(center, rx, ry, from_deg, to_deg, steps)
+	polygon.append_array(ring_points(center, rx * inner_scale, ry * inner_scale, to_deg, from_deg, steps))
+	return polygon
+
+
+static func fill_annular_sector(canvas: CanvasItem, center: Vector2, rx: float, ry: float, inner_scale: float, from_deg: float, to_deg: float, color: Color, steps: int = 24) -> void:
+	canvas.draw_colored_polygon(annular_sector_polygon(center, rx, ry, inner_scale, from_deg, to_deg, steps), color)
+
+
 static func ring(canvas: CanvasItem, center: Vector2, rx: float, ry: float, color: Color, width: float = 1.2, steps: int = 40) -> void:
 	stroke_arc(canvas, center, rx, ry, 0.0, TAU_DEG, color, width, steps)
 

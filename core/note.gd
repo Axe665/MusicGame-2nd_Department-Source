@@ -60,9 +60,6 @@ var path_chain: bool = false
 var path_legacy: bool = false
 var trace_style: String = "wipe"
 var space: String = "ring"
-var plane_x: float = 0.5
-var plane_y: float = 0.5
-var plane_radius: float = 0.10
 var trace_pts: Array[Dictionary] = []
 var anchor_pair: int = -1
 var pair_id: String = ""
@@ -364,8 +361,6 @@ func mirror_u() -> void:
 	angle = fposmod(angle + 180.0, 360.0)
 	tail_angle = fposmod(tail_angle + 180.0, 360.0)
 	center_u = fposmod(center_u + 0.5, 1.0)
-	plane_x = 1.0 - plane_x
-	plane_y = 1.0 - plane_y
 	for point in trace_pts:
 		# Plane/trace coordinates are centred on the ring: a 180° rotation
 		# negates both axes.
@@ -385,11 +380,6 @@ func to_dict() -> Dictionary:
 		"color": color,
 		"lock": lock,
 	}
-	if space != "ring" and type != "path" and type != "trace":
-		data["space"] = space
-		data["plane_x"] = snappedf(plane_x, 0.0001)
-		data["plane_y"] = snappedf(plane_y, 0.0001)
-		data["plane_radius"] = snappedf(plane_radius, 0.0001)
 	match type:
 		"tap":
 			if sized:
@@ -482,10 +472,7 @@ static func from_dict(raw: Dictionary) -> Note:
 	note.path_speed = float(raw.get("speed", 1.0))
 	note.path_style = String(raw.get("path_style", "arc"))
 	note.trace_style = String(raw.get("trace_style", "wipe"))
-	note.space = String(raw.get("space", "plane" if note.type in ["path", "trace"] else "ring"))
-	note.plane_x = float(raw.get("plane_x", 0.5))
-	note.plane_y = float(raw.get("plane_y", 0.5))
-	note.plane_radius = float(raw.get("plane_radius", 0.10))
+	note.space = "plane" if note.type in ["path", "trace"] else "ring"
 	note.anchor_pair = int(raw.get("pair", -1))
 	note.pair_id = String(raw.get("pair_id", ""))
 	note.center_u = float(raw.get("center_u", 0.25))
@@ -579,14 +566,35 @@ func to_code() -> String:
 	var a := _code_num(angle)
 	match type:
 		"tap":
+			# 旧格式 [id]tap(beat,angle)；宽度/大小 Tap 只在非默认时追加。
+			if sized:
+				return "[%d]tap(%s,%s,%s,1,%s)" % [id, b, a, _code_num(width), _code_num(size_ratio)]
+			if not is_equal_approx(width, 60.0):
+				return "[%d]tap(%s,%s,%s)" % [id, b, a, _code_num(width)]
 			return "[%d]tap(%s,%s)" % [id, b, a]
 		"hold":
+			# 旧格式 [id]hold(beat,end,angle)；非默认宽度追加第 4 段。
+			if not is_equal_approx(width, 60.0):
+				return "[%d]hold(%s,%s,%s,%s)" % [id, b, _code_num(end_beat), a, _code_num(width)]
 			return "[%d]hold(%s,%s,%s)" % [id, b, _code_num(end_beat), a]
 		"seek":
 			return "[%d]seek(%s,%d)" % [id, b, 1 if seek_orien == 1 else 0]
 		"anchor":
+			if anchor_pair >= 0:
+				return "[%d]anchor(%s,%s,%s,%d)" % [id, b, a, pair_id, anchor_pair]
 			return "[%d]anchor(%s,%s,%s)" % [id, b, a, pair_id]
 		"bell":
+			# 旧格式 [id]bell(beat,angle)；弧宽/半径非默认时追加，半径需要宽度占位。
+			var bell_width_value := bell_width()
+			var bell_radius_value := snappedf(radius, 0.001)
+			var has_width := not is_equal_approx(bell_width_value, BELL_MAX_WIDTH)
+			var has_radius := not is_equal_approx(bell_radius_value, 26.0)
+			if has_width and has_radius:
+				return "[%d]bell(%s,%s,%s,%s)" % [id, b, a, _code_num(bell_width_value), _code_num(bell_radius_value)]
+			if has_width:
+				return "[%d]bell(%s,%s,%s)" % [id, b, a, _code_num(bell_width_value)]
+			if has_radius:
+				return "[%d]bell(%s,%s,%s,%s)" % [id, b, a, _code_num(BELL_MAX_WIDTH), _code_num(bell_radius_value)]
 			return "[%d]bell(%s,%s)" % [id, b, a]
 		"path":
 			return "[%d]path{%s}" % [id, path_part_code()]
@@ -626,10 +634,18 @@ static func from_code(code: String) -> Note:
 		"tap":
 			note.beat = float(parts[0]) if parts.size() > 0 else 0.0
 			note.angle = float(parts[1]) if parts.size() > 1 else 0.0
+			if parts.size() > 2:
+				note.width = float(parts[2])
+			if parts.size() > 3:
+				note.sized = int(parts[3]) == 1
+			if parts.size() > 4:
+				note.size_ratio = clampf(float(parts[4]), SIZED_TAP_MIN, SIZED_TAP_MAX)
 		"hold":
 			note.beat = float(parts[0]) if parts.size() > 0 else 0.0
 			note.end_beat = float(parts[1]) if parts.size() > 1 else note.beat
 			note.angle = float(parts[2]) if parts.size() > 2 else 0.0
+			if parts.size() > 3:
+				note.width = float(parts[3])
 		"seek":
 			note.beat = float(parts[0]) if parts.size() > 0 else 0.0
 			note.end_beat = note.beat
@@ -641,12 +657,17 @@ static func from_code(code: String) -> Note:
 			note.angle = float(parts[1]) if parts.size() > 1 else 0.0
 			note.pair_id = parts[2].strip_edges() if parts.size() > 2 else ""
 			note.width = 0.0
+			if parts.size() > 3:
+				note.anchor_pair = int(parts[3])
 		"bell":
 			note.beat = float(parts[0]) if parts.size() > 0 else 0.0
 			note.angle = float(parts[1]) if parts.size() > 1 else 0.0
+			if parts.size() > 2:
+				note.width = float(parts[2])
 			note.center_u = fposmod(note.angle / 360.0, 1.0)
 			note.radius = 26.0
-			note.width = 0.0
+			if parts.size() > 3:
+				note.radius = float(parts[3])
 		_:
 			return null
 	return note

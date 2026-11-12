@@ -136,17 +136,14 @@ static func _note_line(chart: Chart, note: Note) -> String:
 	var options := _note_options(note)
 	match note.type:
 		"tap":
-			var suffix := ""
-			if note.space == "plane":
-				suffix = ",space=plane,px=%s,py=%s,pr=%s" % [_num(note.plane_x), _num(note.plane_y), _num(note.plane_radius)]
-			return "tap,%s,%s,%s%s%s" % [_beat(chart, note.beat), _num(note.angle), _num(note.width), suffix, options]
+			return "tap,%s,%s,%s%s" % [_beat(chart, note.beat), _num(note.angle), _num(note.arc_width()), options]
 		"hold":
 			var suffix := ""
 			if note.hold_style == "curved":
 				suffix = ",style=curved"
 			if not note.visual_pts.is_empty():
 				suffix += ",body=%s" % _points(note.visual_pts)
-			return "hold,%s,%s,%s,%s%s%s" % [_beat(chart, note.beat), _num(note.angle), _num(note.width), _beat(chart, note.end_beat), suffix, options]
+			return "hold,%s,%s,%s,%s%s%s" % [_beat(chart, note.beat), _num(note.angle), _num(note.arc_width()), _beat(chart, note.end_beat), suffix, options]
 		"path":
 			var suffix := ",tol=%s,samples=%s" % [_num(note.tolerance), _num(note.samples_per_beat)]
 			if not note.visual_pts.is_empty():
@@ -182,7 +179,8 @@ static func _note_line(chart: Chart, note: Note) -> String:
 				suffix += ",pairId=%s" % _clean(note.pair_id)
 			return "anchor,%s,%s%s%s" % [_beat(chart, note.beat), _num(note.angle), suffix, options]
 		"bell":
-			return "bell,%s,%s,%s%s" % [_beat(chart, note.beat), _num(note.center_u), _num(note.radius), options]
+			var suffix := ",width=%s" % _num(note.bell_width())
+			return "bell,%s,%s,%s%s%s" % [_beat(chart, note.beat), _num(note.center_u), _num(note.radius), suffix, options]
 	return "tap,%s,%s,%s%s" % [_beat(chart, note.beat), _num(note.angle), _num(note.width), options]
 
 

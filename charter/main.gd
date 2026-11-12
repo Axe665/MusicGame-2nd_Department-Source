@@ -385,10 +385,10 @@ func _build_ui() -> void:
 	brand_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	brand_row.add_child(brand_spacer)
 	# 菜单 id 全局唯一（_on_menu 的 match 先匹配先得，重复 id 会让后面的分支永远收不到）：
-	# 文件 0–9 / 15–18、编辑 10–14、视图 20–25、插入 30–38、事件 40–41、试玩 50–51。
+	# 文件 0–9 / 15–19、编辑 10–14、视图 20–25、插入 30–38、事件 40–41、试玩 50–51。
 	brand_row.add_child(_menu("文件", [
 		["新建", 0], ["打开", 1], ["保存", 2], ["另存为", 3], ["-", 0],
-		["导入", [["歌曲 / 识别 BPM…", 9], ["谱面 (.osz/.zip/.txt)", 6], ["舞萌文件夹", 8], ["在线舞萌谱面…", 15], ["在线 osu! 谱面…", 18]]],
+		["导入", [["歌曲 / 识别 BPM…", 9], ["导入视频…", 19], ["谱面 (.osz/.zip/.txt)", 6], ["舞萌文件夹", 8], ["在线舞萌谱面…", 15], ["在线 osu! 谱面…", 18]]],
 		["导出", [["导出 .lbp", 7]]],
 		["-", 0], ["恢复自动保存", 4], ["-", 0], ["退出", 5],
 	]))
@@ -2102,6 +2102,9 @@ func _on_menu(id: int) -> void:
 			_import_dir_dialog.popup_centered_ratio(0.75)
 		9:
 			_audio_dialog.popup_centered_ratio(0.75)
+		19:
+			if _inspector != null:
+				_inspector.open_video_picker()
 		15:
 			_chart_browser.popup_centered_ratio(0.8)
 		18:
