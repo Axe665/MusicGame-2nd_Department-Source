@@ -133,12 +133,15 @@ func _build_mai_ui() -> void:
 	top.add_child(tabs)
 
 	var filter_btn := Button.new()
-	filter_btn.text = "筛选"
 	filter_btn.tooltip_text = "版本 / 曲风 / 只看收藏"
 	filter_btn.toggle_mode = true
-	filter_btn.custom_minimum_size = Vector2(64, 34)
-	filter_btn.add_theme_font_size_override("font_size", 12)
+	filter_btn.focus_mode = Control.FOCUS_NONE
+	filter_btn.custom_minimum_size = Vector2(44, 34)
 	filter_btn.toggled.connect(func(on: bool) -> void: _filter_row.visible = on)
+	var filter_icon := FunnelIcon.new()
+	filter_icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	filter_btn.add_child(filter_icon)
+	filter_icon.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	top.add_child(filter_btn)
 
 	_filter_row = HBoxContainer.new()
@@ -1774,3 +1777,15 @@ static func _difficulty_name(index: int) -> String:
 		4: return "MAS"
 		5: return "Re:MAS"
 	return "LV"
+
+
+## 参考图里的漏斗图标：没有额外贴图，直接画三笔。
+class FunnelIcon extends Control:
+	func _draw() -> void:
+		var c := size * 0.5
+		var color := UITheme.MUTED
+		var half := 7.0
+		draw_line(c + Vector2(-half, -6.0), c + Vector2(half, -6.0), color, 1.8, true)
+		draw_line(c + Vector2(-half, -6.0), c + Vector2(0.0, 1.0), color, 1.8, true)
+		draw_line(c + Vector2(half, -6.0), c + Vector2(0.0, 1.0), color, 1.8, true)
+		draw_line(c + Vector2(0.0, 1.0), c + Vector2(0.0, 7.0), color, 1.8, true)
