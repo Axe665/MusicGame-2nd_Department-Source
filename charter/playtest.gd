@@ -3,7 +3,7 @@ extends Control
 
 signal exit_requested
 signal settings_requested
-## 结算页点「重看本局」时把本局录制发出去，由主场景重开一局回放。
+## 结算页点「打开回放」时把本局录制发出去，由主场景重开一局回放。
 signal replay_requested(data: Replay)
 
 const PERFECT_MS := 65.0
@@ -530,21 +530,31 @@ func _build_ui() -> void:
 	_bias_label = Label.new()
 	UITheme.style_mono(_bias_label, 12, UITheme.CYAN)
 	box.add_child(_bias_label)
+	var action_row := HBoxContainer.new()
+	action_row.add_theme_constant_override("separation", 8)
+	box.add_child(action_row)
 	_apply_bias_button = Button.new()
 	_apply_bias_button.text = "把本局偏差写进本谱面"
 	_apply_bias_button.tooltip_text = "把平均判定偏差加进这张谱面的 offset 并存盘；只影响这一张，别的谱面不动"
 	_apply_bias_button.pressed.connect(_apply_bias_to_chart)
-	box.add_child(_apply_bias_button)
+	_apply_bias_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_apply_bias_button.clip_text = true
+	_apply_bias_button.stretch_ratio = 2.0
+	action_row.add_child(_apply_bias_button)
 	_replay_button = Button.new()
-	_replay_button.text = "重看本局"
-	_replay_button.tooltip_text = "用刚录下的输入重放这一局；判定结果与刚才一致（F8 可切 AUTO）"
+	_replay_button.text = "打开回放"
+	_replay_button.tooltip_text = "用刚录下的输入重放这一局；判定结果与刚才一致"
 	_replay_button.pressed.connect(_request_replay)
-	box.add_child(_replay_button)
+	_replay_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_replay_button.stretch_ratio = 1.0
+	action_row.add_child(_replay_button)
 	_save_replay_button = Button.new()
-	_save_replay_button.text = "保存回放…"
+	_save_replay_button.text = "保存回放"
 	_save_replay_button.tooltip_text = "把这一局的输入存成 .tmkrpl 文件，可以留着以后重看"
 	_save_replay_button.pressed.connect(_save_replay)
-	box.add_child(_save_replay_button)
+	_save_replay_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_save_replay_button.stretch_ratio = 1.0
+	action_row.add_child(_save_replay_button)
 	_results_text = RichTextLabel.new()
 	_results_text.bbcode_enabled = false
 	_results_text.fit_content = false
@@ -2659,7 +2669,6 @@ func _finish() -> void:
 		else:
 			can_replay = _record != null and _record.event_count() > 0
 		_replay_button.disabled = not can_replay
-		_replay_button.text = "再看一遍" if replay_mode else "重看本局"
 	if _save_replay_button != null:
 		_save_replay_button.disabled = _current_replay() == null
 	if _apply_bias_button != null:
