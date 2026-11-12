@@ -3,6 +3,8 @@ extends Control
 
 signal exit_requested
 signal settings_requested
+## 结算页点「重看本局」时把本局录制发出去，由主场景重开一局回放。
+signal replay_requested(data: Replay)
 
 const PERFECT_MS := 65.0
 const GREAT_MS := 115.0
@@ -123,6 +125,20 @@ var _path_motion_samples: Array[Dictionary] = []
 var path_input_logging := true
 var _path_input_log: FileAccess
 var _path_input_log_path := ""
+## 回放：录制本局输入；播放时把录制的事件按时间喂回同一套判定。
+var _record: Replay = null
+var _recording: bool = false
+var replay_source: Replay = null
+var replay_mode: bool = false
+var _replay_events: Array = []
+var _replay_index: int = 0
+var _replay_ms: float = 0.0
+var _replay_cursor: Vector2 = Vector2.INF
+var _record_offset: float = 0.0
+## 回放用录制里的 offset 序列，不去动用户的设置。
+var _offset_override: float = NAN
+## 回放快慢（1.0 = 原速）。只影响画面，不影响判定。
+var replay_rate: float = 1.0
 const AUTO_LEAD_MS := 8.0              # 比判定时间早这么多就按下（吃掉帧量化误差）
 const AUTO_RELEASE_MS := 60.0          # Hold 尾判之后再松手，避免被判成提前松开
 const AUTO_PREVIEW_MS := 900.0         # 光标提前多久开始预判下一个要点
@@ -159,6 +175,8 @@ var _judge_ms_now: float = 0.0
 var _bias_label: Label
 ## 结算页：把本局平均偏差写进这张谱面的 offset（一次修一张，别的谱面不受影响）。
 var _apply_bias_button: Button
+## 结算页：重放本局录制。
+var _replay_button: Button
 ## 暂停菜单（ESC）。
 var _pause_overlay: Control = null
 var _path_judgement_toggle: CheckButton
@@ -212,6 +230,10 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	_preview.auto_cursor = Vector2.INF
 	if auto_play:
 		_preview.auto_cursor = _preview.project_design(Vector2.ZERO)
+	if replay_source != null:
+		_enter_replay(replay_source)
+	elif _app != null:
+		_start_recording()
 	# 鼠标移动不再按帧累积，瞄准反馈早一帧到达。
 	Input.set_use_accumulated_input(false)
 	_paused = false
@@ -401,6 +423,11 @@ func _build_ui() -> void:
 	_apply_bias_button.tooltip_text = "把平均判定偏差加进这张谱面的 offset 并存盘；只影响这一张，别的谱面不动"
 	_apply_bias_button.pressed.connect(_apply_bias_to_chart)
 	box.add_child(_apply_bias_button)
+	_replay_button = Button.new()
+	_replay_button.text = "重看本局"
+	_replay_button.tooltip_text = "用刚录下的输入重放这一局；判定结果与刚才一致（F8 可切 AUTO）"
+	_replay_button.pressed.connect(_request_replay)
+	box.add_child(_replay_button)
 	_results_text = RichTextLabel.new()
 	_results_text.bbcode_enabled = false
 	_results_text.fit_content = false
@@ -454,7 +481,7 @@ func _init_states() -> void:
 	_errors.clear()
 	_scatter.clear()
 	_error_sum = 0.0
-	_auto_origin_ms = float(_app.playtest_offset_ms if _app != null else 0.0)
+	_auto_origin_ms = _active_offset()
 	_press_assignments.clear()
 	_log.clear()
 	_combo = 0
@@ -599,14 +626,22 @@ func _start_audio() -> void:
 func _process(delta: float) -> void:
 	if not _running or chart == null or _paused:
 		return
+	if replay_mode:
+		# 虚拟时钟：倍速只改画面快慢；判定只认事件时间戳，所以结果不变。
+		_replay_ms += clampf(delta, 0.0, 0.25) * 1000.0 * maxf(0.05, replay_rate)
 	var chart_ms := _chart_ms()
 	_last_frame_ms = clampf(delta * 1000.0, 1.0, 200.0)
-	var judge_ms := chart_ms + float(_app.playtest_offset_ms if _app != null else 0.0)
+	var judge_ms := chart_ms + _active_offset()
 	_judge_ms_now = judge_ms
 	var beat := chart.timing.chart_ms_to_beat(chart_ms)
 	_preview.playing = true
 	_preview.prepare_playtest_frame(beat, delta)
-	if auto_play:
+	if replay_mode:
+		_dispatch_replay(judge_ms)
+		if _replay_cursor.is_finite():
+			_preview.mouse_screen = _replay_cursor
+			_preview._update_cursor()
+	elif auto_play:
 		_auto_step(judge_ms, beat, delta)
 		_preview.mouse_screen = _auto_cursor
 		_preview._update_cursor()
@@ -635,6 +670,114 @@ func _process(delta: float) -> void:
 		_key_presses.pop_front()
 	while not _seek_presses.is_empty() and float(_seek_presses[0].get("hi", _seek_presses[0].get("time", -INF))) < judge_ms - keep_ms:
 		_seek_presses.pop_front()
+	if _recording and _record != null:
+		var offset_now := _active_offset()
+		if absf(offset_now - _record_offset) > 0.01:
+			_record_offset = offset_now
+			_record.add_offset(judge_ms, offset_now)
+
+
+## 开始录制本局输入。
+func _start_recording() -> void:
+	if auto_play:
+		# AUTO 不需要输入，回放也就是再跑一遍 AUTO，不必录。
+		_record = null
+		return
+	_record = Replay.new()
+	_record.chart_path = chart_path
+	_record.chart_hash = Replay.hash_chart(chart)
+	_record.start_beat = start_beat
+	_record.settings = {
+		"offset_ms": _active_offset(),
+		"flow": _preview.flow_scale,
+		"star_speed": _preview.star_speed,
+		"cursor_scale": _preview.cursor_scale,
+		"note_skin": _preview.note_skin,
+		"hit_fx": _preview.hit_fx_style,
+		"rate": 1.0,
+	}
+	_record_offset = _active_offset()
+	_recording = true
+
+
+## 进入回放：视觉参数用录制时的值，判定偏移也跟着录制走。
+func _enter_replay(data: Replay) -> void:
+	replay_mode = true
+	_recording = false
+	_record = null
+	_replay_events = data.events
+	_replay_index = 0
+	_replay_ms = chart.timing.beat_to_chart_ms(start_beat)
+	_offset_override = float(data.settings.get("offset_ms", 0.0))
+	_replay_cursor = Vector2.INF
+	_preview.flow_scale = float(data.settings.get("flow", _preview.flow_scale))
+	_preview.star_speed = float(data.settings.get("star_speed", _preview.star_speed))
+	_preview.cursor_scale = float(data.settings.get("cursor_scale", _preview.cursor_scale))
+	if data.settings.has("note_skin"):
+		_preview.note_skin = String(data.settings["note_skin"])
+	if data.settings.has("hit_fx"):
+		_preview.hit_fx_style = String(data.settings["hit_fx"])
+	for event in _replay_events:
+		if String(event.get("k", "")) == "move":
+			_replay_cursor = Vector2(float(event.get("x", 0.0)), float(event.get("y", 0.0)))
+			break
+	_add_log("REPLAY 载入 %d 个事件" % _replay_events.size())
+
+
+## 把到时间的事件全部重放；判定拿到的时间戳就是录制时的那个。
+func _dispatch_replay(judge_ms: float) -> void:
+	while _replay_index < _replay_events.size():
+		var event: Dictionary = _replay_events[_replay_index]
+		if float(event.get("t", 0.0)) > judge_ms:
+			break
+		_replay_index += 1
+		_apply_replay_event(event)
+
+
+func _apply_replay_event(event: Dictionary) -> void:
+	var stamp := float(event.get("t", 0.0))
+	match String(event.get("k", "")):
+		"move":
+			var point := Vector2(float(event.get("x", 0.0)), float(event.get("y", 0.0)))
+			_replay_cursor = point
+			_queue_path_motion(point, stamp)
+		"press":
+			var key := int(event.get("key", 0))
+			_key_presses.append({
+				"time": stamp,
+				"lo": float(event.get("lo", stamp)),
+				"hi": float(event.get("hi", stamp)),
+				"mouse": Vector2(float(event.get("x", 0.0)), float(event.get("y", 0.0))),
+				"angle": float(event.get("a", 0.0)),
+				"u": float(event.get("u", 0.0)),
+				"valid": bool(event.get("v", false)),
+				"key": key,
+			})
+			_keys_held[key] = true
+		"release":
+			_keys_held.erase(int(event.get("key", 0)))
+		"seek":
+			_seek_presses.append({
+				"time": stamp,
+				"lo": float(event.get("lo", stamp)),
+				"hi": float(event.get("hi", stamp)),
+				"orien": int(event.get("dir", 0)),
+			})
+		"offset":
+			_offset_override = float(event.get("v", 0.0))
+
+
+## 回放时用录制里的 offset，不去改用户设置。
+func _active_offset() -> float:
+	if not is_nan(_offset_override):
+		return _offset_override
+	return float(_app.playtest_offset_ms if _app != null else 0.0)
+
+
+func _request_replay() -> void:
+	if replay_mode or _record == null or _record.event_count() == 0:
+		return
+	replay_requested.emit(_record)
 
 
 ## 驱动报告 0 的平台上用设置里的回退值（Android/Web 常见）。
@@ -653,6 +796,10 @@ func _chart_ms() -> float:
 
 
 func _chart_ms_inner() -> float:
+	if replay_mode:
+		# 回放走虚拟时钟：判定只认事件自带的时间戳，音频漂移不影响结果。
+		_last_chart_ms = _replay_ms
+		return _replay_ms
 	if _paused:
 		return _last_chart_ms
 	var now_usec := Time.get_ticks_usec()
@@ -1094,7 +1241,7 @@ func _judge_path(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 	var head_point: Vector2 = _preview.note_head_screen(note, beat)
 	# 星星头开始沿轨迹移动的那一刻（beat + wait）才是“起划”，在这里响提示音。
 	if not bool(state.get("slide_cued", false)):
-		var slide_ms := slide_start_ms(chart, note, float(_app.playtest_offset_ms if _app != null else 0.0))
+		var slide_ms := slide_start_ms(chart, note, _active_offset())
 		if ms >= slide_ms:
 			state["slide_cued"] = true
 			# 错过太久（跳转/卡帧）就不再补播。
@@ -1192,7 +1339,7 @@ func _judge_path(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 func _update_path_progress(note: Note, state: Dictionary, tracker: PathProgress, ms: float, beat: float, mouse: Vector2, tail_radius: float) -> void:
 	# Samples carry scoring-adjusted timestamps. Transform the visual start into
 	# that same clock; a negative offset must not discard the start of a slide.
-	var offset_ms := float(_app.playtest_offset_ms if _app != null else 0.0)
+	var offset_ms := _active_offset()
 	var head_start := chart.timing.beat_to_chart_ms(note.beat) + offset_ms
 	var start_ms := maxf(head_start, chart.timing.beat_to_chart_ms(note.beat + clampf(note.wait_beat, 0.0, note.duration())) + offset_ms - 120.0)
 	var tail_ms := float(state["end_ms"])
@@ -1267,7 +1414,7 @@ func _queue_path_motion(point: Vector2, ms: float) -> void:
 
 
 func _open_path_input_log() -> void:
-	if not path_input_logging or chart == null:
+	if not path_input_logging or chart == null or replay_mode:
 		return
 	_close_path_input_log()
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path("user://logs"))
@@ -1278,7 +1425,7 @@ func _open_path_input_log() -> void:
 		return
 	_write_path_input_log({"kind": "session", "schema": 2, "chart": chart_path,
 		"title": chart.metadata.get("title", ""), "difficulty": chart.metadata.get("version", ""),
-		"offset_ms": float(_app.playtest_offset_ms if _app != null else 0.0),
+		"offset_ms": _active_offset(),
 		"preview_size": _path_log_point(_preview.size), "start_beat": start_beat, "auto": auto_play})
 	print("[path-input-log] ", ProjectSettings.globalize_path(_path_input_log_path))
 
@@ -1327,7 +1474,7 @@ func _record_path_input_frame(note: Note, state: Dictionary, tracker: PathProgre
 	var distance := mouse.distance_to(target)
 	var reason := "before_body_start" if ms < start_ms else ("approaching_region" if distance > target_radius else "inside_region")
 	var record := {"kind": "frame", "note": note.id, "time_ms": snappedf(ms, 0.01),
-		"beat": beat, "start_ms": start_ms, "offset_ms": float(_app.playtest_offset_ms if _app != null else 0.0),
+		"beat": beat, "start_ms": start_ms, "offset_ms": _active_offset(),
 		"head_hit": state["head_hit"], "coverage": tracker.coverage, "progress": tracker.progress,
 		"next": tracker.next_index, "next_gate": tracker.next_gate, "gate_count": tracker.group_count,
 		"tolerance": tracker.tolerance, "remaining": tracker.remaining_groups(), "body_ready": tracker.body_ready(),
@@ -1767,7 +1914,7 @@ func _record_error(error_ms: float, label: String, tier: String = "", time_ms: f
 		})
 	_error_sum += error_ms
 	_add_log("%s  %+.0fms" % [label, error_ms])
-	if _app == null or not bool(_app.dynamic_offset) or _errors.size() < DYNAMIC_SAMPLE_MIN:
+	if _app == null or replay_mode or not bool(_app.dynamic_offset) or _errors.size() < DYNAMIC_SAMPLE_MIN:
 		return
 	# 动态 offset：每次命中往消除当前偏差的方向挪 5%，自动部分最多 ±50ms。
 	var next := float(_app.playtest_offset_ms) - error_ms * DYNAMIC_STEP
@@ -1792,7 +1939,7 @@ func _unstable_rate() -> float:
 
 ## 退出/结算时把自动调过的偏移写回设置。
 func _flush_offset() -> void:
-	if _app == null:
+	if _app == null or replay_mode:
 		return
 	_app.last_bias_ms = _mean_error()
 	_app.save_settings()
@@ -1810,13 +1957,13 @@ func _update_top_bar(ms: float, beat: float) -> void:
 	var total := chart.timing.beat_to_chart_ms(chart.duration_beats())
 	_top_time.text = "%s / %s" % [_format_ms(ms), _format_ms(total)]
 	var accuracy := _accuracy()
-	var offset := float(_app.playtest_offset_ms if _app != null else 0.0)
+	var offset := _active_offset()
 	var skin_label := String(Preview3D.skin_presets().get(_preview.note_skin, {}).get("label", _preview.note_skin))
 	var fx_label := String(Preview3D.hit_fx_presets().get(_preview.hit_fx_style, _preview.hit_fx_style))
 	if _style_label != null:
 		_style_label.text = "%s · %s" % [skin_label, fx_label]
 	_top_stats.text = "%sHIT %d  MISS %d  ACC %s  COMBO %d  |  LIMIT %d  |  BIA %+.1fms  OFF %+.0fms" % [
-		"[AUTO] " if auto_play else "",
+		"[REPLAY] " if replay_mode else ("[AUTO] " if auto_play else ""),
 		_hit_count,
 		_miss_count,
 		"—" if accuracy < 0.0 else "%.1f%%" % accuracy,
@@ -2053,18 +2200,25 @@ func _input_interval(now_ms: float) -> Vector2:
 
 func _input(event: InputEvent) -> void:
 	if event is InputEventMouseMotion:
-		if _running and not _paused and not _finished and not auto_play:
+		if _running and not _paused and not _finished and not auto_play and not replay_mode:
 			var point: Vector2 = _preview.get_global_transform_with_canvas().affine_inverse() * event.position
-			_queue_path_motion(point, _chart_ms() + float(_app.playtest_offset_ms if _app != null else 0.0))
+			var move_ms := _chart_ms() + _active_offset()
+			_queue_path_motion(point, move_ms)
+			if _recording and _record != null:
+				_record.add_move(move_ms, point)
 		return
 	if event is InputEventMouseButton and event.pressed and (event.button_index == MOUSE_BUTTON_WHEEL_UP or event.button_index == MOUSE_BUTTON_WHEEL_DOWN):
-		var span := _input_interval(_chart_ms() + float(_app.playtest_offset_ms if _app != null else 0.0))
-		_seek_presses.append({
-			"time": (span.x + span.y) * 0.5,
-			"lo": span.x,
-			"hi": span.y,
-			"orien": 0 if event.button_index == MOUSE_BUTTON_WHEEL_UP else 1,
-		})
+		var span := _input_interval(_chart_ms() + _active_offset())
+		var direction := 0 if event.button_index == MOUSE_BUTTON_WHEEL_UP else 1
+		if not replay_mode:
+			_seek_presses.append({
+				"time": (span.x + span.y) * 0.5,
+				"lo": span.x,
+				"hi": span.y,
+				"orien": direction,
+			})
+			if _recording and _record != null:
+				_record.add_seek((span.x + span.y) * 0.5, span.x, span.y, direction)
 		get_viewport().set_input_as_handled()
 		return
 	if not (event is InputEventKey):
@@ -2080,6 +2234,8 @@ func _input(event: InputEvent) -> void:
 			else:
 				_set_paused(true)
 			get_viewport().set_input_as_handled()
+			return
+		if replay_mode:
 			return
 		if event.pressed and not event.echo:
 			if event.keycode == KEY_F6:
@@ -2117,7 +2273,7 @@ func _input(event: InputEvent) -> void:
 			if not _running or _paused or _finished:
 				return
 			var key: int = event.physical_keycode if event.physical_keycode != 0 else event.keycode
-			var span := _input_interval(_chart_ms() + float(_app.playtest_offset_ms if _app != null else 0.0))
+			var span := _input_interval(_chart_ms() + _active_offset())
 			var stamp := (span.x + span.y) * 0.5
 			# 同一个键的手抖双击只算一次；和弦用不同键，不受影响。
 			var repeated := stamp - float(_last_press_ms.get(key, -INF)) < KEY_DEBOUNCE_MS
@@ -2133,11 +2289,17 @@ func _input(event: InputEvent) -> void:
 					"valid": _preview.cursor_valid,
 					"key": key,
 				})
+				if _recording and _record != null:
+					_record.add_press(stamp, span.x, span.y, key, _preview.mouse_screen,
+						_preview.screen_angle_deg(_preview.mouse_screen), _preview.cursor_u, _preview.cursor_valid)
 			_keys_held[key] = true
 			get_viewport().set_input_as_handled()
 		elif not event.pressed:
 			var key: int = event.physical_keycode if event.physical_keycode != 0 else event.keycode
 			_keys_held.erase(key)
+			if _recording and _record != null:
+				var release_span := _input_interval(_chart_ms() + _active_offset())
+				_record.add_release((release_span.x + release_span.y) * 0.5, key)
 			get_viewport().set_input_as_handled()
 
 
@@ -2145,6 +2307,13 @@ func _finish() -> void:
 	if _finished:
 		return
 	_finished = true
+	if _record != null and not replay_mode:
+		_record.result = {
+			"hit": _hit_count,
+			"miss": _miss_count,
+			"max_combo": _max_combo,
+			"tiers": _tier_counts.duplicate(),
+		}
 	_close_path_input_log()
 	_running = false
 	if _audio != null:
@@ -2179,18 +2348,21 @@ func _finish() -> void:
 	if _scatter_chart != null:
 		var span := 0.0
 		if chart != null:
-			span = chart.timing.beat_to_chart_ms(chart.duration_beats()) + float(_app.playtest_offset_ms if _app != null else 0.0)
+			span = chart.timing.beat_to_chart_ms(chart.duration_beats()) + _active_offset()
 		_scatter_chart.set_hits(_scatter, span)
 	if _bias_label != null:
 		_bias_label.text = "平均判定偏差 %+.2f 毫秒   ·   不稳定率 (UR) %.2f   ·   样本 %d   ·   当前 offset %+.0fms" % [
 			average_error,
 			_unstable_rate(),
 			_errors.size(),
-			float(_app.playtest_offset_ms if _app != null else 0.0),
+			_active_offset(),
 		]
+	if _replay_button != null:
+		_replay_button.disabled = replay_mode or _record == null or _record.event_count() == 0
+		_replay_button.text = "重看本局（回放中）" if replay_mode else "重看本局"
 	if _apply_bias_button != null:
 		var delta := -average_error
-		var can_apply: bool = not auto_play and _errors.size() >= 8 and absf(delta) >= 1.0 \
+		var can_apply: bool = not auto_play and not replay_mode and _errors.size() >= 8 and absf(delta) >= 1.0 \
 			and _app != null and (not _app.set_path.is_empty() or not _app.chart_path.is_empty())
 		_apply_bias_button.disabled = not can_apply
 		_apply_bias_button.text = ("把本局偏差写进本谱面（offset %+.0fms）" % delta) if can_apply else "把本局偏差写进本谱面"

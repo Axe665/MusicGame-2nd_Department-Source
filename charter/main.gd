@@ -2047,6 +2047,29 @@ func _start_playtest(from_start: bool) -> void:
 	_playtest.setup(_app.chart, 0.0 if from_start else _app.playhead_beat, _app.chart_path)
 	_playtest.exit_requested.connect(_end_playtest)
 	_playtest.settings_requested.connect(func() -> void: _open_playtest_setup(false))
+	_playtest.replay_requested.connect(func(data: Replay) -> void: _start_replay.call_deferred(data))
+
+
+## 结算页点「重看本局」：按同一份谱面重开一局，输入全部来自录制。
+func _start_replay(data: Replay) -> void:
+	if data == null or _app == null or _app.chart == null:
+		return
+	if _playtest != null:
+		_end_playtest()
+	var editor_root := get_node("Root") as Control
+	editor_root.hide()
+	editor_root.process_mode = Node.PROCESS_MODE_DISABLED
+	_preview.set_suspended(true)
+	if not data.chart_hash.is_empty() and data.chart_hash != Replay.hash_chart(_app.chart):
+		_show_toast("谱面在录制之后被改过，回放结果可能和当时不同", "error")
+	_playtest = Playtest.new()
+	_playtest.replay_source = data
+	add_child(_playtest)
+	_playtest.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_playtest.setup(_app.chart, data.start_beat, _app.chart_path)
+	_playtest.exit_requested.connect(_end_playtest)
+	_playtest.settings_requested.connect(func() -> void: _open_playtest_setup(false))
+	_playtest.replay_requested.connect(func(next: Replay) -> void: _start_replay.call_deferred(next))
 
 
 func _end_playtest() -> void:
