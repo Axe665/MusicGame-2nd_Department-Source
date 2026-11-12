@@ -35,10 +35,9 @@ const QUALITY_OPTIONS := [
 ## 界面（HUD）选项：和 视图 → 画质 同样的菜单结构，只影响显示。
 const HUD_OPTIONS := [
 	{"key": "hud_scale", "label": "HUD 缩放", "choices": [["80%", 120], ["100%", 121], ["120%", 122]]},
-	{"key": "hud_combo_mode", "label": "连击", "choices": [["屏幕中心", 123], ["右上角", 124], ["关", 125]]},
+	{"key": "hud_combo_mode", "label": "连击", "choices": [["屏幕中心", 123], ["右侧", 124], ["关", 125]]},
 	{"key": "hud_progress_style", "label": "进度仪表", "choices": [["环外弧", 126], ["关", 127]]},
 	{"key": "hud_judge_position", "label": "判定字位置", "choices": [["跟音符", 128], ["屏幕中心", 129], ["关", 130]]},
-	{"key": "hud_tier_counts", "label": "判定计数", "choices": [["游玩中", 131], ["仅结算", 132]]},
 	{"key": "hud_opacity", "label": "HUD 透明度", "choices": [["100%", 133], ["85%", 134], ["70%", 135]]},
 	{"key": "hud_show_title", "label": "左上：曲名", "choices": [["显示", 136], ["隐藏", 137]]},
 	{"key": "hud_show_difficulty", "label": "左上：难度", "choices": [["显示", 138], ["隐藏", 139]]},
@@ -958,8 +957,6 @@ func _hud_index(key: String) -> int:
 			return ["ring", "off"].find(_app.hud_progress_style)
 		"hud_judge_position":
 			return ["note", "center", "off"].find(_app.hud_judge_position)
-		"hud_tier_counts":
-			return ["play", "off"].find(_app.hud_tier_counts)
 		"hud_opacity":
 			return [100, 85, 70].find(_app.hud_opacity)
 		"hud_show_title":
@@ -985,8 +982,6 @@ func _set_hud_index(key: String, index: int) -> void:
 			_app.hud_progress_style = ["ring", "off"][clampi(index, 0, 1)]
 		"hud_judge_position":
 			_app.hud_judge_position = ["note", "center", "off"][clampi(index, 0, 2)]
-		"hud_tier_counts":
-			_app.hud_tier_counts = ["play", "off"][clampi(index, 0, 1)]
 		"hud_opacity":
 			_app.hud_opacity = [100, 85, 70][clampi(index, 0, 2)]
 		"hud_show_title":

@@ -4170,11 +4170,9 @@ func _draw_editor_hud(canvas: Control, chart: Chart, t: float) -> void:
 	_draw_cached_text(canvas, "hud_preview", mono, Vector2(cx - 34, baseline_y + 20), "预览 / 非正式", 10, UITheme.MUTED)
 
 
-const HUD_TIER_NAMES := ["PERFECT", "GREAT", "GOOD", "BAD", "MISS"]
-
-## 试玩 HUD v2：街机大字报。
-## 左上曲目簇（TRACK / 曲名 / 难度章），右上成绩簇（ACCURACY / 大字准度 / 评级章 / 一行彩点），
-## 中心连击（COMBO 标签在上），环外 8px 进度带 + 2px 准度细线。
+## 试玩 HUD v3：信息贴着环的左右两侧，垂直居中。
+## 左：TRACK / 曲名 / 难度 / 可选进度与用时；右：ACCURACY / 大字准度 / 评级章 / 连击。
+## 判定字仍在音符处；五档计数只在暂停页和结算页显示。
 func _draw_play_hud(canvas: Control, chart: Chart, t: float) -> void:
 	var bounds := size
 	if bounds.x < 320.0 or bounds.y < 240.0:
@@ -4191,45 +4189,115 @@ func _draw_play_hud(canvas: Control, chart: Chart, t: float) -> void:
 	var accuracy := hud_accuracy
 	var progress := clampf(t / maxf(1.0, chart.duration_beats()), 0.0, 1.0)
 	_draw_ring_gauge(canvas, progress, accuracy, s, op)
-	# 左上：曲目簇。
-	var left := Vector2(margin, margin)
-	if bool(hud_options.get("show_title", true)):
-		_draw_hud_text(canvas, "p_track", mono, left, "TRACK", _hud_small(s), _hud_tint(UITheme.MUTED, 0.85 * op))
-		left.y += 15.0 * s
-		if not hud_title.is_empty():
-			_draw_hud_text(canvas, "p_title", bold, left, hud_title, int(round(19.0 * s)), _hud_tint(UITheme.INK, op))
-			left.y += 25.0 * s
-	if bool(hud_options.get("show_difficulty", true)) and not hud_difficulty.is_empty():
-		_draw_chip(canvas, left, hud_difficulty, s, op, UITheme.CYAN)
-		left.y += 27.0 * s
-	if bool(hud_options.get("show_percent", false)):
-		_draw_hud_text(canvas, "p_percent", mono, left, "进度 %d%%" % roundi(progress * 100.0), _hud_small(s), _hud_tint(UITheme.MUTED, op))
-		left.y += 15.0 * s
-	if bool(hud_options.get("show_time", false)):
-		_draw_hud_text(canvas, "p_time", mono, left, "%s / %s" % [_hud_time(hud_ms), _hud_time(hud_total_ms)], _hud_small(s), _hud_tint(UITheme.MUTED, op))
-	if bool(hud_options.get("show_watermark", false)):
-		_draw_hud_text(canvas, "p_watermark", mono, Vector2(margin, bounds.y - margin), "试玩 · 预览 / 非正式", _hud_small(s), _hud_tint(UITheme.MUTED, op))
-	# 右上：成绩簇（准度是主体，评级只是旁边的小章）。
-	var right := bounds.x - margin
-	var acc_text := "—" if accuracy < 0.0 else "%.2f%%" % accuracy
-	var acc_size := int(round(38.0 * s))
-	_draw_hud_text(canvas, "p_acc_label", mono, Vector2(right, margin), "ACCURACY", _hud_small(s), _hud_tint(UITheme.MUTED, 0.85 * op), 1)
-	var acc_y := margin + 15.0 * s
-	_draw_hud_text(canvas, "p_acc", bold, Vector2(right, acc_y), acc_text, acc_size, _hud_tint(UITheme.INK, op), 1)
-	var acc_w := bold.get_string_size(acc_text, HORIZONTAL_ALIGNMENT_LEFT, -1, acc_size).x
-	_draw_rank_chip(canvas, right - acc_w - 10.0 * s, acc_y + 5.0 * s, hud_rating, s, op)
-	# 五档压成一行彩点，颜色保留但不铺五行。
-	var dots_y := acc_y + 47.0 * s
-	if String(hud_options.get("tier_counts", "play")) == "play":
-		_draw_tier_dots(canvas, right, dots_y, s, op)
-	# 中心：连击，标签在数字上方。
+	var ring_r := _hud_ring_radius(t)
+	var gap := 20.0 * s
+	var side := minf(center.x, bounds.x - center.x) - ring_r - margin - gap
+	var col_w := clampf(side, 90.0 * s, 320.0 * s)
+	var left_x := center.x - ring_r - gap - col_w
+	var right_x := center.x + ring_r + gap
+	_draw_hud_track_column(canvas, left_x + col_w, col_w, center.y, s, op, progress, bold, mono)
+	_draw_hud_score_column(canvas, right_x, col_w, center.y, s, op, accuracy, bold, mono)
 	var combo_mode := String(hud_options.get("combo_mode", "center"))
 	if combo_mode == "center":
 		_draw_combo(canvas, bold, center, s, 78.0 * s, 2, op)
 		if hud_auto:
 			_draw_hud_text(canvas, "p_auto", mono, Vector2(center.x, center.y + 74.0 * s), "AUTO", _hud_small(s), _hud_tint(UITheme.AMBER, op), 2)
-	elif combo_mode == "corner":
-		_draw_combo(canvas, bold, Vector2(right, dots_y + 22.0 * s), s, 30.0 * s, 1, op)
+	if bool(hud_options.get("show_watermark", false)):
+		_draw_hud_text(canvas, "p_watermark", mono, Vector2(margin, bounds.y - margin), "试玩 · 预览 / 非正式", _hud_small(s), _hud_tint(UITheme.MUTED, op))
+
+
+## 左列：垂直居中，宽度随窗口收窄；长曲名截断成省略号。
+func _draw_hud_track_column(canvas: Control, right_x: float, col_w: float, center_y: float, s: float, op: float, progress: float, bold: Font, mono: Font) -> void:
+	var show_title := bool(hud_options.get("show_title", true))
+	var show_diff := bool(hud_options.get("show_difficulty", true)) and not hud_difficulty.is_empty()
+	var show_pct := bool(hud_options.get("show_percent", false))
+	var show_time := bool(hud_options.get("show_time", false))
+	var height := 0.0
+	if show_title:
+		height += 15.0 * s
+		if not hud_title.is_empty():
+			height += 25.0 * s
+	if show_diff:
+		height += 27.0 * s
+	if show_pct:
+		height += 15.0 * s
+	if show_time:
+		height += 15.0 * s
+	var y := center_y - height * 0.5
+	if show_title:
+		_draw_hud_text(canvas, "p_track", mono, Vector2(right_x, y), "TRACK", _hud_small(s), _hud_tint(UITheme.MUTED, 0.85 * op), 1)
+		y += 15.0 * s
+		if not hud_title.is_empty():
+			var title := _hud_fit_text(hud_title, bold, int(round(19.0 * s)), col_w)
+			_draw_hud_text(canvas, "p_title", bold, Vector2(right_x, y), title, int(round(19.0 * s)), _hud_tint(UITheme.INK, op), 1)
+			y += 25.0 * s
+	if show_diff:
+		_draw_chip(canvas, Vector2(right_x, y), hud_difficulty, s, op, UITheme.CYAN, 1)
+		y += 27.0 * s
+	if show_pct:
+		_draw_hud_text(canvas, "p_percent", mono, Vector2(right_x, y), "进度 %d%%" % roundi(progress * 100.0), _hud_small(s), _hud_tint(UITheme.MUTED, op), 1)
+		y += 15.0 * s
+	if show_time:
+		_draw_hud_text(canvas, "p_time", mono, Vector2(right_x, y), "%s / %s" % [_hud_time(hud_ms), _hud_time(hud_total_ms)], _hud_small(s), _hud_tint(UITheme.MUTED, op), 1)
+
+
+## 右列：准度是主体；评级章与 ACCURACY 同排右对齐，连击在下方。
+func _draw_hud_score_column(canvas: Control, x: float, col_w: float, center_y: float, s: float, op: float, accuracy: float, bold: Font, mono: Font) -> void:
+	var acc_text := "—" if accuracy < 0.0 else "%.2f%%" % accuracy
+	var acc_size := int(round(38.0 * s))
+	var combo_mode := String(hud_options.get("combo_mode", "center"))
+	var reserve_combo := combo_mode == "corner"
+	# 标签行要容得下 22px 的评级章，否则章底会压到准度数字顶部。
+	var label_row := 24.0 * s
+	var height := label_row + acc_size
+	if reserve_combo:
+		height += 8.0 * s + 50.0 * s
+	var y := center_y - height * 0.5
+	var small := _hud_small(s)
+	var label_w := mono.get_string_size("ACCURACY", HORIZONTAL_ALIGNMENT_LEFT, -1, small).x
+	var chip_w := mono.get_string_size(hud_rating, HORIZONTAL_ALIGNMENT_LEFT, -1, maxi(11, int(round(13.0 * s)))).x + 14.0 * s
+	_draw_hud_text(canvas, "p_acc_label", mono, Vector2(x, y), "ACCURACY", small, _hud_tint(UITheme.MUTED, 0.85 * op))
+	# 评级章贴着 ACCURACY 标签，不甩到列的最右边。
+	_draw_rank_chip(canvas, x + label_w + 10.0 * s + chip_w, y, hud_rating, s, op)
+	y += label_row
+	_draw_hud_text(canvas, "p_acc", bold, Vector2(x, y), acc_text, acc_size, _hud_tint(UITheme.INK, op))
+	y += acc_size + 8.0 * s
+	if reserve_combo:
+		_draw_combo(canvas, bold, Vector2(x, y + 34.0 * s), s, 34.0 * s, 0, op)
+
+
+## 环的横向像素半径（取进度带所在的那一圈）；侧栏据此贴住环的切线。
+func _hud_ring_radius(t: float) -> float:
+	if _max_design_radius > 0.0:
+		var affine := _screen_affine()
+		return _max_design_radius * (affine[1] as Vector2).length()
+	var center := project_design(Vector2.ZERO)
+	var radius := 0.0
+	for u in [0.0, 0.25, 0.5, 0.75]:
+		var edge := project_u(u, t)
+		if _valid_point(edge):
+			radius = maxf(radius, center.distance_to(edge))
+	return radius
+
+
+## 曲名太长时截成“前缀…”；按文字/字号/宽度缓存，避免每帧重排。
+var _hud_fit_cache: Dictionary = {}
+
+func _hud_fit_text(text: String, font: Font, font_size: int, max_width: float) -> String:
+	var key := "%s|%d|%d" % [text, font_size, int(max_width)]
+	if _hud_fit_cache.has(key):
+		return String(_hud_fit_cache[key])
+	var result := text
+	if font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x > max_width:
+		var cut := text
+		result = "…"
+		while cut.length() > 1:
+			cut = cut.substr(0, cut.length() - 1)
+			if font.get_string_size(cut + "…", HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x <= max_width:
+				result = cut + "…"
+				break
+	_hud_fit_cache[key] = result
+	return result
 
 
 func _hud_small(s: float) -> int:
@@ -4255,14 +4323,17 @@ func _draw_ring_gauge(canvas: Control, progress: float, accuracy: float, s: floa
 
 
 ## 难度胶囊：细边框 + 半透明底，比裸文字更像街机标签。
-func _draw_chip(canvas: Control, pos: Vector2, text: String, s: float, op: float, color: Color) -> void:
+func _draw_chip(canvas: Control, pos: Vector2, text: String, s: float, op: float, color: Color, align: int = 0) -> void:
 	var font := UITheme.mono_font()
 	var size := maxi(10, int(round(11.0 * s)))
 	var w := font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, size).x + 14.0 * s
 	var h := 19.0 * s
-	canvas.draw_rect(Rect2(pos.x, pos.y, w, h), _hud_tint(color, 0.14 * op))
-	canvas.draw_rect(Rect2(pos.x, pos.y, w, h), _hud_tint(color, 0.55 * op), false, 1.0)
-	_draw_hud_text(canvas, "p_chip", font, pos + Vector2(7.0 * s, 2.0 * s), text, size, _hud_tint(UITheme.INK, op))
+	var at := pos
+	if align == 1:
+		at.x -= w
+	canvas.draw_rect(Rect2(at.x, at.y, w, h), _hud_tint(color, 0.14 * op))
+	canvas.draw_rect(Rect2(at.x, at.y, w, h), _hud_tint(color, 0.55 * op), false, 1.0)
+	_draw_hud_text(canvas, "p_chip", font, at + Vector2(7.0 * s, 2.0 * s), text, size, _hud_tint(UITheme.INK, op))
 
 
 func _draw_rank_chip(canvas: Control, right_x: float, top_y: float, rank: String, s: float, op: float) -> void:
@@ -4274,22 +4345,6 @@ func _draw_rank_chip(canvas: Control, right_x: float, top_y: float, rank: String
 	canvas.draw_rect(Rect2(right_x - w, top_y, w, h), _hud_tint(color, 0.16 * op))
 	canvas.draw_rect(Rect2(right_x - w, top_y, w, h), _hud_tint(color, 0.75 * op), false, 1.0)
 	_draw_hud_text(canvas, "p_rank", font, Vector2(right_x - w * 0.5, top_y + 4.0 * s), rank, size, _hud_tint(color, op), 2)
-
-
-## 五档计数：右对齐的一行「彩点 + 数字」，从右往左排。
-func _draw_tier_dots(canvas: Control, right_x: float, y: float, s: float, op: float) -> void:
-	var font := UITheme.mono_font()
-	var size := maxi(9, int(round(11.0 * s)))
-	var x := right_x
-	for i in range(HUD_TIER_NAMES.size() - 1, -1, -1):
-		var tier: String = HUD_TIER_NAMES[i]
-		var text := str(int(hud_tiers.get(tier, 0)))
-		var w := font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, size).x
-		x -= w
-		_draw_hud_text(canvas, "p_tier_" + tier, font, Vector2(x, y), text, size, _hud_tint(_tier_color(tier), op))
-		x -= 6.0 * s
-		canvas.draw_circle(Vector2(x - 3.0 * s, y + 6.0 * s), 3.2 * s, _hud_tint(_tier_color(tier), op))
-		x -= 12.0 * s
 
 
 ## 连击：≥2 才出现；命中轻微放大，断连变红、下沉、淡出。
