@@ -17,6 +17,9 @@ const EARLY_MS := 115.0
 const PRESS_KEEP_MS := 34.0
 ## 同一个键 50ms 内的重复按下只算一次（手抖双击）。
 const KEY_DEBOUNCE_MS := 50.0
+## Godot 4 的 InputEvent 不带时间戳：按键只可能在“上次输入刷新 → 现在”之间按下。
+## 这段时间就是判定时的不确定度，区间长度上限取这一值（≈17fps，更慢就不再加长）。
+const INPUT_SPAN_MAX_MS := 60.0
 ## 金键（黄键式）：判定线前后各 100ms 内光标在场就算，到线才结算。
 const BELL_WINDOW_MS := 130.0
 ## 扫键串：相邻 Bell 间隔在这个范围内、角度还在动，就算同一条链，共享提前量。
@@ -86,6 +89,8 @@ var _key_presses: Array[Dictionary] = []
 ## 最近一次真正被按键命中的时间：用来识别“刚打完又蹭一下”的额外按键。
 var _last_hit_press_ms: float = -1.0e9
 var _seek_presses: Array[Dictionary] = []
+## 上一帧的实际间隔（ms）：输入每帧刷新一次，按键只可能落在这段时间里。
+var _last_frame_ms: float = 16.7
 ## 连续多少个统计窗口装不下目标帧：用来给弱机自动降画质。
 var _slow_windows: int = 0
 ## 每个键上一次按下的时间，用来吃掉手抖双击。
@@ -436,6 +441,7 @@ func _init_states() -> void:
 	_key_presses.clear()
 	_last_hit_press_ms = -1.0e9
 	_seek_presses.clear()
+	_last_frame_ms = 16.7
 	_slow_windows = 0
 	_last_press_ms.clear()
 	_keys_held.clear()
@@ -594,6 +600,7 @@ func _process(delta: float) -> void:
 	if not _running or chart == null or _paused:
 		return
 	var chart_ms := _chart_ms()
+	_last_frame_ms = clampf(delta * 1000.0, 1.0, 200.0)
 	var judge_ms := chart_ms + float(_app.playtest_offset_ms if _app != null else 0.0)
 	_judge_ms_now = judge_ms
 	var beat := chart.timing.chart_ms_to_beat(chart_ms)
@@ -624,9 +631,9 @@ func _process(delta: float) -> void:
 	if beat > chart.duration_beats() + 2.0:
 		_finish()
 	var keep_ms := PRESS_KEEP_MS
-	while not _key_presses.is_empty() and float(_key_presses[0].get("time", -INF)) < judge_ms - keep_ms:
+	while not _key_presses.is_empty() and float(_key_presses[0].get("hi", _key_presses[0].get("time", -INF))) < judge_ms - keep_ms:
 		_key_presses.pop_front()
-	while not _seek_presses.is_empty() and float(_seek_presses[0].get("time", -INF)) < judge_ms - keep_ms:
+	while not _seek_presses.is_empty() and float(_seek_presses[0].get("hi", _seek_presses[0].get("time", -INF))) < judge_ms - keep_ms:
 		_seek_presses.pop_front()
 
 
@@ -936,11 +943,13 @@ func _judge_seek(note: Note, ms: float, beat: float) -> void:
 	for i in _seek_presses.size():
 		var press: Dictionary = _seek_presses[i]
 		var stamp := float(press.get("time", -INF))
-		if stamp < target - HIT_WINDOW_MS or stamp > target + HIT_WINDOW_MS:
+		var span_hi := float(press.get("hi", stamp))
+		var span_lo := float(press.get("lo", stamp))
+		if span_hi < target - HIT_WINDOW_MS or span_lo > target + HIT_WINDOW_MS:
 			continue
 		if int(press.get("orien", -1)) != note.seek_orien:
 			continue
-		var distance := absf(stamp - target)
+		var distance := absf(press_error(press, target))
 		if distance < best:
 			best = distance
 			picked = i
@@ -972,7 +981,7 @@ func _judge_tap(note: Note, ms: float, beat: float) -> void:
 		return
 	var press := _take_assigned_press(note.id)
 	if not press.is_empty():
-		var error := float(press["time"]) - target
+		var error := press_error(press, target)
 		var tier := _tier_for(error)
 		state["done"] = true
 		_preview.set_note_state(note.id, "hit")
@@ -1001,7 +1010,7 @@ func _judge_hold(note: Note, ms: float, beat: float) -> void:
 			return
 		var press := _take_assigned_press(note.id)
 		if not press.is_empty():
-			var head_error := float(press["time"]) - target
+			var head_error := press_error(press, target)
 			var head_tier := _tier_for(head_error)
 			state["started"] = true
 			state["head"] = true
@@ -1089,7 +1098,7 @@ func _judge_path(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 			# 头部：鼠标实际位置贴近判定时刻的星头（不再用角度条带兜底）。
 			var press := _take_assigned_press(note.id)
 			if not press.is_empty():
-				var head_error := float(press["time"]) - head_ms
+				var head_error := press_error(press, head_ms)
 				var tier := _tier_for(head_error)
 				state["head_hit"] = true
 				tracker.confirm_head()
@@ -1488,7 +1497,7 @@ func _judge_anchor(note: Note, ms: float, beat: float) -> void:
 		return
 	var press := _take_assigned_press(note.id)
 	if not press.is_empty():
-		var anchor_error := float(press["time"]) - target
+		var anchor_error := press_error(press, target)
 		var tier := _tier_for(anchor_error)
 		state["done"] = true
 		_preview.set_note_state(note.id, "hit")
@@ -1568,15 +1577,17 @@ func _assign_presses(ms: float, beat: float) -> void:
 	for press_index in _key_presses.size():
 		var press: Dictionary = _key_presses[press_index]
 		var stamp := float(press.get("time", -INF))
+		var press_lo := float(press.get("lo", stamp))
+		var press_hi := float(press.get("hi", stamp))
 		for target in targets:
-			if stamp < float(target["lo"]) or stamp > float(target["hi"]):
+			if press_hi < float(target["lo"]) or press_lo > float(target["hi"]):
 				continue
 			var match := _match_press(press, target)
 			if not bool(match.get("ok", false)):
 				continue
 			var distance := float(match["distance"])
 			var note_target := float(target["target"])
-			var error := absf(stamp - note_target)
+			var error := absf(press_error(press, note_target))
 			# 刚命中一颗后 50ms 内的额外按键：不许提前吃下一颗，避免手指蹭键把下一颗判成 GREAT。
 			if press_is_stray(stamp, note_target, _last_hit_press_ms):
 				continue
@@ -1908,6 +1919,19 @@ func _probe_frame_time() -> void:
 	_frame_since_usec = now
 
 
+## 按键真实时刻只知道落在一帧的区间里。判定取区间内最靠近判定线的点：
+## 60fps 最多差 8ms，30fps 17ms，卡顿帧自动覆盖——低帧率不会白掉一档。
+static func press_error(press: Dictionary, target: float) -> float:
+	var mid := float(press.get("time", target))
+	var lo := float(press.get("lo", mid))
+	var hi := float(press.get("hi", mid))
+	if lo > hi:
+		var swap := lo
+		lo = hi
+		hi = swap
+	return clampf(target, lo, hi) - target
+
+
 func _tier_for(error_ms: float) -> String:
 	var error := absf(error_ms)
 	if error <= PERFECT_MS:
@@ -2007,6 +2031,14 @@ func _format_ms(ms: float) -> String:
 	return "%02d:%02d.%03d" % [minutes, seconds, millis]
 
 
+## Godot 4 的 InputEvent 没有时间戳，按键只能在“上一次输入刷新 → 现在”之间按下。
+## 判定时用这个区间取对玩家最有利的落点：帧越长（低帧率、卡顿帧）不确定度越大，
+## 但最多只放宽 INPUT_SPAN_MAX_MS，不会变成白送。
+func _input_interval(now_ms: float) -> Vector2:
+	var span := minf(_last_frame_ms, INPUT_SPAN_MAX_MS)
+	return Vector2(now_ms - span, now_ms)
+
+
 func _input(event: InputEvent) -> void:
 	if event is InputEventMouseMotion:
 		if _running and not _paused and not _finished and not auto_play:
@@ -2014,9 +2046,11 @@ func _input(event: InputEvent) -> void:
 			_queue_path_motion(point, _chart_ms() + float(_app.playtest_offset_ms if _app != null else 0.0))
 		return
 	if event is InputEventMouseButton and event.pressed and (event.button_index == MOUSE_BUTTON_WHEEL_UP or event.button_index == MOUSE_BUTTON_WHEEL_DOWN):
-		var stamp := _chart_ms() + float(_app.playtest_offset_ms if _app != null else 0.0)
+		var span := _input_interval(_chart_ms() + float(_app.playtest_offset_ms if _app != null else 0.0))
 		_seek_presses.append({
-			"time": stamp,
+			"time": (span.x + span.y) * 0.5,
+			"lo": span.x,
+			"hi": span.y,
 			"orien": 0 if event.button_index == MOUSE_BUTTON_WHEEL_UP else 1,
 		})
 		get_viewport().set_input_as_handled()
@@ -2071,13 +2105,16 @@ func _input(event: InputEvent) -> void:
 			if not _running or _paused or _finished:
 				return
 			var key: int = event.physical_keycode if event.physical_keycode != 0 else event.keycode
-			var stamp := _chart_ms() + float(_app.playtest_offset_ms if _app != null else 0.0)
+			var span := _input_interval(_chart_ms() + float(_app.playtest_offset_ms if _app != null else 0.0))
+			var stamp := (span.x + span.y) * 0.5
 			# 同一个键的手抖双击只算一次；和弦用不同键，不受影响。
 			var repeated := stamp - float(_last_press_ms.get(key, -INF)) < KEY_DEBOUNCE_MS
 			_last_press_ms[key] = stamp
 			if not repeated:
 				_key_presses.append({
 					"time": stamp,
+					"lo": span.x,
+					"hi": span.y,
 					"mouse": _preview.mouse_screen,
 					"angle": _preview.screen_angle_deg(_preview.mouse_screen),
 					"u": _preview.cursor_u,

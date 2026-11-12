@@ -30,6 +30,7 @@ func _run() -> void:
 	await _test_playtest()
 	await _test_bell_judgement()
 	await _test_bell_chain()
+	await _test_press_interval()
 	await _test_real_motion()
 	print("Path judgement: %d passed, %d failed" % [passed, failed])
 	quit(1 if failed else 0)
@@ -593,6 +594,51 @@ func _test_bell_chain() -> void:
 	check(bool(run._states[chain_bell.id]["armed"]), "a chain bell tolerates 70px off the band")
 	run._judge_bell(far, far_target - 100.0, far.beat, far_point + (center - far_point).normalized() * 70.0)
 	check(not bool(run._states[far.id]["armed"]), "a bell outside the chain keeps the 55px band")
+	run.queue_free()
+	await process_frame
+
+
+## 按键时刻只知道落在一帧的区间里：判定要按区间里最靠近判定线的点算，
+## 而且在窗口边缘只要区间碰到就算数（低帧率不掉档、不掉 MISS）。
+func _test_press_interval() -> void:
+	var press := {"time": 70.0, "lo": 60.0, "hi": 80.0}
+	check(is_equal_approx(Playtest.press_error(press, 0.0), 60.0), "a frame-wide press is judged at its best point")
+	check(is_equal_approx(Playtest.press_error(press, 100.0), -20.0), "the best point follows the target side")
+	check(is_equal_approx(Playtest.press_error({"time": 8.0}, 5.0), 3.0), "an exact press keeps its old error")
+	var chart := DemoChart.make_empty({"bpm": 240.0})
+	chart.notes.clear()
+	var tap := Note.new("tap", 1.0, 0.0, 30.0)
+	tap.id = 1
+	chart.notes.append(tap)
+	var run := Playtest.new()
+	run.path_input_logging = false
+	root.add_child(run)
+	await process_frame
+	run.setup(chart, 0.0, "")
+	run.set_process(false)
+	run._last_frame_ms = 33.0
+	var span: Vector2 = run._input_interval(1000.0)
+	check(is_equal_approx(span.y - span.x, 33.0), "a press spans the last frame")
+	run._last_frame_ms = 400.0
+	check(is_equal_approx(run._input_interval(1000.0).x, 1000.0 - Playtest.INPUT_SPAN_MAX_MS), "a long stall stops widening at the cap")
+	run._preview.prepare_playtest_frame(1.0, 0.0)
+	var point: Vector2 = run._preview.note_head_screen(tap, 1.0)
+	var target: float = run._states[1]["target_ms"]
+	var window := Playtest.HIT_WINDOW_MS
+	run._key_presses.append({"time": target + window - 5.0 + 10.0, "lo": target + window - 5.0,
+		"hi": target + window + 15.0, "mouse": point, "angle": 0.0, "u": 0.0, "valid": true, "key": KEY_A})
+	run._assign_presses(target + window + 10.0, 1.0)
+	check(run._press_assignments.has(1), "a press whose frame span still touches the window is assigned")
+	run._judge_tap(tap, target + window + 10.0, 1.0)
+	check(bool(run._states[1]["done"]), "the edge press resolves instead of missing")
+	check(int(run._tier_counts.get("BAD", 0)) == 1, "the edge press is graded BAD, not a free PERFECT")
+	run._states[1]["done"] = false
+	run._press_assignments.clear()
+	run._key_presses.clear()
+	run._key_presses.append({"time": target + window + 20.0, "lo": target + window + 10.0,
+		"hi": target + window + 30.0, "mouse": point, "angle": 0.0, "u": 0.0, "valid": true, "key": KEY_A})
+	run._assign_presses(target + window + 20.0, 1.0)
+	check(not run._press_assignments.has(1), "a press fully outside the window is still ignored")
 	run.queue_free()
 	await process_frame
 
