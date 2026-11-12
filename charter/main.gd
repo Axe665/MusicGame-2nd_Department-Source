@@ -11,6 +11,7 @@ var _preview: Preview3D
 var _view_menu: MenuButton
 var _quality_menu: PopupMenu
 var _quality_rows: Dictionary = {}
+var _quality_widgets: Dictionary = {}
 var _quality_ids: Dictionary = {}
 
 ## 画质菜单：每项一行子菜单，行标题带当前值，子项打勾。只影响渲染，不碰判定。
@@ -969,6 +970,18 @@ func _apply_visual_options() -> void:
 	_preview.bar_lines_visible = _app.bar_lines
 	_preview.apply_ring_quality()
 	_preview.request_redraw()
+	# 试玩里有自己的 Preview3D：局内改画质要同时推给它。
+	if _playtest != null and _playtest._preview != null:
+		var inner: Preview3D = _playtest._preview
+		inner.note_detail_fine = _app.note_detail_fine
+		inner.note_glow = _app.note_glow
+		inner.cursor_trail_mode = _app.cursor_trail
+		inner.fx_budget = _app.fx_budget
+		inner.ring_3d_scale = _app.ring_3d_scale
+		inner.ring_3d_hz = _app.ring_3d_hz
+		inner.bar_lines_visible = _app.bar_lines
+		inner.apply_ring_quality()
+		inner.request_redraw()
 
 
 ## 把当前画质填回菜单（行标题带数值，子项打勾）。
@@ -984,6 +997,44 @@ func _refresh_view_menu() -> void:
 		_quality_menu.set_item_text(int(row["row"]), "%s：%s" % [String(row["label"]), value_text])
 		for i in menu.item_count:
 			menu.set_item_checked(i, i == index)
+		var pick: OptionButton = _quality_widgets.get(String(key))
+		if pick != null:
+			pick.select(index if index >= 0 else choices.size())
+
+
+## 试玩设置里的画质行（和 视图 → 画质 同一份数据）。
+func _build_quality_rows(parent: Control) -> void:
+	var title := Label.new()
+	title.text = "画质（只影响画面，不影响判定）"
+	title.add_theme_font_size_override("font_size", 12)
+	parent.add_child(title)
+	var grid := GridContainer.new()
+	grid.columns = 2
+	grid.add_theme_constant_override("h_separation", 10)
+	grid.add_theme_constant_override("v_separation", 3)
+	parent.add_child(grid)
+	for option in QUALITY_OPTIONS:
+		var key := String(option["key"])
+		var label := Label.new()
+		label.text = String(option["label"])
+		label.add_theme_font_size_override("font_size", 11)
+		grid.add_child(label)
+		var pick := OptionButton.new()
+		pick.add_theme_font_size_override("font_size", 11)
+		for choice in option["choices"]:
+			pick.add_item(String(choice[0]))
+		if key == "preset":
+			pick.add_item("自定义")
+		pick.item_selected.connect(func(index: int) -> void:
+			if key == "preset" and index > 2:
+				return
+			_set_quality_index(key, index)
+			_app.save_settings()
+			_apply_visual_options()
+			_refresh_view_menu()
+		)
+		grid.add_child(pick)
+		_quality_widgets[key] = pick
 
 
 func _menu(title: String, items: Array) -> MenuButton:
@@ -1909,7 +1960,7 @@ func _open_playtest_setup(from_start: bool) -> void:
 		_playtest_auto.button_pressed = bool(_app.playtest_auto)
 	if _playtest_bias != null:
 		_playtest_bias.text = "上次平均偏差 %+.1fms" % float(_app.last_bias_ms)
-	_playtest_dialog.popup_centered(Vector2i(400, 360))
+	_playtest_dialog.popup_centered(Vector2i(430, 600))
 
 
 func _build_playtest_dialog() -> void:
@@ -1945,6 +1996,8 @@ func _build_playtest_dialog() -> void:
 	_playtest_bias.add_theme_font_size_override("font_size", 11)
 	_playtest_bias.add_theme_color_override("font_color", UITheme.MUTED)
 	box.add_child(_playtest_bias)
+	box.add_child(HSeparator.new())
+	_build_quality_rows(box)
 	var trace_row := HBoxContainer.new()
 	box.add_child(trace_row)
 	var trace_label := Label.new()

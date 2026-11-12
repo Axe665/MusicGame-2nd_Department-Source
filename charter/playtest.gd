@@ -208,6 +208,16 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	_preview.note_skin = String(_app.note_skin if _app != null else "candy")
 	_preview.hit_fx_style = String(_app.hit_fx_style if _app != null else "burst")
 	_preview.cursor_scale = float(_app.cursor_scale if _app != null else 1.0)
+	# 画质选项（视图 → 画质）：试玩用自己的 Preview3D，要单独推一份。
+	if _app != null:
+		_preview.note_detail_fine = bool(_app.note_detail_fine)
+		_preview.note_glow = bool(_app.note_glow)
+		_preview.cursor_trail_mode = String(_app.cursor_trail)
+		_preview.fx_budget = String(_app.fx_budget)
+		_preview.ring_3d_scale = String(_app.ring_3d_scale)
+		_preview.ring_3d_hz = int(_app.ring_3d_hz)
+		_preview.bar_lines_visible = bool(_app.bar_lines)
+		_preview.apply_ring_quality()
 	# AUTO 关掉时 auto_cursor 保持 INF，等于用真实鼠标。
 	_preview.auto_cursor = Vector2.INF
 	if auto_play:
