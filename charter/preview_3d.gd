@@ -3881,8 +3881,9 @@ func _draw_pulses(canvas: Control) -> void:
 		var label_alpha := alpha
 		var detail_alpha := 0.72 * alpha
 		var outline_alpha := 0.55 * alpha
-		# 街机判定字：26px 基准（900 高），命中 0.1s 内从 1.25 倍缩回原大。
-		var judge_base := 26.0 * clampf(canvas.size.y / 900.0, 0.8, 1.8)
+		# 街机判定字：26px 基准（900 高），随 HUD 缩放；命中 0.1s 内从 1.25 倍缩回原大。
+		var hud_scale := clampf(float(hud_options.get("scale", 100)) / 100.0, 0.5, 2.0)
+		var judge_base := 26.0 * clampf(canvas.size.y / 900.0, 0.8, 1.8) * hud_scale
 		var font_size := int(round(judge_base * (1.0 + 0.25 * clampf(1.0 - age / 0.10, 0.0, 1.0))))
 		var detail_size := 12
 		var outline_size := 6
@@ -3916,9 +3917,10 @@ func _draw_pulses(canvas: Control) -> void:
 			canvas.draw_string(UITheme.FONT_REGULAR, pos + Vector2(0, detail_size + 2), detail, HORIZONTAL_ALIGNMENT_LEFT, -1, detail_size, Color(1, 1, 1, detail_alpha))
 
 
-## 星星判定字字号：约环半径 6.5%，小预览自动缩、大屏封顶。
+## 星星判定字字号：约环半径 6.5%，随 HUD 缩放，小预览自动缩、大屏封顶。
 func _path_label_font_size() -> int:
-	return int(round(clampf(_avg_radius_cache * 0.065, 18.0, 40.0)))
+	var hud_scale := clampf(float(hud_options.get("scale", 100)) / 100.0, 0.5, 2.0)
+	return int(round(clampf(_avg_radius_cache * 0.065, 18.0, 40.0) * hud_scale))
 
 
 func _path_label_point(point: Vector2, bounds: Vector2, label: String, detail: String, font_size: int, detail_size: int) -> Vector2:
