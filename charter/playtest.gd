@@ -600,6 +600,7 @@ func _build_ui() -> void:
 	result_buttons.add_child(_results_button)
 
 	var bottom := Label.new()
+	bottom.name = "PlaytestHint"
 	bottom.text = "任意有效键：Tap / Hold / Anchor；Path / Bell 用鼠标定位；Seek 用滚轮上/下接住；Limit 停留 200ms 断连；[ / ] 判定偏移；F9 日志 / F10 判定区域。"
 	bottom.add_theme_font_size_override("font_size", 11)
 	bottom.add_theme_color_override("font_color", Color(UITheme.MUTED.r, UITheme.MUTED.g, UITheme.MUTED.b, 0.8))
@@ -856,6 +857,17 @@ func _start_recording() -> void:
 
 
 ## 进入回放：视觉参数用录制时的值，判定偏移也跟着录制走。
+## 导出录像时：藏掉所有会出现在画面里的 UI，并且拒绝任何输入
+## （不然拖动进度条会把导出的视频也拖歪）。
+func _prepare_export_recording() -> void:
+	for node_name in ["TopBar", "StatsBar", "ReplayBar", "PlaytestHint", "PauseOverlay"]:
+		var node := get_node_or_null(node_name)
+		if node is CanvasItem:
+			node.visible = false
+	set_process_input(false)
+	Input.set_mouse_mode(Input.MOUSE_MODE_HIDDEN)
+
+
 func _enter_replay(data: Replay) -> void:
 	replay_mode = true
 	_recording = false
@@ -882,6 +894,8 @@ func _enter_replay(data: Replay) -> void:
 	if _replay_bar != null:
 		_replay_bar.visible = true
 	_update_replay_bar()
+	if export_mode:
+		_prepare_export_recording()
 	_add_log("REPLAY 载入 %d 个事件" % _replay_events.size())
 
 
@@ -1107,6 +1121,8 @@ func _start_video_export(path: String) -> void:
 	args.append_array([
 		"--write-movie", _export_avi,
 		"--fixed-fps", "60",
+		# 渲染窗口挪到屏幕外：Movie Maker 必须有窗口，但没必要让人看见。
+		"--position", "-4000,-4000",
 		"--", "--replay=" + tmp, "--chart=" + snapshot, "--export-quit",
 	])
 	print("[export] ", exe, " ", args)
@@ -1193,7 +1209,7 @@ func _poll_render_stage() -> void:
 	var args := PackedStringArray([
 		"-y", "-progress", progress_file, "-nostats",
 		"-i", _export_avi,
-		"-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "23",
+		"-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-crf", "23",
 		"-c:a", "aac", "-b:a", "192k",
 		_export_mp4,
 	])
@@ -2808,6 +2824,8 @@ func _input_interval(now_ms: float) -> Vector2:
 
 
 func _input(event: InputEvent) -> void:
+	if export_mode:
+		return
 	if event is InputEventMouseMotion:
 		if _running and not _paused and not _finished and not auto_play and not replay_mode:
 			var point: Vector2 = _preview.get_global_transform_with_canvas().affine_inverse() * event.position

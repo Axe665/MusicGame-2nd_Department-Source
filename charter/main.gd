@@ -2058,6 +2058,12 @@ func _open_replay_file(path: String, export_quit: bool, chart_override: String =
 	_app.set_chart(chart, chart_path, false)
 	_sync_from_app()
 	_export_quit = export_quit
+	if export_quit:
+		# 渲染进程别抢焦点：它在屏幕外跑，用户不该感觉到它存在。
+		get_window().set_flag(Window.FLAG_NO_FOCUS, true)
+		# POPUP 不进任务栏；配合 --position 挪出屏幕，就等于「看不见」。
+		get_window().set_flag(Window.FLAG_POPUP, true)
+		Input.set_mouse_mode(Input.MOUSE_MODE_HIDDEN)
 	_start_replay(data)
 
 
