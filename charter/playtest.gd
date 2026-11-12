@@ -1051,6 +1051,26 @@ func _start_video_export(path: String) -> void:
 	_export_mp4 = path
 	_export_avi = path.get_basename() + ".avi"
 	_export_ffmpeg = _ffmpeg_path()
+	# 子进程要自己读到谱面：从 osz 导入的谱 chart_path 是空的，所以这里存一份快照，
+	# 顺带把相对的音频路径转成绝对路径，免得快照换了目录就找不到声音。
+	var snapshot := ProjectSettings.globalize_path("user://export_chart.json")
+	var chart_ok := false
+	if chart != null:
+		var dict := ChartIO.chart_to_dict(chart)
+		var audio := String(dict.get("audio", ""))
+		if not audio.is_empty() and not audio.begins_with("res://") \
+				and not audio.begins_with("user://") and not audio.is_absolute_path() \
+				and not chart_path.is_empty():
+			dict["audio"] = ChartIO.resolve_path(chart_path, audio)
+		var file := FileAccess.open(snapshot, FileAccess.WRITE)
+		if file != null:
+			file.store_string(JSON.stringify(dict))
+			file.close()
+			chart_ok = true
+	if not chart_ok:
+		_notify_result("导出失败：谱面快照写不进去")
+		return
+	DirAccess.remove_absolute(ProjectSettings.globalize_path("user://export_error.txt"))
 	var exe := OS.get_executable_path()
 	# 从编辑器里跑的（含 F5）子进程不带 --path 会直接进项目管理器，什么都不渲。
 	# 导出成 exe 之后 res:// 在 pck 里，这个目录不存在，就不加。
@@ -1061,7 +1081,7 @@ func _start_video_export(path: String) -> void:
 	args.append_array([
 		"--write-movie", _export_avi,
 		"--fixed-fps", "60",
-		"--", "--replay=" + tmp, "--export-quit",
+		"--", "--replay=" + tmp, "--chart=" + snapshot, "--export-quit",
 	])
 	print("[export] ", exe, " ", args)
 	_export_pid = OS.create_process(exe, args)
@@ -1091,9 +1111,28 @@ func _tick_export(delta: float) -> void:
 				_export_stage = 0
 				_notify_result("导出失败：渲染进程没开始写文件（看控制台的 [export] 行）")
 			return
+		var error_path := ProjectSettings.globalize_path("user://export_error.txt")
+		if FileAccess.file_exists(error_path):
+			var reason := FileAccess.get_file_as_string(error_path).strip_edges()
+			DirAccess.remove_absolute(error_path)
+			if FileAccess.file_exists(_export_avi):
+				DirAccess.remove_absolute(_export_avi)
+			_export_stage = 0
+			_notify_result("导出失败：%s" % reason)
+			return
 		if not FileAccess.file_exists(_export_avi):
 			_export_stage = 0
 			_notify_result("导出失败：没有生成视频文件")
+			return
+		# 只有几帧的「视频」说明回放根本没载入，别转码了。
+		var probe := FileAccess.open(_export_avi, FileAccess.READ)
+		var avi_size := probe.get_length() if probe != null else 0
+		if probe != null:
+			probe.close()
+		if avi_size < 50000:
+			DirAccess.remove_absolute(_export_avi)
+			_export_stage = 0
+			_notify_result("导出失败：只录到 %.0f KB，回放没载入成功" % (avi_size / 1024.0))
 			return
 		var args := PackedStringArray([
 			"-y", "-i", _export_avi,

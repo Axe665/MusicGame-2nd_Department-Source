@@ -166,10 +166,15 @@ func _ready() -> void:
 	set_process(true)
 	if "--bench" in OS.get_cmdline_user_args():
 		call_deferred("_run_bench")
+	var replay_arg := ""
+	var chart_arg := ""
 	for arg in OS.get_cmdline_user_args():
 		if arg.begins_with("--replay="):
-			call_deferred("_open_replay_file", arg.get_slice("=", 1), "--export-quit" in OS.get_cmdline_user_args())
-			break
+			replay_arg = arg.get_slice("=", 1)
+		elif arg.begins_with("--chart="):
+			chart_arg = arg.get_slice("=", 1)
+	if not replay_arg.is_empty():
+		call_deferred("_open_replay_file", replay_arg, "--export-quit" in OS.get_cmdline_user_args(), chart_arg)
 
 
 ## 无人值守性能基准：载入 Apollo 谱，从扫圈段自动打 25 秒后退出。
@@ -2033,29 +2038,39 @@ func _commit_playtest_settings() -> void:
 
 ## 命令行打开一个 .tmkrpl：载入它记的谱面，然后直接进回放。
 ## 导出视频时子进程会带 --export-quit，放完自动退出。
-func _open_replay_file(path: String, export_quit: bool) -> void:
+func _open_replay_file(path: String, export_quit: bool, chart_override: String = "") -> void:
 	var data := Replay.load_from(path)
 	if data == null:
-		print("[replay] 读不出回放：", path)
-		if export_quit:
-			get_tree().quit(1)
+		_replay_fail("读不出回放：%s" % path, export_quit)
 		return
-	var chart_path := data.chart_path
+	# 导出时传进来的谱面快照优先；没有才用回放里记的原路径。
+	var chart_path := chart_override
 	if chart_path.is_empty() or not FileAccess.file_exists(chart_path):
-		print("[replay] 找不到谱面：", chart_path)
-		if export_quit:
-			get_tree().quit(1)
+		chart_path = data.chart_path
+	if chart_path.is_empty() or not FileAccess.file_exists(chart_path):
+		var shown := chart_path if not chart_path.is_empty() else "回放里没记谱面路径"
+		_replay_fail("找不到回放对应的谱面（%s）" % shown, export_quit)
 		return
 	var chart: Chart = ChartIO.load_chart(chart_path)
 	if chart == null:
-		print("[replay] 谱面读取失败：", ChartIO.last_error)
-		if export_quit:
-			get_tree().quit(1)
+		_replay_fail("谱面读取失败：%s" % ChartIO.last_error, export_quit)
 		return
 	_app.set_chart(chart, chart_path, false)
 	_sync_from_app()
 	_export_quit = export_quit
 	_start_replay(data)
+
+
+## 回放载入失败：控制台打一行，导出模式还要留个文件给主进程报错。
+func _replay_fail(message: String, export_quit: bool) -> void:
+	print("[replay] ", message)
+	if not export_quit:
+		return
+	var file := FileAccess.open(ProjectSettings.globalize_path("user://export_error.txt"), FileAccess.WRITE)
+	if file != null:
+		file.store_string(message)
+		file.close()
+	get_tree().quit(1)
 
 
 func _start_playtest(from_start: bool) -> void:
