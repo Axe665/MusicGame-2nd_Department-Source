@@ -81,6 +81,20 @@ var _audio_available: bool = false
 var _start_chart_ms: float = 0.0
 var _last_chart_ms: float = -INF
 var _clock := AudioClock.new()
+## 开局缓冲：倒计时前的时间轴起点，比开始拍早一个预读 + 0.5s，
+## 让 GO 之后第一颗音符仍有完整的飞入时间；早于这里的音符不计分。
+var _timeline_start_beat: float = 0.0
+var _timeline_start_ms: float = -INF
+var _loaded_audio: AudioStream = null
+const COUNTDOWN_SEC := 2.0
+var _ready_layer: Control = null
+var _ready_phase: String = "idle"     # load / fill / countdown / done
+var _ready_progress: float = 0.0
+var _ready_delay: float = 0.0
+var _countdown_left: float = 0.0
+var _tick_index: int = -1
+var _tick_player: AudioStreamPlayer = null
+var _setup_token: int = 0
 var _ordered_notes: Array[Note] = []
 var _ui_accum: float = 0.0
 
@@ -175,6 +189,7 @@ func _ready() -> void:
 	if _app != null:
 		_app.appearance_changed.connect(_sync_sfx_style)
 	_build_ui()
+	_build_ready_layer()
 	_build_pause_overlay()
 
 
@@ -188,8 +203,22 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	start_beat = p_start_beat
 	chart_path = p_chart_path
 	_finished = false
+	_running = false
+	_paused = false
+	# 重开时旧的音轨不能继续响过加载/倒计时这一段。
+	if _audio != null:
+		_audio.stop()
+	_setup_token += 1
+	var token := _setup_token
 	if _results != null:
 		_results.visible = false
+	if _pause_overlay != null:
+		_pause_overlay.visible = false
+	var flow := float(_app.flow_scale if _app != null else 1.0)
+	var pre_ms := chart.pre_read_ms / maxf(0.1, flow)
+	# 从读头起手时也先退一个预读 + 0.5s；倒计时结束后第一颗音符不会贴脸。
+	_timeline_start_beat = timeline_start_beat(chart, start_beat, pre_ms)
+	_timeline_start_ms = chart.timing.beat_to_chart_ms(_timeline_start_beat)
 	_init_states()
 	_last_chart_ms = -INF
 	_preview.chart_override = chart
@@ -202,12 +231,11 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	_preview.use_3d_ring = true
 	_preview.mouse_tilt = true
 	_preview.show_debug = false
-	_preview.flow_scale = float(_app.flow_scale if _app != null else 1.0)
+	_preview.flow_scale = flow
 	_preview.star_speed = float(_app.star_speed if _app != null else 1.0)
 	_preview.note_skin = String(_app.note_skin if _app != null else "candy")
 	_preview.hit_fx_style = String(_app.hit_fx_style if _app != null else "burst")
 	_preview.cursor_scale = float(_app.cursor_scale if _app != null else 1.0)
-	# HUD 左上角的曲目信息；成绩数据由 _update_hud_state() 每 50ms 推一次。
 	_preview.hud_title = String(chart.metadata.get("title", "")) if chart != null else ""
 	_preview.hud_difficulty = String(chart.difficulty) if chart != null else ""
 	_preview.hud_auto = auto_play
@@ -215,7 +243,6 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	_preview.hud_tiers = {}
 	_preview.hud_options = _app.hud_options() if _app != null else {}
 	_update_hud_state()
-	# 画质选项（视图 → 画质）：试玩用自己的 Preview3D，要单独推一份。
 	if _app != null:
 		_preview.note_detail_fine = bool(_app.note_detail_fine)
 		_preview.note_glow = bool(_app.note_glow)
@@ -225,28 +252,176 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 		_preview.ring_3d_hz = int(_app.ring_3d_hz)
 		_preview.bar_lines_visible = bool(_app.bar_lines)
 		_preview.apply_ring_quality()
-	# AUTO 关掉时 auto_cursor 保持 INF，等于用真实鼠标。
 	_preview.auto_cursor = Vector2.INF
 	if auto_play:
 		_preview.auto_cursor = _preview.project_design(Vector2.ZERO)
-	# 鼠标移动不再按帧累积，瞄准反馈早一帧到达。
 	Input.set_use_accumulated_input(false)
-	_paused = false
-	if _pause_overlay != null:
-		_pause_overlay.visible = false
-	_preview.time_beat = start_beat
+	# 关键：先把 3D 环/音符画在时间轴起点并显示准备层，让玩家看到加载/READY，
+	# 再读音频；音频解码可能阻塞一两百毫秒，正好藏在这一层后面。
+	_preview.time_beat = _timeline_start_beat
 	_preview.playing = true
 	_preview.visible = true
 	_preview.set_process(false)
-	_preview.prepare_playtest_frame(start_beat, 0.0)
-	# 进场 / 重开时整体淡入，避免音符和轨迹直接蹦出来。
-	modulate.a = 0.0
-	var fade := create_tween()
-	fade.tween_property(self, "modulate:a", 1.0, 0.2).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
-	_start_audio()
-	_running = true
+	_preview.prepare_playtest_frame(_timeline_start_beat, 0.0)
+	modulate.a = 1.0
+	# 无头测试/无头基准直接开打：没有屏幕可看，倒计时只会拖慢用例。
+	if DisplayServer.get_name() == "headless":
+		_prepare_audio()
+		_open_path_input_log()
+		_start_play()
+		return
+	_ready_phase = "load"
+	_ready_progress = 0.0
+	_tick_index = -1
+	_ready_layer.visible = true
+	_ready_layer.queue_redraw()
+	await get_tree().process_frame
+	await get_tree().process_frame
+	if token != _setup_token or not is_inside_tree():
+		return
+	_prepare_audio()
+	_ready_phase = "fill"
+	_ready_progress = 0.0
+	_ready_delay = 0.3
+	_ready_layer.queue_redraw()
+	_running = false
 	_open_path_input_log()
+
+
+## 开始拍之前退一个预读 + 0.5s（按 BPM 换算成拍）；夹在 0 以上。
+static func timeline_start_beat(chart: Chart, start_beat: float, pre_read_ms: float, extra_ms: float = 500.0) -> float:
+	if chart == null:
+		return maxf(0.0, start_beat)
+	return maxf(0.0, chart.timing.spawn_beat(maxf(0.0, start_beat), maxf(0.0, pre_read_ms) + extra_ms))
+
+
+## 倒计时数字：2s 分三格 → 3 / 2 / 1 / 0（0 = GO）。
+static func countdown_number(left: float, total: float) -> int:
+	if left <= 0.0:
+		return 0
+	if total <= 0.0:
+		return 1
+	return clampi(int(ceil(left / (total / 3.0))), 1, 3)
+
+
+func _start_play() -> void:
+	_ready_phase = "done"
+	_ready_layer.visible = false
+	_running = true
+	_start_audio()
 	Input.set_mouse_mode(Input.MOUSE_MODE_HIDDEN)
+
+
+func _process_ready(delta: float) -> void:
+	if _ready_layer == null:
+		return
+	if _ready_phase == "load":
+		# 准备层已经画出来，音频还在后面同步加载；圆环先保持空。
+		_ready_layer.queue_redraw()
+		return
+	if _ready_phase == "fill":
+		_ready_progress = minf(1.0, _ready_progress + delta / maxf(0.05, _ready_delay))
+		if _ready_progress >= 1.0:
+			_ready_phase = "countdown"
+			_countdown_left = COUNTDOWN_SEC
+			_tick_index = 3
+			_play_tick(3)
+		_ready_layer.queue_redraw()
+		return
+	if _ready_phase == "countdown":
+		_countdown_left = maxf(0.0, _countdown_left - delta)
+		var n := countdown_number(_countdown_left, COUNTDOWN_SEC)
+		if n != _tick_index:
+			_tick_index = n
+			_play_tick(n)
+		if _countdown_left <= 0.0:
+			_start_play()
+			return
+		_ready_layer.queue_redraw()
+
+
+func _build_ready_layer() -> void:
+	_ready_layer = Control.new()
+	_ready_layer.name = "ReadyLayer"
+	_ready_layer.mouse_filter = Control.MOUSE_FILTER_STOP
+	_ready_layer.visible = false
+	add_child(_ready_layer)
+	_ready_layer.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_ready_layer.draw.connect(_draw_ready_layer)
+	_build_tick()
+
+
+## 倒计时滴答：合成一个 35ms 的短音，不依赖外部资源。
+func _build_tick() -> void:
+	_tick_player = AudioStreamPlayer.new()
+	_tick_player.name = "CountdownTick"
+	_tick_player.bus = "SFX"
+	add_child(_tick_player)
+	var rate := 44100
+	var count := int(rate * 0.035)
+	var data := PackedByteArray()
+	data.resize(count * 2)
+	for i in count:
+		var t := float(i) / float(rate)
+		var env := exp(-t * 90.0)
+		var value := int(sin(TAU * 1760.0 * t) * env * 0.32 * 32767.0)
+		data.encode_s16(i * 2, value)
+	var stream := AudioStreamWAV.new()
+	stream.format = AudioStreamWAV.FORMAT_16_BITS
+	stream.mix_rate = rate
+	stream.stereo = false
+	stream.data = data
+	_tick_player.stream = stream
+
+
+func _play_tick(n: int) -> void:
+	if _tick_player == null:
+		return
+	_tick_player.pitch_scale = 1.0 if n > 0 else 1.5
+	_tick_player.play()
+
+
+func _ready_tint(color: Color, alpha: float) -> Color:
+	return Color(color.r, color.g, color.b, color.a * alpha)
+
+
+func _draw_ready_layer() -> void:
+	var bounds: Vector2 = _ready_layer.size
+	if bounds.x < 2.0 or bounds.y < 2.0:
+		return
+	var center := bounds * 0.5
+	var radius := minf(bounds.x, bounds.y) * 0.17
+	var mono := UITheme.mono_font()
+	var bold := UITheme.bold_font()
+	_ready_layer.draw_rect(Rect2(Vector2.ZERO, bounds), Color(0.02, 0.03, 0.05, 0.94))
+	_ready_layer.draw_arc(center, radius, 0.0, TAU, 96, Color(1, 1, 1, 0.10), 6.0, true)
+	var progress := 1.0 if _ready_phase in ["countdown", "done"] else clampf(_ready_progress, 0.0, 1.0)
+	_ready_layer.draw_arc(center, radius, -PI * 0.5, -PI * 0.5 + TAU * progress, 96, _ready_tint(UITheme.INK, 0.92), 6.0, true)
+	var head_angle := -PI * 0.5 + TAU * progress
+	_ready_layer.draw_circle(center + Vector2(cos(head_angle), sin(head_angle)) * radius, 5.0, UITheme.CYAN)
+	var title := String(chart.metadata.get("title", "")) if chart != null else ""
+	var difficulty := String(chart.difficulty) if chart != null else ""
+	var loading := _ready_phase == "load" or _ready_phase == "fill"
+	var label := "加载中" if loading else "READY"
+	_ready_layer.draw_string(mono, Vector2(0.0, center.y - radius - 26.0), label,
+		HORIZONTAL_ALIGNMENT_CENTER, bounds.x, 13, _ready_tint(UITheme.MUTED, 0.9))
+	if loading:
+		_ready_layer.draw_string(bold, Vector2(0.0, center.y + 14.0), "准备中",
+			HORIZONTAL_ALIGNMENT_CENTER, bounds.x, int(minf(54.0, radius * 0.7)), _ready_tint(UITheme.INK, 0.95))
+	else:
+		var number := str(_tick_index) if _tick_index > 0 else "GO"
+		var size := int(minf(120.0, radius * 1.15))
+		_ready_layer.draw_string(bold, Vector2(0.0, center.y + size * 0.34), number,
+			HORIZONTAL_ALIGNMENT_CENTER, bounds.x, size, _ready_tint(UITheme.INK, 0.98))
+	if not title.is_empty():
+		_ready_layer.draw_string(mono, Vector2(0.0, center.y + radius + 38.0), title,
+			HORIZONTAL_ALIGNMENT_CENTER, bounds.x, 12, _ready_tint(UITheme.INK, 0.86))
+	if not difficulty.is_empty():
+		_ready_layer.draw_string(mono, Vector2(0.0, center.y + radius + 58.0), difficulty,
+			HORIZONTAL_ALIGNMENT_CENTER, bounds.x, 11, _ready_tint(UITheme.MUTED, 0.9))
+	var hint := "Esc 取消"
+	_ready_layer.draw_string(mono, Vector2(0.0, bounds.y - 22.0), hint,
+		HORIZONTAL_ALIGNMENT_CENTER, bounds.x, 10, _ready_tint(UITheme.MUTED, 0.75))
 
 
 func _build_pause_overlay() -> void:
@@ -492,7 +667,14 @@ func _init_states() -> void:
 			"trace_reset": false,
 			"armed": false,
 		}
+	# 从读头/回退点之后开始：起点之前的音符不判、不计分，避免一进局就一串 MISS。
+	for note in _ordered_notes:
+		var state: Dictionary = _states[note.id]
+		if float(state["end_ms"]) < _timeline_start_ms - 1.0:
+			state["done"] = true
 	_judge_from = 0
+	while _judge_from < _ordered_notes.size() and bool(_states[_ordered_notes[_judge_from].id]["done"]):
+		_judge_from += 1
 	_auto_index = 0
 	_auto_cursor = Vector2.ZERO
 	_auto_hold_keys.clear()
@@ -544,43 +726,53 @@ func _judgement_notes() -> Array[Note]:
 	return result
 
 
+## 音频解码放在准备层后面；_start_audio() 到 GO 时才真正起播。
+func _prepare_audio() -> void:
+	_loaded_audio = null
+	_audio_available = false
+	var bench_audio := bench_mode and "--bench-audio" in OS.get_cmdline_user_args()
+	if bench_mode and not bench_audio:
+		return
+	var path := chart.audio_path
+	if not path.begins_with("res://") and not path.begins_with("user://") and not path.is_absolute_path() and not chart_path.is_empty():
+		path = ChartIO.resolve_path(chart_path, path)
+	_loaded_audio = ChartIO.audio_stream_from_path(path)
+	_audio_available = _loaded_audio != null
+	if _audio_available:
+		print("[audio] playtest ", path, " -> ", _loaded_audio, " bus=Music")
+	if bench_audio:
+		# 基准模式带音频时可以静音，只测解码开销。
+		var music_bus := AudioServer.get_bus_index("Music")
+		if music_bus >= 0:
+			AudioServer.set_bus_volume_db(music_bus, -60.0)
+
+
 func _start_audio() -> void:
 	_last_chart_ms = -INF
 	_clock = AudioClock.new()
 	var bench_audio := bench_mode and "--bench-audio" in OS.get_cmdline_user_args()
-	if bench_mode and not bench_audio:
-		_audio_available = false
-		_start_chart_ms = chart.timing.beat_to_chart_ms(start_beat)
-		_clock.start(_start_chart_ms, Time.get_ticks_usec())
-		return
+	_start_chart_ms = chart.timing.beat_to_chart_ms(_timeline_start_beat)
 	# 重开/重进时先停掉旧播放器，避免音频叠加。
 	if _audio != null:
 		_audio.stop()
 		remove_child(_audio)
 		_audio.queue_free()
 		_audio = null
-	_audio = AudioStreamPlayer.new()
-	_audio.name = "PlaytestAudio"
-	_audio.bus = "Music"
-	add_child(_audio)
-	var path := chart.audio_path
-	if not path.begins_with("res://") and not path.begins_with("user://") and not path.is_absolute_path() and not chart_path.is_empty():
-		path = ChartIO.resolve_path(chart_path, path)
-	var stream := ChartIO.audio_stream_from_path(path)
-	_start_chart_ms = chart.timing.beat_to_chart_ms(start_beat)
-	if stream == null:
+	if bench_mode and not bench_audio:
+		_audio_available = false
+		_clock.start(_start_chart_ms, Time.get_ticks_usec())
+		return
+	if _loaded_audio == null:
 		_audio_available = false
 		_clock.start(_start_chart_ms, Time.get_ticks_usec())
 		_add_log("音频不可用，使用系统时钟继续试玩。")
 		return
 	_audio_available = true
-	_audio.stream = stream
-	if bench_audio:
-		# 基准模式带音频时可以静音，只测解码开销。
-		var music_bus := AudioServer.get_bus_index("Music")
-		if music_bus >= 0:
-			AudioServer.set_bus_volume_db(music_bus, -60.0)
-	print("[audio] playtest ", path, " -> ", stream, " bus=", _audio.bus)
+	_audio = AudioStreamPlayer.new()
+	_audio.name = "PlaytestAudio"
+	_audio.bus = "Music"
+	add_child(_audio)
+	_audio.stream = _loaded_audio
 	_audio.finished.connect(_finish)
 	var lead_sec := (_start_chart_ms - chart.offset_ms) / 1000.0
 	_audio.play(maxf(0.0, lead_sec))
@@ -590,6 +782,9 @@ func _start_audio() -> void:
 
 
 func _process(delta: float) -> void:
+	if _ready_layer != null and _ready_layer.visible:
+		_process_ready(delta)
+		return
 	if not _running or chart == null or _paused:
 		return
 	var chart_ms := _chart_ms()
@@ -2032,6 +2227,12 @@ func _input_interval(now_ms: float) -> Vector2:
 
 
 func _input(event: InputEvent) -> void:
+	if _ready_layer != null and _ready_layer.visible:
+		# 倒计时期间只认 Esc：取消回编辑器，不写成绩；其他键不提前开打。
+		if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_ESCAPE:
+			_exit()
+			get_viewport().set_input_as_handled()
+		return
 	if event is InputEventMouseMotion:
 		if _running and not _paused and not _finished and not auto_play:
 			var point: Vector2 = _preview.get_global_transform_with_canvas().affine_inverse() * event.position
@@ -2248,6 +2449,9 @@ func _retry() -> void:
 
 
 func _exit() -> void:
+	_setup_token += 1
+	if _ready_layer != null:
+		_ready_layer.visible = false
 	_close_path_input_log()
 	if _audio != null:
 		_audio.stop()
