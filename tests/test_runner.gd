@@ -111,6 +111,7 @@ func _initialize() -> void:
 		"test_bell_center_merges",
 		"test_replay_round_trip",
 		"test_replay_dispatch",
+		"test_replay_scrub",
 	]
 	for test_name in tests:
 		if call(test_name) != true:
@@ -2990,4 +2991,24 @@ func test_replay_dispatch() -> bool:
 	eq(run._replay_index, 5, "events are not dispatched twice")
 	run.free()
 	return true
+
+
+## 进度条比例：起点/终点要夹住，中间线性。
+func test_replay_scrub() -> bool:
+	var run := Playtest.new()
+	run._replay_start_ms = 1000.0
+	run._replay_total_ms = 5000.0
+	run._replay_ms = 3000.0
+	near(run._replay_fraction(), 0.5, 0.001, "scrub maps the middle of the song")
+	run._replay_ms = 1000.0
+	near(run._replay_fraction(), 0.0, 0.001, "scrub clamps at the start")
+	run._replay_ms = 9000.0
+	near(run._replay_fraction(), 1.0, 0.001, "scrub clamps past the end")
+	run._replay_start_ms = 0.0
+	run._replay_total_ms = 0.0
+	run._replay_ms = 0.0
+	near(run._replay_fraction(), 0.0, 0.001, "empty span does not divide by zero")
+	run.free()
+	return true
+
 
