@@ -84,6 +84,11 @@ var _stretch_syncing: bool = false
 var _audio: AudioStreamPlayer
 var _audio_path: String = ""
 var _audio_token: int = 0
+## 当前 _audio.stream 的时间伸缩倍率（1 = 原始；>1 = 已经 atempo 过）。
+var _audio_stream_rate: float = 1.0
+## 当前流是按哪个倍速准备的；倍速变了要重新加载。
+var _audio_rate_key: float = 1.0
+var _audio_loading := false
 var _playing: bool = false
 var _rate: float = 1.0
 var _loop: bool = false
@@ -1541,11 +1546,17 @@ func _ensure_audio() -> void:
 	if _app == null or _app.chart == null:
 		return
 	var path: String = _app.chart.audio_path
-	if path == _audio_path:
+	if path == _audio_path and is_equal_approx(_rate, _audio_rate_key):
+		if _audio_loading:
+			# 同一份音频正在准备：等它完成，避免 _start_play 用空流开跑。
+			while _audio_loading:
+				await get_tree().process_frame
 		return
 	_audio_path = path
+	_audio_rate_key = _rate
 	_audio_token += 1
 	var token := _audio_token
+	_audio_loading = true
 	_audio.stop()
 	_playing = false
 	var resolved := path
@@ -1565,11 +1576,39 @@ func _ensure_audio() -> void:
 			return
 	if prepared.is_empty():
 		_audio.stream = null
+		_audio_loading = false
 		_show_toast("音频不可用：%s" % MediaIO.last_error, "warning")
 		return
-	var stream := ChartIO.audio_stream_from_path(prepared)
+	var base := ChartIO.audio_stream_from_path(prepared)
+	var stream := base
+	var stream_rate := 1.0
+	if absf(_rate - 1.0) >= 0.001:
+		if not MediaIO.has_ffmpeg():
+			_show_toast("变速不变调需要 ffmpeg（当前 PATH 找不到）；已回退变调", "warning")
+		else:
+			var cached := MediaIO.rate_audio_cache_path(prepared, _rate)
+			var total_sec := base.get_length() / maxf(0.1, _rate) if base != null else 0.0
+			var stretched := cached if FileAccess.file_exists(cached) else ""
+			if stretched.is_empty():
+				_show_import_progress()
+				stretched = await MediaIO.prepare_audio_at_rate_async(prepared, _rate, get_tree(), func(_ratio: float, seconds: float) -> void:
+					var ratio := clampf(seconds / total_sec, 0.0, 0.99) if total_sec > 0.0 else -1.0
+					_import_progress_text("变速音频：%s（%.2f×）" % [resolved.get_file(), _rate], ratio, seconds))
+				_hide_import_progress()
+				if token != _audio_token:
+					return
+			if not stretched.is_empty():
+				var fast := ChartIO.audio_stream_from_path(stretched)
+				if fast != null:
+					stream = fast
+					stream_rate = _rate
+			if stream_rate == 1.0:
+				_show_toast("变速音频生成失败，已回退变调：%s" % MediaIO.last_error, "warning")
 	_audio.stream = stream if stream is AudioStream else null
-	print("[audio] editor ", prepared, " -> ", _audio.stream, " bus=", _audio.bus)
+	_audio_stream_rate = stream_rate
+	_audio.pitch_scale = _rate / maxf(0.01, _audio_stream_rate)
+	_audio_loading = false
+	print("[audio] editor ", prepared, " -> ", _audio.stream, " stream_rate=", _audio_stream_rate, " bus=", _audio.bus)
 	if _audio.stream == null:
 		_show_toast("音频不可用：预览使用系统时钟。", "warning")
 
@@ -1633,7 +1672,10 @@ func _toggle_play() -> void:
 func _start_play(beat: float) -> void:
 	if _app == null or _app.chart == null:
 		return
-	_ensure_audio()
+	# 倍速音频第一次要等 ffmpeg 生成；加载完再起播，别用旧流或空流开跑。
+	await _ensure_audio()
+	if _app == null or _app.chart == null:
+		return
 	_last_beat_int = -1
 	_build_sfx_events()
 	_playing = true
@@ -1652,8 +1694,8 @@ func _rebase_playback(beat: float) -> void:
 	_sfx_event_index = _first_sfx_event(beat)
 	_sfx_last_beat = beat - 0.001
 	if _audio.stream != null:
-		_audio.pitch_scale = _rate
-		var from_sec := maxf(0.0, (_play_start_chart_ms - _app.chart.offset_ms) / 1000.0)
+		_audio.pitch_scale = _rate / maxf(0.01, _audio_stream_rate)
+		var from_sec := maxf(0.0, (_play_start_chart_ms - _app.chart.offset_ms) / 1000.0) / maxf(0.01, _audio_stream_rate)
 		# 音频比谱面短（或跳到了音频末尾之后）就别播了，交给墙钟继续推，
 		# 否则 play() 立刻 finished，播放会被误停。
 		if from_sec < _audio.stream.get_length():
@@ -1769,8 +1811,9 @@ func _process(_delta: float) -> void:
 	if _playing:
 		var chart_ms := 0.0
 		if _audio.stream != null and _audio.playing:
-			# 播放位置按 pitch_scale 前进；驱动延迟/混音间隔是真实秒，换算要乘倍速。
-			chart_ms = (_audio.get_playback_position()
+			# 变速音频流里 1 秒 = 谱面 _audio_stream_rate 秒；驱动延迟/混音间隔
+			# 是真实秒，换算成谱面时间要乘倍速。
+			chart_ms = (_audio.get_playback_position() * _audio_stream_rate
 				+ (AudioServer.get_time_since_last_mix() - AudioServer.get_output_latency()) * _rate) * 1000.0 + _app.chart.offset_ms
 		else:
 			chart_ms = _play_start_chart_ms + float(Time.get_ticks_usec() - _play_start_usec) / 1000.0 * _rate
@@ -1795,7 +1838,7 @@ func _playback_total_ms() -> float:
 		return 0.0
 	var total_ms: float = _app.chart.timing.beat_to_chart_ms(_app.chart.duration_beats())
 	if _audio != null and _audio.stream != null:
-		total_ms = maxf(total_ms, _audio.stream.get_length() * 1000.0 + _app.chart.offset_ms)
+		total_ms = maxf(total_ms, _audio.stream.get_length() * 1000.0 * _audio_stream_rate + _app.chart.offset_ms)
 	return total_ms
 
 
@@ -2052,7 +2095,7 @@ func _prepare_import_media() -> void:
 func _show_import_progress() -> void:
 	if _import_progress == null:
 		_import_progress = AcceptDialog.new()
-		_import_progress.title = "导入媒体"
+		_import_progress.title = "媒体处理"
 		_import_progress.min_size = Vector2i(460, 150)
 		var box := VBoxContainer.new()
 		box.add_theme_constant_override("separation", 12)
@@ -2473,7 +2516,7 @@ func _build_audio_rows(parent: Control) -> void:
 
 func _build_cache_rows(parent: Control) -> void:
 	var title := Label.new()
-	title.text = "转码缓存"
+	title.text = "转码 / 变速缓存"
 	title.add_theme_font_size_override("font_size", 12)
 	parent.add_child(title)
 	_cache_label = Label.new()
@@ -2482,15 +2525,15 @@ func _build_cache_rows(parent: Control) -> void:
 	parent.add_child(_cache_label)
 	_refresh_cache_label()
 	var clear := Button.new()
-	clear.text = "清理转码缓存…"
+	clear.text = "清理转码 / 变速缓存…"
 	clear.pressed.connect(func() -> void:
 		var dialog := ConfirmationDialog.new()
-		dialog.title = "清理转码缓存"
-		dialog.dialog_text = "删除 %s 的 BGA / 音频转码文件；源文件不动，下次打开重新转。要继续吗？" % _format_bytes(MediaIO.cache_size())
+		dialog.title = "清理转码 / 变速缓存"
+		dialog.dialog_text = "删除 %s 的 BGA / 音频转码 / 变速音频文件；源文件不动，下次需要时重新生成。要继续吗？" % _format_bytes(MediaIO.cache_size())
 		dialog.confirmed.connect(func() -> void:
 			var freed := MediaIO.clear_cache()
 			_refresh_cache_label()
-			_show_toast("已清理转码缓存 %s" % _format_bytes(freed), "info")
+			_show_toast("已清理缓存 %s" % _format_bytes(freed), "info")
 		)
 		add_child(dialog)
 		dialog.popup_centered()
@@ -2503,7 +2546,7 @@ func _build_cache_rows(parent: Control) -> void:
 func _refresh_cache_label() -> void:
 	if _cache_label == null:
 		return
-	_cache_label.text = "user://media 当前占用 %s；音频转码和无解码库时的视频兜底会写这里。" % _format_bytes(MediaIO.cache_size())
+	_cache_label.text = "user://media 当前占用 %s；音频转码、变速音频和无解码库时的视频兜底会写这里。" % _format_bytes(MediaIO.cache_size())
 
 
 func _format_bytes(value: int) -> String:
@@ -2552,7 +2595,7 @@ func _build_playtest_dialog() -> void:
 	box.add_theme_constant_override("separation", 10)
 	scroll.add_child(box)
 	_playtest_rate = _playtest_spin_row(box, "倍速", 0.5, 2.0, 0.05, 1.0, "×")
-	_playtest_rate.tooltip_text = "试玩和编辑器试听都按这个速度走；局中修改在重开本局后生效；只对本次运行有效"
+	_playtest_rate.tooltip_text = "试玩和编辑器试听都按这个速度走；声音不变调（每个新倍速首次生成缓存）；局中修改在重开本局后生效；只对本次运行有效"
 	_playtest_flow = _playtest_spin_row(box, "流速", 0.05, 3.0, 0.01, 1.0, "×")
 	_playtest_star = _playtest_spin_row(box, "星速", 0.5, 2.0, 0.05, 1.0, "×")
 	_playtest_cursor = _playtest_spin_row(box, "光标大小", 0.5, 2.0, 0.05, 1.0, "×")

@@ -63,13 +63,16 @@ func consume_anchor_jump() -> bool:
 
 
 ## `audio_playing` = 播放器真的在放；`playback_sec <= 0` 表示音频还没开始出声。
-## `rate` = 播放倍速：播放位置按它前进，墙钟要跟上；驱动延迟/混音间隔是真实
-## 秒数，换算成流位置时也要乘 rate，否则 2× 下判定会整体偏几十毫秒。
+## `rate` = 播放倍速：墙钟按它前进，驱动延迟/混音间隔是真实秒数，换算成
+##   谱面时间时也要乘它。
+## `stream_rate` = 当前音频流的时间伸缩倍率（1 = 原始音频；2 = 已经用
+##   atempo 拉长/压缩过，流里 1 秒对应谱面 2 秒）。
 func update(now_usec: int, audio_playing: bool, playback_sec: float, chart_offset_ms: float,
-		latency_sec: float, mix_sec: float, rate: float = 1.0) -> float:
+		latency_sec: float, mix_sec: float, rate: float = 1.0, stream_rate: float = 1.0) -> float:
 	if not _started:
 		return 0.0
 	var speed := maxf(0.01, rate)
+	var stretch := maxf(0.01, stream_rate)
 	var dt := clampf(float(now_usec - _last_usec) / 1000.0, 0.0, MAX_HITCH_MS)
 	_last_usec = now_usec
 	var step := dt * speed
@@ -83,7 +86,7 @@ func update(now_usec: int, audio_playing: bool, playback_sec: float, chart_offse
 		return clock_ms
 	var mix := clampf(mix_sec, 0.0, MAX_MIX_SEC)
 	var latency := _latency_estimate(now_usec, latency_sec)
-	var audio_ms := (playback_sec + (mix - latency) * speed) * 1000.0 + chart_offset_ms
+	var audio_ms := (playback_sec * stretch + (mix - latency) * speed) * 1000.0 + chart_offset_ms
 	if not anchored:
 		if absf(audio_ms - clock_ms) <= MAX_ANCHOR_JUMP_MS:
 			anchored = true

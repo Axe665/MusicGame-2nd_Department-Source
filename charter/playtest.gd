@@ -94,6 +94,8 @@ var next_playback_rate: float = 1.0
 var _timeline_start_beat: float = 0.0
 var _timeline_start_ms: float = -INF
 var _loaded_audio: AudioStream = null
+## 当前音频流的时间伸缩倍率（1 = 原始；>1 = 已经 atempo 过）。
+var _audio_stream_rate: float = 1.0
 ## 时间轴退到音频 0 秒之前时，音频要等这么久再起播（ms）。
 var _audio_delay_ms: float = 0.0
 const COUNTDOWN_SEC := 2.0
@@ -281,7 +283,7 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	modulate.a = 1.0
 	# 无头测试/无头基准直接开打：没有屏幕可看，倒计时只会拖慢用例。
 	if DisplayServer.get_name() == "headless":
-		_prepare_audio()
+		await _prepare_audio()
 		_open_path_input_log()
 		_start_play()
 		return
@@ -294,7 +296,9 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	await get_tree().process_frame
 	if token != _setup_token or not is_inside_tree():
 		return
-	_prepare_audio()
+	await _prepare_audio()
+	if token != _setup_token or not is_inside_tree():
+		return
 	_ready_phase = "fill"
 	_ready_progress = 0.0
 	_ready_delay = 0.3
@@ -772,16 +776,47 @@ func _judgement_notes() -> Array[Note]:
 func _prepare_audio() -> void:
 	_loaded_audio = null
 	_audio_available = false
+	_audio_stream_rate = 1.0
 	var bench_audio := bench_mode and "--bench-audio" in OS.get_cmdline_user_args()
 	if bench_mode and not bench_audio:
 		return
 	var path := chart.audio_path
 	if not path.begins_with("res://") and not path.begins_with("user://") and not path.is_absolute_path() and not chart_path.is_empty():
 		path = ChartIO.resolve_path(chart_path, path)
-	_loaded_audio = ChartIO.audio_stream_from_path(path)
+	var base_path := MediaIO.prepare_audio(path)
+	if base_path.is_empty():
+		base_path = path
+	var base := ChartIO.audio_stream_from_path(base_path)
+	if absf(playback_rate - 1.0) >= 0.001:
+		if not MediaIO.has_ffmpeg():
+			_add_log("变速不变调需要 ffmpeg；回退变调。")
+		else:
+			var total_sec := base.get_length() / maxf(0.1, playback_rate) if base != null else 0.0
+			var cached := MediaIO.rate_audio_cache_path(base_path, playback_rate)
+			var stretched := cached if FileAccess.file_exists(cached) else ""
+			if stretched.is_empty():
+				# 第一次：子进程生成，READY 层的圆弧跟着进度走。
+				stretched = await MediaIO.prepare_audio_at_rate_async(base_path, playback_rate, get_tree(),
+					func(_ratio: float, seconds: float) -> void:
+						if _ready_layer == null or total_sec <= 0.0:
+							return
+						_ready_progress = clampf(seconds / total_sec, 0.0, 0.99)
+						_ready_layer.queue_redraw())
+				if not is_inside_tree():
+					return
+			if not stretched.is_empty():
+				var fast := ChartIO.audio_stream_from_path(stretched)
+				if fast != null:
+					_loaded_audio = fast
+					_audio_stream_rate = playback_rate
+					_audio_available = true
+					print("[audio] playtest ", stretched, " -> ", fast, " stream_rate=", _audio_stream_rate)
+					return
+			_add_log("变速音频生成失败；回退变调。")
+	_loaded_audio = base
 	_audio_available = _loaded_audio != null
 	if _audio_available:
-		print("[audio] playtest ", path, " -> ", _loaded_audio, " bus=Music")
+		print("[audio] playtest ", base_path, " -> ", _loaded_audio, " bus=Music")
 	if bench_audio:
 		# 基准模式带音频时可以静音，只测解码开销。
 		var music_bus := AudioServer.get_bus_index("Music")
@@ -816,9 +851,11 @@ func _start_audio() -> void:
 	_audio.bus = "Music"
 	add_child(_audio)
 	_audio.stream = _loaded_audio
-	_audio.pitch_scale = playback_rate
+	# 音频已经按倍速预拉伸过（stream_rate = playback_rate）时保持原音高；回退到
+	# 原始音频时用 pitch_scale 变调加速。
+	_audio.pitch_scale = playback_rate / maxf(0.01, _audio_stream_rate)
 	_audio.finished.connect(_finish)
-	var lead_sec := (_start_chart_ms - chart.offset_ms) / 1000.0
+	var lead_sec := (_start_chart_ms - chart.offset_ms) / 1000.0 / maxf(0.01, _audio_stream_rate)
 	if lead_sec >= 0.0:
 		_audio.play(lead_sec)
 	else:
@@ -898,7 +935,7 @@ func _chart_ms_inner() -> float:
 	var playback := _audio.get_playback_position() if playing else 0.0
 	var mix := AudioServer.get_time_since_last_mix() if playing else 0.0
 	var latency := _effective_latency() if playing else 0.0
-	var ms := _clock.update(now_usec, playing, playback, chart.offset_ms, latency, mix, playback_rate)
+	var ms := _clock.update(now_usec, playing, playback, chart.offset_ms, latency, mix, playback_rate, _audio_stream_rate)
 	# 起播锚定要把驱动延迟减掉，是一次真实的回跳；只允许这一帧不单调。
 	if _clock.consume_anchor_jump():
 		_last_chart_ms = -INF

@@ -75,7 +75,7 @@ godot --path .
 - 编辑器播放打击音：运输条「音频」弹出里的“打击音”开关，播放时按音符时间触发 Tap、Hold 头/尾、Path 头/尾、Anchor、Bell、Trace；不影响试玩
 - 光标：Estella 风格白色环 + 青色内环 + 旋转弧 + 深色描边 + 拖尾；预览内始终隐藏系统光标并绘制自定义光标
 - 流速：运输条“流速”0.05×–3.0×，步进 0.01，只缩放预读速度（`pre_read_ms ÷ flow_scale`），不改判定窗口；试玩沿用当前设置
-- 倍速：试玩设置（F5，或暂停菜单 →「试玩设置」）里的“倍速”0.5×–2.0×（步进 0.05），试玩和编辑器试听都按这个速度走；声音同步变调（DT 风格），BGA 视频跟速，READY 倒计时仍按真实 2 秒；局中修改在重开本局后生效；只对本次运行有效，暂不写进 `settings.json`
+- 倍速：试玩设置（F5，或暂停菜单 →「试玩设置」）里的“倍速”0.5×–2.0×（步进 0.05），试玩和编辑器试听都按这个速度走；**声音不变调**——用 ffmpeg `atempo` 预生成该倍速的音频并缓存（音质最好；每个新倍速首次等约 2–5 秒，之后秒开），BGA 视频跟速，READY 倒计时仍按真实 2 秒；没有 ffmpeg 时回退成变调并在日志/提示里说明；局中修改在重开本局后生效；倍速本身只对本次运行有效
 - 星速：运输条“星速”0.75×–1.5×，同时缩放滑条引导星移动速度与所需跟随距离
 - 视角：视图页“正对镜头（忽略倾斜）”默认开启，试玩时环面始终正对相机；需要作者镜头时可关闭
 - 打击音：新增 Hold / Path / Anchor 分层音色（合成 WAV，瞬态 + 音体 + 短尾）；Trace 离开轨迹超过 250ms 会重置累计距离（FRAY）
@@ -235,11 +235,11 @@ BGA 走 gdffmpeg 直解（见下一条）；音频仍按下面的表转码，结
 
 BGA 默认**直接解码、不转码**：`addons/ffmpeg` 里带了 [EIRTeam.FFmpeg](https://github.com/EIRTeam/EIRTeam.FFmpeg)（MIT，GDExtension + libav），仓库里已提交 Windows / Linux x86_64 的库和 FFmpeg 运行时，克隆下来就能用。`.ogv` 仍走引擎自带的 Theora，mp4 / webm / mov / mkv / avi 直接交给 gdffmpeg 解码，**导入带 BGA 的谱面不再冻结、也不产生转码缓存**。检测到 BGA 时不再叠加谱面的静图背景。
 
-兜底：如果平台没有对应二进制（macOS / Android / arm64），或解码库加载失败，会自动退回原来的 ffmpeg 后台转码（540p30、带进度、写 `user://media`），`.ogv` 之外仍能播。要补平台：把上游 release 里对应目录放进 `addons/ffmpeg/`，在 `ffmpeg.gdextension` 的 `[libraries]` / `[dependencies]` 补两行即可。设置 → 转码缓存 可以看占用并一键清理。
+兜底：如果平台没有对应二进制（macOS / Android / arm64），或解码库加载失败，会自动退回原来的 ffmpeg 后台转码（540p30、带进度、写 `user://media`），`.ogv` 之外仍能播。要补平台：把上游 release 里对应目录放进 `addons/ffmpeg/`，在 `ffmpeg.gdextension` 的 `[libraries]` / `[dependencies]` 补两行即可。设置 →「转码 / 变速缓存」可以看占用并一键清理。
 
 ## 已知限制
 
-- 非原生音频/视频格式依赖 `ffmpeg` 在 PATH 中；没有 ffmpeg 时原生 WAV/OGG/MP3 与 OGV 仍可用，其他格式会给出明确提示。转码缓存位于 `user://media/`，谱面保存的是原始路径，便于重新链接。
+- 非原生音频/视频格式依赖 `ffmpeg` 在 PATH 中；**变速不变调的 `atempo` 预生成也需要 ffmpeg**，没有时倍速会回退成变调并提示。原生 WAV/OGG/MP3 与 OGV 在没有 ffmpeg 时仍可用。转码 / 变速缓存位于 `user://media/`，谱面保存的是原始路径，便于重新链接。
 - 自动识别 BPM/offset 需要能拿到 PCM：WAV 直接解析，其余格式（含 mp3/ogg）要用 ffmpeg 解成 11 kHz 单声道并缓存到 `user://analysis/`；可在导入弹窗里指定 ffmpeg 路径（存于 `user://editor.cfg`）。识别结果是初值，半速/倍速、弱起前奏仍要人工确认。
 - 分音 UI 已隐藏，`GridDivisions` 仅保留内部兼容/其他吸附；音符固定使用当前小节线与竖线交点；拍号分母仍固定 4。
 - 预览默认开启 3D 环网格；环/舞台/刻度是 GPU 网格，音符与 HUD 仍是 2D 叠加（按本轮取舍，保证编辑精度）。旧机器或集显可在“视图”页关闭 3D 环网格回退到投影环线。

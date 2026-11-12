@@ -62,6 +62,91 @@ static func audio_cache_path(path: String) -> String:
 	return _cache_path(path, "ogg")
 
 
+## 变速不变调的音频缓存：atempo 预生成，键里带倍速和源文件 mtime + 大小。
+static func rate_audio_cache_path(path: String, rate: float) -> String:
+	var stamp := 0
+	var size := 0
+	if FileAccess.file_exists(path):
+		stamp = FileAccess.get_modified_time(path)
+		var file := FileAccess.open(path, FileAccess.READ)
+		if file != null:
+			size = file.get_length()
+			file.close()
+	var tag := "%.2f" % clampf(rate, 0.5, 2.0)
+	var stem := path.get_file().get_basename().validate_filename()
+	var digest := ("r%d|%s|%s|%d|%d" % [CACHE_VERSION, path, tag, stamp, size]).md5_text().substr(0, 10)
+	return "user://media/%s_%s_rate%s.ogg" % [stem, digest, tag]
+
+
+static func prepare_audio_at_rate(path: String, rate: float) -> String:
+	last_error = ""
+	if path.is_empty():
+		return ""
+	if absf(rate - 1.0) < 0.001:
+		return prepare_audio(path)
+	var target := rate_audio_cache_path(path, rate)
+	if FileAccess.file_exists(target):
+		return target
+	if not has_ffmpeg():
+		last_error = "变速不变调需要 ffmpeg；当前 PATH 中找不到 ffmpeg。"
+		return ""
+	DirAccess.make_dir_recursive_absolute("user://media")
+	var output: Array = []
+	var code := OS.execute(ffmpeg_exe, _rate_audio_args(_source_path(path), target, rate), output, true, false)
+	if code != 0 or not FileAccess.file_exists(target):
+		last_error = "变速音频生成失败：%s" % path.get_file()
+		return ""
+	return target
+
+
+## 变速音频同理：子进程 + 进度文件；`progress` 的 ratio 固定 -1，只有已生成秒数。
+static func prepare_audio_at_rate_async(path: String, rate: float, tree: SceneTree,
+		progress: Callable = Callable()) -> String:
+	if absf(rate - 1.0) < 0.001:
+		return await prepare_audio_async(path, tree, progress)
+	last_error = ""
+	if path.is_empty():
+		return ""
+	var target := rate_audio_cache_path(path, rate)
+	if FileAccess.file_exists(target):
+		return target
+	if tree == null:
+		return prepare_audio_at_rate(path, rate)
+	if not has_ffmpeg():
+		last_error = "变速不变调需要 ffmpeg；当前 PATH 中找不到 ffmpeg。"
+		return ""
+	if _jobs.has(target):
+		while _jobs.has(target) and not FileAccess.file_exists(target):
+			await tree.create_timer(0.2).timeout
+		if FileAccess.file_exists(target):
+			return target
+		return ""
+	DirAccess.make_dir_recursive_absolute("user://media")
+	_jobs[target] = true
+	var progress_path := target + ".progress"
+	var progress_abs := ProjectSettings.globalize_path(progress_path)
+	if FileAccess.file_exists(progress_path):
+		DirAccess.remove_absolute(progress_abs)
+	var pid := OS.create_process(ffmpeg_exe, _rate_audio_args(_source_path(path), target, rate, progress_abs), false)
+	if pid <= 0:
+		_jobs.erase(target)
+		last_error = "无法启动 ffmpeg。"
+		return ""
+	while OS.is_process_running(pid):
+		if progress.is_valid():
+			progress.call(-1.0, read_progress_seconds(progress_path))
+		await tree.create_timer(0.2).timeout
+	_jobs.erase(target)
+	if FileAccess.file_exists(progress_path):
+		DirAccess.remove_absolute(progress_abs)
+	if not FileAccess.file_exists(target):
+		last_error = "变速音频生成失败：%s" % path.get_file()
+		return ""
+	if progress.is_valid():
+		progress.call(1.0, 0.0)
+	return target
+
+
 ## 转码缓存的 .ogv 路径；键里带源文件 mtime + 大小，替换同路径视频会自动重转。
 static func video_cache_path(path: String) -> String:
 	var stamp := 0
@@ -236,6 +321,20 @@ static func _video_args(source: String, target: String, progress_path: String = 
 
 static func _audio_args(source: String, target: String, progress_path: String = "") -> Array:
 	var args := ["-y", "-i", source, "-vn", "-acodec", "libvorbis", "-q:a", "5"]
+	if not progress_path.is_empty():
+		args.append_array(["-loglevel", "error", "-progress", progress_path])
+	args.append(ProjectSettings.globalize_path(target))
+	return args
+
+
+## atempo 0.5–2.0 正好覆盖倍速范围；只留第一条音轨，封面/视频流全部丢掉。
+static func _rate_audio_args(source: String, target: String, rate: float,
+		progress_path: String = "") -> Array:
+	var args := [
+		"-y", "-i", source, "-map", "0:a:0", "-vn",
+		"-filter:a", "atempo=%.5f" % clampf(rate, 0.5, 2.0),
+		"-acodec", "libvorbis", "-q:a", "5",
+	]
 	if not progress_path.is_empty():
 		args.append_array(["-loglevel", "error", "-progress", progress_path])
 	args.append(ProjectSettings.globalize_path(target))
