@@ -160,6 +160,7 @@ var _apply_bias_button: Button
 var _pause_overlay: Control = null
 var _pause_status: Label
 var _pause_style: Label
+var _pause_tiers: Label
 var _path_judgement_toggle: CheckButton
 var _paused: bool = false
 
@@ -278,6 +279,10 @@ func _build_pause_overlay() -> void:
 	_pause_style = Label.new()
 	UITheme.style_mono(_pause_style, 11, UITheme.MUTED)
 	box.add_child(_pause_style)
+	# 五档计数只在暂停页看：游玩画面的周边视觉读不了五个小数字。
+	_pause_tiers = Label.new()
+	UITheme.style_mono(_pause_tiers, 11, UITheme.MUTED)
+	box.add_child(_pause_tiers)
 	box.add_child(HSeparator.new())
 	_path_judgement_toggle = CheckButton.new()
 	_path_judgement_toggle.text = "显示 Path 判定区域（F10）"
@@ -321,6 +326,10 @@ func _refresh_pause_status() -> void:
 	var skin_label := String(Preview3D.skin_presets().get(_preview.note_skin, {}).get("label", _preview.note_skin))
 	var fx_label := String(Preview3D.hit_fx_presets().get(_preview.hit_fx_style, _preview.hit_fx_style))
 	_pause_style.text = "皮肤 %s · 特效 %s%s" % [skin_label, fx_label, " · AUTO" if auto_play else ""]
+	_pause_tiers.text = "PERFECT %d · GREAT %d · GOOD %d · BAD %d · MISS %d" % [
+		int(_tier_counts.get("PERFECT", 0)), int(_tier_counts.get("GREAT", 0)),
+		int(_tier_counts.get("GOOD", 0)), int(_tier_counts.get("BAD", 0)),
+		int(_tier_counts.get("MISS", 0))]
 
 
 func _add_pause_button(parent: VBoxContainer, text: String, callback: Callable) -> void:

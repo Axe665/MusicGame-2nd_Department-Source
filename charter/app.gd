@@ -62,8 +62,6 @@ var hud_combo_mode: String = "center"
 var hud_progress_style: String = "ring"
 ## note / center / off
 var hud_judge_position: String = "note"
-## play / off（结算页固定显示）
-var hud_tier_counts: String = "play"
 ## 100 / 85 / 70
 var hud_opacity: int = 100
 var hud_show_title: bool = true
@@ -487,8 +485,6 @@ func _load_settings() -> void:
 			hud_progress_style = progress_style if progress_style in ["ring", "off"] else "ring"
 			var judge_pos := String(data.get("hud_judge_position", hud_judge_position))
 			hud_judge_position = judge_pos if judge_pos in ["note", "center", "off"] else "note"
-			var tier_mode := String(data.get("hud_tier_counts", hud_tier_counts))
-			hud_tier_counts = tier_mode if tier_mode in ["play", "off"] else "play"
 			hud_opacity = int(data.get("hud_opacity", hud_opacity))
 			hud_opacity = hud_opacity if hud_opacity in [100, 85, 70] else 100
 			hud_show_title = bool(data.get("hud_show_title", hud_show_title))
@@ -524,7 +520,6 @@ func hud_options() -> Dictionary:
 		"combo_mode": hud_combo_mode,
 		"progress_style": hud_progress_style,
 		"judge_position": hud_judge_position,
-		"tier_counts": hud_tier_counts,
 		"opacity": hud_opacity,
 		"show_title": hud_show_title,
 		"show_difficulty": hud_show_difficulty,
@@ -637,7 +632,7 @@ func effective_latency_sec() -> float:
 func save_settings() -> void:
 	var data := {"path_wait_indicator": path_wait_indicator, "note_skin": note_skin, "hit_fx_style": hit_fx_style, "hit_sfx_style": hit_sfx_style, "ffmpeg": ffmpeg_path, "frame_cap": frame_cap, "audio_buffer_ms": audio_buffer_ms, "playtest_offset_ms": playtest_offset_ms, "audio_latency_ms": audio_latency_ms, "dynamic_offset": dynamic_offset, "playtest_auto": playtest_auto, "last_bias_ms": last_bias_ms, "cursor_scale": cursor_scale, "flow_scale": flow_scale, "star_speed": star_speed, "trace_color": trace_color.to_html(), "aa_2d_level": aa_2d_level, "note_detail_fine": note_detail_fine, "note_glow": note_glow, "cursor_trail": cursor_trail, "fx_budget": fx_budget, "ring_3d_scale": ring_3d_scale, "ring_3d_hz": ring_3d_hz, "bar_lines": bar_lines, "quality_preset": quality_preset,
 		"hud_scale": hud_scale, "hud_combo_mode": hud_combo_mode, "hud_progress_style": hud_progress_style,
-		"hud_judge_position": hud_judge_position, "hud_tier_counts": hud_tier_counts, "hud_opacity": hud_opacity,
+		"hud_judge_position": hud_judge_position, "hud_opacity": hud_opacity,
 		"hud_show_title": hud_show_title, "hud_show_difficulty": hud_show_difficulty,
 		"hud_show_percent": hud_show_percent, "hud_show_time": hud_show_time,
 		"hud_show_watermark": hud_show_watermark}
