@@ -20,7 +20,8 @@ var _quality_ids: Dictionary = {}
 
 ## 画质菜单：每项一行子菜单，行标题带当前值，子项打勾。只影响渲染，不碰判定。
 const QUALITY_OPTIONS := [
-	{"key": "preset", "label": "预设", "choices": [["高（全开）", 80], ["中", 81], ["低", 82]]},
+	{"key": "preset", "label": "预设", "choices": [["极高（4× 抗锯齿）", 80], ["高（2× 抗锯齿）", 81], ["中", 82], ["低", 83]]},
+	{"key": "frame_cap", "label": "帧率上限", "choices": [["60", 90], ["120", 91], ["144", 92], ["240", 93], ["垂直同步", 94], ["不限", 95]]},
 	{"key": "aa_2d_level", "label": "2D 抗锯齿", "choices": [["关", 60], ["2×", 61], ["4×", 62]]},
 	{"key": "note_detail_fine", "label": "音符精细度", "choices": [["全画质", 63], ["省电", 64]]},
 	{"key": "note_glow", "label": "音符光晕", "choices": [["开", 65], ["关", 66]]},
@@ -1004,7 +1005,9 @@ func _set_hud_index(key: String, index: int) -> void:
 func _quality_index(key: String) -> int:
 	match key:
 		"preset":
-			return ["high", "mid", "low"].find(_app.quality_preset)
+			return ["ultra", "high", "mid", "low"].find(_app.quality_preset)
+		"frame_cap":
+			return ["60", "120", "144", "240", "vsync", "unlimited"].find(_app.frame_cap)
 		"aa_2d_level":
 			return _app.aa_2d_level
 		"note_detail_fine":
@@ -1026,9 +1029,13 @@ func _quality_index(key: String) -> int:
 
 func _set_quality_index(key: String, index: int) -> void:
 	if key == "preset":
-		_app.apply_quality_preset(["high", "mid", "low"][clampi(index, 0, 2)])
+		_app.apply_quality_preset(["ultra", "high", "mid", "low"][clampi(index, 0, 3)])
 		return
 	match key:
+		"frame_cap":
+			_app.frame_cap = ["60", "120", "144", "240", "vsync", "unlimited"][clampi(index, 0, 5)]
+			_app.apply_frame_cap()
+			return
 		"aa_2d_level":
 			_app.aa_2d_level = clampi(index, 0, 2)
 		"note_detail_fine":
@@ -1134,7 +1141,7 @@ func _build_quality_rows(parent: Control) -> void:
 		if key == "preset":
 			pick.add_item("自定义")
 		pick.item_selected.connect(func(index: int) -> void:
-			if key == "preset" and index > 2:
+			if key == "preset" and index > 3:
 				return
 			_set_quality_index(key, index)
 			_app.save_settings()
