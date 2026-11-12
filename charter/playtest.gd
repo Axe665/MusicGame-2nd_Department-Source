@@ -1868,8 +1868,12 @@ func _bench_mouse(beat: float) -> void:
 
 ## 基准模式：统计帧间隔的 p50/p95/最大值，找出平均帧率看不出的卡顿尖峰。
 ## 目标帧时：设置的上限和屏幕刷新率里更严的那个（刷新率读不到就按 60）。
+## 返回 0 表示「不限帧」——玩家自己选了不限帧，就别替他降画质。
 func _frame_budget_ms() -> float:
 	var cap := int(Engine.max_fps)
+	var refresh := DisplayServer.window_get_vsync_mode() != DisplayServer.VSYNC_DISABLED
+	if cap <= 0 and not refresh:
+		return 0.0
 	var hz := DisplayServer.screen_get_refresh_rate()
 	var limit := float(cap) if cap > 0 else 1.0e9
 	if hz > 1.0:
@@ -1901,7 +1905,7 @@ func _probe_frame_time() -> void:
 			spikes += 1
 	# 弱机保护：连续两个统计窗口都装不下目标帧时降一档画质（只降不升，避免来回抖）。
 	var budget := _frame_budget_ms()
-	if median > budget * 1.12:
+	if budget > 0.0 and median > budget * 1.12:
 		_slow_windows += 1
 		if _slow_windows >= 2 and _preview.quality_level == 0:
 			_preview.set_quality_level(1)
