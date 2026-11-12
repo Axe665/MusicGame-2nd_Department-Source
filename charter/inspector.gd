@@ -2,6 +2,19 @@ class_name Inspector
 extends TabContainer
 
 const BellPreviewScript = preload("res://charter/bell_preview.gd")
+const HoldPreviewScript = preload("res://charter/hold_preview.gd")
+
+
+## 通用「宽度」行：Tap/Hold 的环上弧宽由它 × 长度比例决定。
+## 通用「宽度」行：Tap/Hold 的环上弧宽由它 × 长度比例决定。
+## Bell 用专属「弧宽」；Limit 在区域页。
+static func shows_width_row(note_type: String) -> bool:
+	return note_type in ["tap", "hold"]
+
+
+## 通用「长度 ×l」行只给 Tap；改了就变成大小 Tap。
+static func shows_length_row(note_type: String) -> bool:
+	return note_type == "tap"
 
 var _app: Node = null
 var _pages: Dictionary = {}
@@ -9,6 +22,9 @@ var _page_list: Array[VBoxContainer] = []
 var _applying: bool = false
 var _rebuilding: bool = false
 var _video_dialog: FileDialog
+var _video_progress: AcceptDialog
+var _video_progress_bar: ProgressBar
+var _video_progress_label: Label
 var _selected_timing: int = 0
 var _selected_visual: int = 0
 var _note_page_ready: bool = false
@@ -423,23 +439,31 @@ func _build_note_page_for(page: VBoxContainer, note: Note) -> void:
 	)
 	_note_widgets["angle"] = angle_spin
 	_remember_row("angle", angle_spin)
-	var width_spin := _spin(common, "宽度", note.width, 0.0, 360.0, 1.0, func(value: float) -> void:
+	var width_spin := _spin(common, "基础宽度 °", note.width, 0.0, 360.0, 1.0, func(value: float) -> void:
 		if _active_note != null:
 			_active_note.width = value
+			if _active_note.type == "hold" and _note_widgets.has("hold_preview"):
+				_note_widgets["hold_preview"].set_state(_active_note.arc_width(), _active_note.duration())
+			_update_tap_formula()
 	)
+	width_spin.tooltip_text = "基础宽度：实际弧宽 = 基础宽度 × 长度倍率；普通 Tap/Hold 60° × 0.50 = 30°"
 	_note_widgets["width"] = width_spin
 	_remember_row("width", width_spin)
 	# 大小 Tap：到判定环的长度，单位是 l（旧版 tap 的长度）。0.00–1.50，两位小数。
-	var length_spin := _spin(common, "长度 ×l", note.length_ratio(), Note.SIZED_TAP_MIN, Note.SIZED_TAP_MAX, 0.01, func(value: float) -> void:
+	var length_spin := _spin(common, "长度倍率 ×l", note.length_ratio(), Note.SIZED_TAP_MIN, Note.SIZED_TAP_MAX, 0.01, func(value: float) -> void:
 		if _active_note != null and _active_note.type == "tap":
 			_active_note.set_size_ratio(value)
+			_update_tap_formula()
 	)
+	length_spin.tooltip_text = "0.50 = 普通 Tap；1.00 = 与基础宽度相同；1.50 = 1.5 倍。改离 0.50 会变成大小 Tap"
 	_note_widgets["length"] = length_spin
 	_remember_row("length", length_spin)
-	var tap_group := _note_group(page, "tapsize", "长度")
-	_label(tap_group, "Tap 与 Hold 头默认 0.50 l；把“长度 ×l”改掉就变成可调长度的 Tap（0.00–1.50 l，两位小数）；环心出现时是 1/6 l。", 11, UITheme.MUTED)
+	var tap_group := _note_group(page, "tapsize", "Tap 长度（大小 Tap）")
+	_label(tap_group, "实际弧宽 = 基础宽度 × 长度倍率。普通 Tap 固定 0.50 l；改长度倍率会变成「大小 Tap」，谱面会记住自定义长度。环心出现时是 1/6 l。", 11, UITheme.MUTED)
+	var tap_formula := _label(tap_group, "", 11, UITheme.CYAN)
+	_note_widgets["tap_formula"] = tap_formula
 	_buttons(tap_group, [
-		{"text": "恢复 0.5 l", "callback": func() -> void:
+		{"text": "恢复普通 Tap（0.50 l）", "callback": func() -> void:
 			if _active_note != null and _active_note.type == "tap":
 				_apply(func() -> void:
 					_active_note.sized = false
@@ -447,24 +471,6 @@ func _build_note_page_for(page: VBoxContainer, note: Note) -> void:
 				)
 				_refresh_note_page()},
 	])
-
-	var plane := _note_group(page, "plane", "平面音符")
-	var px := _spin(plane, "平面 x", note.plane_x, 0.0, 1.0, 0.001, func(value: float) -> void:
-		if _active_note != null:
-			_active_note.plane_x = value
-	)
-	_note_widgets["plane_x"] = px
-	var py := _spin(plane, "平面 y", note.plane_y, 0.0, 1.0, 0.001, func(value: float) -> void:
-		if _active_note != null:
-			_active_note.plane_y = value
-	)
-	_note_widgets["plane_y"] = py
-	var pr := _spin(plane, "判定半径", note.plane_radius, 0.02, 0.3, 0.005, func(value: float) -> void:
-		if _active_note != null:
-			_active_note.plane_radius = value
-	)
-	_note_widgets["plane_r"] = pr
-	_label(plane, "平面 Tap：按 osu 原 2D 坐标；鼠标进入半径 + 按键判定，不占用环上角度。", 11, UITheme.MUTED)
 
 	var bell := _note_group(page, "bell", "金键 Bell")
 	var bu := _spin(bell, "中心 u", note.center_u, 0.0, 0.9999, 0.001, func(value: float) -> void:
@@ -678,37 +684,12 @@ func _build_note_page_for(page: VBoxContainer, note: Note) -> void:
 	_label(path_edit, "右键单击 Path 尾部可在该处新建 part；各 part 可分别编辑，预览中整条链共用 part0 的星星。", 10, UITheme.MUTED)
 
 	var hold_body := _note_group(page, "hold", "Hold")
-	var hold_style_label := _label(hold_body, "", 11, UITheme.MUTED)
-	_note_widgets["hold_style_label"] = hold_style_label
-	# 弯长条先删掉：它的功能和星星（Path）重合，目前只保留直 Hold。
-	_label(hold_body, "直 Hold：从圆心张开成扇形，尾部收到判定线时变窄消失。", 11, UITheme.MUTED)
-	var hold_list := ItemList.new()
-	hold_list.custom_minimum_size = Vector2(0, 88)
-	hold_list.item_selected.connect(func(index: int) -> void:
-		_selected_visual = index
-		_refresh_note_page()
-	)
-	hold_body.add_child(hold_list)
-	_note_widgets["hold_list"] = hold_list
-	_buttons(hold_body, [
-		{"text": "加体节点", "callback": func() -> void: _add_visual_point(_active_note)},
-		{"text": "删体节点", "callback": func() -> void: _delete_visual_point(_active_note)},
-	])
-	var hdb := _spin(hold_body, "Δbeat", 0.0, 0.0, 1.0, 0.01, func(value: float) -> void:
-		var n := _active_note
-		if n != null and _selected_visual >= 0 and _selected_visual < n.visual_pts.size():
-			n.visual_pts[_selected_visual]["db"] = value
-	)
-	_note_widgets["hold_db"] = hdb
-	_remember_row("hold_db", hdb)
-	var hda := _spin(hold_body, "Δangle", 0.0, -720.0, 720.0, 0.5, func(value: float) -> void:
-		var n := _active_note
-		if n != null and _selected_visual >= 0 and _selected_visual < n.visual_pts.size():
-			n.visual_pts[_selected_visual]["da"] = value
-	)
-	_note_widgets["hold_da"] = hda
-	_remember_row("hold_da", hda)
-	_label(hold_body, "节点只改画面，不改 Hold 头部判定；在预览里拖动金色菱形。", 11, UITheme.MUTED)
+	_label(hold_body, "实际弧宽 = 基础宽度 × 0.50（Hold 头固定）；预览按 1 拍身体展示，改上面的「基础宽度」会实时变。", 11, UITheme.MUTED)
+	var hold_preview := HoldPreviewScript.new()
+	hold_preview.name = "HoldShapePreview"
+	hold_preview.set_state(note.arc_width(), note.duration())
+	hold_body.add_child(hold_preview)
+	_note_widgets["hold_preview"] = hold_preview
 
 	var trace_body := _note_group(page, "trace", "Trace")
 	var move := _spin(trace_body, "移动距离 px", note.move_px, 0.0, 1000.0, 1.0, func(value: float) -> void:
@@ -841,11 +822,12 @@ func _refresh_note_page() -> void:
 	_note_widgets["angle"].value = note.angle
 	_note_widgets["width"].value = note.width
 	_note_widgets["length"].value = note.length_ratio()
+	_update_tap_formula()
 	var is_bell := note.type == "bell"
 	_note_rows["end"].visible = note.type in ["hold", "path"]
 	_note_rows["angle"].visible = note.type in ["tap", "hold", "path", "anchor", "bell"]
-	_note_rows["width"].visible = false
-	_note_rows["length"].visible = false
+	_note_rows["width"].visible = shows_width_row(note.type)
+	_note_rows["length"].visible = shows_length_row(note.type)
 	_note_groups["common"].visible = true
 	_note_groups["misc"].visible = true
 	var can_color := note.supports_custom_color()
@@ -859,21 +841,17 @@ func _refresh_note_page() -> void:
 	_note_rows["custom_color"].visible = can_color
 	var fallback := UITheme.PINK if note.type == "tap" else (UITheme.GOLD if note.type == "hold" else Note.DEFAULT_PATH_COLOR)
 	_note_widgets["custom_color"].color = note.resolved_color(_app.chart, fallback)
-	# 锁定是 _check 直接挂在组体上的，隐藏它本身，别把整组体一起藏掉。
-	_note_widgets["lock"].visible = false
-	_note_groups["tapsize"].visible = false
-	_note_groups["plane"].visible = false
+	# 锁定是 _check 直接挂在组体上的；恢复显示，不改组体。
+	_note_widgets["lock"].visible = true
+	_note_groups["tapsize"].visible = shows_length_row(note.type)
 	_note_groups["bell"].visible = is_bell
 	_note_groups["path"].visible = false
 	_note_groups["path_edit"].visible = note.type == "path"
-	_note_groups["hold"].visible = false
+	_note_groups["hold"].visible = note.type == "hold"
 	_note_groups["trace"].visible = false
 	_note_groups["seek"].visible = note.type == "seek"
 	_note_groups["anchor"].visible = note.type == "anchor"
-	_note_widgets["anchor_pair"].get_parent().visible = false
-	_note_widgets["plane_x"].value = note.plane_x
-	_note_widgets["plane_y"].value = note.plane_y
-	_note_widgets["plane_r"].value = note.plane_radius
+	_note_widgets["anchor_pair"].get_parent().visible = note.type == "anchor"
 	_note_widgets["bell_u"].value = note.center_u
 	_note_widgets["bell_w"].value = note.bell_width()
 	_note_widgets["bell_preview"].set_arc_width(note.bell_width())
@@ -907,8 +885,7 @@ func _refresh_note_page() -> void:
 	if note.type == "seek":
 		_note_widgets["seek_orien"].selected = 1 if note.seek_orien == 1 else 0
 	if note.type == "hold":
-		_note_widgets["hold_style_label"].text = "直 Hold：扇形张开，尾部收到判定线时消失。"
-		_fill_visual_list(_note_widgets["hold_list"], note)
+		_note_widgets["hold_preview"].set_state(note.arc_width(), note.duration())
 	if note.type == "trace":
 		_note_widgets["trace_move"].value = note.move_px
 		var where := "贴环（外缘）" if note.space != "plane" else "平面"
@@ -918,6 +895,19 @@ func _refresh_note_page() -> void:
 		_note_widgets["anchor_pair_id"].text = note.pair_id
 	_note_widgets["lock"].button_pressed = note.lock
 	_applying = false
+
+
+func _update_tap_formula() -> void:
+	if _active_note == null or _active_note.type != "tap":
+		return
+	var label: Label = _note_widgets.get("tap_formula")
+	if not is_instance_valid(label):
+		return
+	label.text = "实际弧宽 %.1f° = 基础 %.1f° × %.2f l" % [
+		_active_note.arc_width(),
+		_active_note.width,
+		_active_note.length_ratio(),
+	]
 
 
 func _fill_visual_list(list: ItemList, note: Note) -> void:
@@ -932,17 +922,11 @@ func _fill_visual_list(list: ItemList, note: Note) -> void:
 	if _note_rows.has("path_db"):
 		_note_rows["path_db"].visible = has_point and note.type == "path"
 		_note_rows["path_da"].visible = has_point and note.type == "path"
-	if _note_rows.has("hold_db"):
-		_note_rows["hold_db"].visible = has_point and note.type == "hold"
-		_note_rows["hold_da"].visible = has_point and note.type == "hold"
 	if has_point:
 		var point: Dictionary = note.visual_pts[_selected_visual]
 		if note.type == "path":
 			_note_widgets["path_db"].value = float(point.get("db", 0.0))
 			_note_widgets["path_da"].value = float(point.get("da", 0.0))
-		elif note.type == "hold":
-			_note_widgets["hold_db"].value = float(point.get("db", 0.0))
-			_note_widgets["hold_da"].value = float(point.get("da", 0.0))
 
 
 func _path_erase_width(note: Note) -> float:
@@ -1257,9 +1241,10 @@ func _build_view_page(page: VBoxContainer) -> void:
 	video_path.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_row(page, "路径", video_path)
 	_buttons(page, [
-		{"text": "选择 .ogv", "callback": func() -> void: _pick_video()},
+		{"text": "选择视频…", "callback": func() -> void: _pick_video()},
 		{"text": "移除", "callback": func() -> void: _app.mutate(func() -> void: _app.chart.video_path = "")},
 	])
+	_label(page, "支持 OGV / MP4 / WebM / MOV / MKV / AVI；非 OGV 导入时转码到 user://media 缓存。", 11, UITheme.MUTED)
 	_spin(page, "videoOffset ms", _app.chart.video_offset_ms, -10000.0, 10000.0, 1.0, func(value: float) -> void: _app.chart.video_offset_ms = value)
 	_spin(page, "FPS 提示", _app.chart.video_fps, 1.0, 240.0, 1.0, func(value: float) -> void: _app.chart.video_fps = value)
 	_spin(page, "不透明度", _app.chart.video_opacity, 0.0, 1.0, 0.01, func(value: float) -> void: _app.chart.video_opacity = value)
@@ -1706,18 +1691,28 @@ func _delete_view_state(state: ViewState) -> void:
 	_app.selected_view_index = -1
 
 
+## 顶部菜单和检查器按钮共用的入口。
+func open_video_picker() -> void:
+	_pick_video()
+
+
 func _pick_video() -> void:
 	if _video_dialog != null:
+		return
+	if _app == null or _app.chart == null:
+		if _app != null:
+			_app.notice.emit("先打开或新建谱面再导入视频", "warning")
 		return
 	_video_dialog = FileDialog.new()
 	_video_dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
 	_video_dialog.access = FileDialog.ACCESS_FILESYSTEM
-	_video_dialog.filters = PackedStringArray(["*.ogv ; Ogg Theora", "*.mp4 ; MP4", "*.webm ; WebM", "*.mov ; MOV", "*.mkv ; MKV", "*.avi ; AVI"])
-	_video_dialog.title = "选择 Ogg Theora 视频"
+	var filters := PackedStringArray()
+	for extension in MediaIO.SUPPORTED_VIDEO:
+		filters.append("*.%s ; %s" % [extension, String(extension).to_upper()])
+	_video_dialog.filters = filters
+	_video_dialog.title = "选择视频（OGV / MP4 / WebM / MOV / MKV / AVI）"
 	_video_dialog.file_selected.connect(func(path: String) -> void:
-		_app.mutate(func() -> void:
-			_app.chart.video_path = path
-		)
+		_start_video_import(path)
 		_video_dialog.queue_free()
 		_video_dialog = null
 	)
@@ -1727,3 +1722,75 @@ func _pick_video() -> void:
 	)
 	add_child(_video_dialog)
 	_video_dialog.popup_centered_ratio(0.6)
+
+
+func _start_video_import(path: String) -> void:
+	if _app == null or _app.chart == null:
+		_app.notice.emit("先打开或新建谱面再导入视频", "warning")
+		return
+	if not MediaIO.is_supported_video(path):
+		_app.notice.emit("不支持的视频格式：.%s" % path.get_extension(), "error")
+		return
+	if MediaIO.is_native_video(path) or FileAccess.file_exists(MediaIO.video_cache_path(path)):
+		_apply_video_path(path)
+		_app.notice.emit("视频已导入", "info")
+		return
+	var target_chart: Chart = _app.chart
+	_show_video_progress()
+	var result := await MediaIO.prepare_video_async(path, get_tree(), _on_video_progress)
+	_hide_video_progress()
+	if result.is_empty():
+		_app.notice.emit("视频导入失败：%s" % MediaIO.last_error, "error")
+		return
+	if _app.chart != target_chart:
+		_app.notice.emit("视频已转码；谱面已切换，请在目标谱面重新选择同一个视频（缓存已就绪）", "warning")
+		return
+	_apply_video_path(path)
+	_app.notice.emit("视频已导入并转码", "info")
+
+
+func _apply_video_path(path: String) -> void:
+	_app.mutate(func() -> void:
+		_app.chart.video_path = path
+	)
+
+
+func _show_video_progress() -> void:
+	if _video_progress == null:
+		_video_progress = AcceptDialog.new()
+		_video_progress.title = "导入视频"
+		_video_progress.min_size = Vector2i(460, 150)
+		var box := VBoxContainer.new()
+		box.add_theme_constant_override("separation", 12)
+		_video_progress.add_child(box)
+		_video_progress_label = Label.new()
+		_video_progress_label.text = "正在转码视频…"
+		box.add_child(_video_progress_label)
+		_video_progress_bar = ProgressBar.new()
+		_video_progress_bar.max_value = 100.0
+		_video_progress_bar.show_percentage = true
+		_video_progress_bar.custom_minimum_size = Vector2(420, 24)
+		box.add_child(_video_progress_bar)
+		add_child(_video_progress)
+		var ok := _video_progress.get_ok_button()
+		if ok != null:
+			ok.visible = false
+	_video_progress_bar.value = 0.0
+	_video_progress_label.text = "正在转码视频…"
+	_video_progress.popup_centered(Vector2i(500, 170))
+
+
+func _hide_video_progress() -> void:
+	if _video_progress != null:
+		_video_progress.hide()
+
+
+func _on_video_progress(ratio: float, seconds: float) -> void:
+	if _video_progress_bar == null or _video_progress_label == null:
+		return
+	if ratio >= 0.0:
+		_video_progress_bar.value = clampf(ratio, 0.0, 1.0) * 100.0
+		_video_progress_label.text = "正在转码视频… %d%%（已转 %.0f 秒）" % [roundi(ratio * 100.0), seconds]
+	else:
+		_video_progress_bar.value = fmod(float(Time.get_ticks_msec()) * 0.05, 100.0)
+		_video_progress_label.text = "正在转码视频… 已转 %.0f 秒" % seconds

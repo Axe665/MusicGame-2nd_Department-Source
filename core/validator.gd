@@ -139,11 +139,6 @@ static func _check_notes(chart: Chart, issues: Array[Dictionary]) -> void:
 			_add(issues, "error", "音符 %d 的类型 %s 未知" % [note.id, note.type], "note:%d" % note.id)
 		if note.width < 0.0 or note.width > 360.0:
 			_add(issues, "error", "音符 %d 的宽度越界" % note.id, "note:%d" % note.id)
-		if note.space == "plane" and note.type != "path":
-			if note.plane_x < 0.0 or note.plane_x > 1.0 or note.plane_y < 0.0 or note.plane_y > 1.0:
-				_add(issues, "error", "平面音符 %d 的位置越出舞台安全区" % note.id, "note:%d" % note.id)
-			if note.plane_radius <= 0.0 or note.plane_radius > 0.3:
-				_add(issues, "error", "平面音符 %d 的判定半径越界" % note.id, "note:%d" % note.id)
 		match note.type:
 			"hold":
 				if note.end_beat <= note.beat + EPS:

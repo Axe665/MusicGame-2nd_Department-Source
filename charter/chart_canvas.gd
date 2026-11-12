@@ -742,15 +742,6 @@ func _draw_note(note: Note, plot: Rect2) -> void:
 func _draw_tap(note: Note) -> void:
 	var y := _beat_to_y(note.beat)
 	var selected := _is_note_selected(note.id)
-	if note.space == "plane":
-		var px := _u_to_x(clampf(note.plane_x, 0.0, 1.0))
-		var point := Vector2(px, y)
-		draw_circle(point, 7.0 if selected else 6.0, Color(UITheme.CORAL.r, UITheme.CORAL.g, UITheme.CORAL.b, 0.20))
-		draw_arc(point, 6.0, 0.0, TAU, 24, UITheme.CORAL, 2.0, true)
-		draw_circle(point, 2.0, UITheme.INK)
-		if _show_type_label(note):
-			_draw_type_label("PLANE TAP", point + Vector2(9, 12), UITheme.CORAL)
-		return
 	for interval in _u_intervals(note.angle, note.arc_width()):
 		var x0 := _u_to_x(interval.x)
 		var x1 := _u_to_x(interval.y)
@@ -1558,8 +1549,7 @@ func _note_positions(note: Note) -> Array[Dictionary]:
 		"bell":
 			result.append({"point": Vector2(_u_to_x(note.center_u), _beat_to_y(note.beat)), "part": "head"})
 		"tap":
-			var tap_x := _u_to_x(clampf(note.plane_x, 0.0, 1.0)) if note.space == "plane" else _u_to_x(fposmod(note.angle, 360.0) / 360.0)
-			result.append({"point": Vector2(tap_x, _beat_to_y(note.beat)), "part": "head"})
+			result.append({"point": Vector2(_u_to_x(fposmod(note.angle, 360.0) / 360.0), _beat_to_y(note.beat)), "part": "head"})
 		_:
 			result.append({"point": Vector2(_u_to_x(fposmod(note.angle, 360.0) / 360.0), _beat_to_y(note.beat)), "part": "head"})
 	return result
@@ -1899,7 +1889,7 @@ func _note_in_marquee(note: Note) -> bool:
 	for item in _note_positions(note):
 		if _circle_hits_marquee(item["point"], _note_point_radius(note, String(item.get("part", "head")))):
 			return true
-	if note.type in ["tap", "hold", "path"] and (note.type != "tap" or note.space != "plane"):
+	if note.type in ["tap", "hold", "path"]:
 		var head_width := note.width if note.type == "path" else note.arc_width()
 		if _arc_hits_marquee(note.angle, head_width, _beat_to_y(note.beat)):
 			return true

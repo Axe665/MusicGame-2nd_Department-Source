@@ -84,7 +84,7 @@ godot --path .
 - 音量：运输条「音频」弹出里的“音乐”“音效”两个滑杆，分别控制 `Music` / `SFX` 总线；编辑器播放、试玩、打击音共用总线设置
 - 游玩范围：所有 note 以**八角舞台安全矩形**为准；手绘 Trace 在落点时夹到安全区，环上 note 保持在环内
 - 接近表现：所有音符（Tap / Hold / Path / Trace / Anchor / Bell）都从圆心飞向判定环并随预读放大，轨迹和星尾一起长出，不再原地出现；Hold 完成后 0.24 拍渐隐
-- 长度体系：l = 旧版 Tap 与判定环重合时的条带长度（即 `note.width`）。新版普通 Tap 与 Hold 头都是 **0.5 l**，且"看到多长 = 能打多长"（绘制与判定共用 `Note.arc_width()`）；**Tap 的长度**直接在检查器"长度 ×l" 调到 **0.00–1.50 l**（两位小数），改了就自动变成"大小 Tap"，"恢复 0.5 l" 按钮可还原，0 长度仍保留一个点标记；Tap / Hold 在环心出现时只有 **1/6 l**，飞近判定环时长到 1 l
+- 长度体系：l = 旧版 Tap 与判定环重合时的条带长度（即 `note.width`）。新版普通 Tap 与 Hold 头都是 **0.5 l**，且"看到多长 = 能打多长"（绘制与判定共用 `Note.arc_width()`）；**Tap 的长度**直接在检查器「长度倍率 ×l」调到 **0.00–1.50 l**（两位小数），实际弧宽 = 基础宽度 × 长度倍率；改离 0.50 就自动变成"大小 Tap"，「恢复普通 Tap（0.50 l）」按钮可还原，0 长度仍保留一个点标记；Tap / Hold 在环心出现时只有 **1/6 l**，飞近判定环时长到 1 l
 - Path 视觉尺寸 ×2（`PATH_SIZE_SCALE`）：轨迹笔画、V 形箭头、星头、尾环、进度球全部放大，轨迹几何与判定不变；Trace 使用重做后的门框/游标绘制
 - Hold 叠放：同角度连续 Hold 按时间做深度淡化（越晚越淡，下限 65%），身体与头/尾分两遍画，所有头都压在身体上层；最近要按的一颗额外带一层头带柔光。判定角度与时间不变
 - Hold 外观：头部与 Tap 用同一条"长度条"（`_draw_length_band`），只是主体色换成黄色，缩放节奏与 Tap 完全一致（环心 1/6 l → 判定环 1 l）；身体从**圆心**画到 **1.44R**（旧版 0.28R→1R 的 0.72R 的 2 倍，外端越过判定环 0.44R），飞入时同样跟着 `grow` 长出来
@@ -110,11 +110,12 @@ godot --path .
 - 纵轴：左列保留**连续拍号**（1、2、3、4、5…），并显示小节线、竖线与 30° 特殊角度参考线；分音网格、右列分音选择器、顶栏 SNAP 和视图页“分音”已隐藏，音符吸附使用当前小节线与竖线的交点
 - 写入方向：画布右上角「从上往下」开关，关闭后时间轴上下翻转（后出现的音符在上），翻转状态随谱面存进 `editor.flow_down`
 - Path/Hold 编辑：弧线 Path 与 Hold 选中后可在预览中拖动青色体节点；五角星 Path 不含可拖节点
-- 格式：File 菜单可导入 osu!std/taiko `.osz`、导出 `.lbp` v2；导入报告用对话框显示；谱面 notes/shapes 采用紧凑代码：`[id]tap(beat,angle)`、`[id]hold(beat,end,angle)`、`[id]path{(part0,beat,angle,end,end_angle,centrifuge,axis);...}`、`[id]seek(beat,orien)`、`[id]anchor(beat,angle,pair_id)`、`[id]bell(beat,angle)`、`[id]red(beat,end_beat,width)` 与单块无缩进 `shape{[id,closed,segments{...}];...}`；`timing` 位于 `notes` 之前
+- 格式：File 菜单可导入 osu!std/taiko `.osz`、导出 `.lbp` v2（Tap/Hold 写实际弧宽，Bell 行尾带 `width=` 选项）；导入报告用对话框显示；谱面 notes/shapes 采用紧凑代码：`[id]tap(beat,angle[,width[,1,size]])`、`[id]hold(beat,end,angle[,width])`、`[id]path{(part0,beat,angle,end,end_angle,centrifuge,axis);...}`、`[id]seek(beat,orien)`、`[id]anchor(beat,angle,pair_id[,pair])`、`[id]bell(beat,angle[,width[,radius]])`、`[id]red(beat,end_beat,width)` 与单块无缩进 `shape{[id,closed,segments{...}];...}`；`timing` 位于 `notes` 之前。宽度/大小 Tap 只在非默认时追加可选段：普通 Tap 不写宽度（60°/0.5 l）、普通 Hold 不写宽度（60°）、普通 Bell 不写宽度/半径（30°/26px）；旧版读到尾巴会忽略，旧谱面照常载入。
 - Path 造型：选中 Path 后在检查器“路径造型”切换弧线/五角星；五角星在环内画出五条弦，头尾圆环仍落在环上，中段判定仍走头尾弦
 - 预览：默认开启 3D 环网格；环、八边形舞台、八束光、刻度、外圈、投影阴影全部走 GPU 网格；相机投影 tilt/zoom/ellipse/rotation + 鼠标倾斜/视差；固定预读 P(u,q,t)、单光标最近点、HUD 60° 弧、误差刻度、视频层；视图页可关闭“3D 环网格”回退到投影环线
 - Limit 表现与绘制：填充红色扇区、亮色外弧、扇区斜纹、LIMIT/LIMIT IN 标签；Limit 工具在预览中横向拖角度、纵向拖时长（最多 4 拍）；Seek 表现：扩散圆环、方向箭头、朝里冷蓝/朝外暖橙、PERFECT/MISS 双档
-- 媒体：原生 WAV/OGG/MP3 音频、Ogg Theora 视频；FLAC/M4A/AAC/OPUS/WebM/MP4 音频与 MP4/WebM/MOV/MKV/AVI 视频通过 ffmpeg 自动转码到 `user://media/` 后预览
+- 媒体：原生 WAV/OGG/MP3 音频、Ogg Theora 视频；FLAC/M4A/AAC/OPUS/WebM/MP4 音频与 MP4/WebM/MOV/MKV/AVI 视频通过 ffmpeg 自动转码到 `user://media/` 后预览；`文件 → 导入视频…` 和检查器「选择视频…」都认这些格式，导入时显示百分比进度，谱面仍保存原始路径
+- Hold 检查器：选中 Hold 时显示俯视扇形预览，扇形角度 = 当前实际弧宽，身体按 1 拍样本展示，下方标注「弧宽 xx° · 时长 x.xx 拍」；Tap/Hold 的通用「宽度」行和 Tap 的「长度 ×l」行已恢复
 - 预览光标：判定环内整片和环外缓冲都可吸附到最近的 u，放置音符不必精确压在环线上
 - 视觉：石墨黑 + 安全黄 UI、浅色切角音符卡、深空径向渐变、终末地式分段圆环（白色开口弧 + 琥珀细环 + 凹槽刻度 + 暗色外圈，不再使用八角外框/八束光）、圆盘刻度/十字准星、音符投影；试玩时环放大到屏幕短边约 86–88%，环外整片仍可判定；音符保留珊瑚/琥珀/青/薄荷/紫/金/红语义色
 - 性能：Forward+ / Vulkan、60fps 上限；边界批量采样时只排序一次分段，变形插值参数按事件计算一次；BoundaryFrame 缓存形状采样，当前时刻的网格、音符和光标共用精确边界求值，编辑后失效；Path 固定造型采样与相机适配半径复用；3D 网格在变形期间跟随渲染帧更新，静止时复用；音符拖动按帧合并通知、不重建环网格，完整校验在松开鼠标后执行；试玩时暂停被覆盖的编辑器及其 3D 视口；静止时 SubViewport 自动禁用，3D 内部渲染 0.8×；时间轴静态层与播放头拆成两层，播放时只重绘播放头；检查器标签 20Hz 更新、事件轨 20Hz、最近点 96 采样、字号预加载、视频仅在漂移时 seek
@@ -226,7 +227,7 @@ tests/     SceneTree 无头测试
 | 音频 | WAV / OGG / MP3 | FLAC / M4A / AAC / OPUS / WebM / MP4 |
 | 视频 | Ogg Theora（.ogv） | MP4 / WebM / MOV / MKV / AVI |
 
-转码结果缓存到 `user://media/`，按源路径哈希命名；谱面仍保存原始路径。视频用于环后背景层，默认 35% 不透明度，`videoOffset` 独立于音频。
+转码结果缓存到 `user://media/`，按源路径 + 文件 mtime + 大小哈希命名；替换同路径源文件会自动重转。谱面仍保存原始路径。视频用于环后背景层，默认 35% 不透明度，`videoOffset` 独立于音频。导入入口：`文件 → 导入视频…` 或检查器「视图/设置 → 视频 → 选择视频…」，非 OGV 会在导入时转码并显示百分比进度。
 
 ## 已知限制
 

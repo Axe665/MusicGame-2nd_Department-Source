@@ -17,10 +17,14 @@ func _initialize() -> void:
 		"test_demo_path_migration",
 		"test_legacy_path_chart_migration",
 		"test_seek_and_limit_code",
+		"test_note_width_code",
+		"test_note_flags_code",
+		"test_plane_tap_dropped",
 		"test_compact_chart_code",
 		"test_path_judgement_label_pos",
 		"test_judge_label_geometry",
 		"test_note_glyph_geometry",
+		"test_note_width_controls",
 		"test_path_chain_code",
 		"test_path_chain_judgement",
 		"test_path_erase_overlap",
@@ -494,6 +498,89 @@ func test_seek_and_limit_code() -> bool:
 	return true
 
 
+func test_note_width_code() -> bool:
+	var sized_tap := Note.new("tap", 1.0, 90.0, 80.0)
+	sized_tap.id = 3
+	sized_tap.set_size_ratio(0.75)
+	eq(sized_tap.to_code(), "[3]tap(1.0,90.0,80.0,1,0.75)", "sized tap writes width and size")
+	var sized_back := Note.from_code(sized_tap.to_code())
+	ok(sized_back != null, "sized tap parses")
+	if sized_back != null:
+		near(sized_back.width, 80.0, 0.001, "sized tap keeps base width")
+		ok(sized_back.sized, "sized tap keeps sized flag")
+		near(sized_back.size_ratio, 0.75, 0.001, "sized tap keeps size ratio")
+		near(sized_back.arc_width(), 60.0, 0.001, "sized tap arc width is width x size")
+
+	var normal := Note.new("tap", 1.0, 90.0, 60.0)
+	normal.id = 4
+	eq(normal.to_code(), "[4]tap(1.0,90.0)", "normal tap stays compact")
+	var wide := Note.new("tap", 1.0, 90.0, 72.0)
+	wide.id = 5
+	eq(wide.to_code(), "[5]tap(1.0,90.0,72.0)", "width-only tap writes one extra field")
+	var wide_back := Note.from_code(wide.to_code())
+	if wide_back != null:
+		near(wide_back.width, 72.0, 0.001, "width-only tap keeps width")
+		ok(not wide_back.sized, "width-only tap stays unsized")
+
+	var hold := Note.new("hold", 2.0, 0.0, 48.0)
+	hold.id = 6
+	hold.end_beat = 4.0
+	eq(hold.to_code(), "[6]hold(2.0,4.0,0.0,48.0)", "wide hold writes width")
+	var hold_back := Note.from_code(hold.to_code())
+	if hold_back != null:
+		near(hold_back.width, 48.0, 0.001, "wide hold keeps width")
+
+	var bell := Note.new("bell", 3.0, 0.0, 27.0)
+	bell.id = 7
+	eq(bell.to_code(), "[7]bell(3.0,0.0,27.0,44.0)", "narrow bell writes width and radius")
+	var bell_back := Note.from_code(bell.to_code())
+	if bell_back != null:
+		near(bell_back.bell_width(), 27.0, 0.001, "narrow bell keeps width")
+		near(bell_back.radius, 44.0, 0.001, "narrow bell keeps radius")
+	var default_bell := Note.new("bell", 3.0, 0.0, 30.0)
+	default_bell.id = 8
+	default_bell.radius = 26.0
+	eq(default_bell.to_code(), "[8]bell(3.0,0.0)", "default bell stays compact")
+	var default_bell_back := Note.from_code(default_bell.to_code())
+	if default_bell_back != null:
+		near(default_bell_back.bell_width(), 30.0, 0.001, "default bell loads 30 degrees")
+	var radius_only_bell := Note.new("bell", 3.0, 0.0, 30.0)
+	radius_only_bell.id = 9
+	radius_only_bell.radius = 44.0
+	eq(radius_only_bell.to_code(), "[9]bell(3.0,0.0,30.0,44.0)", "radius-only bell uses a width placeholder")
+
+	var anchor := Note.new("anchor", 2.0, 90.0, 0.0)
+	anchor.id = 10
+	anchor.pair_id = "p1"
+	anchor.anchor_pair = 45
+	eq(anchor.to_code(), "[10]anchor(2.0,90.0,p1,45)", "anchor writes pair angle")
+	var anchor_back := Note.from_code(anchor.to_code())
+	if anchor_back != null:
+		eq(anchor_back.pair_id, "p1", "anchor keeps pair id")
+		eq(anchor_back.anchor_pair, 45, "anchor keeps pair angle")
+
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	sized_tap.id = 1
+	hold.id = 2
+	bell.id = 3
+	chart.notes = [sized_tap, hold, bell]
+	var loaded := ChartIO.from_json(ChartIO.to_json(chart))
+	ok(loaded != null, "compact chart with widths loads")
+	if loaded != null:
+		var by_id := {}
+		for note in loaded.notes:
+			by_id[note.id] = note
+		if by_id.has(1):
+			near(by_id[1].arc_width(), 60.0, 0.001, "json keeps sized tap arc width")
+		if by_id.has(2):
+			near(by_id[2].width, 48.0, 0.001, "json keeps hold width")
+		if by_id.has(3):
+			near(by_id[3].bell_width(), 27.0, 0.001, "json keeps bell width")
+			near(by_id[3].radius, 44.0, 0.001, "json keeps bell radius")
+	return true
+
+
 func test_path_judgement_label_pos() -> bool:
 	var bounds := Vector2(1600, 900)
 	var center := Vector2(800, 450)
@@ -543,10 +630,56 @@ func test_note_glyph_geometry() -> bool:
 	var sector := NoteGlyph.sector_polygon(center, 20, 10, -30, 30, 8)
 	eq(sector.size(), 10, "sector starts at the center plus the arc")
 	ok(sector[0] == center, "sector polygon starts at the ring center")
+	var annular := NoteGlyph.annular_sector_polygon(center, 20, 10, 0.5, -30, 30, 8)
+	eq(annular.size(), 18, "annular sector joins outer and inner arcs")
 	var normal := NoteGlyph.ring_normal(center, 20, 10, 0)
 	near(normal.y, -1.0, 0.01, "top normal points up")
 	eq(NotePalette.CARDS.size(), 7, "palette keeps seven note cards")
 	eq(String(NotePalette.CARDS[5].get("type", "")), "bell", "bell card stays in the palette")
+	return true
+
+
+func test_note_width_controls() -> bool:
+	ok(Inspector.shows_width_row("tap"), "tap shows the common width row")
+	ok(Inspector.shows_width_row("hold"), "hold shows the common width row")
+	ok(not Inspector.shows_width_row("bell"), "bell uses its own arc width row")
+	ok(Inspector.shows_length_row("tap"), "tap shows the length row")
+	ok(not Inspector.shows_length_row("hold"), "hold has no sized length")
+	return true
+
+
+func test_note_flags_code() -> bool:
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	var tap := Note.new("tap", 1.0, 90.0, 60.0)
+	tap.id = 1
+	tap.lock = true
+	chart.notes = [tap]
+	var data := ChartIO.chart_to_dict(chart)
+	ok(data.has("note_flags"), "locked notes use the note_flags side map")
+	var loaded := ChartIO.from_json(ChartIO.to_json(chart))
+	ok(loaded != null, "locked chart loads")
+	if loaded != null and not loaded.notes.is_empty():
+		ok(loaded.notes[0].lock, "lock survives the compact chart roundtrip")
+	return true
+
+
+func test_plane_tap_dropped() -> bool:
+	var data := {
+		"format": "tamaki3-chart",
+		"version": 1,
+		"timing": {"points": [{"beat": 0.0, "bpm": 120.0, "beats_per_bar": 4}]},
+		"notes": [
+			{"id": 1, "type": "tap", "beat": 1.0, "angle": 0.0, "width": 60.0, "space": "plane", "plane_x": 0.5, "plane_y": 0.5, "plane_radius": 0.1},
+			{"id": 2, "type": "tap", "beat": 2.0, "angle": 90.0, "width": 60.0},
+		],
+	}
+	var chart := ChartIO.chart_from_dict(data)
+	ok(chart != null, "legacy plane tap chart loads")
+	if chart != null:
+		eq(chart.notes.size(), 1, "legacy plane tap is dropped")
+		if not chart.notes.is_empty():
+			eq(chart.notes[0].id, 2, "ring tap survives")
 	return true
 
 
@@ -949,6 +1082,25 @@ func test_media_formats() -> bool:
 	ok(MediaIO.is_supported_audio("a.flac"), "flac is accepted through the decode cache")
 	ok(not MediaIO.is_native_audio("a.flac"), "flac is not a native stream class")
 	ok(MediaIO.is_native_video("a.ogv"), "ogv is native video")
+	ok(MediaIO.is_supported_video("a.mp4"), "mp4 is accepted through the video cache")
+	ok(not MediaIO.is_native_video("a.mp4"), "mp4 is not a native stream class")
+	ok(not MediaIO.is_supported_video("a.txt"), "text is not a video")
+	ok(MediaIO.video_cache_path("a.mp4").ends_with(".ogv"), "video cache is ogv")
+	var cache_file := "user://test_video_cache.mp4"
+	var cache_write := FileAccess.open(cache_file, FileAccess.WRITE)
+	if cache_write != null:
+		cache_write.store_string("x")
+		cache_write.close()
+	var cache_a := MediaIO.video_cache_path(cache_file)
+	cache_write = FileAccess.open(cache_file, FileAccess.WRITE)
+	if cache_write != null:
+		cache_write.store_string("xx")
+		cache_write.close()
+	var cache_b := MediaIO.video_cache_path(cache_file)
+	ok(cache_a != cache_b, "video cache key follows source size")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(cache_file))
+	near(MediaIO.progress_seconds("out_time_us=2500000\nprogress=continue\n"), 2.5, 0.01, "ffmpeg progress microseconds")
+	near(MediaIO.progress_seconds("out_time=00:00:03.500000\n"), 3.5, 0.01, "ffmpeg progress timecode")
 	eq(MediaIO.prepare_audio("res://audio/demo_click.wav"), "res://audio/demo_click.wav", "native audio passes through")
 	return true
 
@@ -971,6 +1123,24 @@ func test_lbp_export() -> bool:
 	ok(gap_text.contains("erase=0.400:0.600"), "lbp keeps path erase range")
 	chart.notes.erase(gap_note)
 	ok(not text.contains("\r"), "lbp uses LF")
+	var width_chart := Chart.new()
+	width_chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	var lbp_tap := Note.new("tap", 0.0, 90.0, 60.0)
+	lbp_tap.id = 1
+	lbp_tap.set_size_ratio(0.5)
+	var lbp_hold := Note.new("hold", 0.0, 90.0, 60.0)
+	lbp_hold.id = 2
+	lbp_hold.end_beat = 2.0
+	var lbp_bell := Note.new("bell", 0.0, 0.0, 27.0)
+	lbp_bell.id = 3
+	lbp_bell.center_u = 0.25
+	lbp_bell.radius = 26.0
+	width_chart.notes = [lbp_tap, lbp_hold, lbp_bell]
+	var width_text := LBPIO.export_chart(width_chart)
+	ok(width_text.contains("tap,"), "lbp keeps taps")
+	ok(width_text.contains("hold,"), "lbp keeps holds")
+	ok(width_text.contains("90.000,30.000"), "lbp writes visible arc width")
+	ok(width_text.contains("width=27.000"), "lbp bell exports width option")
 	var path := "user://test_export.lbp"
 	eq(LBPIO.export_to_file(chart, path), OK, "lbp write")
 	var read := FileAccess.get_file_as_string(path)

@@ -62,6 +62,11 @@ static func chart_to_dict(chart: Chart) -> Dictionary:
 			entry["rgb"] = "#" + note.custom_color.to_html(false)
 		if not entry.is_empty():
 			note_colors[str(note.id)] = entry
+	# 锁定同样旁挂，避免每个音符代码都多一段。
+	var note_flags := {}
+	for note in chart.notes:
+		if note.lock:
+			note_flags[str(note.id)] = {"lock": true}
 	var meta := {}
 	for key in ["title", "artist", "creator", "version", "tags", "license", "background"]:
 		meta[key] = String(chart.metadata.get(key, ""))
@@ -102,6 +107,8 @@ static func chart_to_dict(chart: Chart) -> Dictionary:
 		result["palette"] = _palette_rows(chart)
 	if not note_colors.is_empty():
 		result["note_colors"] = note_colors
+	if not note_flags.is_empty():
+		result["note_flags"] = note_flags
 	return result
 
 
@@ -152,6 +159,22 @@ static func _apply_note_colors(chart: Chart, stored: Dictionary) -> void:
 					note.has_custom_color = true
 		elif raw is int or raw is float:
 			note.color = maxi(0, int(raw))
+
+
+static func _apply_note_flags(chart: Chart, stored: Dictionary) -> void:
+	var by_id := {}
+	for note in chart.notes:
+		by_id[note.id] = note
+	for key in stored.keys():
+		var id_text := String(key)
+		if not id_text.is_valid_int():
+			continue
+		var note: Note = by_id.get(int(id_text), null)
+		if note == null:
+			continue
+		var raw: Variant = stored[key]
+		if raw is Dictionary and bool(raw.get("lock", false)):
+			note.lock = true
 
 
 static func _note_code(note: Note, by_id: Dictionary) -> String:
@@ -264,10 +287,16 @@ static func chart_from_dict(data: Dictionary) -> Chart:
 				if parsed != null:
 					chart.notes.append(parsed)
 		elif raw is Dictionary and String(raw.get("type", "")) != "trace":
+			# 旧 plane Tap 已移除；旧数据直接跳过，不转成 0° 环上 Tap。
+			if String(raw.get("type", "")) == "tap" and String(raw.get("space", "ring")) == "plane":
+				continue
 			chart.notes.append(Note.from_dict(raw))
 	var stored_colors: Variant = data.get("note_colors", {})
 	if stored_colors is Dictionary:
 		_apply_note_colors(chart, stored_colors)
+	var stored_flags: Variant = data.get("note_flags", {})
+	if stored_flags is Dictionary:
+		_apply_note_flags(chart, stored_flags)
 	# Normalize legacy Path JSON to the new centrifuge/axis representation on
 	# every chart load, not just for the bundled demo.
 	for note in chart.notes:
