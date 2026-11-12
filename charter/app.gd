@@ -38,6 +38,10 @@ var path_wait_indicator: String = "progress"
 ## Trace 门框主色（默认银白）。
 var trace_color: Color = Color(0.78, 0.86, 1.0)
 var note_skin: String = "candy"
+## 视图性能选项：2D 抗锯齿（MSAA 4×）与音符弧带采样精度。
+## 默认全开；弱机可以在「视图」菜单里关掉换帧率。
+var aa_2d: bool = true
+var note_detail_fine: bool = true
 var hit_fx_style: String = "burst"
 var hit_sfx_style: String = "default"
 ## 试玩光标大小倍率（1.0 = 默认）。
@@ -433,6 +437,8 @@ func _load_settings() -> void:
 		if parsed is Dictionary:
 			var data: Dictionary = parsed
 			note_skin = String(data.get("note_skin", note_skin))
+			aa_2d = bool(data.get("aa_2d", aa_2d))
+			note_detail_fine = bool(data.get("note_detail_fine", note_detail_fine))
 			hit_fx_style = String(data.get("hit_fx_style", hit_fx_style))
 			hit_sfx_style = String(data.get("hit_sfx_style", hit_sfx_style))
 			ffmpeg_path = String(data.get("ffmpeg", ffmpeg_path))
@@ -451,6 +457,14 @@ func _load_settings() -> void:
 			trace_color = Color.from_string(String(data.get("trace_color", "")), trace_color)
 	MediaIO.set_ffmpeg_exe(ffmpeg_path)
 	apply_frame_cap()
+	apply_visual_quality()
+
+
+## 2D 抗锯齿在运行时就能改：关掉能省 1.5–2.5ms 的填充开销。
+func apply_visual_quality() -> void:
+	var viewport := get_viewport()
+	if viewport != null:
+		viewport.msaa_2d = Viewport.MSAA_4X if aa_2d else Viewport.MSAA_DISABLED
 
 
 ## 帧率选项：60 / 120 保留垂直同步（跑不满就自动落到下一个整除，稳定优先）；
@@ -506,7 +520,7 @@ func effective_latency_sec() -> float:
 
 
 func save_settings() -> void:
-	var data := {"path_wait_indicator": path_wait_indicator, "note_skin": note_skin, "hit_fx_style": hit_fx_style, "hit_sfx_style": hit_sfx_style, "ffmpeg": ffmpeg_path, "frame_cap": frame_cap, "audio_buffer_ms": audio_buffer_ms, "playtest_offset_ms": playtest_offset_ms, "audio_latency_ms": audio_latency_ms, "dynamic_offset": dynamic_offset, "playtest_auto": playtest_auto, "last_bias_ms": last_bias_ms, "cursor_scale": cursor_scale, "flow_scale": flow_scale, "star_speed": star_speed, "trace_color": trace_color.to_html()}
+	var data := {"path_wait_indicator": path_wait_indicator, "note_skin": note_skin, "hit_fx_style": hit_fx_style, "hit_sfx_style": hit_sfx_style, "ffmpeg": ffmpeg_path, "frame_cap": frame_cap, "audio_buffer_ms": audio_buffer_ms, "playtest_offset_ms": playtest_offset_ms, "audio_latency_ms": audio_latency_ms, "dynamic_offset": dynamic_offset, "playtest_auto": playtest_auto, "last_bias_ms": last_bias_ms, "cursor_scale": cursor_scale, "flow_scale": flow_scale, "star_speed": star_speed, "trace_color": trace_color.to_html(), "aa_2d": aa_2d, "note_detail_fine": note_detail_fine}
 	var file := FileAccess.open(SETTINGS_PATH, FileAccess.WRITE)
 	if file != null:
 		file.store_string(JSON.stringify(data, "\t"))
