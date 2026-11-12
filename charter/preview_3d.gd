@@ -226,6 +226,22 @@ func _exit_tree() -> void:
 		Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
 
 
+## 画质档：0 = 全开，1 = 省电（3D 分辨率降一档、去掉音符柔光、弧带采样减半）。
+## 试玩里由实测帧时自动降档，只为让弱机也能稳住节奏。
+var quality_level: int = 0
+
+
+func set_quality_level(level: int) -> void:
+	var next := clampi(level, 0, 1)
+	if next == quality_level:
+		return
+	quality_level = next
+	if _subviewport != null:
+		_subviewport.scaling_3d_scale = 0.8 if next == 0 else 0.62
+	if _overlay != null:
+		_overlay.queue_redraw()
+
+
 func set_suspended(suspended: bool) -> void:
 	set_process(not suspended)
 	if _subviewport == null:
@@ -527,14 +543,15 @@ func _process(_delta: float) -> void:
 			_perf_since_usec = perf_now
 		elif perf_now - _perf_since_usec >= 2000000 and _perf_frames > 0:
 			var per := float(maxi(1, _perf_frames)) * 1000.0
-			print("[perf] fps=%.0f draw=%.2fms proc=%.2fms pulses=%d | note=%.1f fx=%.1f" % [
-				Engine.get_frames_per_second(),
-				float(_perf_draw_usec) / float(maxi(1, _perf_frames)) / 1000.0,
-				float(_perf_proc_usec) / float(maxi(1, _perf_frames)) / 1000.0,
-				_pulses.size(),
-				float(_perf_sections[3]) / per,
-				float(_perf_sections[4]) / per,
-			])
+			if OS.is_debug_build():
+				print("[perf] fps=%.0f draw=%.2fms proc=%.2fms pulses=%d | note=%.1f fx=%.1f" % [
+					Engine.get_frames_per_second(),
+					float(_perf_draw_usec) / float(maxi(1, _perf_frames)) / 1000.0,
+					float(_perf_proc_usec) / float(maxi(1, _perf_frames)) / 1000.0,
+					_pulses.size(),
+					float(_perf_sections[3]) / per,
+					float(_perf_sections[4]) / per,
+				])
 			_perf_draw_usec = 0
 			_perf_frames = 0
 			_perf_sections = [0, 0, 0, 0, 0, 0]
@@ -3145,7 +3162,7 @@ func _draw_length_band(canvas: Control, chart: Chart, angle: float, width: float
 		if _valid_point(dot):
 			canvas.draw_circle(dot, 7.0 * ns, Color(color.r, color.g, color.b, 0.90 * alpha))
 		return dot
-	var steps := clampi(int(width / 4.0), 10, 96)
+	var steps := clampi(int(width / (4.0 if quality_level == 0 else 6.0)), 8, 96)
 	var points := PackedVector2Array()
 	for i in steps + 1:
 		var sample_angle := angle - width * 0.5 + width * float(i) / float(steps)
@@ -3158,7 +3175,8 @@ func _draw_length_band(canvas: Control, chart: Chart, angle: float, width: float
 	if points.size() < 2:
 		return Vector2(INF, INF)
 	# Tap 的粉色柔光压低：保留一点氛围，但不抢白边和色带。
-	_stroke_band(canvas, points, color, 18.0 * ns, alpha, -1.0, 0.35)
+	if quality_level == 0:
+		_stroke_band(canvas, points, color, 18.0 * ns, alpha, -1.0, 0.35)
 	var cap_scale := ns * float(_skin()["scale"])
 	var center_point := points[points.size() / 2]
 	# 两端圆头：让长条读成一根胶囊，而不是一段没有边界的弧。
