@@ -8,6 +8,7 @@ const TOOL_ORDER := [
 
 var _app: Node = null
 var _preview: Preview3D
+var _view_menu: MenuButton
 var _canvas: ChartCanvas
 var _event_track: EventTrack
 var _inspector: Inspector
@@ -285,9 +286,11 @@ func _build_ui() -> void:
 	brand_row.add_child(_menu("编辑", [
 		["撤销", 10], ["重做", 11], ["-", 0], ["删除", 12], ["取消选择", 13], ["全选可见", 14],
 	]))
-	brand_row.add_child(_menu("视图", [
+	_view_menu = _menu("视图", [
 		["显示/隐藏 HUD", 20], ["调试叠层", 21], ["波形", 22], ["从上往下写入", 25], ["-", 0], ["边界状态轨", 23], ["时间 / BPM (F6)", 24],
-	]))
+		["-", 0], ["2D 抗锯齿：开", 26], ["音符精细度：全画质", 27],
+	])
+	brand_row.add_child(_view_menu)
 	brand_row.add_child(_menu("插入", [
 		["Tap", 30], ["Hold", 31], ["Path", 32], ["Seek", 33], ["Anchor", 34], ["Bell", 35], ["Limit", 36], ["-", 0], ["BoundaryEvent", 37], ["RingState 关键帧", 38],
 	]))
@@ -864,6 +867,15 @@ func _set_stretch_error(has_error: bool) -> void:
 		_stretch_edit.remove_theme_color_override("font_color")
 
 
+## 视图菜单里两个性能选项的当前值。
+func _refresh_view_menu() -> void:
+	if _view_menu == null or _app == null:
+		return
+	var popup := _view_menu.get_popup()
+	popup.set_item_text(popup.get_item_index(26), "2D 抗锯齿：%s" % ("开" if _app.aa_2d else "关"))
+	popup.set_item_text(popup.get_item_index(27), "音符精细度：%s" % ("全画质" if _app.note_detail_fine else "省电"))
+
+
 func _menu(title: String, items: Array) -> MenuButton:
 	var menu := MenuButton.new()
 	menu.text = title
@@ -1054,6 +1066,8 @@ func _sync_appearance() -> void:
 	if _app == null:
 		return
 	_preview.note_skin = _app.note_skin
+	_preview.note_detail_fine = _app.note_detail_fine
+	_refresh_view_menu()
 	_preview.hit_fx_style = _app.hit_fx_style
 	_preview.cursor_scale = _app.cursor_scale
 	_preview.refresh_style()
@@ -1703,6 +1717,19 @@ func _on_menu(id: int) -> void:
 		21:
 			_app.debug_overlay = not _app.debug_overlay
 			_preview.show_debug = _app.debug_overlay
+		26:
+			_app.aa_2d = not _app.aa_2d
+			_app.apply_visual_quality()
+			_app.save_settings()
+			_refresh_view_menu()
+			_show_toast("2D 抗锯齿：%s" % ("开" if _app.aa_2d else "关（省 1.5–2.5ms）"), "info")
+		27:
+			_app.note_detail_fine = not _app.note_detail_fine
+			_preview.note_detail_fine = _app.note_detail_fine
+			_preview.request_redraw()
+			_app.save_settings()
+			_refresh_view_menu()
+			_show_toast("音符精细度：%s" % ("全画质" if _app.note_detail_fine else "省电"), "info")
 		22:
 			_app.waveform_visible = not _app.waveform_visible
 		25:

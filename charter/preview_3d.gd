@@ -230,6 +230,8 @@ func _exit_tree() -> void:
 ## 画质档：0 = 全开，1 = 省电（只降 3D 背景的渲染分辨率，音符永远按全画质画）。
 ## 试玩里由实测帧时自动降档，只为让弱机也能稳住节奏。
 var quality_level: int = 0
+## 音符弧带采样精度：true = 1/4°（全画质），false = 1/6°（省电，边缘略方）。
+var note_detail_fine: bool = true
 
 
 func set_quality_level(level: int) -> void:
@@ -3180,7 +3182,7 @@ func _draw_length_band(canvas: Control, chart: Chart, angle: float, width: float
 		if _valid_point(dot):
 			canvas.draw_circle(dot, 7.0 * ns, Color(color.r, color.g, color.b, 0.90 * alpha))
 		return dot
-	var steps := clampi(int(width / 4.0), 10, 96)
+	var steps := clampi(int(width / (4.0 if note_detail_fine else 6.0)), 10, 96)
 	var points := PackedVector2Array()
 	for i in steps + 1:
 		var sample_angle := angle - width * 0.5 + width * float(i) / float(steps)
@@ -3537,7 +3539,6 @@ func _draw_player_cursor(canvas: Control) -> void:
 		var ratio := float(i + 1) / float(maxi(1, _cursor_trail.size()))
 		var point: Vector2 = item["pos"]
 		var radius := lerpf(3.0, 10.5, ratio) * cs
-		canvas.draw_circle(point, radius * 1.9, Color(accent.r, accent.g, accent.b, 0.06 * life))
 		canvas.draw_circle(point, radius, Color(accent.r, accent.g, accent.b, 0.26 * life))
 		canvas.draw_circle(point, radius * 0.45, Color(1, 1, 1, 0.16 * life))
 	var m := mouse_screen
