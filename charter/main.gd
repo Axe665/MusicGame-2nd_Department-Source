@@ -154,12 +154,22 @@ func _ready() -> void:
 func _run_bench() -> void:
 	var start_beat := 0.0 if "--bench-start0" in OS.get_cmdline_user_args() else 312.0
 	var osz := ""
+	var plain := ""
 	for arg in OS.get_cmdline_user_args():
 		if arg.begins_with("--bench-osz="):
 			osz = arg.get_slice("=", 1)
+		elif arg.begins_with("--bench-chart="):
+			plain = arg.get_slice("=", 1)
 		elif arg.begins_with("--bench-from="):
 			start_beat = float(arg.get_slice("=", 1))
-	if osz.is_empty():
+	if not plain.is_empty():
+		var plain_chart: Chart = ChartIO.load_chart(plain)
+		if plain_chart == null:
+			print("[bench] chart load failed: ", plain)
+			get_tree().quit()
+			return
+		_app.set_chart(plain_chart, plain, false)
+	elif osz.is_empty():
 		var chart: Chart = ChartIO.load_chart("user://autosave.json")
 		if chart != null:
 			_app.set_chart(chart, "user://autosave.json", false)

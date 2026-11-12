@@ -226,6 +226,22 @@ func _exit_tree() -> void:
 		Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
 
 
+## 画质档：0 = 全开，1 = 省电（3D 分辨率降一档、去掉音符柔光、弧带采样减半）。
+## 试玩里由实测帧时自动降档，只为让弱机也能稳住节奏。
+var quality_level: int = 0
+
+
+func set_quality_level(level: int) -> void:
+	var next := clampi(level, 0, 1)
+	if next == quality_level:
+		return
+	quality_level = next
+	if _subviewport != null:
+		_subviewport.scaling_3d_scale = 0.8 if next == 0 else 0.62
+	if _overlay != null:
+		_overlay.queue_redraw()
+
+
 func set_suspended(suspended: bool) -> void:
 	set_process(not suspended)
 	if _subviewport == null:
@@ -527,14 +543,15 @@ func _process(_delta: float) -> void:
 			_perf_since_usec = perf_now
 		elif perf_now - _perf_since_usec >= 2000000 and _perf_frames > 0:
 			var per := float(maxi(1, _perf_frames)) * 1000.0
-			print("[perf] fps=%.0f draw=%.2fms proc=%.2fms pulses=%d | note=%.1f fx=%.1f" % [
-				Engine.get_frames_per_second(),
-				float(_perf_draw_usec) / float(maxi(1, _perf_frames)) / 1000.0,
-				float(_perf_proc_usec) / float(maxi(1, _perf_frames)) / 1000.0,
-				_pulses.size(),
-				float(_perf_sections[3]) / per,
-				float(_perf_sections[4]) / per,
-			])
+			if OS.is_debug_build():
+				print("[perf] fps=%.0f draw=%.2fms proc=%.2fms pulses=%d | note=%.1f fx=%.1f" % [
+					Engine.get_frames_per_second(),
+					float(_perf_draw_usec) / float(maxi(1, _perf_frames)) / 1000.0,
+					float(_perf_proc_usec) / float(maxi(1, _perf_frames)) / 1000.0,
+					_pulses.size(),
+					float(_perf_sections[3]) / per,
+					float(_perf_sections[4]) / per,
+				])
 			_perf_draw_usec = 0
 			_perf_frames = 0
 			_perf_sections = [0, 0, 0, 0, 0, 0]
@@ -1802,8 +1819,8 @@ func _draw_bar_lines(canvas: Control, chart: Chart, beat: float, pre: float) -> 
 	# so the lines follow deformations and tilt exactly like the note bands.
 	var frame := _frame_for(chart, beat)
 	var boundary: Array[Dictionary] = []
-	for i in 128:
-		boundary.append(frame.point_at(float(i) / 128.0))
+	for i in 72:
+		boundary.append(frame.point_at(float(i) / 72.0))
 	# Reuse the exact start point: evaluating u=1 can select the first
 	# segment but interpolate its far endpoint, leaving a spur at the seam.
 	boundary.append(boundary[0])
@@ -3145,7 +3162,7 @@ func _draw_length_band(canvas: Control, chart: Chart, angle: float, width: float
 		if _valid_point(dot):
 			canvas.draw_circle(dot, 7.0 * ns, Color(color.r, color.g, color.b, 0.90 * alpha))
 		return dot
-	var steps := clampi(int(width / 4.0), 10, 96)
+	var steps := clampi(int(width / (4.0 if quality_level == 0 else 6.0)), 8, 96)
 	var points := PackedVector2Array()
 	for i in steps + 1:
 		var sample_angle := angle - width * 0.5 + width * float(i) / float(steps)
@@ -3158,7 +3175,8 @@ func _draw_length_band(canvas: Control, chart: Chart, angle: float, width: float
 	if points.size() < 2:
 		return Vector2(INF, INF)
 	# Tap 的粉色柔光压低：保留一点氛围，但不抢白边和色带。
-	_stroke_band(canvas, points, color, 18.0 * ns, alpha, -1.0, 0.35)
+	if quality_level == 0:
+		_stroke_band(canvas, points, color, 18.0 * ns, alpha, -1.0, 0.35)
 	var cap_scale := ns * float(_skin()["scale"])
 	var center_point := points[points.size() / 2]
 	# 两端圆头：让长条读成一根胶囊，而不是一段没有边界的弧。
@@ -3687,18 +3705,19 @@ func _draw_note_pops(canvas: Control) -> void:
 
 
 func _draw_pulses(canvas: Control) -> void:
-	# 脉冲多时只给最新的 6 个画完整特效，其余降级成一个细环。
-	var crowded := _pulses.size() > 6
+	# 脉冲多时只给最新的 4 个画完整特效，其余降级成一个细环。
+	var crowded := _pulses.size() > 4
 	for index in _pulses.size():
 		var pulse: Dictionary = _pulses[index]
 		var age := float(pulse.get("age", 0.0))
 		var alpha := clampf(1.0 - age / 0.42, 0.0, 1.0)
 		var point: Vector2 = pulse["pos"]
 		var color: Color = pulse["color"]
-		var sparks: Array = pulse.get("sparks", [])
+		# 只有最新那个脉冲画碎片，旧的只留环：密集段每帧少几十次多边形绘制。
+		var sparks: Array = pulse.get("sparks", []) if index == _pulses.size() - 1 else []
 		var kind := String(pulse.get("kind", "tap"))
 		# 星头单独一套 osu!std 式发散：密度再高也不降级，否则根本看不见。
-		if kind != "path" and crowded and index < _pulses.size() - 6:
+		if kind != "path" and crowded and index < _pulses.size() - 4:
 			canvas.draw_arc(point, 16.0 + age * 30.0, 0.0, TAU, 16, Color(color.r, color.g, color.b, 0.5 * alpha), 2.0, false)
 			continue
 		# 档位越差，爆点越小；位置按脉冲缩放，文字不缩。
@@ -3941,6 +3960,20 @@ func _draw_fx_ink(canvas: Control, point: Vector2, color: Color, age: float, spa
 	canvas.draw_circle(point, 3.0 * fade, Color(1, 1, 1, 0.65 * fade))
 
 
+## draw_string 每帧都会重新排版（CJK 尤其贵）：缓存 TextLine，只在文字变化时重建。
+var _hud_text: Dictionary = {}
+
+
+func _draw_cached_text(canvas: Control, key: String, font: Font, pos: Vector2, text: String, font_size: int, color: Color) -> void:
+	var entry: Dictionary = _hud_text.get(key, {})
+	if entry.is_empty() or String(entry["text"]) != text or int(entry["size"]) != font_size:
+		var line := TextLine.new()
+		line.add_string(text, font, font_size)
+		entry = {"text": text, "size": font_size, "line": line}
+		_hud_text[key] = entry
+	(entry["line"] as TextLine).draw(canvas.get_canvas_item(), pos, color)
+
+
 func _draw_hud(canvas: Control, chart: Chart, t: float) -> void:
 	var width := size.x
 	var cx := width * 0.5
@@ -3969,11 +4002,11 @@ func _draw_hud(canvas: Control, chart: Chart, t: float) -> void:
 	canvas.draw_arc(Vector2(cx, cy), radius, end - third, end - third + third * accuracy_ratio, 24, UITheme.CYAN, 24.0, false)
 	var font := UITheme.bold_font()
 	var mono := UITheme.mono_font()
-	canvas.draw_string(font, Vector2(cx - radius * 0.68, cy - radius * 0.52), "进度", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, UITheme.INK)
-	canvas.draw_string(font, Vector2(cx - 18, cy - radius * 0.52), hud_rating, HORIZONTAL_ALIGNMENT_LEFT, -1, 20, UITheme.INK)
-	canvas.draw_string(font, Vector2(cx + radius * 0.48, cy - radius * 0.52), "准度", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, UITheme.CYAN)
-	canvas.draw_string(mono, Vector2(cx - radius * 0.68, cy - radius * 0.32), "%d%%" % roundi(progress * 100.0), HORIZONTAL_ALIGNMENT_LEFT, -1, 12, UITheme.INK)
-	canvas.draw_string(mono, Vector2(cx + radius * 0.48, cy - radius * 0.32), "—" if hud_accuracy < 0.0 else "%.2f%%" % hud_accuracy, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, UITheme.INK)
+	_draw_cached_text(canvas, "hud_progress", font, Vector2(cx - radius * 0.68, cy - radius * 0.52), "进度", 11, UITheme.INK)
+	_draw_cached_text(canvas, "hud_rating", font, Vector2(cx - 18, cy - radius * 0.52), hud_rating, 20, UITheme.INK)
+	_draw_cached_text(canvas, "hud_accuracy_label", font, Vector2(cx + radius * 0.48, cy - radius * 0.52), "准度", 11, UITheme.CYAN)
+	_draw_cached_text(canvas, "hud_progress_value", mono, Vector2(cx - radius * 0.68, cy - radius * 0.32), "%d%%" % roundi(progress * 100.0), 12, UITheme.INK)
+	_draw_cached_text(canvas, "hud_accuracy_value", mono, Vector2(cx + radius * 0.48, cy - radius * 0.32), "—" if hud_accuracy < 0.0 else "%.2f%%" % hud_accuracy, 12, UITheme.INK)
 	var baseline_y := cy + radius * 0.44
 	var tick_left := cx - radius * 0.80
 	var tick_right := cx + radius * 0.80
@@ -3988,7 +4021,7 @@ func _draw_hud(canvas: Control, chart: Chart, t: float) -> void:
 		if i < hud_errors.size():
 			color = UITheme.CYAN if error < 0.0 else UITheme.CORAL
 		canvas.draw_line(Vector2(x, baseline_y - 2.0), Vector2(x, baseline_y - 2.0 - length), color, 2.0, false)
-	canvas.draw_string(mono, Vector2(cx - 34, baseline_y + 20), "预览 / 非正式", HORIZONTAL_ALIGNMENT_LEFT, -1, 10, UITheme.MUTED)
+	_draw_cached_text(canvas, "hud_preview", mono, Vector2(cx - 34, baseline_y + 20), "预览 / 非正式", 10, UITheme.MUTED)
 
 
 func _draw_debug(canvas: Control, chart: Chart, t: float) -> void:

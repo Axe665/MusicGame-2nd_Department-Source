@@ -91,6 +91,8 @@ var _last_hit_press_ms: float = -1.0e9
 var _seek_presses: Array[Dictionary] = []
 ## 上一帧的实际间隔（ms）：输入每帧刷新一次，按键只可能落在这段时间里。
 var _last_frame_ms: float = 16.7
+## 连续多少个统计窗口装不下目标帧：用来给弱机自动降画质。
+var _slow_windows: int = 0
 ## 每个键上一次按下的时间，用来吃掉手抖双击。
 var _last_press_ms: Dictionary = {}
 var _keys_held: Dictionary = {}
@@ -440,6 +442,7 @@ func _init_states() -> void:
 	_last_hit_press_ms = -1.0e9
 	_seek_presses.clear()
 	_last_frame_ms = 16.7
+	_slow_windows = 0
 	_last_press_ms.clear()
 	_keys_held.clear()
 	_hit_count = 0
@@ -1864,6 +1867,18 @@ func _bench_mouse(beat: float) -> void:
 
 
 ## 基准模式：统计帧间隔的 p50/p95/最大值，找出平均帧率看不出的卡顿尖峰。
+## 目标帧时：设置的上限和屏幕刷新率里更严的那个（刷新率读不到就按 60）。
+func _frame_budget_ms() -> float:
+	var cap := int(Engine.max_fps)
+	var hz := DisplayServer.screen_get_refresh_rate()
+	var limit := float(cap) if cap > 0 else 1.0e9
+	if hz > 1.0:
+		limit = minf(limit, hz)
+	if limit > 1.0e8:
+		limit = 60.0
+	return 1000.0 / maxf(30.0, limit)
+
+
 func _probe_frame_time() -> void:
 	var now := Time.get_ticks_usec()
 	if _frame_last_usec > 0:
@@ -1884,8 +1899,17 @@ func _probe_frame_time() -> void:
 	for value in sorted:
 		if float(value) > float(sorted[n / 2]) * 2.0:
 			spikes += 1
+	# 弱机保护：连续两个统计窗口都装不下目标帧时降一档画质（只降不升，避免来回抖）。
+	var budget := _frame_budget_ms()
+	if median > budget * 1.12:
+		_slow_windows += 1
+		if _slow_windows >= 2 and _preview.quality_level == 0:
+			_preview.set_quality_level(1)
+			_add_log("画质降档：中位帧 %.1fms，超预算 %.1fms" % [median, budget])
+	else:
+		_slow_windows = 0
 	# 只在出现明显卡顿时打印，正常游玩不会刷屏。
-	if worst > 8.0 or spikes > 20:
+	if (worst > 8.0 or spikes > 20) and OS.is_debug_build():
 		print("[frame] t=%.1fs n=%d med=%.1fms p95=%.1fms max=%.1fms spikes=%d notes=%d" % [
 			_chart_ms() / 1000.0, n, median, p95, worst, spikes, _ordered_notes.size(),
 		])
