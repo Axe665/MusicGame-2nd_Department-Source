@@ -151,6 +151,7 @@ var _replay_seeking: bool = false
 var _replay_bar: Control = null
 var _replay_slider: HSlider = null
 var _replay_play_button: Button = null
+var _replay_exit_button: Button = null
 var _replay_time_label: Label = null
 const AUTO_LEAD_MS := 8.0              # 比判定时间早这么多就按下（吃掉帧量化误差）
 const AUTO_RELEASE_MS := 60.0          # Hold 尾判之后再松手，避免被判成提前松开
@@ -415,6 +416,15 @@ func _build_replay_bar() -> void:
 	UITheme.style_mono(_replay_time_label, 12, UITheme.MUTED)
 	_replay_time_label.custom_minimum_size = Vector2(130, 0)
 	row.add_child(_replay_time_label)
+
+	# 进度条最右边：直接退回这一局的结算界面。
+	_replay_exit_button = Button.new()
+	_replay_exit_button.text = "退出"
+	_replay_exit_button.tooltip_text = "退出回放，回到结算界面"
+	_replay_exit_button.focus_mode = Control.FOCUS_NONE
+	_replay_exit_button.custom_minimum_size = Vector2(64, 0)
+	_replay_exit_button.pressed.connect(_exit_replay)
+	row.add_child(_replay_exit_button)
 
 
 func _update_replay_bar() -> void:
@@ -822,7 +832,11 @@ func _process(delta: float) -> void:
 		_update_hud()
 		_update_replay_bar()
 	if beat > chart.duration_beats() + 2.0:
-		_finish()
+		# 回放放到头 = 自动退回结算界面，不用手动点退出。
+		if replay_mode:
+			_exit_replay()
+		else:
+			_finish()
 	_prune_input_queues(judge_ms)
 	if _recording and _record != null:
 		var offset_now := _active_offset()
@@ -1436,6 +1450,19 @@ func _show_toast(message: String) -> void:
 	_toast_tween = create_tween()
 	_toast_tween.tween_interval(2.5)
 	_toast_tween.tween_property(_toast_label, "modulate:a", 0.0, 0.6)
+
+
+## 退出回放：停在这里，把结算界面放回来（和这一局打完时看到的是同一个）。
+func _exit_replay() -> void:
+	if not replay_mode:
+		return
+	if not _finished:
+		_finish()
+	if _replay_bar != null:
+		_replay_bar.visible = false
+	if _results != null:
+		_results.visible = true
+	Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
 
 
 func _request_replay() -> void:
