@@ -38,10 +38,21 @@ var path_wait_indicator: String = "progress"
 ## Trace 门框主色（默认银白）。
 var trace_color: Color = Color(0.78, 0.86, 1.0)
 var note_skin: String = "candy"
-## 视图性能选项：2D 抗锯齿（MSAA 4×）与音符弧带采样精度。
-## 默认全开；弱机可以在「视图」菜单里关掉换帧率。
-var aa_2d: bool = true
+## 画质选项（视图 → 画质）。全部只影响渲染，不碰判定。
+var quality_preset: String = "high"
+## 0 = 关，1 = 2×，2 = 4×（2D 层的 MSAA）。
+var aa_2d_level: int = 2
 var note_detail_fine: bool = true
+var note_glow: bool = true
+## long / short / off
+var cursor_trail: String = "long"
+## full / light / off
+var fx_budget: String = "full"
+## high / mid / low（3D 背景渲染分辨率 0.8 / 0.65 / 0.5）
+var ring_3d_scale: String = "high"
+## 3D 背景刷新率 60 / 30（2D 与判定永远按游戏帧率）
+var ring_3d_hz: int = 60
+var bar_lines: bool = true
 var hit_fx_style: String = "burst"
 var hit_sfx_style: String = "default"
 ## 试玩光标大小倍率（1.0 = 默认）。
@@ -437,8 +448,19 @@ func _load_settings() -> void:
 		if parsed is Dictionary:
 			var data: Dictionary = parsed
 			note_skin = String(data.get("note_skin", note_skin))
-			aa_2d = bool(data.get("aa_2d", aa_2d))
+			# 旧版只有 aa_2d 布尔值，读进来换算成三档。
+			aa_2d_level = clampi(int(data.get("aa_2d_level", 2 if bool(data.get("aa_2d", true)) else 0)), 0, 2)
 			note_detail_fine = bool(data.get("note_detail_fine", note_detail_fine))
+			note_glow = bool(data.get("note_glow", note_glow))
+			var trail_mode := String(data.get("cursor_trail", cursor_trail))
+			cursor_trail = trail_mode if trail_mode in ["long", "short", "off"] else "long"
+			var fx_mode := String(data.get("fx_budget", fx_budget))
+			fx_budget = fx_mode if fx_mode in ["full", "light", "off"] else "full"
+			var ring_scale := String(data.get("ring_3d_scale", ring_3d_scale))
+			ring_3d_scale = ring_scale if ring_scale in ["high", "mid", "low"] else "high"
+			ring_3d_hz = 30 if int(data.get("ring_3d_hz", ring_3d_hz)) == 30 else 60
+			bar_lines = bool(data.get("bar_lines", bar_lines))
+			quality_preset = String(data.get("quality_preset", "high"))
 			hit_fx_style = String(data.get("hit_fx_style", hit_fx_style))
 			hit_sfx_style = String(data.get("hit_sfx_style", hit_sfx_style))
 			ffmpeg_path = String(data.get("ffmpeg", ffmpeg_path))
@@ -463,8 +485,49 @@ func _load_settings() -> void:
 ## 2D 抗锯齿在运行时就能改：关掉能省 1.5–2.5ms 的填充开销。
 func apply_visual_quality() -> void:
 	var viewport := get_viewport()
-	if viewport != null:
-		viewport.msaa_2d = Viewport.MSAA_4X if aa_2d else Viewport.MSAA_DISABLED
+	if viewport == null:
+		return
+	match aa_2d_level:
+		0:
+			viewport.msaa_2d = Viewport.MSAA_DISABLED
+		1:
+			viewport.msaa_2d = Viewport.MSAA_2X
+		_:
+			viewport.msaa_2d = Viewport.MSAA_4X
+
+
+## 预设：一次把八项调成一组常用组合（单项改动后预设显示为「自定义」）。
+func apply_quality_preset(name: String) -> void:
+	quality_preset = name
+	match name:
+		"low":
+			aa_2d_level = 0
+			note_detail_fine = false
+			note_glow = false
+			cursor_trail = "off"
+			fx_budget = "light"
+			ring_3d_scale = "low"
+			ring_3d_hz = 30
+			bar_lines = false
+		"mid":
+			aa_2d_level = 1
+			note_detail_fine = true
+			note_glow = true
+			cursor_trail = "short"
+			fx_budget = "light"
+			ring_3d_scale = "mid"
+			ring_3d_hz = 30
+			bar_lines = true
+		_:
+			quality_preset = "high"
+			aa_2d_level = 2
+			note_detail_fine = true
+			note_glow = true
+			cursor_trail = "long"
+			fx_budget = "full"
+			ring_3d_scale = "high"
+			ring_3d_hz = 60
+			bar_lines = true
 
 
 ## 帧率选项：60 / 120 保留垂直同步（跑不满就自动落到下一个整除，稳定优先）；
@@ -520,7 +583,7 @@ func effective_latency_sec() -> float:
 
 
 func save_settings() -> void:
-	var data := {"path_wait_indicator": path_wait_indicator, "note_skin": note_skin, "hit_fx_style": hit_fx_style, "hit_sfx_style": hit_sfx_style, "ffmpeg": ffmpeg_path, "frame_cap": frame_cap, "audio_buffer_ms": audio_buffer_ms, "playtest_offset_ms": playtest_offset_ms, "audio_latency_ms": audio_latency_ms, "dynamic_offset": dynamic_offset, "playtest_auto": playtest_auto, "last_bias_ms": last_bias_ms, "cursor_scale": cursor_scale, "flow_scale": flow_scale, "star_speed": star_speed, "trace_color": trace_color.to_html(), "aa_2d": aa_2d, "note_detail_fine": note_detail_fine}
+	var data := {"path_wait_indicator": path_wait_indicator, "note_skin": note_skin, "hit_fx_style": hit_fx_style, "hit_sfx_style": hit_sfx_style, "ffmpeg": ffmpeg_path, "frame_cap": frame_cap, "audio_buffer_ms": audio_buffer_ms, "playtest_offset_ms": playtest_offset_ms, "audio_latency_ms": audio_latency_ms, "dynamic_offset": dynamic_offset, "playtest_auto": playtest_auto, "last_bias_ms": last_bias_ms, "cursor_scale": cursor_scale, "flow_scale": flow_scale, "star_speed": star_speed, "trace_color": trace_color.to_html(), "aa_2d_level": aa_2d_level, "note_detail_fine": note_detail_fine, "note_glow": note_glow, "cursor_trail": cursor_trail, "fx_budget": fx_budget, "ring_3d_scale": ring_3d_scale, "ring_3d_hz": ring_3d_hz, "bar_lines": bar_lines, "quality_preset": quality_preset}
 	var file := FileAccess.open(SETTINGS_PATH, FileAccess.WRITE)
 	if file != null:
 		file.store_string(JSON.stringify(data, "\t"))

@@ -9,6 +9,22 @@ const TOOL_ORDER := [
 var _app: Node = null
 var _preview: Preview3D
 var _view_menu: MenuButton
+var _quality_menu: PopupMenu
+var _quality_rows: Dictionary = {}
+var _quality_ids: Dictionary = {}
+
+## 画质菜单：每项一行子菜单，行标题带当前值，子项打勾。只影响渲染，不碰判定。
+const QUALITY_OPTIONS := [
+	{"key": "preset", "label": "预设", "choices": [["高（全开）", 80], ["中", 81], ["低", 82]]},
+	{"key": "aa_2d_level", "label": "2D 抗锯齿", "choices": [["关", 60], ["2×", 61], ["4×", 62]]},
+	{"key": "note_detail_fine", "label": "音符精细度", "choices": [["全画质", 63], ["省电", 64]]},
+	{"key": "note_glow", "label": "音符光晕", "choices": [["开", 65], ["关", 66]]},
+	{"key": "cursor_trail", "label": "光标拖尾", "choices": [["长", 67], ["短", 68], ["关", 69]]},
+	{"key": "fx_budget", "label": "命中特效", "choices": [["完整", 70], ["精简", 71], ["关", 72]]},
+	{"key": "ring_3d_scale", "label": "3D 环分辨率", "choices": [["高", 73], ["中", 74], ["低", 75]]},
+	{"key": "ring_3d_hz", "label": "3D 环刷新", "choices": [["60Hz", 76], ["30Hz", 77]]},
+	{"key": "bar_lines", "label": "小节线", "choices": [["开", 78], ["关", 79]]},
+]
 var _canvas: ChartCanvas
 var _event_track: EventTrack
 var _inspector: Inspector
@@ -288,9 +304,9 @@ func _build_ui() -> void:
 	]))
 	_view_menu = _menu("视图", [
 		["显示/隐藏 HUD", 20], ["调试叠层", 21], ["波形", 22], ["从上往下写入", 25], ["-", 0], ["边界状态轨", 23], ["时间 / BPM (F6)", 24],
-		["-", 0], ["2D 抗锯齿：开", 26], ["音符精细度：全画质", 27],
 	])
 	brand_row.add_child(_view_menu)
+	_build_quality_menu()
 	brand_row.add_child(_menu("插入", [
 		["Tap", 30], ["Hold", 31], ["Path", 32], ["Seek", 33], ["Anchor", 34], ["Bell", 35], ["Limit", 36], ["-", 0], ["BoundaryEvent", 37], ["RingState 关键帧", 38],
 	]))
@@ -867,13 +883,107 @@ func _set_stretch_error(has_error: bool) -> void:
 		_stretch_edit.remove_theme_color_override("font_color")
 
 
-## 视图菜单里两个性能选项的当前值。
-func _refresh_view_menu() -> void:
-	if _view_menu == null or _app == null:
+func _build_quality_menu() -> void:
+	var root := _view_menu.get_popup()
+	root.add_separator()
+	_quality_menu = PopupMenu.new()
+	_quality_menu.name = "QualityMenu"
+	root.add_child(_quality_menu)
+	root.add_submenu_node_item("画质", _quality_menu)
+	for option in QUALITY_OPTIONS:
+		var key := String(option["key"])
+		var child := PopupMenu.new()
+		child.name = "Q_" + key
+		_quality_menu.add_child(child)
+		for index in (option["choices"] as Array).size():
+			var choice: Array = (option["choices"] as Array)[index]
+			child.add_item(String(choice[0]), int(choice[1]))
+			_quality_ids[int(choice[1])] = {"key": key, "index": index}
+		child.id_pressed.connect(_on_menu)
+		_quality_menu.add_submenu_node_item(String(option["label"]), child)
+		_quality_rows[key] = {"menu": child, "row": _quality_menu.get_item_count() - 1,
+			"label": String(option["label"]), "choices": option["choices"]}
+
+
+## 当前选项落在第几个子项（-1 = 自定义，不勾任何一项）。
+func _quality_index(key: String) -> int:
+	match key:
+		"preset":
+			return ["high", "mid", "low"].find(_app.quality_preset)
+		"aa_2d_level":
+			return _app.aa_2d_level
+		"note_detail_fine":
+			return 0 if _app.note_detail_fine else 1
+		"note_glow":
+			return 0 if _app.note_glow else 1
+		"cursor_trail":
+			return ["long", "short", "off"].find(_app.cursor_trail)
+		"fx_budget":
+			return ["full", "light", "off"].find(_app.fx_budget)
+		"ring_3d_scale":
+			return ["high", "mid", "low"].find(_app.ring_3d_scale)
+		"ring_3d_hz":
+			return 0 if _app.ring_3d_hz >= 60 else 1
+		"bar_lines":
+			return 0 if _app.bar_lines else 1
+	return -1
+
+
+func _set_quality_index(key: String, index: int) -> void:
+	if key == "preset":
+		_app.apply_quality_preset(["high", "mid", "low"][clampi(index, 0, 2)])
 		return
-	var popup := _view_menu.get_popup()
-	popup.set_item_text(popup.get_item_index(26), "2D 抗锯齿：%s" % ("开" if _app.aa_2d else "关"))
-	popup.set_item_text(popup.get_item_index(27), "音符精细度：%s" % ("全画质" if _app.note_detail_fine else "省电"))
+	match key:
+		"aa_2d_level":
+			_app.aa_2d_level = clampi(index, 0, 2)
+		"note_detail_fine":
+			_app.note_detail_fine = index == 0
+		"note_glow":
+			_app.note_glow = index == 0
+		"cursor_trail":
+			_app.cursor_trail = ["long", "short", "off"][clampi(index, 0, 2)]
+		"fx_budget":
+			_app.fx_budget = ["full", "light", "off"][clampi(index, 0, 2)]
+		"ring_3d_scale":
+			_app.ring_3d_scale = ["high", "mid", "low"][clampi(index, 0, 2)]
+		"ring_3d_hz":
+			_app.ring_3d_hz = 60 if index == 0 else 30
+		"bar_lines":
+			_app.bar_lines = index == 0
+	_app.quality_preset = "custom"
+
+
+## 把画质设置推给预览与视口。
+func _apply_visual_options() -> void:
+	if _app == null:
+		return
+	_app.apply_visual_quality()
+	if _preview == null:
+		return
+	_preview.note_detail_fine = _app.note_detail_fine
+	_preview.note_glow = _app.note_glow
+	_preview.cursor_trail_mode = _app.cursor_trail
+	_preview.fx_budget = _app.fx_budget
+	_preview.ring_3d_scale = _app.ring_3d_scale
+	_preview.ring_3d_hz = _app.ring_3d_hz
+	_preview.bar_lines_visible = _app.bar_lines
+	_preview.apply_ring_quality()
+	_preview.request_redraw()
+
+
+## 把当前画质填回菜单（行标题带数值，子项打勾）。
+func _refresh_view_menu() -> void:
+	if _quality_menu == null or _app == null:
+		return
+	for key in _quality_rows.keys():
+		var row: Dictionary = _quality_rows[key]
+		var menu: PopupMenu = row["menu"]
+		var index := _quality_index(String(key))
+		var choices: Array = row["choices"]
+		var value_text := "自定义" if index < 0 else String(choices[index][0])
+		_quality_menu.set_item_text(int(row["row"]), "%s：%s" % [String(row["label"]), value_text])
+		for i in menu.item_count:
+			menu.set_item_checked(i, i == index)
 
 
 func _menu(title: String, items: Array) -> MenuButton:
@@ -1066,7 +1176,7 @@ func _sync_appearance() -> void:
 	if _app == null:
 		return
 	_preview.note_skin = _app.note_skin
-	_preview.note_detail_fine = _app.note_detail_fine
+	_apply_visual_options()
 	_refresh_view_menu()
 	_preview.hit_fx_style = _app.hit_fx_style
 	_preview.cursor_scale = _app.cursor_scale
@@ -1669,6 +1779,13 @@ func _format_ms(ms: float) -> String:
 
 
 func _on_menu(id: int) -> void:
+	if _quality_ids.has(id) and _app != null:
+		var entry: Dictionary = _quality_ids[id]
+		_set_quality_index(String(entry["key"]), int(entry["index"]))
+		_app.save_settings()
+		_apply_visual_options()
+		_refresh_view_menu()
+		return
 	match id:
 		0:
 			_new_dialog.popup_centered_ratio(0.62)
@@ -1717,19 +1834,6 @@ func _on_menu(id: int) -> void:
 		21:
 			_app.debug_overlay = not _app.debug_overlay
 			_preview.show_debug = _app.debug_overlay
-		26:
-			_app.aa_2d = not _app.aa_2d
-			_app.apply_visual_quality()
-			_app.save_settings()
-			_refresh_view_menu()
-			_show_toast("2D 抗锯齿：%s" % ("开" if _app.aa_2d else "关（省 1.5–2.5ms）"), "info")
-		27:
-			_app.note_detail_fine = not _app.note_detail_fine
-			_preview.note_detail_fine = _app.note_detail_fine
-			_preview.request_redraw()
-			_app.save_settings()
-			_refresh_view_menu()
-			_show_toast("音符精细度：%s" % ("全画质" if _app.note_detail_fine else "省电"), "info")
 		22:
 			_app.waveform_visible = not _app.waveform_visible
 		25:
