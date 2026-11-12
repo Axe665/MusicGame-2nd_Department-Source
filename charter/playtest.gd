@@ -196,16 +196,9 @@ var _save_replay_dialog: FileDialog = null
 ## 导出视频：先让子进程用 Movie Maker 渲染 AVI，再用 ffmpeg 转 mp4。
 ## export_mode 只在子进程里为 true：放完自动退出，不录结算画面。
 var export_mode: bool = false
-## 导出画质：渲染永远是 1600×900（Movie Maker 跟着窗口走），
-## 这里选的是成品文件的尺寸，靠 ffmpeg 缩放下来。
-const EXPORT_QUALITY_KEYS := ["native", "720p", "540p"]
-const EXPORT_QUALITY_LABELS := ["原始 900p（最清晰）", "720p（推荐，体积小一半）", "540p（体积最小）"]
-const EXPORT_QUALITY_SPECS := {
-	"native": [1600, 900, "900p 原始"],
-	"720p": [1280, 720, "720p"],
-	"540p": [960, 540, "540p"],
-}
-var _export_quality_picker: OptionButton
+## 渲染永远是 1600×900（Movie Maker 跟着窗口走，改不了），
+## 成品统一缩到 720p：缩小等于超采样，比直接低分辨率渲染更清楚。
+const EXPORT_VIDEO_SIZE := Vector2i(1280, 720)
 var _export_button: Button
 var _export_dialog: FileDialog = null
 var _export_stage: int = 0
@@ -598,19 +591,6 @@ func _build_ui() -> void:
 	_export_button.pressed.connect(_export_video)
 	_export_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	result_buttons.add_child(_export_button)
-	_export_quality_picker = OptionButton.new()
-	_export_quality_picker.tooltip_text = "导出画质：越高越清楚，也越慢"
-	for label in EXPORT_QUALITY_LABELS:
-		_export_quality_picker.add_item(label)
-	var current := EXPORT_QUALITY_KEYS.find(String(_app.export_quality if _app != null else "720p"))
-	_export_quality_picker.select(maxi(0, current))
-	_export_quality_picker.size_flags_horizontal = Control.SIZE_SHRINK_END
-	_export_quality_picker.item_selected.connect(func(index: int) -> void:
-		if _app == null:
-			return
-		_app.export_quality = EXPORT_QUALITY_KEYS[clampi(index, 0, EXPORT_QUALITY_KEYS.size() - 1)]
-		_app.save_settings())
-	result_buttons.add_child(_export_quality_picker)
 	var retry_button := Button.new()
 	retry_button.text = "重试"
 	retry_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -1128,7 +1108,7 @@ func _start_video_export(path: String) -> void:
 	if chart != null:
 		_export_total_ms = maxf(1.0, chart.timing.beat_to_chart_ms(chart.duration_beats()))
 	_ensure_export_window()
-	_export_window.title = "导出回放视频（%s）" % _export_quality_label()
+	_export_window.title = "导出回放视频"
 	_export_bar.value = 0.0
 	_export_label.text = "准备渲染…"
 	var ok_button := _export_window.get_ok_button()
@@ -1230,15 +1210,11 @@ func _poll_render_stage() -> void:
 		return
 	var progress_file := ProjectSettings.globalize_path("user://export_ffmpeg.txt")
 	DirAccess.remove_absolute(progress_file)
-	var spec := _export_quality_spec()
 	var args := PackedStringArray([
 		"-y", "-progress", progress_file, "-nostats",
 		"-i", _export_avi,
-	])
-	# 渲染永远是 1600×900，选的画质靠缩放实现（缩小比放大好看，等于超采样）。
-	if int(spec[0]) != 1600 or int(spec[1]) != 900:
-		args.append_array(["-vf", "scale=%d:%d:flags=lanczos" % [int(spec[0]), int(spec[1])]])
-	args.append_array([
+		# 1600×900 缩到 720p，顺便当超采样。
+		"-vf", "scale=%d:%d:flags=lanczos" % [EXPORT_VIDEO_SIZE.x, EXPORT_VIDEO_SIZE.y],
 		"-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-crf", "23",
 		"-c:a", "aac", "-b:a", "192k",
 		_export_mp4,
@@ -1271,19 +1247,6 @@ func _poll_encode_stage() -> void:
 	get_tree().create_timer(3.0).timeout.connect(func() -> void:
 		if _export_window != null and is_instance_valid(_export_window):
 			_export_window.hide())
-
-
-func _export_quality_key() -> String:
-	var key := String(_app.export_quality if _app != null else "720p")
-	return key if EXPORT_QUALITY_SPECS.has(key) else "720p"
-
-
-func _export_quality_spec() -> Array:
-	return EXPORT_QUALITY_SPECS[_export_quality_key()]
-
-
-func _export_quality_label() -> String:
-	return String(_export_quality_spec()[2])
 
 
 func _set_export_progress(fraction: float, label: String) -> void:
