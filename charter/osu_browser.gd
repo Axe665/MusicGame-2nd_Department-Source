@@ -162,7 +162,8 @@ func _build() -> void:
 		_favorites_only = on
 		_page = 0
 		_fill_cards()
-		_ensure_favorites_loaded()
+		if on:
+			_ensure_favorites_loaded()
 	)
 	_filters_row.add_child(_favorites_check)
 
