@@ -12,6 +12,10 @@ var _view_menu: MenuButton
 var _quality_menu: PopupMenu
 var _quality_rows: Dictionary = {}
 var _quality_widgets: Dictionary = {}
+var _hud_menu: PopupMenu
+var _hud_rows: Dictionary = {}
+var _hud_ids: Dictionary = {}
+var _hud_widgets: Dictionary = {}
 var _quality_ids: Dictionary = {}
 
 ## 画质菜单：每项一行子菜单，行标题带当前值，子项打勾。只影响渲染，不碰判定。
@@ -25,6 +29,21 @@ const QUALITY_OPTIONS := [
 	{"key": "ring_3d_scale", "label": "3D 环分辨率", "choices": [["高", 73], ["中", 74], ["低", 75]]},
 	{"key": "ring_3d_hz", "label": "3D 环刷新", "choices": [["60Hz", 76], ["30Hz", 77]]},
 	{"key": "bar_lines", "label": "小节线", "choices": [["开", 78], ["关", 79]]},
+]
+
+## 界面（HUD）选项：和 视图 → 画质 同样的菜单结构，只影响显示。
+const HUD_OPTIONS := [
+	{"key": "hud_scale", "label": "HUD 缩放", "choices": [["80%", 120], ["100%", 121], ["120%", 122]]},
+	{"key": "hud_combo_mode", "label": "连击", "choices": [["屏幕中心", 123], ["右上角", 124], ["关", 125]]},
+	{"key": "hud_progress_style", "label": "进度仪表", "choices": [["环外弧", 126], ["关", 127]]},
+	{"key": "hud_judge_position", "label": "判定字位置", "choices": [["跟音符", 128], ["屏幕中心", 129], ["关", 130]]},
+	{"key": "hud_tier_counts", "label": "判定计数", "choices": [["游玩中", 131], ["仅结算", 132]]},
+	{"key": "hud_opacity", "label": "HUD 透明度", "choices": [["100%", 133], ["85%", 134], ["70%", 135]]},
+	{"key": "hud_show_title", "label": "左上：曲名", "choices": [["显示", 136], ["隐藏", 137]]},
+	{"key": "hud_show_difficulty", "label": "左上：难度", "choices": [["显示", 138], ["隐藏", 139]]},
+	{"key": "hud_show_percent", "label": "左上：进度%", "choices": [["显示", 140], ["隐藏", 141]]},
+	{"key": "hud_show_time", "label": "左上：用时", "choices": [["显示", 142], ["隐藏", 143]]},
+	{"key": "hud_show_watermark", "label": "左上：试玩水印", "choices": [["显示", 144], ["隐藏", 145]]},
 ]
 var _canvas: ChartCanvas
 var _event_track: EventTrack
@@ -308,6 +327,7 @@ func _build_ui() -> void:
 	])
 	brand_row.add_child(_view_menu)
 	_build_quality_menu()
+	_build_hud_menu()
 	brand_row.add_child(_menu("插入", [
 		["Tap", 30], ["Hold", 31], ["Path", 32], ["Seek", 33], ["Anchor", 34], ["Bell", 35], ["Limit", 36], ["-", 0], ["BoundaryEvent", 37], ["RingState 关键帧", 38],
 	]))
@@ -906,6 +926,80 @@ func _build_quality_menu() -> void:
 			"label": String(option["label"]), "choices": option["choices"]}
 
 
+func _build_hud_menu() -> void:
+	var root := _view_menu.get_popup()
+	_hud_menu = PopupMenu.new()
+	_hud_menu.name = "HudMenu"
+	root.add_child(_hud_menu)
+	root.add_submenu_node_item("界面", _hud_menu)
+	for option in HUD_OPTIONS:
+		var key := String(option["key"])
+		var child := PopupMenu.new()
+		child.name = "H_" + key
+		_hud_menu.add_child(child)
+		for index in (option["choices"] as Array).size():
+			var choice: Array = (option["choices"] as Array)[index]
+			child.add_item(String(choice[0]), int(choice[1]))
+			_hud_ids[int(choice[1])] = {"key": key, "index": index}
+		child.id_pressed.connect(_on_menu)
+		_hud_menu.add_submenu_node_item(String(option["label"]), child)
+		_hud_rows[key] = {"menu": child, "row": _hud_menu.get_item_count() - 1,
+			"label": String(option["label"]), "choices": option["choices"]}
+
+
+func _hud_index(key: String) -> int:
+	match key:
+		"hud_scale":
+			return [80, 100, 120].find(_app.hud_scale)
+		"hud_combo_mode":
+			return ["center", "corner", "off"].find(_app.hud_combo_mode)
+		"hud_progress_style":
+			return ["ring", "off"].find(_app.hud_progress_style)
+		"hud_judge_position":
+			return ["note", "center", "off"].find(_app.hud_judge_position)
+		"hud_tier_counts":
+			return ["play", "off"].find(_app.hud_tier_counts)
+		"hud_opacity":
+			return [100, 85, 70].find(_app.hud_opacity)
+		"hud_show_title":
+			return 0 if _app.hud_show_title else 1
+		"hud_show_difficulty":
+			return 0 if _app.hud_show_difficulty else 1
+		"hud_show_percent":
+			return 0 if _app.hud_show_percent else 1
+		"hud_show_time":
+			return 0 if _app.hud_show_time else 1
+		"hud_show_watermark":
+			return 0 if _app.hud_show_watermark else 1
+	return -1
+
+
+func _set_hud_index(key: String, index: int) -> void:
+	match key:
+		"hud_scale":
+			_app.hud_scale = [80, 100, 120][clampi(index, 0, 2)]
+		"hud_combo_mode":
+			_app.hud_combo_mode = ["center", "corner", "off"][clampi(index, 0, 2)]
+		"hud_progress_style":
+			_app.hud_progress_style = ["ring", "off"][clampi(index, 0, 1)]
+		"hud_judge_position":
+			_app.hud_judge_position = ["note", "center", "off"][clampi(index, 0, 2)]
+		"hud_tier_counts":
+			_app.hud_tier_counts = ["play", "off"][clampi(index, 0, 1)]
+		"hud_opacity":
+			_app.hud_opacity = [100, 85, 70][clampi(index, 0, 2)]
+		"hud_show_title":
+			_app.hud_show_title = index == 0
+		"hud_show_difficulty":
+			_app.hud_show_difficulty = index == 0
+		"hud_show_percent":
+			_app.hud_show_percent = index == 0
+		"hud_show_time":
+			_app.hud_show_time = index == 0
+		"hud_show_watermark":
+			_app.hud_show_watermark = index == 0
+
+
 ## 当前选项落在第几个子项（-1 = 自定义，不勾任何一项）。
 func _quality_index(key: String) -> int:
 	match key:
@@ -968,6 +1062,7 @@ func _apply_visual_options() -> void:
 	_preview.ring_3d_scale = _app.ring_3d_scale
 	_preview.ring_3d_hz = _app.ring_3d_hz
 	_preview.bar_lines_visible = _app.bar_lines
+	_preview.hud_options = _app.hud_options()
 	_preview.apply_ring_quality()
 	_preview.request_redraw()
 	# 试玩里有自己的 Preview3D：局内改画质要同时推给它。
@@ -980,6 +1075,7 @@ func _apply_visual_options() -> void:
 		inner.ring_3d_scale = _app.ring_3d_scale
 		inner.ring_3d_hz = _app.ring_3d_hz
 		inner.bar_lines_visible = _app.bar_lines
+		inner.hud_options = _app.hud_options()
 		inner.apply_ring_quality()
 		inner.request_redraw()
 
@@ -1000,6 +1096,18 @@ func _refresh_view_menu() -> void:
 		var pick: OptionButton = _quality_widgets.get(String(key))
 		if pick != null:
 			pick.select(index if index >= 0 else choices.size())
+	if _hud_menu != null:
+		for key in _hud_rows.keys():
+			var hud_row: Dictionary = _hud_rows[key]
+			var hud_popup: PopupMenu = hud_row["menu"]
+			var hud_index := _hud_index(String(key))
+			var hud_choices: Array = hud_row["choices"]
+			_hud_menu.set_item_text(int(hud_row["row"]), "%s：%s" % [String(hud_row["label"]), String(hud_choices[hud_index][0]) if hud_index >= 0 else "—"])
+			for i in hud_popup.item_count:
+				hud_popup.set_item_checked(i, i == hud_index)
+			var hud_pick: OptionButton = _hud_widgets.get(String(key))
+			if hud_pick != null and hud_index >= 0:
+				hud_pick.select(hud_index)
 
 
 ## 试玩设置里的画质行（和 视图 → 画质 同一份数据）。
@@ -1035,6 +1143,37 @@ func _build_quality_rows(parent: Control) -> void:
 		)
 		grid.add_child(pick)
 		_quality_widgets[key] = pick
+
+
+## 试玩设置里的界面行（和 视图 → 界面 同一份数据）。
+func _build_hud_rows(parent: Control) -> void:
+	var title := Label.new()
+	title.text = "界面（只影响显示）"
+	title.add_theme_font_size_override("font_size", 12)
+	parent.add_child(title)
+	var grid := GridContainer.new()
+	grid.columns = 2
+	grid.add_theme_constant_override("h_separation", 10)
+	grid.add_theme_constant_override("v_separation", 3)
+	parent.add_child(grid)
+	for option in HUD_OPTIONS:
+		var key := String(option["key"])
+		var label := Label.new()
+		label.text = String(option["label"])
+		label.add_theme_font_size_override("font_size", 11)
+		grid.add_child(label)
+		var pick := OptionButton.new()
+		pick.add_theme_font_size_override("font_size", 11)
+		for choice in option["choices"]:
+			pick.add_item(String(choice[0]))
+		pick.item_selected.connect(func(index: int) -> void:
+			_set_hud_index(key, index)
+			_app.save_settings()
+			_apply_visual_options()
+			_refresh_view_menu()
+		)
+		grid.add_child(pick)
+		_hud_widgets[key] = pick
 
 
 func _menu(title: String, items: Array) -> MenuButton:
@@ -1830,6 +1969,13 @@ func _format_ms(ms: float) -> String:
 
 
 func _on_menu(id: int) -> void:
+	if _hud_ids.has(id) and _app != null:
+		var hud_entry: Dictionary = _hud_ids[id]
+		_set_hud_index(String(hud_entry["key"]), int(hud_entry["index"]))
+		_app.save_settings()
+		_apply_visual_options()
+		_refresh_view_menu()
+		return
 	if _quality_ids.has(id) and _app != null:
 		var entry: Dictionary = _quality_ids[id]
 		_set_quality_index(String(entry["key"]), int(entry["index"]))
@@ -1960,7 +2106,7 @@ func _open_playtest_setup(from_start: bool) -> void:
 		_playtest_auto.button_pressed = bool(_app.playtest_auto)
 	if _playtest_bias != null:
 		_playtest_bias.text = "上次平均偏差 %+.1fms" % float(_app.last_bias_ms)
-	_playtest_dialog.popup_centered(Vector2i(430, 600))
+	_playtest_dialog.popup_centered(Vector2i(470, 700))
 
 
 func _build_playtest_dialog() -> void:
@@ -1968,9 +2114,15 @@ func _build_playtest_dialog() -> void:
 	_playtest_dialog.title = "试玩设置"
 	_playtest_dialog.ok_button_text = "开始"
 	_playtest_dialog.min_size = Vector2i(360, 220)
+	# 选项越加越多，内容放进滚动区，小窗口也不会把按钮挤出屏幕。
+	var scroll := ScrollContainer.new()
+	scroll.custom_minimum_size = Vector2(400, 540)
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	_playtest_dialog.add_child(scroll)
 	var box := VBoxContainer.new()
+	box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	box.add_theme_constant_override("separation", 10)
-	_playtest_dialog.add_child(box)
+	scroll.add_child(box)
 	_playtest_rate = _playtest_spin_row(box, "倍速", 0.5, 2.0, 0.05, 1.0, "×")
 	_playtest_flow = _playtest_spin_row(box, "流速", 0.05, 3.0, 0.01, 1.0, "×")
 	_playtest_star = _playtest_spin_row(box, "星速", 0.5, 2.0, 0.05, 1.0, "×")
@@ -1998,6 +2150,8 @@ func _build_playtest_dialog() -> void:
 	box.add_child(_playtest_bias)
 	box.add_child(HSeparator.new())
 	_build_quality_rows(box)
+	box.add_child(HSeparator.new())
+	_build_hud_rows(box)
 	var trace_row := HBoxContainer.new()
 	box.add_child(trace_row)
 	var trace_label := Label.new()

@@ -53,6 +53,24 @@ var ring_3d_scale: String = "high"
 ## 3D 背景刷新率 60 / 30（2D 与判定永远按游戏帧率）
 var ring_3d_hz: int = 60
 var bar_lines: bool = true
+## HUD 选项（视图 → 界面）。只影响显示，不碰判定。
+## 80 / 100 / 120
+var hud_scale: int = 100
+## center / corner / off
+var hud_combo_mode: String = "center"
+## ring / off
+var hud_progress_style: String = "ring"
+## note / center / off
+var hud_judge_position: String = "note"
+## play / off（结算页固定显示）
+var hud_tier_counts: String = "play"
+## 100 / 85 / 70
+var hud_opacity: int = 100
+var hud_show_title: bool = true
+var hud_show_difficulty: bool = true
+var hud_show_percent: bool = false
+var hud_show_time: bool = false
+var hud_show_watermark: bool = false
 var hit_fx_style: String = "burst"
 var hit_sfx_style: String = "default"
 ## 试玩光标大小倍率（1.0 = 默认）。
@@ -461,6 +479,23 @@ func _load_settings() -> void:
 			ring_3d_hz = 30 if int(data.get("ring_3d_hz", ring_3d_hz)) == 30 else 60
 			bar_lines = bool(data.get("bar_lines", bar_lines))
 			quality_preset = String(data.get("quality_preset", "high"))
+			hud_scale = int(data.get("hud_scale", hud_scale))
+			hud_scale = hud_scale if hud_scale in [80, 100, 120] else 100
+			var combo_mode := String(data.get("hud_combo_mode", hud_combo_mode))
+			hud_combo_mode = combo_mode if combo_mode in ["center", "corner", "off"] else "center"
+			var progress_style := String(data.get("hud_progress_style", hud_progress_style))
+			hud_progress_style = progress_style if progress_style in ["ring", "off"] else "ring"
+			var judge_pos := String(data.get("hud_judge_position", hud_judge_position))
+			hud_judge_position = judge_pos if judge_pos in ["note", "center", "off"] else "note"
+			var tier_mode := String(data.get("hud_tier_counts", hud_tier_counts))
+			hud_tier_counts = tier_mode if tier_mode in ["play", "off"] else "play"
+			hud_opacity = int(data.get("hud_opacity", hud_opacity))
+			hud_opacity = hud_opacity if hud_opacity in [100, 85, 70] else 100
+			hud_show_title = bool(data.get("hud_show_title", hud_show_title))
+			hud_show_difficulty = bool(data.get("hud_show_difficulty", hud_show_difficulty))
+			hud_show_percent = bool(data.get("hud_show_percent", hud_show_percent))
+			hud_show_time = bool(data.get("hud_show_time", hud_show_time))
+			hud_show_watermark = bool(data.get("hud_show_watermark", hud_show_watermark))
 			hit_fx_style = String(data.get("hit_fx_style", hit_fx_style))
 			hit_sfx_style = String(data.get("hit_sfx_style", hit_sfx_style))
 			ffmpeg_path = String(data.get("ffmpeg", ffmpeg_path))
@@ -480,6 +515,23 @@ func _load_settings() -> void:
 	MediaIO.set_ffmpeg_exe(ffmpeg_path)
 	apply_frame_cap()
 	apply_visual_quality()
+
+
+## HUD 选项打包给 Preview3D（试玩 HUD 全部从这里读）。
+func hud_options() -> Dictionary:
+	return {
+		"scale": hud_scale,
+		"combo_mode": hud_combo_mode,
+		"progress_style": hud_progress_style,
+		"judge_position": hud_judge_position,
+		"tier_counts": hud_tier_counts,
+		"opacity": hud_opacity,
+		"show_title": hud_show_title,
+		"show_difficulty": hud_show_difficulty,
+		"show_percent": hud_show_percent,
+		"show_time": hud_show_time,
+		"show_watermark": hud_show_watermark,
+	}
 
 
 ## 2D 抗锯齿在运行时就能改：关掉能省 1.5–2.5ms 的填充开销。
@@ -583,7 +635,12 @@ func effective_latency_sec() -> float:
 
 
 func save_settings() -> void:
-	var data := {"path_wait_indicator": path_wait_indicator, "note_skin": note_skin, "hit_fx_style": hit_fx_style, "hit_sfx_style": hit_sfx_style, "ffmpeg": ffmpeg_path, "frame_cap": frame_cap, "audio_buffer_ms": audio_buffer_ms, "playtest_offset_ms": playtest_offset_ms, "audio_latency_ms": audio_latency_ms, "dynamic_offset": dynamic_offset, "playtest_auto": playtest_auto, "last_bias_ms": last_bias_ms, "cursor_scale": cursor_scale, "flow_scale": flow_scale, "star_speed": star_speed, "trace_color": trace_color.to_html(), "aa_2d_level": aa_2d_level, "note_detail_fine": note_detail_fine, "note_glow": note_glow, "cursor_trail": cursor_trail, "fx_budget": fx_budget, "ring_3d_scale": ring_3d_scale, "ring_3d_hz": ring_3d_hz, "bar_lines": bar_lines, "quality_preset": quality_preset}
+	var data := {"path_wait_indicator": path_wait_indicator, "note_skin": note_skin, "hit_fx_style": hit_fx_style, "hit_sfx_style": hit_sfx_style, "ffmpeg": ffmpeg_path, "frame_cap": frame_cap, "audio_buffer_ms": audio_buffer_ms, "playtest_offset_ms": playtest_offset_ms, "audio_latency_ms": audio_latency_ms, "dynamic_offset": dynamic_offset, "playtest_auto": playtest_auto, "last_bias_ms": last_bias_ms, "cursor_scale": cursor_scale, "flow_scale": flow_scale, "star_speed": star_speed, "trace_color": trace_color.to_html(), "aa_2d_level": aa_2d_level, "note_detail_fine": note_detail_fine, "note_glow": note_glow, "cursor_trail": cursor_trail, "fx_budget": fx_budget, "ring_3d_scale": ring_3d_scale, "ring_3d_hz": ring_3d_hz, "bar_lines": bar_lines, "quality_preset": quality_preset,
+		"hud_scale": hud_scale, "hud_combo_mode": hud_combo_mode, "hud_progress_style": hud_progress_style,
+		"hud_judge_position": hud_judge_position, "hud_tier_counts": hud_tier_counts, "hud_opacity": hud_opacity,
+		"hud_show_title": hud_show_title, "hud_show_difficulty": hud_show_difficulty,
+		"hud_show_percent": hud_show_percent, "hud_show_time": hud_show_time,
+		"hud_show_watermark": hud_show_watermark}
 	var file := FileAccess.open(SETTINGS_PATH, FileAccess.WRITE)
 	if file != null:
 		file.store_string(JSON.stringify(data, "\t"))
