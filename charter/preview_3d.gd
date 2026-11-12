@@ -232,6 +232,14 @@ func _exit_tree() -> void:
 var quality_level: int = 0
 ## 音符弧带采样精度：true = 1/4°（全画质），false = 1/6°（省电，边缘略方）。
 var note_detail_fine: bool = true
+## 音符粉色柔光 / 拖尾长度 / 命中特效强度 / 小节线：全部来自视图菜单的画质项。
+var note_glow: bool = true
+var cursor_trail_mode: String = "long"
+var fx_budget: String = "full"
+var bar_lines_visible: bool = true
+## 3D 背景渲染分辨率与刷新率（2D 与判定永远按游戏帧率）。
+var ring_3d_scale: String = "high"
+var ring_3d_hz: int = 60
 
 
 func set_quality_level(level: int) -> void:
@@ -239,8 +247,22 @@ func set_quality_level(level: int) -> void:
 	if next == quality_level:
 		return
 	quality_level = next
-	if _subviewport != null:
-		_subviewport.scaling_3d_scale = 0.8 if next == 0 else 0.62
+	apply_ring_quality()
+
+
+## 3D 背景分辨率：菜单选的高/中/低，再叠加弱机自动降档（降一档，最低 0.4）。
+func apply_ring_quality() -> void:
+	if _subviewport == null:
+		return
+	var scale := 0.8
+	match ring_3d_scale:
+		"mid":
+			scale = 0.65
+		"low":
+			scale = 0.5
+	if quality_level > 0:
+		scale = maxf(0.4, scale - 0.15)
+	_subviewport.scaling_3d_scale = scale
 	if _overlay != null:
 		_overlay.queue_redraw()
 
@@ -583,7 +605,8 @@ func _process(_delta: float) -> void:
 			# 3D 环只在形变/视角变化或每 16ms 重画一次；2D 与游戏逻辑不受影响。
 			var now3 := Time.get_ticks_usec()
 			var changed_3d := view_changed or _mesh_dirty or mesh_key != _last_mesh_key
-			if changed_3d or now3 - _last_3d_usec >= 16000:
+			var frame_gap := 16000 if ring_3d_hz >= 60 else 33000
+			if changed_3d or now3 - _last_3d_usec >= frame_gap:
 				_last_3d_usec = now3
 				_subviewport.render_target_update_mode = SubViewport.UPDATE_ONCE
 				_render_mode = SubViewport.UPDATE_ONCE
@@ -1620,8 +1643,16 @@ func _update_cursor_trail(delta: float) -> void:
 	if moved <= 1.0:
 		return
 	_cursor_trail.append({"pos": mouse_screen, "age": 0.0})
-	# 快速划动时缩短拖尾，减少绘制量（慢速保持 28 点）。
-	var cap := 8 if moved > 60.0 else 28
+	# 拖尾长度按画质项；快速划动时再缩短，减少绘制量。
+	var cap := 28
+	match cursor_trail_mode:
+		"off":
+			_cursor_trail.clear()
+			return
+		"short":
+			cap = 12
+	if moved > 60.0:
+		cap = mini(cap, 8)
 	while _cursor_trail.size() > cap:
 		_cursor_trail.pop_front()
 
@@ -1832,6 +1863,8 @@ static func bar_line_beats(timing: TimingMap, beat: float, pre: float) -> Array[
 
 
 func _draw_bar_lines(canvas: Control, chart: Chart, beat: float, pre: float) -> void:
+	if not bar_lines_visible:
+		return
 	var bars := bar_line_beats(chart.timing, beat, pre)
 	if bars.is_empty():
 		return
@@ -3194,8 +3227,9 @@ func _draw_length_band(canvas: Control, chart: Chart, angle: float, width: float
 			points.append(p)
 	if points.size() < 2:
 		return Vector2(INF, INF)
-	# Tap 的粉色柔光压低：保留一点氛围，但不抢白边和色带。
-	_stroke_band(canvas, points, color, 18.0 * ns, alpha, -1.0, 0.35)
+	# Tap 的粉色柔光压低：保留一点氛围，但不抢白边和色带（画质项可关）。
+	if note_glow:
+		_stroke_band(canvas, points, color, 18.0 * ns, alpha, -1.0, 0.35)
 	var cap_scale := ns * float(_skin()["scale"])
 	var center_point := points[points.size() / 2]
 	# 两端圆头：让长条读成一根胶囊，而不是一段没有边界的弧。
@@ -3724,17 +3758,20 @@ func _draw_note_pops(canvas: Control) -> void:
 
 func _draw_pulses(canvas: Control) -> void:
 	# 脉冲多时只给最新的 6 个画完整特效，其余降级成一个细环。
-	var crowded := _pulses.size() > 6
+	# 画质项「精简」永远走降级分支，「关」只留判定字。
+	var crowded := fx_budget != "full" or _pulses.size() > 6
 	for index in _pulses.size():
 		var pulse: Dictionary = _pulses[index]
 		var age := float(pulse.get("age", 0.0))
 		var alpha := clampf(1.0 - age / 0.42, 0.0, 1.0)
 		var point: Vector2 = pulse["pos"]
 		var color: Color = pulse["color"]
-		var sparks: Array = pulse.get("sparks", [])
+		var sparks: Array = pulse.get("sparks", []) if fx_budget == "full" else []
 		var kind := String(pulse.get("kind", "tap"))
 		# 星头单独一套 osu!std 式发散：密度再高也不降级，否则根本看不见。
-		if kind != "path" and crowded and index < _pulses.size() - 6:
+		if fx_budget == "off" and kind != "path":
+			pass
+		elif kind != "path" and crowded and index < _pulses.size() - 6:
 			canvas.draw_arc(point, 16.0 + age * 30.0, 0.0, TAU, 16, Color(color.r, color.g, color.b, 0.5 * alpha), 2.0, false)
 			continue
 		# 档位越差，爆点越小；位置按脉冲缩放，文字不缩。
