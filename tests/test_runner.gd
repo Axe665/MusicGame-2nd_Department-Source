@@ -20,6 +20,7 @@ func _initialize() -> void:
 		"test_compact_chart_code",
 		"test_path_judgement_label_pos",
 		"test_judge_label_geometry",
+		"test_note_glyph_geometry",
 		"test_path_chain_code",
 		"test_path_chain_judgement",
 		"test_path_erase_overlap",
@@ -526,6 +527,26 @@ func test_judge_label_geometry() -> bool:
 	var fallback := Preview3D.judge_label_anchor(center, center, 100.0, 20.0, true)
 	near(fallback.x, 800.0, 0.5, "center fallback keeps x")
 	near(fallback.y, 330.0, 0.5, "center fallback uses ring radius and points up")
+	return true
+
+
+func test_note_glyph_geometry() -> bool:
+	var center := Vector2(50, 50)
+	var top := NoteGlyph.ellipse_point(center, 20, 10, 0)
+	near(top.x, 50.0, 0.01, "0deg sits at the top")
+	near(top.y, 40.0, 0.01, "0deg is above the center")
+	var right := NoteGlyph.ellipse_point(center, 20, 10, 90)
+	near(right.x, 70.0, 0.01, "90deg sits on the right")
+	near(right.y, 50.0, 0.01, "90deg keeps the center height")
+	var arc := NoteGlyph.ring_points(center, 20, 10, -20, 20, 8)
+	eq(arc.size(), 9, "arc points include both ends")
+	var sector := NoteGlyph.sector_polygon(center, 20, 10, -30, 30, 8)
+	eq(sector.size(), 10, "sector starts at the center plus the arc")
+	ok(sector[0] == center, "sector polygon starts at the ring center")
+	var normal := NoteGlyph.ring_normal(center, 20, 10, 0)
+	near(normal.y, -1.0, 0.01, "top normal points up")
+	eq(NotePalette.CARDS.size(), 7, "palette keeps seven note cards")
+	eq(String(NotePalette.CARDS[5].get("type", "")), "bell", "bell card stays in the palette")
 	return true
 
 
