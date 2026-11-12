@@ -152,7 +152,6 @@ var _replay_bar: Control = null
 var _replay_slider: HSlider = null
 var _replay_play_button: Button = null
 var _replay_time_label: Label = null
-var _pause_button: Button = null
 const AUTO_LEAD_MS := 8.0              # 比判定时间早这么多就按下（吃掉帧量化误差）
 const AUTO_RELEASE_MS := 60.0          # Hold 尾判之后再松手，避免被判成提前松开
 const AUTO_PREVIEW_MS := 900.0         # 光标提前多久开始预判下一个要点
@@ -345,7 +344,7 @@ func _build_replay_bar() -> void:
 	_replay_bar.add_child(row)
 
 	var rewind := Button.new()
-	rewind.text = "⏮"
+	rewind.text = "回到开头"
 	rewind.tooltip_text = "回到开头（Home）"
 	rewind.focus_mode = Control.FOCUS_NONE
 	rewind.pressed.connect(func() -> void: _seek_replay(0.0))
@@ -495,18 +494,6 @@ func _build_ui() -> void:
 	UITheme.style_mono(_top_stats, 12, UITheme.INK)
 	stats_panel.add_child(_top_stats)
 
-	_pause_button = Button.new()
-	_pause_button.text = "⏸"
-	_pause_button.tooltip_text = "暂停（Esc / 空格）"
-	_pause_button.focus_mode = Control.FOCUS_NONE
-	_pause_button.custom_minimum_size = Vector2(40, 34)
-	_pause_button.pressed.connect(func() -> void: _set_paused(true))
-	add_child(_pause_button)
-	_pause_button.set_anchors_preset(Control.PRESET_TOP_RIGHT)
-	_pause_button.offset_left = -58
-	_pause_button.offset_top = 68
-	_pause_button.offset_right = -18
-	_pause_button.offset_bottom = 104
 	_build_replay_bar()
 
 	_results = PanelContainer.new()
@@ -966,7 +953,12 @@ func _active_offset() -> float:
 
 
 func _request_replay() -> void:
-	if replay_mode or _record == null or _record.event_count() == 0:
+	if replay_mode:
+		# 回放结束后再点一次 = 用同一份录制重头再放一遍。
+		if replay_source != null:
+			replay_requested.emit(replay_source)
+		return
+	if _record == null or _record.event_count() == 0:
 		return
 	replay_requested.emit(_record)
 
@@ -2567,8 +2559,13 @@ func _finish() -> void:
 			_active_offset(),
 		]
 	if _replay_button != null:
-		_replay_button.disabled = replay_mode or _record == null or _record.event_count() == 0
-		_replay_button.text = "重看本局（回放中）" if replay_mode else "重看本局"
+		var can_replay := false
+		if replay_mode:
+			can_replay = replay_source != null
+		else:
+			can_replay = _record != null and _record.event_count() > 0
+		_replay_button.disabled = not can_replay
+		_replay_button.text = "再看一遍" if replay_mode else "重看本局"
 	if _apply_bias_button != null:
 		var delta := -average_error
 		var can_apply: bool = not auto_play and not replay_mode and _errors.size() >= 8 and absf(delta) >= 1.0 \
