@@ -922,13 +922,73 @@ func _apply_detail_bga(info: Dictionary) -> void:
 
 ## ── BGA 询问与下载 ────────────────────────────────────────────────────
 func _maj_bga_info(id: String) -> Dictionary:
-	var info := await _head_info("https://majdata.net/api3/api/maichart/%s/video" % id, "https://majdata.net/")
+	var url := "https://majdata.net/api3/api/maichart/%s/video" % id
+	var info := await _head_info(url, "https://majdata.net/")
 	var code := int(info.get("code", 0))
 	if code == 200:
 		return {"state": "yes", "size": int(info.get("length", 0))}
 	if code == 404:
 		return {"state": "no", "size": 0}
-	return {"state": "unknown", "size": int(info.get("length", 0))}
+	if code == 405 or code == 403 or code == 501:
+		# 部分 CDN 对 HEAD 回 405/403，但 GET 是好的：用 1 字节 Range 再确认一次。
+		return await _probe_video_get(url)
+	return {"state": "unknown", "size": 0}
+
+
+func _probe_video_get(url: String) -> Dictionary:
+	_meta_seq += 1
+	var tmp := "user://probe_tmp_%d.txt" % _meta_seq
+	var body_tmp := "user://probe_body_%d.bin" % _meta_seq
+	var tmp_abs := ProjectSettings.globalize_path(tmp)
+	var body_abs := ProjectSettings.globalize_path(body_tmp)
+	if FileAccess.file_exists(tmp):
+		DirAccess.remove_absolute(tmp_abs)
+	if FileAccess.file_exists(body_tmp):
+		DirAccess.remove_absolute(body_abs)
+	var pid := OS.create_process("curl", [
+		"-sL", "--max-time", "6", "--max-filesize", "65536", "-r", "0-0",
+		"-A", "Mozilla/5.0", "-e", "https://majdata.net/",
+		"-D", tmp_abs, "-o", body_abs, url,
+	], false)
+	if pid <= 0:
+		return {"state": "unknown", "size": 0}
+	var started := Time.get_ticks_msec()
+	while OS.is_process_running(pid):
+		if Time.get_ticks_msec() - started > 11000:
+			OS.kill(pid)
+			break
+		await get_tree().create_timer(0.08).timeout
+	var code := 0
+	var length := 0
+	var is_video_type := false
+	if FileAccess.file_exists(tmp):
+		var text := FileAccess.get_file_as_string(tmp)
+		DirAccess.remove_absolute(tmp_abs)
+		for line in text.split("\n"):
+			var trimmed := line.strip_edges()
+			if trimmed.begins_with("HTTP/"):
+				var parts := trimmed.split(" ")
+				if parts.size() >= 2 and String(parts[1]).is_valid_int():
+					code = int(parts[1])
+			elif trimmed.to_lower().begins_with("content-type:"):
+				is_video_type = trimmed.to_lower().contains("video")
+			elif trimmed.to_lower().begins_with("content-range:"):
+				var slash := trimmed.find("/")
+				if slash >= 0:
+					var total := trimmed.substr(slash + 1).strip_edges()
+					if total.is_valid_int():
+						length = maxi(length, int(total))
+			elif trimmed.to_lower().begins_with("content-length:"):
+				var raw := trimmed.split(":", true, 1)
+				if raw.size() == 2 and String(raw[1]).strip_edges().is_valid_int():
+					length = maxi(length, int(String(raw[1]).strip_edges()))
+	if FileAccess.file_exists(body_tmp):
+		DirAccess.remove_absolute(body_abs)
+	if code == 404:
+		return {"state": "no", "size": 0}
+	if is_video_type and (code == 200 or code == 206):
+		return {"state": "yes", "size": length}
+	return {"state": "unknown", "size": length}
 
 
 func _ask_bga(meta: Dictionary) -> void:
