@@ -18,6 +18,10 @@ static var ffmpeg_exe: String = "ffmpeg"
 static var _ffmpeg_checked := false
 static var _ffmpeg_available := false
 static var last_error: String = ""
+## 转码参数改了就要 +1，旧缓存自动作废（旧文件由「清理转码缓存」回收）。
+const CACHE_VERSION := 2
+## 正在转码的目标路径 → true；同一个文件不做第二份 ffmpeg。
+static var _jobs: Dictionary = {}
 
 
 static func set_ffmpeg_exe(path: String) -> void:
@@ -64,7 +68,7 @@ static func video_cache_path(path: String) -> String:
 			size = file.get_length()
 			file.close()
 	var stem := path.get_file().get_basename().validate_filename()
-	var digest := ("%s|%d|%d" % [path, stamp, size]).md5_text().substr(0, 10)
+	var digest := ("v%d|%s|%d|%d" % [CACHE_VERSION, path, stamp, size]).md5_text().substr(0, 10)
 	return "user://media/%s_%s.ogv" % [stem, digest]
 
 
@@ -82,12 +86,8 @@ static func prepare_audio(path: String) -> String:
 		last_error = "该音频格式需要 ffmpeg；当前 PATH 中找不到 ffmpeg。"
 		return ""
 	DirAccess.make_dir_recursive_absolute("user://media")
-	var args := [
-		"-y", "-i", source, "-vn", "-acodec", "libvorbis", "-q:a", "5",
-		ProjectSettings.globalize_path(target),
-	]
 	var output: Array = []
-	var code := OS.execute(ffmpeg_exe, args, output, true, false)
+	var code := OS.execute(ffmpeg_exe, _audio_args(source, target), output, true, false)
 	if code != 0 or not FileAccess.file_exists(target):
 		last_error = "音频转换失败：%s" % path.get_file()
 		return ""
@@ -132,13 +132,22 @@ static func prepare_video_async(path: String, tree: SceneTree, progress: Callabl
 	if not has_ffmpeg():
 		last_error = "该视频格式需要 ffmpeg；当前 PATH 中找不到 ffmpeg。"
 		return ""
+	if _jobs.has(target):
+		# 编辑器预览和试玩可能同时打开同一段 BGA：等第一份转完，别起第二个 ffmpeg。
+		while _jobs.has(target) and not FileAccess.file_exists(target):
+			await tree.create_timer(0.2).timeout
+		if FileAccess.file_exists(target):
+			return target
+		return ""
 	DirAccess.make_dir_recursive_absolute("user://media")
+	_jobs[target] = true
 	var progress_path := _cache_path(path, "progress")
 	var progress_abs := ProjectSettings.globalize_path(progress_path)
 	if FileAccess.file_exists(progress_path):
 		DirAccess.remove_absolute(progress_abs)
 	var pid := OS.create_process(ffmpeg_exe, _video_args(_source_path(path), target, progress_abs), false)
 	if pid <= 0:
+		_jobs.erase(target)
 		last_error = "无法启动 ffmpeg。"
 		return ""
 	var duration := probe_video_duration(path)
@@ -148,6 +157,7 @@ static func prepare_video_async(path: String, tree: SceneTree, progress: Callabl
 			var ratio := -1.0 if duration <= 0.0 else clampf(seconds / duration, 0.0, 1.0)
 			progress.call(ratio, seconds)
 		await tree.create_timer(0.2).timeout
+	_jobs.erase(target)
 	if FileAccess.file_exists(progress_path):
 		DirAccess.remove_absolute(progress_abs)
 	if not FileAccess.file_exists(target):
@@ -158,15 +168,110 @@ static func prepare_video_async(path: String, tree: SceneTree, progress: Callabl
 	return target
 
 
+## 音频同理：FLAC / 导入包里的 mp3 转 OGG 走同一个「子进程 + 进度文件」流程。
+static func prepare_audio_async(path: String, tree: SceneTree, progress: Callable = Callable()) -> String:
+	last_error = ""
+	if path.is_empty():
+		return ""
+	if is_native_audio(path):
+		return path
+	var target := _cache_path(path, "ogg")
+	if FileAccess.file_exists(target):
+		return target
+	if tree == null:
+		return prepare_audio(path)
+	if not has_ffmpeg():
+		last_error = "该音频格式需要 ffmpeg；当前 PATH 中找不到 ffmpeg。"
+		return ""
+	if _jobs.has(target):
+		while _jobs.has(target) and not FileAccess.file_exists(target):
+			await tree.create_timer(0.2).timeout
+		if FileAccess.file_exists(target):
+			return target
+		return ""
+	DirAccess.make_dir_recursive_absolute("user://media")
+	_jobs[target] = true
+	var progress_path := _cache_path(path, "progress")
+	var progress_abs := ProjectSettings.globalize_path(progress_path)
+	if FileAccess.file_exists(progress_path):
+		DirAccess.remove_absolute(progress_abs)
+	var pid := OS.create_process(ffmpeg_exe, _audio_args(_source_path(path), target, progress_abs), false)
+	if pid <= 0:
+		_jobs.erase(target)
+		last_error = "无法启动 ffmpeg。"
+		return ""
+	var duration := probe_video_duration(path)
+	while OS.is_process_running(pid):
+		if progress.is_valid():
+			var seconds := read_progress_seconds(progress_path)
+			var ratio := -1.0 if duration <= 0.0 else clampf(seconds / duration, 0.0, 1.0)
+			progress.call(ratio, seconds)
+		await tree.create_timer(0.2).timeout
+	_jobs.erase(target)
+	if FileAccess.file_exists(progress_path):
+		DirAccess.remove_absolute(progress_abs)
+	if not FileAccess.file_exists(target):
+		last_error = "音频转换失败：%s" % path.get_file()
+		return ""
+	if progress.is_valid():
+		progress.call(1.0, duration)
+	return target
+
+
+## 画面只做环后背景层，压到 540p / 30fps 省一半以上转码时间和解码开销。
 static func _video_args(source: String, target: String, progress_path: String = "") -> Array:
 	var args := [
 		"-y", "-i", source,
-		"-c:v", "libtheora", "-q:v", "7", "-an", "-pix_fmt", "yuv420p",
+		"-vf", "scale=960:-2,fps=30",
+		"-c:v", "libtheora", "-q:v", "6", "-an", "-pix_fmt", "yuv420p",
 	]
 	if not progress_path.is_empty():
 		args.append_array(["-loglevel", "error", "-progress", progress_path])
 	args.append(ProjectSettings.globalize_path(target))
 	return args
+
+
+static func _audio_args(source: String, target: String, progress_path: String = "") -> Array:
+	var args := ["-y", "-i", source, "-vn", "-acodec", "libvorbis", "-q:a", "5"]
+	if not progress_path.is_empty():
+		args.append_array(["-loglevel", "error", "-progress", progress_path])
+	args.append(ProjectSettings.globalize_path(target))
+	return args
+
+
+## 转码缓存占用（字节）；设置里显示和清理共用。
+static func cache_size() -> int:
+	var total := 0
+	var dir := DirAccess.open("user://media")
+	if dir == null:
+		return 0
+	dir.list_dir_begin()
+	var name := dir.get_next()
+	while not name.is_empty():
+		if not dir.current_is_dir():
+			var file := FileAccess.open("user://media/" + name, FileAccess.READ)
+			if file != null:
+				total += file.get_length()
+				file.close()
+		name = dir.get_next()
+	dir.list_dir_end()
+	return total
+
+
+## 清空转码缓存；下次打开会重新转（源文件不动）。
+static func clear_cache() -> int:
+	var freed := cache_size()
+	var dir := DirAccess.open("user://media")
+	if dir == null:
+		return 0
+	dir.list_dir_begin()
+	var name := dir.get_next()
+	while not name.is_empty():
+		if not dir.current_is_dir():
+			DirAccess.remove_absolute(ProjectSettings.globalize_path("user://media/" + name))
+		name = dir.get_next()
+	dir.list_dir_end()
+	return freed
 
 
 ## 读 ffmpeg -progress 文件里的已转秒数；out_time_us / out_time_ms 都是微秒。

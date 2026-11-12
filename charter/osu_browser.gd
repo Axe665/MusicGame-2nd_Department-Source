@@ -516,8 +516,9 @@ func _download_osu(entry: Dictionary) -> void:
 		_finish_progress("下载失败（两个镜像都没拿到）")
 		return
 	_finish_progress("下载完成，开始转谱")
-	source_ready.emit(target)
+	# 先关窗口再交棒：导入时会弹进度/报告对话框。
 	hide()
+	source_ready.emit(target)
 
 
 func _download_osz(set_id: int) -> String:

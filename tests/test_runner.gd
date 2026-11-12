@@ -56,6 +56,8 @@ func _initialize() -> void:
 		"test_note_span_defaults",
 		"test_judgement_text_font",
 		"test_playtest_countdown",
+		"test_background_layering",
+		"test_video_direct_decode",
 		"test_hold_stack_alpha",
 		"test_osu_taiko_import",
 		"test_osu_taiko_flow",
@@ -1613,8 +1615,37 @@ func test_playtest_countdown() -> bool:
 	chart.pre_read_ms = 1000.0
 	near(Playtest.timeline_start_beat(chart, 8.0, 1000.0), 5.0, 0.26,
 		"a mid-chart start rewinds one pre-read plus half a second")
-	near(Playtest.timeline_start_beat(chart, 0.0, 1000.0), 0.0, 0.001,
-		"the chart start never goes negative")
+	near(Playtest.timeline_start_beat(chart, 0.0, 1000.0), -3.0, 0.001,
+		"the chart start now keeps the lead-in as negative beats")
+	eq(Playtest.audio_delay_ms(-3000.0, -500.0), 2500.0, "negative beats delay the audio")
+	eq(Playtest.audio_delay_ms(0.0, -500.0), 0.0, "audio ahead of the timeline starts at once")
+	return true
+
+
+func test_video_direct_decode() -> bool:
+	var mp4 := "user://test_direct_decode.mp4"
+	ok(ChartIO.can_decode_video_directly("a.ogv"), "ogv is always decodable")
+	var has_ffmpeg := ChartIO.ffmpeg_video_available()
+	eq(ChartIO.can_decode_video_directly(mp4), has_ffmpeg, "mp4 decodes directly once gdffmpeg is loaded")
+	ok(not ChartIO.can_decode_video_directly(""), "empty paths never decode")
+	# 没装扩展时必须返回 null，让预览退回转码而不是崩。
+	if has_ffmpeg:
+		var stream := ChartIO.video_stream_from_path("res://icon.svg")
+		ok(stream == null, "non-video files do not become streams")
+	else:
+		ok(ChartIO.video_stream_from_path(mp4) == null, "no extension means no direct stream")
+	return true
+
+
+func test_background_layering() -> bool:
+	near(Preview3D.background_alpha(1.0), 0.32, 0.001, "default background keeps 32% alpha")
+	near(Preview3D.background_alpha(0.5), 0.16, 0.001, "brightness scales the still image")
+	near(Preview3D.background_alpha(0.0), 0.0, 0.001, "zero brightness hides the image")
+	ok(not Preview3D.background_image_visible(true, true), "BGA hides the chart background image")
+	ok(Preview3D.background_image_visible(true, false), "still image returns without BGA")
+	ok(not Preview3D.background_image_visible(false, false), "no image without a texture")
+	near(Preview3D.video_alpha(0.35, 1.0), 0.35, 0.001, "BGA keeps the chart opacity")
+	near(Preview3D.video_alpha(0.35, 2.0), 0.70, 0.001, "global brightness multiplies the BGA")
 	return true
 
 

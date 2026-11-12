@@ -69,6 +69,10 @@ var hud_show_difficulty: bool = true
 var hud_show_percent: bool = false
 var hud_show_time: bool = false
 var hud_show_watermark: bool = false
+## 背景明暗（百分比，100 = 默认观感）：静图和 BGA 共用。
+var background_brightness: int = 100
+## 试玩时鼠标左右键是否算 Tap（关掉后移动/滚轮照常）。
+var mouse_keys: bool = true
 ## 右侧预览宽度与折叠状态（编辑器布局记忆）。
 var preview_width: float = 340.0
 var preview_collapsed: bool = false
@@ -500,6 +504,8 @@ func _load_settings() -> void:
 			hud_show_percent = bool(data.get("hud_show_percent", hud_show_percent))
 			hud_show_time = bool(data.get("hud_show_time", hud_show_time))
 			hud_show_watermark = bool(data.get("hud_show_watermark", hud_show_watermark))
+			background_brightness = clampi(int(data.get("background_brightness", background_brightness)), 0, 150)
+			mouse_keys = bool(data.get("mouse_keys", mouse_keys))
 			preview_width = clampf(float(data.get("preview_width", preview_width)), 280.0, 720.0)
 			preview_collapsed = bool(data.get("preview_collapsed", preview_collapsed))
 			hit_fx_style = String(data.get("hit_fx_style", hit_fx_style))
@@ -664,6 +670,7 @@ func save_settings() -> void:
 		"hud_show_title": hud_show_title, "hud_show_difficulty": hud_show_difficulty,
 		"hud_show_percent": hud_show_percent, "hud_show_time": hud_show_time,
 		"hud_show_watermark": hud_show_watermark,
+		"background_brightness": background_brightness, "mouse_keys": mouse_keys,
 		"preview_width": preview_width, "preview_collapsed": preview_collapsed}
 	var file := FileAccess.open(SETTINGS_PATH, FileAccess.WRITE)
 	if file != null:

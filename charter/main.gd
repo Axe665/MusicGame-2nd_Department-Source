@@ -34,6 +34,7 @@ const QUALITY_OPTIONS := [
 	{"key": "ring_3d_scale", "label": "3D 环分辨率", "choices": [["高", 73], ["中", 74], ["低", 75]]},
 	{"key": "ring_3d_hz", "label": "3D 环刷新", "choices": [["60Hz", 76], ["30Hz", 77]]},
 	{"key": "bar_lines", "label": "小节线", "choices": [["开", 78], ["关", 79]]},
+	{"key": "background_brightness", "label": "背景明暗", "choices": [["关", 96], ["25%", 97], ["50%", 98], ["75%", 99], ["100%（默认）", 100], ["125%", 101], ["150%", 102]]},
 ]
 
 ## 界面（HUD）选项：和 视图 → 画质 同样的菜单结构，只影响显示。
@@ -117,6 +118,11 @@ var _song_dialog: SongImportDialog
 var _chart_browser: ChartBrowser
 ## 独立的“在线 osu! 谱面”窗口（卡片式，只列 osu!std）。
 var _osu_browser: OsuBrowser
+## 设置里「转码缓存」体积显示。
+var _cache_label: Label = null
+var _import_progress: AcceptDialog = null
+var _import_progress_label: Label = null
+var _import_progress_bar: ProgressBar = null
 var _new_dialog: NewChartDialog
 var _playtest: Playtest
 ## 试玩前的设置窗口：倍速 / 流速 / 星速 / 星显。
@@ -130,6 +136,7 @@ var _playtest_offset: SpinBox = null
 var _playtest_latency: SpinBox = null
 var _playtest_dynamic: CheckBox = null
 var _playtest_auto: CheckBox = null
+var _playtest_mouse: CheckBox = null
 var _playtest_bias: Label = null
 ## 试玩设置底部的「从头开始玩」按钮（试玩中隐藏）。
 var _playtest_start_button: Button = null
@@ -1079,6 +1086,8 @@ func _quality_index(key: String) -> int:
 			return 0 if _app.ring_3d_hz >= 60 else 1
 		"bar_lines":
 			return 0 if _app.bar_lines else 1
+		"background_brightness":
+			return [0, 25, 50, 75, 100, 125, 150].find(_app.background_brightness)
 	return -1
 
 
@@ -1107,6 +1116,10 @@ func _set_quality_index(key: String, index: int) -> void:
 			_app.ring_3d_hz = 60 if index == 0 else 30
 		"bar_lines":
 			_app.bar_lines = index == 0
+		"background_brightness":
+			_app.background_brightness = [0, 25, 50, 75, 100, 125, 150][clampi(index, 0, 6)]
+			# 背景明暗不是画质参数，别把预设打成「自定义」。
+			return
 	_app.quality_preset = "custom"
 
 
@@ -1124,6 +1137,7 @@ func _apply_visual_options() -> void:
 	_preview.ring_3d_scale = _app.ring_3d_scale
 	_preview.ring_3d_hz = _app.ring_3d_hz
 	_preview.bar_lines_visible = _app.bar_lines
+	_preview.set_background_brightness(float(_app.background_brightness) / 100.0)
 	_preview.hud_options = _app.hud_options()
 	_preview.apply_ring_quality()
 	_preview.request_redraw()
@@ -1137,6 +1151,7 @@ func _apply_visual_options() -> void:
 		inner.ring_3d_scale = _app.ring_3d_scale
 		inner.ring_3d_hz = _app.ring_3d_hz
 		inner.bar_lines_visible = _app.bar_lines
+		inner.set_background_brightness(float(_app.background_brightness) / 100.0)
 		inner.hud_options = _app.hud_options()
 		inner.apply_ring_quality()
 		inner.request_redraw()
@@ -1941,6 +1956,7 @@ func _on_import_osz_selected(path: String) -> void:
 		_app.restore_active_tab()
 		_show_toast("导入失败：%s" % _import_error_text(), "error")
 		return
+	await _prepare_import_media()
 	var count: int = _app.difficulties.size()
 	var title: String = _app.set_path.get_file().get_basename()
 	if title.is_empty():
@@ -1949,6 +1965,85 @@ func _on_import_osz_selected(path: String) -> void:
 	_sync_from_app()
 	_refresh_tabs()
 	_show_report("转谱完成：%d 个难度已放进新标签页「%s」，顶部可以切换难度。" % [count, title])
+
+
+## 导入时先把 BGA / 需要转码的音频转好：带百分比进度，UI 不冻结。
+## 预览也会自己异步转码，但那里没有进度条；这里先转完，打开就是成品。
+func _prepare_import_media() -> void:
+	if _app == null or _app.difficulties.is_empty():
+		return
+	var videos: Array[String] = []
+	var audios: Array[String] = []
+	for entry in _app.difficulties:
+		var chart: Chart = entry.get("chart", null)
+		if chart == null:
+			continue
+		var video := chart.video_path
+		if not video.is_empty() and not ChartIO.can_decode_video_directly(video) and not FileAccess.file_exists(MediaIO.video_cache_path(video)) and not videos.has(video):
+			videos.append(video)
+		var audio := chart.audio_path
+		if audio.begins_with("user://imports/simai_zip_") and audio.get_extension().to_lower() != "ogg" and not audios.has(audio):
+			audios.append(audio)
+	if videos.is_empty() and audios.is_empty():
+		return
+	var total := videos.size() + audios.size()
+	var done := 0
+	_show_import_progress()
+	var tree := get_tree()
+	for video in videos:
+		var label := "转码 BGA %d/%d：%s" % [done + 1, total, video.get_file()]
+		_import_progress_text(label, 0.0, 0.0)
+		await MediaIO.prepare_video_async(video, tree, func(ratio: float, seconds: float) -> void:
+			_import_progress_text(label, ratio, seconds))
+		done += 1
+	for audio in audios:
+		var label := "转码音频 %d/%d：%s" % [done + 1, total, audio.get_file()]
+		_import_progress_text(label, 0.0, 0.0)
+		var prepared := await MediaIO.prepare_audio_async(audio, tree, func(ratio: float, seconds: float) -> void:
+			_import_progress_text(label, ratio, seconds))
+		done += 1
+		if prepared.is_empty():
+			continue
+		for entry in _app.difficulties:
+			var chart: Chart = entry.get("chart", null)
+			if chart != null and chart.audio_path == audio:
+				chart.audio_path = prepared
+	_hide_import_progress()
+	_app.save_set_file()
+
+
+func _show_import_progress() -> void:
+	if _import_progress == null:
+		_import_progress = AcceptDialog.new()
+		_import_progress.title = "导入媒体"
+		_import_progress.min_size = Vector2i(460, 150)
+		var box := VBoxContainer.new()
+		box.add_theme_constant_override("separation", 12)
+		_import_progress.add_child(box)
+		_import_progress_label = Label.new()
+		_import_progress_label.text = "准备转码…"
+		box.add_child(_import_progress_label)
+		_import_progress_bar = ProgressBar.new()
+		_import_progress_bar.max_value = 100.0
+		_import_progress_bar.show_percentage = true
+		_import_progress_bar.custom_minimum_size = Vector2(420, 24)
+		box.add_child(_import_progress_bar)
+		_import_progress.get_ok_button().visible = false
+		add_child(_import_progress)
+	_import_progress.popup_centered(Vector2i(460, 150))
+
+
+func _import_progress_text(label: String, ratio: float, seconds: float) -> void:
+	if _import_progress_label == null:
+		return
+	_import_progress_label.text = "%s · 已转 %d 秒" % [label, int(maxf(0.0, seconds))]
+	if ratio >= 0.0 and _import_progress_bar != null:
+		_import_progress_bar.value = clampf(ratio, 0.0, 1.0) * 100.0
+
+
+func _hide_import_progress() -> void:
+	if _import_progress != null:
+		_import_progress.hide()
 
 
 func _import_error_text() -> String:
@@ -2007,6 +2102,7 @@ func _save_all_difficulties() -> void:
 func _import_into_current_window(path: String) -> void:
 	# 直接走难度组：多难度来源会一次性转好，顶部会出现难度下拉。
 	if _app != null and _app.open_import_source(path):
+		await _prepare_import_media()
 		_sync_from_app()
 		_show_report(_app.last_import_report)
 		return
@@ -2057,6 +2153,11 @@ func _import_maimai(path: String, difficulty_index: int) -> void:
 func _show_report(text: String) -> void:
 	if _report_dialog == null or text.is_empty():
 		return
+	# 在线浏览器还开着时再弹报告，两个 AcceptDialog 会抢独占焦点（日志报错）。
+	if _chart_browser != null:
+		_chart_browser.hide()
+	if _osu_browser != null:
+		_osu_browser.hide()
 	_report_dialog.dialog_text = text
 	_report_dialog.popup_centered_ratio(0.62)
 
@@ -2223,6 +2324,8 @@ func _open_playtest_setup(from_start: bool) -> void:
 		_playtest_dynamic.button_pressed = bool(_app.dynamic_offset)
 	if _playtest_auto != null:
 		_playtest_auto.button_pressed = bool(_app.playtest_auto)
+	if _playtest_mouse != null:
+		_playtest_mouse.button_pressed = bool(_app.mouse_keys)
 	if _playtest_bias != null:
 		_playtest_bias.text = "上次平均偏差 %+.1fms" % float(_app.last_bias_ms)
 	_playtest_dialog.popup_centered(Vector2i(470, 520))
@@ -2250,6 +2353,8 @@ func _open_settings() -> void:
 		_build_hud_rows(box)
 		box.add_child(HSeparator.new())
 		_build_audio_rows(box)
+		box.add_child(HSeparator.new())
+		_build_cache_rows(box)
 		box.add_child(HSeparator.new())
 		_build_calibration_rows(box)
 		add_child(_settings_dialog)
@@ -2324,6 +2429,51 @@ func _build_audio_rows(parent: Control) -> void:
 	grid.add_child(sfx_pick)
 
 
+func _build_cache_rows(parent: Control) -> void:
+	var title := Label.new()
+	title.text = "转码缓存"
+	title.add_theme_font_size_override("font_size", 12)
+	parent.add_child(title)
+	_cache_label = Label.new()
+	_cache_label.add_theme_font_size_override("font_size", 11)
+	_cache_label.add_theme_color_override("font_color", UITheme.MUTED)
+	parent.add_child(_cache_label)
+	_refresh_cache_label()
+	var clear := Button.new()
+	clear.text = "清理转码缓存…"
+	clear.pressed.connect(func() -> void:
+		var dialog := ConfirmationDialog.new()
+		dialog.title = "清理转码缓存"
+		dialog.dialog_text = "删除 %s 的 BGA / 音频转码文件；源文件不动，下次打开重新转。要继续吗？" % _format_bytes(MediaIO.cache_size())
+		dialog.confirmed.connect(func() -> void:
+			var freed := MediaIO.clear_cache()
+			_refresh_cache_label()
+			_show_toast("已清理转码缓存 %s" % _format_bytes(freed), "info")
+		)
+		add_child(dialog)
+		dialog.popup_centered()
+		dialog.confirmed.connect(dialog.queue_free)
+		dialog.canceled.connect(dialog.queue_free)
+	)
+	parent.add_child(clear)
+
+
+func _refresh_cache_label() -> void:
+	if _cache_label == null:
+		return
+	_cache_label.text = "user://media 当前占用 %s；音频转码和无解码库时的视频兜底会写这里。" % _format_bytes(MediaIO.cache_size())
+
+
+func _format_bytes(value: int) -> String:
+	if value >= 1024 * 1024 * 1024:
+		return "%.1f GB" % (float(value) / (1024.0 * 1024.0 * 1024.0))
+	if value >= 1024 * 1024:
+		return "%.0f MB" % (float(value) / (1024.0 * 1024.0))
+	if value >= 1024:
+		return "%.0f KB" % (float(value) / 1024.0)
+	return "%d B" % value
+
+
 func _build_calibration_rows(parent: Control) -> void:
 	var title := Label.new()
 	title.text = "校准"
@@ -2380,6 +2530,10 @@ func _build_playtest_dialog() -> void:
 	_playtest_auto.text = "AUTO 自动演示（游戏内 F8 切换）"
 	_playtest_auto.tooltip_text = "自动完美演奏所有音符，用来快速看谱面；结算会标注 AUTO"
 	box.add_child(_playtest_auto)
+	_playtest_mouse = CheckBox.new()
+	_playtest_mouse.text = "鼠标左右键算 Tap"
+	_playtest_mouse.tooltip_text = "关掉后左右键不参与判定；鼠标移动、滚轮 Seek 照常（暂停菜单也能改）"
+	box.add_child(_playtest_mouse)
 	_playtest_bias = Label.new()
 	_playtest_bias.text = "上次平均偏差 +0.0ms"
 	_playtest_bias.add_theme_font_size_override("font_size", 11)
@@ -2461,6 +2615,8 @@ func _commit_playtest_settings() -> void:
 		_app.dynamic_offset = _playtest_dynamic.button_pressed
 	if _playtest_auto != null:
 		_app.playtest_auto = _playtest_auto.button_pressed
+	if _playtest_mouse != null:
+		_app.mouse_keys = _playtest_mouse.button_pressed
 	if _playtest_trace_color != null:
 		_app.trace_color = _playtest_trace_color.color
 	_app.save_settings()
