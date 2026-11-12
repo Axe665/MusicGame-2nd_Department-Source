@@ -9,14 +9,18 @@ const TOOL_ORDER := [
 var _app: Node = null
 var _preview: Preview3D
 var _view_menu: MenuButton
-var _quality_menu: PopupMenu
-var _quality_rows: Dictionary = {}
+var _preview_panel: PanelContainer
+var _preview_grip: Control
+var _preview_reopen: Button
+var _preview_gear: MenuButton
+var _preview_dragging: bool = false
+var _preview_drag_start_x: float = 0.0
+var _preview_drag_width: float = 340.0
+var _preview_manual_open: bool = false
+var _audio_popup: PopupPanel = null
+var _settings_dialog: AcceptDialog = null
 var _quality_widgets: Dictionary = {}
-var _hud_menu: PopupMenu
-var _hud_rows: Dictionary = {}
-var _hud_ids: Dictionary = {}
 var _hud_widgets: Dictionary = {}
-var _quality_ids: Dictionary = {}
 
 ## 画质菜单：每项一行子菜单，行标题带当前值，子项打勾。只影响渲染，不碰判定。
 const QUALITY_OPTIONS := [
@@ -142,12 +146,16 @@ func _ready() -> void:
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_setup_audio_buses()
 	_build_ui()
+	resized.connect(_on_editor_resized)
+	get_window().size_changed.connect(_on_editor_resized)
+	call_deferred("_on_editor_resized")
 	_build_audio()
 	_sfx = HitSfx.new()
 	_sfx.name = "EditorHitSfx"
 	add_child(_sfx)
 	_sfx.set_style(String(_app.hit_sfx_style) if _app != null else "default")
 	_build_dialogs()
+	_build_audio_popup()
 	if _app != null:
 		_app.chart_changed.connect(_on_chart_changed)
 		_app.chart_live_changed.connect(_on_chart_live_changed)
@@ -256,6 +264,70 @@ func _run_bench() -> void:
 	get_tree().quit()
 
 
+## 预览齿轮：HUD / 调试 / 收起。
+func _on_preview_menu(id: int) -> void:
+	if _app == null or _preview == null:
+		return
+	match id:
+		0:
+			_app.hud_visible = not _app.hud_visible
+			_preview.show_hud = _app.hud_visible
+		1:
+			_app.debug_overlay = not _app.debug_overlay
+			_preview.show_debug = _app.debug_overlay
+		2:
+			_set_preview_collapsed(true, true)
+			return
+	_update_status()
+
+
+func _set_preview_collapsed(value: bool, manual: bool) -> void:
+	if _app == null or _preview_panel == null:
+		return
+	if manual:
+		_preview_manual_open = not value
+	var changed: bool = value != _app.preview_collapsed
+	_app.preview_collapsed = value
+	_preview_panel.visible = not value
+	_preview_grip.visible = not value
+	_preview_reopen.visible = value
+	if _preview != null:
+		_preview.set_suspended(value)
+	if changed:
+		_app.save_settings()
+
+
+func _on_preview_grip_input(event: InputEvent) -> void:
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
+		if event.pressed:
+			_preview_dragging = true
+			_preview_drag_start_x = event.global_position.x
+			_preview_drag_width = _preview_panel.custom_minimum_size.x
+		else:
+			_preview_dragging = false
+			if _app != null:
+				_app.preview_width = _preview_panel.custom_minimum_size.x
+				_app.save_settings()
+	elif event is InputEventMouseMotion and _preview_dragging:
+		var dx: float = event.global_position.x - _preview_drag_start_x
+		var width := clampf(_preview_drag_width - dx, 280.0, 720.0)
+		_preview_panel.custom_minimum_size.x = width
+		if _app != null:
+			_app.preview_width = width
+
+
+## 窄窗口自动收起预览；用户手动开/关过之后不再抢。
+func _on_editor_resized() -> void:
+	if _app == null or _preview_panel == null or _preview_manual_open:
+		return
+	# 拉伸模式下 Control 的虚拟宽度固定 1600，得看真实窗口宽度。
+	var width := float(DisplayServer.window_get_size().x)
+	if width < 1180.0 and not _app.preview_collapsed:
+		_set_preview_collapsed(true, false)
+	elif width >= 1180.0 and _app.preview_collapsed:
+		_set_preview_collapsed(false, false)
+
+
 func _build_ui() -> void:
 	var root := VBoxContainer.new()
 	root.name = "Root"
@@ -316,26 +388,25 @@ func _build_ui() -> void:
 	# 文件 0–9 / 15–18、编辑 10–14、视图 20–25、插入 30–38、事件 40–41、试玩 50–51。
 	brand_row.add_child(_menu("文件", [
 		["新建", 0], ["打开", 1], ["保存", 2], ["另存为", 3], ["-", 0],
-		["新增难度（复制当前）", 16], ["保存全部难度", 17], ["-", 0],
-		["在线舞萌谱面…", 15], ["在线 osu! 谱面…", 18], ["导入歌曲 / 识别 BPM…", 9], ["导入谱面 (.osz/.zip/.txt)", 6], ["导入舞萌文件夹", 8], ["导出 .lbp", 7], ["-", 0], ["恢复自动保存", 4], ["-", 0], ["退出", 5],
+		["导入", [["歌曲 / 识别 BPM…", 9], ["谱面 (.osz/.zip/.txt)", 6], ["舞萌文件夹", 8], ["在线舞萌谱面…", 15], ["在线 osu! 谱面…", 18]]],
+		["导出", [["导出 .lbp", 7]]],
+		["-", 0], ["恢复自动保存", 4], ["-", 0], ["退出", 5],
 	]))
 	brand_row.add_child(_menu("编辑", [
 		["撤销", 10], ["重做", 11], ["-", 0], ["删除", 12], ["取消选择", 13], ["全选可见", 14],
+		["-", 0], ["设置…", 26],
 	]))
 	_view_menu = _menu("视图", [
-		["显示/隐藏 HUD", 20], ["调试叠层", 21], ["波形", 22], ["从上往下写入", 25], ["-", 0], ["边界状态轨", 23], ["时间 / BPM (F6)", 24],
+		["显示/隐藏 HUD", 20], ["调试叠层", 21], ["波形", 22], ["从上往下写入", 25], ["-", 0],
+		["边界状态轨", 23], ["时间 / BPM (F6)", 24],
 	])
 	brand_row.add_child(_view_menu)
-	_build_quality_menu()
-	_build_hud_menu()
 	brand_row.add_child(_menu("插入", [
-		["Tap", 30], ["Hold", 31], ["Path", 32], ["Seek", 33], ["Anchor", 34], ["Bell", 35], ["Limit", 36], ["-", 0], ["BoundaryEvent", 37], ["RingState 关键帧", 38],
-	]))
-	brand_row.add_child(_menu("事件", [
-		["新建 BoundaryEvent", 40], ["新建 Limit", 41],
+		["Tap", 30], ["Hold", 31], ["Path", 32], ["Seek", 33], ["Anchor", 34], ["Bell", 35], ["Limit", 36],
+		["-", 0], ["BoundaryEvent", 37], ["RingState 关键帧", 38],
 	]))
 	brand_row.add_child(_menu("试玩", [
-		["从播放头试玩（F5）", 50], ["从头试玩（Shift+F5）", 51],
+		["从播放头试玩（F5）", 50], ["从头试玩（Shift+F5）", 51], ["-", 0], ["校准判定偏移…", 52],
 	]))
 	var playtest_button := Button.new()
 	playtest_button.text = "试玩 F5"
@@ -350,7 +421,13 @@ func _build_ui() -> void:
 
 	var tool_row := HBoxContainer.new()
 	tool_row.add_theme_constant_override("separation", 4)
-	top_box.add_child(tool_row)
+	# 1024 窗口下工具行会超出；给一条横向滚动，而不是把字段挤没。
+	var tool_scroll := ScrollContainer.new()
+	tool_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
+	tool_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	tool_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	top_box.add_child(tool_scroll)
+	tool_scroll.add_child(tool_row)
 	_tool_group = ButtonGroup.new()
 	for spec in TOOL_ORDER:
 		var button := Button.new()
@@ -364,6 +441,12 @@ func _build_ui() -> void:
 
 	var beat_divider := VSeparator.new()
 	tool_row.add_child(beat_divider)
+	var grid_label := Label.new()
+	grid_label.text = "网格"
+	grid_label.add_theme_font_size_override("font_size", 10)
+	grid_label.add_theme_color_override("font_color", UITheme.MUTED)
+	grid_label.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	tool_row.add_child(grid_label)
 	var beat_div_label := Label.new()
 	beat_div_label.text = "小节线："
 	beat_div_label.add_theme_font_size_override("font_size", 11)
@@ -420,6 +503,12 @@ func _build_ui() -> void:
 
 	var stretch_divider := VSeparator.new()
 	tool_row.add_child(stretch_divider)
+	var layout_label := Label.new()
+	layout_label.text = "布局"
+	layout_label.add_theme_font_size_override("font_size", 10)
+	layout_label.add_theme_color_override("font_color", UITheme.MUTED)
+	layout_label.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	tool_row.add_child(layout_label)
 	var stretch_label := Label.new()
 	stretch_label.text = "纵向拉伸"
 	stretch_label.add_theme_font_size_override("font_size", 11)
@@ -486,15 +575,14 @@ func _build_ui() -> void:
 	main_row.add_theme_constant_override("separation", 0)
 	root.add_child(main_row)
 
-	var preview_panel := PanelContainer.new()
-	preview_panel.custom_minimum_size = Vector2(340, 0)
-	preview_panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	preview_panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	preview_panel.size_flags_stretch_ratio = 29.0
-	main_row.add_child(preview_panel)
+	_preview_panel = PanelContainer.new()
+	_preview_panel.custom_minimum_size = Vector2(clampf(float(_app.preview_width) if _app != null else 340.0, 280.0, 720.0), 0)
+	_preview_panel.size_flags_horizontal = Control.SIZE_FILL
+	_preview_panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	main_row.add_child(_preview_panel)
 	var preview_box := VBoxContainer.new()
 	preview_box.add_theme_constant_override("separation", 6)
-	preview_panel.add_child(preview_box)
+	_preview_panel.add_child(preview_box)
 	var preview_header := HBoxContainer.new()
 	preview_box.add_child(preview_header)
 	var preview_title := Label.new()
@@ -510,27 +598,23 @@ func _build_ui() -> void:
 	var preview_spacer := Control.new()
 	preview_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	preview_header.add_child(preview_spacer)
-	var hud_toggle := Button.new()
-	hud_toggle.text = "HUD"
-	hud_toggle.toggle_mode = true
-	hud_toggle.button_pressed = true
-	hud_toggle.add_theme_font_size_override("font_size", 11)
-	hud_toggle.toggled.connect(func(pressed: bool) -> void:
-		_app.hud_visible = pressed
-		_preview.show_hud = pressed
-		_update_status()
+	# HUD / 调试 / 收起都收进齿轮，避免预览标题栏被按钮占满。
+	_preview_gear = MenuButton.new()
+	_preview_gear.text = "⋯"
+	_preview_gear.flat = true
+	_preview_gear.add_theme_font_size_override("font_size", 13)
+	_preview_gear.tooltip_text = "预览选项"
+	var gear_popup := _preview_gear.get_popup()
+	gear_popup.add_check_item("HUD", 0)
+	gear_popup.add_check_item("调试叠层", 1)
+	gear_popup.add_separator()
+	gear_popup.add_item("收起预览", 2)
+	gear_popup.about_to_popup.connect(func() -> void:
+		gear_popup.set_item_checked(0, bool(_app.hud_visible) if _app != null else true)
+		gear_popup.set_item_checked(1, bool(_app.debug_overlay) if _app != null else false)
 	)
-	preview_header.add_child(hud_toggle)
-	var debug_toggle := Button.new()
-	debug_toggle.text = "调试"
-	debug_toggle.toggle_mode = true
-	debug_toggle.add_theme_font_size_override("font_size", 11)
-	debug_toggle.toggled.connect(func(pressed: bool) -> void:
-		_app.debug_overlay = pressed
-		_preview.show_debug = pressed
-		_update_status()
-	)
-	preview_header.add_child(debug_toggle)
+	gear_popup.id_pressed.connect(_on_preview_menu)
+	preview_header.add_child(_preview_gear)
 	_preview = Preview3D.new()
 	_preview.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_preview.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -563,6 +647,21 @@ func _build_ui() -> void:
 	inspector_wrap.size_flags_stretch_ratio = 24.0
 	inspector_wrap.add_theme_constant_override("separation", 4)
 	main_row.add_child(inspector_wrap)
+	_preview_grip = Control.new()
+	_preview_grip.name = "PreviewGrip"
+	_preview_grip.custom_minimum_size = Vector2(6, 0)
+	_preview_grip.mouse_default_cursor_shape = Control.CURSOR_HSIZE
+	_preview_grip.tooltip_text = "拖动调整预览宽度"
+	_preview_grip.gui_input.connect(_on_preview_grip_input)
+	main_row.add_child(_preview_grip)
+	_preview_reopen = Button.new()
+	_preview_reopen.name = "PreviewReopen"
+	_preview_reopen.text = "预览"
+	_preview_reopen.add_theme_font_size_override("font_size", 10)
+	_preview_reopen.custom_minimum_size = Vector2(44, 0)
+	_preview_reopen.visible = false
+	_preview_reopen.pressed.connect(func() -> void: _set_preview_collapsed(false, true))
+	main_row.add_child(_preview_reopen)
 	_palette = NotePalette.new()
 	_palette.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	inspector_wrap.add_child(_palette)
@@ -577,7 +676,11 @@ func _build_ui() -> void:
 	inspector_wrap.add_child(_inspector)
 	main_row.move_child(center, 0)
 	main_row.move_child(inspector_wrap, 1)
-	main_row.move_child(preview_panel, 2)
+	main_row.move_child(_preview_grip, 2)
+	main_row.move_child(_preview_panel, 3)
+	main_row.move_child(_preview_reopen, 4)
+	if _app != null and _app.preview_collapsed:
+		_set_preview_collapsed(true, false)
 
 	var transport := PanelContainer.new()
 	transport.name = "Transport"
@@ -638,18 +741,14 @@ func _build_ui() -> void:
 	loop_check.text = "循环"
 	loop_check.toggled.connect(func(pressed: bool) -> void: _loop = pressed)
 	transport_row.add_child(loop_check)
-	var metro_check := CheckBox.new()
-	metro_check.text = "节拍器"
-	metro_check.button_pressed = true
-	metro_check.toggled.connect(func(pressed: bool) -> void: _metronome = pressed)
-	transport_row.add_child(metro_check)
-	var sfx_check := CheckBox.new()
-	sfx_check.text = "打击音"
-	sfx_check.button_pressed = true
-	sfx_check.toggled.connect(func(pressed: bool) -> void: _sfx_enabled = pressed)
-	transport_row.add_child(sfx_check)
-	transport_row.add_child(_volume_slider("音乐", "Music"))
-	transport_row.add_child(_volume_slider("音效", "SFX"))
+	transport_row.add_child(VSeparator.new())
+	# 节拍器 / 打击音 / 音量收进一个音频弹出，底部只留一个入口。
+	var audio_button := Button.new()
+	audio_button.text = "音频"
+	audio_button.add_theme_font_size_override("font_size", 11)
+	audio_button.tooltip_text = "节拍器、打击音、音乐/音效音量"
+	audio_button.pressed.connect(func() -> void: _show_audio_popup(audio_button))
+	transport_row.add_child(audio_button)
 	var transport_spacer := Control.new()
 	transport_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	transport_row.add_child(transport_spacer)
@@ -904,49 +1003,6 @@ func _set_stretch_error(has_error: bool) -> void:
 		_stretch_edit.remove_theme_color_override("font_color")
 
 
-func _build_quality_menu() -> void:
-	var root := _view_menu.get_popup()
-	root.add_separator()
-	_quality_menu = PopupMenu.new()
-	_quality_menu.name = "QualityMenu"
-	root.add_child(_quality_menu)
-	root.add_submenu_node_item("画质", _quality_menu)
-	for option in QUALITY_OPTIONS:
-		var key := String(option["key"])
-		var child := PopupMenu.new()
-		child.name = "Q_" + key
-		_quality_menu.add_child(child)
-		for index in (option["choices"] as Array).size():
-			var choice: Array = (option["choices"] as Array)[index]
-			child.add_item(String(choice[0]), int(choice[1]))
-			_quality_ids[int(choice[1])] = {"key": key, "index": index}
-		child.id_pressed.connect(_on_menu)
-		_quality_menu.add_submenu_node_item(String(option["label"]), child)
-		_quality_rows[key] = {"menu": child, "row": _quality_menu.get_item_count() - 1,
-			"label": String(option["label"]), "choices": option["choices"]}
-
-
-func _build_hud_menu() -> void:
-	var root := _view_menu.get_popup()
-	_hud_menu = PopupMenu.new()
-	_hud_menu.name = "HudMenu"
-	root.add_child(_hud_menu)
-	root.add_submenu_node_item("界面", _hud_menu)
-	for option in HUD_OPTIONS:
-		var key := String(option["key"])
-		var child := PopupMenu.new()
-		child.name = "H_" + key
-		_hud_menu.add_child(child)
-		for index in (option["choices"] as Array).size():
-			var choice: Array = (option["choices"] as Array)[index]
-			child.add_item(String(choice[0]), int(choice[1]))
-			_hud_ids[int(choice[1])] = {"key": key, "index": index}
-		child.id_pressed.connect(_on_menu)
-		_hud_menu.add_submenu_node_item(String(option["label"]), child)
-		_hud_rows[key] = {"menu": child, "row": _hud_menu.get_item_count() - 1,
-			"label": String(option["label"]), "choices": option["choices"]}
-
-
 func _hud_index(key: String) -> int:
 	match key:
 		"hud_scale":
@@ -1084,32 +1140,22 @@ func _apply_visual_options() -> void:
 
 ## 把当前画质填回菜单（行标题带数值，子项打勾）。
 func _refresh_view_menu() -> void:
-	if _quality_menu == null or _app == null:
+	if _app == null:
 		return
-	for key in _quality_rows.keys():
-		var row: Dictionary = _quality_rows[key]
-		var menu: PopupMenu = row["menu"]
+	for key in _quality_widgets.keys():
 		var index := _quality_index(String(key))
-		var choices: Array = row["choices"]
-		var value_text := "自定义" if index < 0 else String(choices[index][0])
-		_quality_menu.set_item_text(int(row["row"]), "%s：%s" % [String(row["label"]), value_text])
-		for i in menu.item_count:
-			menu.set_item_checked(i, i == index)
-		var pick: OptionButton = _quality_widgets.get(String(key))
-		if pick != null:
-			pick.select(index if index >= 0 else choices.size())
-	if _hud_menu != null:
-		for key in _hud_rows.keys():
-			var hud_row: Dictionary = _hud_rows[key]
-			var hud_popup: PopupMenu = hud_row["menu"]
-			var hud_index := _hud_index(String(key))
-			var hud_choices: Array = hud_row["choices"]
-			_hud_menu.set_item_text(int(hud_row["row"]), "%s：%s" % [String(hud_row["label"]), String(hud_choices[hud_index][0]) if hud_index >= 0 else "—"])
-			for i in hud_popup.item_count:
-				hud_popup.set_item_checked(i, i == hud_index)
-			var hud_pick: OptionButton = _hud_widgets.get(String(key))
-			if hud_pick != null and hud_index >= 0:
-				hud_pick.select(hud_index)
+		for pick in (_quality_widgets[key] as Array):
+			if pick is OptionButton:
+				var option: OptionButton = pick
+				if index < 0:
+					option.select(maxi(0, option.item_count - 1))
+				elif index < option.item_count:
+					option.select(index)
+	for key in _hud_widgets.keys():
+		var hud_index := _hud_index(String(key))
+		for pick in (_hud_widgets[key] as Array):
+			if pick is OptionButton and hud_index >= 0:
+				(pick as OptionButton).select(hud_index)
 
 
 ## 试玩设置里的画质行（和 视图 → 画质 同一份数据）。
@@ -1144,7 +1190,9 @@ func _build_quality_rows(parent: Control) -> void:
 			_refresh_view_menu()
 		)
 		grid.add_child(pick)
-		_quality_widgets[key] = pick
+		var picks: Array = _quality_widgets.get(key, [])
+		picks.append(pick)
+		_quality_widgets[key] = picks
 
 
 ## 试玩设置里的界面行（和 视图 → 界面 同一份数据）。
@@ -1175,7 +1223,9 @@ func _build_hud_rows(parent: Control) -> void:
 			_refresh_view_menu()
 		)
 		grid.add_child(pick)
-		_hud_widgets[key] = pick
+		var picks: Array = _hud_widgets.get(key, [])
+		picks.append(pick)
+		_hud_widgets[key] = picks
 
 
 func _menu(title: String, items: Array) -> MenuButton:
@@ -1186,10 +1236,25 @@ func _menu(title: String, items: Array) -> MenuButton:
 	for item in items:
 		if item[0] == "-":
 			popup.add_separator()
+		elif item[1] is Array:
+			_add_submenu(popup, String(item[0]), item[1])
 		else:
 			popup.add_item(item[0], int(item[1]))
 	popup.id_pressed.connect(_on_menu)
 	return menu
+
+
+func _add_submenu(parent: PopupMenu, title: String, items: Array) -> void:
+	var child := PopupMenu.new()
+	child.name = "Sub_" + title
+	parent.add_child(child)
+	for item in items:
+		if item[0] == "-":
+			child.add_separator()
+		else:
+			child.add_item(item[0], int(item[1]))
+	child.id_pressed.connect(_on_menu)
+	parent.add_submenu_node_item(title, child)
 
 
 func _setup_audio_buses() -> void:
@@ -1209,6 +1274,48 @@ func _set_bus_volume(bus_name: String, value: float) -> void:
 	var linear := clampf(value / 100.0, 0.0, 1.0)
 	AudioServer.set_bus_volume_db(index, linear_to_db(maxf(0.0001, linear)))
 	AudioServer.set_bus_mute(index, linear <= 0.001)
+
+
+func _build_audio_popup() -> void:
+	_audio_popup = PopupPanel.new()
+	_audio_popup.name = "AudioPopup"
+	add_child(_audio_popup)
+	var margin := MarginContainer.new()
+	for side in ["left", "right", "top", "bottom"]:
+		margin.add_theme_constant_override("margin_" + side, 10)
+	_audio_popup.add_child(margin)
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 6)
+	box.custom_minimum_size = Vector2(230, 0)
+	margin.add_child(box)
+	var metro := CheckBox.new()
+	metro.text = "节拍器"
+	metro.button_pressed = true
+	metro.toggled.connect(func(pressed: bool) -> void: _metronome = pressed)
+	box.add_child(metro)
+	var sfx := CheckBox.new()
+	sfx.text = "打击音"
+	sfx.button_pressed = true
+	sfx.toggled.connect(func(pressed: bool) -> void: _sfx_enabled = pressed)
+	box.add_child(sfx)
+	box.add_child(_volume_slider("音乐", "Music"))
+	box.add_child(_volume_slider("音效", "SFX"))
+	var more := Button.new()
+	more.text = "更多音频设置…"
+	more.add_theme_font_size_override("font_size", 11)
+	more.pressed.connect(func() -> void:
+		_audio_popup.hide()
+		_open_settings()
+	)
+	box.add_child(more)
+
+
+func _show_audio_popup(button: Button) -> void:
+	if _audio_popup == null:
+		return
+	var size := Vector2i(250, 190)
+	var at := Vector2i(button.global_position.x, button.global_position.y - size.y - 6)
+	_audio_popup.popup(Rect2i(at, size))
 
 
 func _volume_slider(label_text: String, bus_name: String) -> HBoxContainer:
@@ -1971,21 +2078,11 @@ func _format_ms(ms: float) -> String:
 
 
 func _on_menu(id: int) -> void:
-	if _hud_ids.has(id) and _app != null:
-		var hud_entry: Dictionary = _hud_ids[id]
-		_set_hud_index(String(hud_entry["key"]), int(hud_entry["index"]))
-		_app.save_settings()
-		_apply_visual_options()
-		_refresh_view_menu()
-		return
-	if _quality_ids.has(id) and _app != null:
-		var entry: Dictionary = _quality_ids[id]
-		_set_quality_index(String(entry["key"]), int(entry["index"]))
-		_app.save_settings()
-		_apply_visual_options()
-		_refresh_view_menu()
-		return
 	match id:
+		26:
+			_open_settings()
+		52:
+			_open_calibration()
 		0:
 			_new_dialog.popup_centered_ratio(0.62)
 		1:
@@ -2082,6 +2179,8 @@ func _open_calibration() -> void:
 		add_child(_calibration_dialog)
 	if _playtest_dialog != null:
 		_playtest_dialog.hide()
+	if _settings_dialog != null:
+		_settings_dialog.hide()
 	_calibration_dialog.open()
 
 
@@ -2109,6 +2208,123 @@ func _open_playtest_setup(from_start: bool) -> void:
 	if _playtest_bias != null:
 		_playtest_bias.text = "上次平均偏差 %+.1fms" % float(_app.last_bias_ms)
 	_playtest_dialog.popup_centered(Vector2i(470, 700))
+
+
+## 统一设置窗口：画质 / 界面 / 音频 / 校准。视图菜单只留显示开关。
+func _open_settings() -> void:
+	if _app == null:
+		return
+	if _settings_dialog == null:
+		_settings_dialog = AcceptDialog.new()
+		_settings_dialog.title = "设置"
+		_settings_dialog.ok_button_text = "关闭"
+		_settings_dialog.min_size = Vector2i(560, 680)
+		var scroll := ScrollContainer.new()
+		scroll.custom_minimum_size = Vector2(520, 600)
+		scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+		_settings_dialog.add_child(scroll)
+		var box := VBoxContainer.new()
+		box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		box.add_theme_constant_override("separation", 10)
+		scroll.add_child(box)
+		_build_quality_rows(box)
+		box.add_child(HSeparator.new())
+		_build_hud_rows(box)
+		box.add_child(HSeparator.new())
+		_build_audio_rows(box)
+		box.add_child(HSeparator.new())
+		_build_calibration_rows(box)
+		add_child(_settings_dialog)
+	_refresh_view_menu()
+	_settings_dialog.popup_centered_ratio(0.72)
+
+
+func _build_audio_rows(parent: Control) -> void:
+	var title := Label.new()
+	title.text = "音频"
+	title.add_theme_font_size_override("font_size", 12)
+	parent.add_child(title)
+	var grid := GridContainer.new()
+	grid.columns = 2
+	grid.add_theme_constant_override("h_separation", 10)
+	grid.add_theme_constant_override("v_separation", 4)
+	parent.add_child(grid)
+	# 输出延迟：0 = 用驱动值；>0 = 强制覆盖。
+	var lat_label := Label.new()
+	lat_label.text = "输出延迟"
+	lat_label.add_theme_font_size_override("font_size", 11)
+	grid.add_child(lat_label)
+	var lat := SpinBox.new()
+	lat.min_value = 0.0
+	lat.max_value = 250.0
+	lat.step = 1.0
+	lat.suffix = "ms"
+	lat.value = float(_app.audio_latency_ms)
+	lat.tooltip_text = "0 = 用驱动报告值；>0 = 强制覆盖。驱动明显不准时才手动填"
+	lat.value_changed.connect(func(value: float) -> void:
+		_app.audio_latency_ms = clampf(value, 0.0, 250.0)
+		_app.save_settings()
+	)
+	grid.add_child(lat)
+	# 音频缓冲是启动期设置，写 override.cfg 后重启生效。
+	var buf_label := Label.new()
+	buf_label.text = "音频缓冲"
+	buf_label.add_theme_font_size_override("font_size", 11)
+	grid.add_child(buf_label)
+	var buf_row := HBoxContainer.new()
+	buf_row.add_theme_constant_override("separation", 6)
+	var buf := SpinBox.new()
+	buf.min_value = 3
+	buf.max_value = 40
+	buf.step = 1
+	buf.suffix = "ms"
+	buf.value = float(_app.audio_buffer_ms)
+	buf.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	buf_row.add_child(buf)
+	var apply_buf := Button.new()
+	apply_buf.text = "应用（重启）"
+	apply_buf.pressed.connect(func() -> void: _app.set_audio_buffer(int(buf.value)))
+	buf_row.add_child(apply_buf)
+	grid.add_child(buf_row)
+	# 打击音色。
+	var sfx_label := Label.new()
+	sfx_label.text = "打击音色"
+	sfx_label.add_theme_font_size_override("font_size", 11)
+	grid.add_child(sfx_label)
+	var sfx_pick := OptionButton.new()
+	for label in ["默认", "清脆", "低沉"]:
+		sfx_pick.add_item(label)
+	sfx_pick.selected = maxi(0, ["default", "crisp", "deep"].find(_app.hit_sfx_style))
+	sfx_pick.item_selected.connect(func(index: int) -> void:
+		var styles := ["default", "crisp", "deep"]
+		_app.hit_sfx_style = styles[clampi(index, 0, 2)]
+		_app.save_settings()
+		_sfx.set_style(_app.hit_sfx_style)
+		if _playtest != null:
+			_playtest._sync_sfx_style()
+	)
+	grid.add_child(sfx_pick)
+
+
+func _build_calibration_rows(parent: Control) -> void:
+	var title := Label.new()
+	title.text = "校准"
+	title.add_theme_font_size_override("font_size", 12)
+	parent.add_child(title)
+	var hint := Label.new()
+	hint.text = "跟声音或脉冲点 8 次，写回判定偏移；也可以直接改试玩设置里的偏移。"
+	hint.add_theme_font_size_override("font_size", 11)
+	hint.add_theme_color_override("font_color", UITheme.MUTED)
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	parent.add_child(hint)
+	var open_cal := Button.new()
+	open_cal.text = "打开校准…"
+	open_cal.pressed.connect(func() -> void:
+		if _settings_dialog != null:
+			_settings_dialog.hide()
+		_open_calibration()
+	)
+	parent.add_child(open_cal)
 
 
 func _build_playtest_dialog() -> void:
@@ -2151,9 +2367,11 @@ func _build_playtest_dialog() -> void:
 	_playtest_bias.add_theme_color_override("font_color", UITheme.MUTED)
 	box.add_child(_playtest_bias)
 	box.add_child(HSeparator.new())
-	_build_quality_rows(box)
-	box.add_child(HSeparator.new())
-	_build_hud_rows(box)
+	var open_settings := Button.new()
+	open_settings.text = "画质 / 界面 / 音频设置…"
+	open_settings.tooltip_text = "统一设置窗口：画质、界面、音频与校准"
+	open_settings.pressed.connect(_open_settings)
+	box.add_child(open_settings)
 	var trace_row := HBoxContainer.new()
 	box.add_child(trace_row)
 	var trace_label := Label.new()
@@ -2255,7 +2473,7 @@ func _start_playtest(from_start: bool) -> void:
 	_playtest.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_playtest.setup(_app.chart, 0.0 if from_start else _app.playhead_beat, _app.chart_path)
 	_playtest.exit_requested.connect(_end_playtest)
-	_playtest.settings_requested.connect(func() -> void: _open_playtest_setup(false))
+	_playtest.settings_requested.connect(_open_settings)
 
 
 func _end_playtest() -> void:

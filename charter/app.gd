@@ -69,6 +69,9 @@ var hud_show_difficulty: bool = true
 var hud_show_percent: bool = false
 var hud_show_time: bool = false
 var hud_show_watermark: bool = false
+## 右侧预览宽度与折叠状态（编辑器布局记忆）。
+var preview_width: float = 340.0
+var preview_collapsed: bool = false
 var hit_fx_style: String = "burst"
 var hit_sfx_style: String = "default"
 ## 试玩光标大小倍率（1.0 = 默认）。
@@ -494,6 +497,8 @@ func _load_settings() -> void:
 			hud_show_percent = bool(data.get("hud_show_percent", hud_show_percent))
 			hud_show_time = bool(data.get("hud_show_time", hud_show_time))
 			hud_show_watermark = bool(data.get("hud_show_watermark", hud_show_watermark))
+			preview_width = clampf(float(data.get("preview_width", preview_width)), 280.0, 720.0)
+			preview_collapsed = bool(data.get("preview_collapsed", preview_collapsed))
 			hit_fx_style = String(data.get("hit_fx_style", hit_fx_style))
 			hit_sfx_style = String(data.get("hit_sfx_style", hit_sfx_style))
 			ffmpeg_path = String(data.get("ffmpeg", ffmpeg_path))
@@ -652,7 +657,8 @@ func save_settings() -> void:
 		"hud_judge_position": hud_judge_position, "hud_opacity": hud_opacity,
 		"hud_show_title": hud_show_title, "hud_show_difficulty": hud_show_difficulty,
 		"hud_show_percent": hud_show_percent, "hud_show_time": hud_show_time,
-		"hud_show_watermark": hud_show_watermark}
+		"hud_show_watermark": hud_show_watermark,
+		"preview_width": preview_width, "preview_collapsed": preview_collapsed}
 	var file := FileAccess.open(SETTINGS_PATH, FileAccess.WRITE)
 	if file != null:
 		file.store_string(JSON.stringify(data, "\t"))
