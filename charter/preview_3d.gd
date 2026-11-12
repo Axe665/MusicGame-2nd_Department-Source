@@ -4189,7 +4189,8 @@ func _draw_play_hud(canvas: Control, chart: Chart, t: float) -> void:
 	var accuracy := hud_accuracy
 	var progress := clampf(t / maxf(1.0, chart.duration_beats()), 0.0, 1.0)
 	_draw_ring_gauge(canvas, progress, accuracy, s, op)
-	var ring_r := _hud_ring_radius(t)
+	# 舞台外圈刻度大约在判定环的 1.19×；HUD 再退到 1.2×，避免压到装饰环。
+	var ring_r := _hud_ring_radius(t) * 1.2
 	var gap := 20.0 * s
 	var side := minf(center.x, bounds.x - center.x) - ring_r - margin - gap
 	var col_w := clampf(side, 90.0 * s, 320.0 * s)
