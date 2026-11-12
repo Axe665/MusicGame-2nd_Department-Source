@@ -104,6 +104,7 @@ func _initialize() -> void:
 		"test_import_window_set",
 		"test_bpm_change_approach",
 		"test_osu_std_filter",
+		"test_chart_browser_helpers",
 		"test_path_slide_start",
 		"test_hold_seam_interval",
 		"test_judge_scatter",
@@ -2757,6 +2758,58 @@ func test_bpm_change_approach() -> bool:
 	flat.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
 	near(flat.timing.spawn_beat(10.0, 1000.0), 8.0, 0.001, "flat BPM keeps the old two-beat pre-read")
 	return true
+func test_chart_browser_helpers() -> bool:
+	var items: Array = []
+	for i in 65:
+		items.append(i)
+	eq(ChartBrowser.paginate(items, 0, 30).size(), 30, "first page holds 30")
+	eq(int(ChartBrowser.paginate(items, 2, 30)[0]), 60, "third page starts at 60")
+	eq(ChartBrowser.paginate(items, 3, 30).size(), 0, "past the end is empty")
+
+	var levels := ChartBrowser.maj_levels(["", "5", "7+", "", "12", "13+", ""])
+	eq(levels.size(), 4, "majdata levels skip empty slots")
+	eq(int(levels[0].get("index", 0)), 1, "majdata keeps the difficulty index")
+	eq(String(levels[3].get("level", "")), "13+", "majdata keeps Re:Master")
+
+	var path := "user://test_maidata_levels.txt"
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	file.store_string("&title=T\n&artist=A\n&lv_1=4\n&des_1=x\n&inote_1=(120){1},1,\n&lv_4=12+\n&des_4=y\n&inote_4=(120){1},2,\n")
+	file.close()
+	var parsed := ChartBrowser.levels_from_maidata(path)
+	eq(parsed.size(), 2, "maidata parses only real difficulties")
+	eq(String(parsed[0].get("level", "")), "4", "maidata level is read")
+	eq(String(parsed[1].get("creator", "")), "y", "maidata designer is read")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+
+	var spec := {
+		"files": [
+			{"name": "maidata.txt", "url": "/adxcs/11/maidata.txt", "bytes": 100},
+			{"name": "track.mp3", "url": "https://x/11/track.mp3", "bytes": 200},
+			{"name": "bg.png", "url": "https://x/11/bg.png", "bytes": 300},
+			{"name": "pv.mp4", "url": "https://x/11/pv.mp4", "bytes": 400},
+		],
+	}
+	var covers := ChartBrowser.adx_cover_urls(spec)
+	eq(covers.size(), 2, "adx cover tries webp then png")
+	ok(String(covers[0]).ends_with(".webp"), "adx cover prefers webp")
+	var bga := ChartBrowser.adx_bga_info(spec)
+	eq(String(bga.get("state", "")), "yes", "adx spec reports BGA")
+	eq(int(bga.get("size", 0)), 400, "adx BGA size comes from the catalog")
+	var with_bga := ChartBrowser.download_files(spec, true)
+	var without_bga := ChartBrowser.download_files(spec, false)
+	eq(with_bga.size(), 4, "BGA download keeps all files")
+	eq(without_bga.size(), 3, "non-BGA download drops the video")
+	eq(ChartBrowser.download_size(with_bga), 1000, "BGA download size includes the video")
+	eq(ChartBrowser.download_size(without_bga), 600, "non-BGA download size skips the video")
+	var mp4 := PackedByteArray([0, 0, 0, 0x18, 0x66, 0x74, 0x79, 0x70, 0, 0, 0, 0])
+	var webm := PackedByteArray([0x1A, 0x45, 0xDF, 0xA3, 0, 0, 0, 0, 0, 0, 0, 0])
+	ok(ChartBrowser.is_video(mp4), "mp4 header is accepted")
+	ok(ChartBrowser.is_video(webm), "webm header is accepted")
+	ok(not ChartBrowser.is_video("<!DOCTYPE html>".to_utf8_buffer()), "HTML error page is not a video")
+	eq(ChartBrowser.favorite_key("adx", "11"), "adx:11", "favorite key is source-scoped")
+	return true
+
+
 ## 在线 osu!：只列 osu!std，链接 / 纯 ID 能被识别成直接下载。
 func test_osu_std_filter() -> bool:
 	var only_taps := {"title": "A", "artist": "a", "id": 1, "beatmaps": [{"mode_int": 0}, {"mode_int": 0}]}
