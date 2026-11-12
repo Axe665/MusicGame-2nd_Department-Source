@@ -7,7 +7,8 @@ extends RefCounted
 ##      缩不了就把后一条只留星头降 Tap。
 ##   3. 星星超速：压短轨迹（尾巴可能不在原按钮），保留星星本体。
 ##   4. 严格 A-B-A-B 交互段（≥5 颗、均速超上限）整段锁到一对 45° 位置；
-##      ≤45°（舞萌邻键）的快速 Tap 交替（≥3 颗）整段收到第一颗角度，形成叠键；
+##      连 45° 都追不上（253px ÷ 间隔 > 鼠标上限）的段整段收到第一颗角度，光标不用甩；
+##      ≤45°（舞萌邻键）的快速 Tap 交替（≥3 颗）同样整段收到第一颗角度，形成叠键；
 ##      其余大于 45° 且快过鼠标上限的折返逐颗压成 45°。
 ##   5. 星星期间只留落在星轨上的 Tap/Hold/Bell。
 ##   6. Hold 尾巴撞到下一颗按键时缩短，不足半拍降 Tap。
@@ -442,7 +443,17 @@ static func _lock_interaction_runs(chart: Chart, stats: Dictionary, stack_only: 
 			var speed := chord / maxf(0.001, avg_gap) * 1000.0
 			if avg_gap > 0.1 and speed > MAX_HEAD_SPEED:
 				did_lock = true
-				if stack:
+				# 收到 45° 后鼠标仍然追不上（253px ÷ 间隔 > 上限）：整段叠到同一位置，
+				# 光标不用来回甩，两只手交替按就行。带 Hold 的段不叠，免得把长条挪错地方。
+				var collapse := false
+				if not stack:
+					var lock_chord := 2.0 * sin(deg_to_rad(RUN_LOCK_STEP) * 0.5) * RING_RADIUS
+					collapse = lock_chord / avg_gap * 1000.0 > MAX_HEAD_SPEED
+					for note in run:
+						if note.type != "tap":
+							collapse = false
+							break
+				if stack or collapse:
 					for note in run:
 						_rotate_note(note, JudgeMath.angle_delta(note.angle, a_angle))
 						locked[note.id] = true
