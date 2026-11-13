@@ -21,6 +21,8 @@ const PRESS_KEEP_MS := 34.0
 const KEY_DEBOUNCE_MS := 50.0
 ## 滚轮反向之后，这么短时间内的再次反向滚动不计：上下交替蹭轮凑不出有效方向。
 const SEEK_REVERSE_GUARD_MS := 80.0
+## 双押 Anchor：两颗锚点的两次按键要在这么短时间内按下才算“同时”。
+const ANCHOR_SYNC_MS := 40.0
 ## 鼠标左右键当成两个独立“按键”（和键盘两键一样），用负数避开 Key 枚举。
 const MOUSE_KEY_LEFT := -2
 const MOUSE_KEY_RIGHT := -3
@@ -111,6 +113,9 @@ var _tick_index: int = -1
 var _tick_player: AudioStreamPlayer = null
 var _setup_token: int = 0
 var _ordered_notes: Array[Note] = []
+## 双押 Anchor：每对的 owner id（较小的一方负责判定），按 id 取 Note。
+var _anchor_owner_ids: Array[int] = []
+var _note_index: Dictionary = {}
 var _ui_accum: float = 0.0
 
 var _states: Dictionary = {}
@@ -720,6 +725,28 @@ func _init_states() -> void:
 			"trace_reset": false,
 			"armed": false,
 		}
+	# 双押 Anchor：一对只由 owner 判定，找出同拍反向的伙伴。
+	_note_index.clear()
+	_anchor_owner_ids.clear()
+	for note in _ordered_notes:
+		_note_index[note.id] = note
+	var paired: Dictionary = {}
+	for note in _ordered_notes:
+		if note.type != "anchor" or paired.has(note.id):
+			continue
+		var partner := chart.anchor_partner(note)
+		if partner == null:
+			_states[note.id]["anchor_unpaired"] = true
+			continue
+		var owner := note if note.id < partner.id else partner
+		var other := partner if owner == note else note
+		paired[owner.id] = true
+		paired[other.id] = true
+		_states[owner.id]["anchor_owner"] = true
+		_states[owner.id]["anchor_pair_id"] = other.id
+		_states[owner.id]["anchor_pending"] = []
+		_states[other.id]["anchor_pair_id"] = owner.id
+		_anchor_owner_ids.append(owner.id)
 	# 从读头/回退点之后开始：起点之前的音符不判、不计分，避免一进局就一串 MISS。
 	for note in _ordered_notes:
 		var state: Dictionary = _states[note.id]
@@ -1179,6 +1206,7 @@ func _toggle_auto() -> void:
 
 
 func _judge_all(ms: float, beat: float, delta: float) -> void:
+	_judge_anchor_pairs(ms, beat)
 	_assign_presses(ms, beat)
 	var mouse: Vector2 = _preview.mouse_screen
 	for i in range(_judge_from, _ordered_notes.size()):
@@ -1780,22 +1808,129 @@ func _judge_bell(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 		_add_log("MISS Bell #%d @%.0fms" % [note.id, target])
 
 
+## 双押 Anchor：一对算一个判定单元。窗口与 Tap 相同；
+## 光标在任一锚点 140px 内、两次按键相差 ≤40ms 才成立，档位取较差的一次。
+## 命中与失误都只记一次，连击与准确率也只算一个样本。
+func _judge_anchor_pairs(ms: float, beat: float) -> void:
+	for owner_id in _anchor_owner_ids:
+		var state: Dictionary = _states[owner_id]
+		if bool(state.get("done", false)):
+			continue
+		var target := float(state["target_ms"])
+		if ms < target - EARLY_MS:
+			continue
+		var partner_id := int(state.get("anchor_pair_id", -1))
+		if not _states.has(partner_id):
+			continue
+		var partner_state: Dictionary = _states[partner_id]
+		var owner_note: Note = _note_index.get(owner_id)
+		var partner_note: Note = _note_index.get(partner_id)
+		var pa := _preview.note_head_screen(owner_note, beat)
+		var pb := _preview.note_head_screen(partner_note, beat)
+		var tolerance := POSITION_TOLERANCE_PX + float(_preview.note_graphic_radius("anchor"))
+		var pending: Array = state.get("anchor_pending", [])
+		# 第一键只留 40ms 等第二键；超时就不算同一组多押。
+		var fresh_pending: Array = []
+		for press in pending:
+			if ms - float(press.get("time", -INF)) <= ANCHOR_SYNC_MS:
+				fresh_pending.append(press)
+		pending = fresh_pending
+		# 只把“在任一锚点附近”的按键收进这一对，别的音符照常分配。
+		var kept_presses: Array[Dictionary] = []
+		for press in _key_presses:
+			var lo := float(press.get("lo", press.get("time", 0.0)))
+			var hi := float(press.get("hi", press.get("time", 0.0)))
+			if hi < target - EARLY_MS or lo > target + HIT_WINDOW_MS:
+				kept_presses.append(press)
+				continue
+			var point: Vector2 = press.get("mouse", Vector2.INF)
+			if not _near_anchor(point, pa, pb, tolerance):
+				kept_presses.append(press)
+				continue
+			pending.append(press)
+		_key_presses = kept_presses
+		state["anchor_pending"] = pending
+		var picked := _pick_anchor_pair(pending, target)
+		if not picked.is_empty():
+			var press_a: Dictionary = picked["a"]
+			var press_b: Dictionary = picked["b"]
+			var worse := float(picked["error"])
+			var tier := _tier_for(worse)
+			state["done"] = true
+			partner_state["done"] = true
+			state["anchor_pending"] = []
+			_preview.set_note_state(owner_id, "hit")
+			_preview.set_note_state(partner_id, "hit")
+			_preview.add_note_pop("anchor", owner_note, beat)
+			_preview.add_note_pop("anchor", partner_note, beat)
+			_register_hit(tier)
+			# 判定字放在玩家实际靠近的那颗锚点上。
+			var aim_angle := owner_note.angle
+			var aim_mouse: Vector2 = press_a.get("mouse", pa)
+			if aim_mouse.distance_to(pb) < aim_mouse.distance_to(pa):
+				aim_angle = partner_note.angle
+			_pulse_at(aim_angle, beat, _tier_color(tier), tier, 70.0, "tap", _timing_detail(worse, tier))
+			_sfx.play("anchor", 1.0)
+			_record_error(worse, "ANCHOR PAIR #%d/#%d %s" % [owner_id, partner_id, tier], tier,
+				float(picked["time"]))
+			continue
+		if ms > target + HIT_WINDOW_MS:
+			state["done"] = true
+			partner_state["done"] = true
+			state["anchor_pending"] = []
+			_preview.set_note_state(owner_id, "miss")
+			_preview.set_note_state(partner_id, "miss")
+			_miss_count += 1
+			_add_judgement("MISS")
+			_combo = 0
+			_pulse_at(owner_note.angle, beat, UITheme.RED, "MISS", 70.0)
+			_add_log("MISS Anchor PAIR #%d/#%d" % [owner_id, partner_id])
+
+
+## 从候选按键里找一对：不同物理键、时间差 ≤40ms、各在自己的窗口内。
+## 返回较差那次的带符号误差，用来取档位。
+static func _pick_anchor_pair(presses: Array, target: float) -> Dictionary:
+	var best: Dictionary = {}
+	var best_cost := INF
+	for i in presses.size():
+		var a: Dictionary = presses[i]
+		var error_a := press_error(a, target)
+		if absf(error_a) > HIT_WINDOW_MS:
+			continue
+		for j in range(i + 1, presses.size()):
+			var b: Dictionary = presses[j]
+			if int(a.get("key", 0)) == int(b.get("key", 0)):
+				continue
+			if absf(float(a.get("time", 0.0)) - float(b.get("time", 0.0))) > ANCHOR_SYNC_MS:
+				continue
+			var error_b := press_error(b, target)
+			if absf(error_b) > HIT_WINDOW_MS:
+				continue
+			var cost := maxf(absf(error_a), absf(error_b))
+			if cost >= best_cost:
+				continue
+			best_cost = cost
+			best = {
+				"a": a,
+				"b": b,
+				"error": error_a if absf(error_a) >= absf(error_b) else error_b,
+				"time": maxf(float(a.get("time", 0.0)), float(b.get("time", 0.0))),
+			}
+	return best
+
+
+static func _near_anchor(point: Vector2, a: Vector2, b: Vector2, tolerance: float) -> bool:
+	if not point.is_finite():
+		return false
+	return point.distance_to(a) <= tolerance or point.distance_to(b) <= tolerance
+
+
+## 成对的 Anchor 已经在 _judge_anchor_pairs 里整对结算；这里只兜底单颗旧谱。
 func _judge_anchor(note: Note, ms: float, beat: float) -> void:
 	var state: Dictionary = _states[note.id]
+	if not bool(state.get("anchor_unpaired", false)):
+		return
 	var target := float(state["target_ms"])
-	if ms < target - EARLY_MS:
-		return
-	var press := _take_assigned_press(note.id)
-	if not press.is_empty():
-		var anchor_error := press_error(press, target)
-		var tier := _tier_for(anchor_error)
-		state["done"] = true
-		_preview.set_note_state(note.id, "hit")
-		_register_hit(tier)
-		_pulse_at(note.angle, beat, _tier_color(tier), tier, note.arc_width(), "tap", _timing_detail(anchor_error, tier))
-		_sfx.play("anchor", 1.0)
-		_record_error(float(press["time"]) - target, "ANCHOR #%d %s" % [note.id, tier], tier, float(press["time"]))
-		return
 	if ms > target + HIT_WINDOW_MS:
 		state["done"] = true
 		_preview.set_note_state(note.id, "miss")
@@ -1803,7 +1938,7 @@ func _judge_anchor(note: Note, ms: float, beat: float) -> void:
 		_add_judgement("MISS")
 		_combo = 0
 		_pulse_at(note.angle, beat, UITheme.RED, "MISS", 70.0)
-		_add_log("MISS Anchor #%d" % note.id)
+		_add_log("MISS Anchor #%d (unpaired)" % note.id)
 
 
 func _judge_red(ms: float, beat: float, delta: float, mouse: Vector2) -> void:
@@ -1973,9 +2108,8 @@ func _press_target(note: Note, ms: float, beat: float) -> Dictionary:
 				PackedVector2Array([_preview.note_head_screen(note, beat)]),
 				POSITION_TOLERANCE_PX + float(_preview.note_graphic_radius("path")), 0.0)
 		"anchor":
-			return _shape_target(note, target - EARLY_MS, target + HIT_WINDOW_MS, target,
-				PackedVector2Array([_preview.note_head_screen(note, beat)]),
-				POSITION_TOLERANCE_PX + float(_preview.note_graphic_radius(note.type)), 0.0)
+			# 成对 Anchor 由 _judge_anchor_pairs 整对收键，不走单键分配。
+			return {}
 		"trace":
 			if bool(state.get("trace_started", false)) or note.trace_style != "slider":
 				return {}

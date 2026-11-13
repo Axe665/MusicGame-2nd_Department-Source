@@ -1530,35 +1530,38 @@ func _create_note(type: String) -> void:
 		return
 	var beat: float = _app.snap_beat(get_time_beat())
 	var angle := fposmod(cursor_u * 360.0, 360.0)
-	var kind := type
-	var note := Note.new(kind, beat, angle, 60.0)
-	note.id = chart.next_note_id()
-	match type:
-		"hold":
-			note.end_beat = beat + 1.0
-			note.hold = true
-			note.hold_style = "straight"
-		"path":
-			note.end_beat = beat + 1.0
-			note.tail_angle = fposmod(angle + 60.0, 360.0)
-			note.tail_width = 45.0
-			note.tolerance = 0.24
-			note.samples_per_beat = 4.0
-			note.trace_pts = [
-				{"x": cos(deg_to_rad(angle)), "y": sin(deg_to_rad(angle)), "db": 0.0},
-				{"x": cos(deg_to_rad(note.tail_angle)) * 0.70, "y": sin(deg_to_rad(note.tail_angle)) * 0.70, "db": 1.0},
-			]
-		"anchor":
-			note.width = 0.0
-			note.anchor_pair = -1
-		"bell":
-			note.width = Note.BELL_MAX_WIDTH
-			note.center_u = cursor_u
-			note.radius = 26.0
+	var added: Array[Note] = []
+	if type == "anchor":
+		# Anchor 是双押配置：一次放两颗同拍反向的锚点。
+		added = chart.make_anchor_pair(beat, angle)
+	else:
+		var note := Note.new(type, beat, angle, 60.0)
+		note.id = chart.next_note_id()
+		match type:
+			"hold":
+				note.end_beat = beat + 1.0
+				note.hold = true
+				note.hold_style = "straight"
+			"path":
+				note.end_beat = beat + 1.0
+				note.tail_angle = fposmod(angle + 60.0, 360.0)
+				note.tail_width = 45.0
+				note.tolerance = 0.24
+				note.samples_per_beat = 4.0
+				note.trace_pts = [
+					{"x": cos(deg_to_rad(angle)), "y": sin(deg_to_rad(angle)), "db": 0.0},
+					{"x": cos(deg_to_rad(note.tail_angle)) * 0.70, "y": sin(deg_to_rad(note.tail_angle)) * 0.70, "db": 1.0},
+				]
+			"bell":
+				note.width = Note.BELL_MAX_WIDTH
+				note.center_u = cursor_u
+				note.radius = 26.0
+		added = [note]
 	_app.begin_edit()
-	chart.notes.append(note)
+	for item in added:
+		chart.notes.append(item)
 	_app.finish_edit()
-	_app.select_note(note.id)
+	_app.select_note(added[0].id)
 
 
 func _pick_control_point(screen: Vector2) -> Dictionary:
@@ -3311,9 +3314,16 @@ func _draw_notes(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 			"anchor":
 				var grow := _approach(chart, note.beat, t)
 				var p := _flying_position(chart, note.angle, note.beat, t, pre)
+				var ns := maxf(1.0, _note_scale())
 				if _valid_point(p):
-					canvas.draw_circle(p, 27.0 * grow, Color(UITheme.VIOLET.r, UITheme.VIOLET.g, UITheme.VIOLET.b, 0.14))
-				_draw_diamond(canvas, p, 16.0 * clampf(grow, 0.35, 1.0), UITheme.VIOLET)
+					canvas.draw_circle(p, 40.0 * ns * grow, Color(UITheme.VIOLET.r, UITheme.VIOLET.g, UITheme.VIOLET.b, 0.14))
+				# 多押线：两颗锚点之间一条细实线，随下落逐渐显现。
+				var partner := chart.anchor_partner(note)
+				if partner != null and note.id < partner.id:
+					var q := _flying_position(chart, partner.angle, partner.beat, t, pre)
+					if _valid_point(p) and _valid_point(q):
+						canvas.draw_line(p, q, Color(UITheme.VIOLET.r, UITheme.VIOLET.g, UITheme.VIOLET.b, 0.55 * grow), 2.0, true)
+				_draw_diamond(canvas, p, 24.0 * ns * clampf(grow, 0.35, 1.0), UITheme.VIOLET)
 			"bell":
 				_draw_bell(canvas, chart, note, t)
 
@@ -3820,7 +3830,14 @@ func add_note_pop(kind: String, note: Note, beat: float) -> void:
 		return
 	var ns := _note_scale()
 	var pop := {"kind": kind, "age": 0.0}
-	if kind == "path":
+	if kind == "anchor":
+		var point := note_head_screen(note, beat)
+		if not _valid_point(point):
+			return
+		pop["point"] = point
+		pop["color"] = UITheme.VIOLET
+		pop["base"] = 24.0 * maxf(1.0, _note_scale())
+	elif kind == "path":
 		# 只放大环上的星头标记；下落星星和尾环继续走原来的淡出。
 		var point := _path_screen_point(chart, note, 0.0, beat)
 		if not _valid_point(point):
@@ -3866,6 +3883,25 @@ func _draw_note_pops(canvas: Control) -> void:
 		var pop_scale := note_pop_scale(age)
 		var color: Color = pop["color"]
 		var flash := clampf(1.0 - age / 0.08, 0.0, 1.0)
+		if String(pop.get("kind", "")) == "anchor":
+			# 菱形整体放大淡出：命中时和 Tap 的条带一样有“弹一下”的反馈。
+			var point: Vector2 = pop["point"]
+			var s := float(pop["base"]) * pop_scale
+			var diamond := PackedVector2Array([
+				point + Vector2(0.0, -s),
+				point + Vector2(s, 0.0),
+				point + Vector2(0.0, s),
+				point + Vector2(-s, 0.0),
+				point + Vector2(0.0, -s),
+			])
+			canvas.draw_circle(point, s * 1.8, Color(color.r, color.g, color.b, 0.14 * alpha))
+			canvas.draw_polyline(diamond, Color(0, 0, 0, 0.60 * alpha), 5.0)
+			canvas.draw_polyline(diamond, Color(1, 1, 1, 0.92 * alpha), 3.0)
+			canvas.draw_colored_polygon(PackedVector2Array([diamond[0], diamond[1], diamond[2], diamond[3]]),
+				Color(color.r, color.g, color.b, 0.32 * alpha))
+			if flash > 0.0:
+				canvas.draw_circle(point, s * 0.9, Color(1, 1, 1, 0.35 * flash))
+			continue
 		if String(pop.get("kind", "")) == "path":
 			# 星头落点标记整体放大：软光 + 黑底 + 白环 + 颜色外弧。
 			var point: Vector2 = pop["point"]

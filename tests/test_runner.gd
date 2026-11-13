@@ -984,6 +984,37 @@ func test_press_space_priority() -> bool:
 			alternating_ok = false
 		prev = dir
 	ok(alternating_ok, "alternating wheel ticks never pass the guard")
+	# 双押 Anchor：两个不同键、相差 ≤40ms 才成对，档次取较差的一次。
+	var two_keys := [
+		{"time": 995.0, "lo": 995.0, "hi": 995.0, "key": 65},
+		{"time": 1020.0, "lo": 1020.0, "hi": 1020.0, "key": 66},
+	]
+	var picked := Playtest._pick_anchor_pair(two_keys, 1000.0)
+	ok(not picked.is_empty(), "two keys within 40ms form an anchor pair")
+	eq(float(picked.get("error", 0.0)), 20.0, "the worse press decides the tier")
+	ok(Playtest._pick_anchor_pair([
+		{"time": 995.0, "lo": 995.0, "hi": 995.0, "key": 65},
+		{"time": 1045.0, "lo": 1045.0, "hi": 1045.0, "key": 66},
+	], 1000.0).is_empty(), "keys 50ms apart do not pair")
+	ok(Playtest._pick_anchor_pair([
+		{"time": 1000.0, "lo": 1000.0, "hi": 1000.0, "key": 65},
+		{"time": 1010.0, "lo": 1010.0, "hi": 1010.0, "key": 65},
+	], 1000.0).is_empty(), "the same physical key cannot double-press")
+	ok(Playtest._near_anchor(Vector2(10, 0), Vector2(0, 0), Vector2(300, 0), 140.0),
+		"aiming at either anchor counts")
+	ok(not Playtest._near_anchor(Vector2(150, 0), Vector2(0, 0), Vector2(300, 0), 140.0),
+		"the midpoint between two anchors counts for neither")
+	# 放置 Anchor 时一次生成同拍反向的一对。
+	var pair_chart := Chart.new()
+	var pair := pair_chart.make_anchor_pair(2.0, 30.0)
+	eq(pair.size(), 2, "placing an anchor creates a pair")
+	eq(pair[0].pair_id, pair[1].pair_id, "the pair shares one pairId")
+	near(JudgeMath.angle_distance(pair[0].angle, pair[1].angle), 180.0, 0.001, "the pair is opposite")
+	pair_chart.notes.append(pair[0])
+	pair_chart.notes.append(pair[1])
+	ok(pair_chart.anchor_partner(pair[0]) != null, "the pair resolves through the chart")
+	pair[1].angle = 95.0
+	ok(pair_chart.anchor_partner(pair[0]) != null, "any angle still pairs at the same beat")
 	return true
 
 

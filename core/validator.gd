@@ -177,12 +177,9 @@ static func _check_notes(chart: Chart, issues: Array[Dictionary]) -> void:
 				if note.center_u < 0.0 or note.center_u >= 1.0:
 					_add(issues, "error", "Bell %d 的中心 u 越界" % note.id, "note:%d" % note.id)
 			"anchor":
-				if note.anchor_pair >= 0:
-					var partner := _anchor_partner(chart, note)
-					if partner == null:
-						_add(issues, "error", "Anchor %d 缺少同拍反向的配对" % note.id, "note:%d" % note.id)
-				if not note.pair_id.is_empty() and _anchor_partner(chart, note) == null:
-					_add(issues, "error", "Anchor %d 的 pairId 没有配对" % note.id, "note:%d" % note.id)
+				# 双押配置：单颗 Anchor 不再成立，必须同拍反向成对。
+				if _anchor_partner(chart, note) == null:
+					_add(issues, "error", "Anchor %d 必须与同拍反向的另一颗配对" % note.id, "note:%d" % note.id)
 		if note.space != "plane" or note.type == "path":
 			var u := note.center_u if note.type == "bell" else fposmod(note.angle, 360.0) / 360.0
 			var shape := chart.get_default_shape()
@@ -190,21 +187,20 @@ static func _check_notes(chart: Chart, issues: Array[Dictionary]) -> void:
 				var sampled := shape.point_at(u)
 				if sampled.get("gap", false):
 					_add(issues, "error", "音符 %d 落在缺口段上" % note.id, "note:%d" % note.id)
+	# 同拍最多一对（双押）；第三颗 Anchor 直接拒绝。
+	var anchor_counts := {}
+	for note in chart.notes:
+		if note.type != "anchor":
+			continue
+		var key := "%.4f" % note.beat
+		anchor_counts[key] = int(anchor_counts.get(key, 0)) + 1
+	for key in anchor_counts:
+		if int(anchor_counts[key]) > 2:
+			_add(issues, "error", "同拍 Anchor 超过双押上限（%s 拍有 %d 颗，最多 2 颗）" % [key, int(anchor_counts[key])], "notes")
 
 
 static func _anchor_partner(chart: Chart, note: Note) -> Note:
-	if note.pair_id.is_empty():
-		return null
-	for other in chart.notes:
-		if other.id == note.id or other.type != "anchor":
-			continue
-		if other.pair_id != note.pair_id:
-			continue
-		if absf(other.beat - note.beat) > EPS:
-			continue
-		if absf(JudgeMath.angle_distance(other.angle, note.angle) - 180.0) <= 1.0:
-			return other
-	return null
+	return chart.anchor_partner(note)
 
 
 static func _check_playability(chart: Chart, issues: Array[Dictionary]) -> void:
