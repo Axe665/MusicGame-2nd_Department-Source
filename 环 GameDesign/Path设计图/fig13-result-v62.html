@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>结算</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:1200px;height:760px;overflow:hidden}
+body{background:#FAF7F2;color:#1F1B18;font-family:"Noto Sans CJK SC",sans-serif;
+ padding:52px 64px 0;display:flex;flex-direction:column}
+.k{font-family:"DejaVu Sans Mono",monospace;font-size:12px;letter-spacing:4px;color:#9A8C7A}
+h1{font-size:30px;margin-top:10px;font-weight:700}
+.sub{font-size:15px;color:#6B6259;margin-top:8px}
+.body{flex:1;display:flex;gap:26px;margin-top:30px}
+.card{flex:1;border:1px solid #E2D8CA;background:#FFFDFA;border-radius:10px;padding:22px 24px;position:relative}
+.lbl{font-family:"DejaVu Sans Mono",monospace;font-size:12px;letter-spacing:3px;color:#8A7F72}
+.big{font-family:"DejaVu Sans Mono",monospace;font-size:64px;font-weight:700;margin-top:14px}
+.row{font-size:14px;color:#4A423A;margin-top:10px}
+.tag{display:inline-block;font-size:11.5px;padding:2px 9px;border-radius:10px;background:#F1E7DA;color:#8A5A2B;margin-top:14px}
+.foot{font-size:12.5px;color:#8A7F72;margin:8px 0 26px;line-height:1.7}
+</style></head><body>
+<div class="k">TAMAKI₃ / RESULT</div>
+<h1>一个演奏评级，一个收集目标</h1>
+<div class="sub">演奏侧与收集侧分开呈现；追求准确率和追求路线收集是两条可重玩的目标。</div>
+<div class="body">
+  <div class="card">
+    <div class="lbl">PERFORMANCE</div>
+    <div class="big">S</div>
+    <div class="row">准确率 98.72%　·　最大连击 128</div>
+    <div class="row">PERFECT 402 / GREAT 21 / GOOD 3 / BAD 0</div>
+    <div class="tag">当前实现：这一侧就是全部结算内容</div>
+  </div>
+  <div class="card">
+    <div class="lbl">BELL COLLECTION</div>
+    <div class="big">12<span style="font-size:30px;color:#8A7F72"> / 15</span></div>
+    <div class="row">收集率 80%</div>
+    <div class="row">漏掉的铃铛不折算成普通 Tap 失误</div>
+    <div class="tag">设计目标：当前结算页没有这一列</div>
+  </div>
+</div>
+<div class="foot">
+  Bell：设计上不进普通连击、不扣普通准确率；当前实现命中计 PERFECT，计入连击与准确率。<br>
+  Limit：断连一次并按固定点扣准确率，区内不重复惩罚。
+</div>
+</body></html>

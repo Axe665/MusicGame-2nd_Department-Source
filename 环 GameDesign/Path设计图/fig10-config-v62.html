@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>五类配置</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:1200px;height:760px;overflow:hidden}
+body{background:#FAF7F2;color:#1F1B18;font-family:"Noto Sans CJK SC",sans-serif;
+ padding:52px 64px 0;display:flex;flex-direction:column}
+.k{font-family:"DejaVu Sans Mono",monospace;font-size:12px;letter-spacing:4px;color:#9A8C7A}
+h1{font-size:30px;margin-top:10px;font-weight:700}
+.sub{font-size:15px;color:#6B6259;margin-top:8px}
+.body{flex:1;margin-top:26px}
+.row{display:flex;align-items:center;gap:18px;padding:15px 18px;border-radius:8px;margin-bottom:9px;background:#FFFDFA;border:1px solid #E6DCCE}
+.tag{width:30px;font-family:"DejaVu Sans Mono",monospace;font-size:16px;font-weight:700;color:#8A7F72}
+.nm{width:120px;font-size:16px;font-weight:600}
+.ct{font-size:14.5px;color:#4A423A}
+.hi{background:#FBF1E8;border-color:#E8C9A8}
+.foot{font-size:12.5px;color:#8A7F72;margin:10px 0 26px}
+</style></head><body>
+<div class="k">TAMAKI₃ / CONFIG</div>
+<h1>五类配置，各承担一件事</h1>
+<div class="sub">这是配置分类，不是五层新操作；表现层不参与判定。</div>
+<div class="body">
+  <div class="row"><div class="tag">A</div><div class="nm">曲目</div><div class="ct">BPM / offset / 拍号 / 难度 / 音频</div></div>
+  <div class="row"><div class="tag">B</div><div class="nm">音符</div><div class="ct">Tap / Hold / Path / Seek / Anchor —— 时间、逻辑角度、宽度</div></div>
+  <div class="row"><div class="tag">C</div><div class="nm">区域</div><div class="ct">Bell / Limit —— 时间范围、逻辑角度、宽度</div></div>
+  <div class="row hi"><div class="tag">D</div><div class="nm">表现</div><div class="ct">Path 视觉点、箭头与方向、配色分组、音色</div></div>
+  <div class="row"><div class="tag">E</div><div class="nm">环状态</div><div class="ct">zoom / tilt / ellipse / rotation 关键帧</div></div>
+</div>
+<div class="foot">D 层只改看得见的部分：加一个视觉控制点，不会多出一个判定点；换一种配色，不会改逻辑角度。</div>
+</body></html>
