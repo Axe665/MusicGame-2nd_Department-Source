@@ -1226,7 +1226,7 @@ func toggle_note_selection(note_id: int) -> void:
 
 
 func mirror_selected_notes() -> void:
-	var notes := get_selected_notes()
+	var notes := selection_with_partners()
 	if notes.is_empty():
 		return
 	begin_edit()
@@ -1261,7 +1261,7 @@ func rotate_selected_notes(degrees: float) -> void:
 
 func copy_selected_notes() -> void:
 	clipboard_notes.clear()
-	var notes := get_selected_notes()
+	var notes := selection_with_partners()
 	if notes.is_empty():
 		return
 	var base_beat := notes[0].beat
@@ -1353,6 +1353,27 @@ func get_selected_notes() -> Array[Note]:
 		if selected_notes.has(note.id):
 			result.append(note)
 	return result
+
+
+## 选中 Anchor 时把同拍、同 pairId 的伙伴一并带上：删除/复制/镜像按整对处理。
+func with_anchor_partners(notes: Array[Note]) -> Array[Note]:
+	var result: Array[Note] = []
+	var seen := {}
+	for note in notes:
+		if seen.has(note.id):
+			continue
+		seen[note.id] = true
+		result.append(note)
+		if note.type == "anchor" and chart != null:
+			var partner := chart.anchor_partner(note)
+			if partner != null and not seen.has(partner.id):
+				seen[partner.id] = true
+				result.append(partner)
+	return result
+
+
+func selection_with_partners() -> Array[Note]:
+	return with_anchor_partners(get_selected_notes())
 
 
 func get_selected_note() -> Note:

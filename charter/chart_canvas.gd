@@ -176,7 +176,7 @@ func has_clipboard() -> bool:
 func copy_selection(cut: bool = false) -> void:
 	if _app == null or _app.chart == null:
 		return
-	var selected: Array[Note] = _app.get_selected_notes()
+	var selected: Array[Note] = _app.selection_with_partners()
 	if selected.is_empty():
 		notice.emit("先选中音符，再复制或剪切。", "warning")
 		return
@@ -244,15 +244,17 @@ func mirror_selected_note() -> bool:
 	var selected: Array[Note] = _app.get_selected_notes()
 	if selected.size() != 1:
 		return false
-	var note: Note = selected[0]
-	if note.lock:
-		notice.emit("音符已锁定，无法镜像。", "warning")
-		return false
+	var group: Array[Note] = _app.with_anchor_partners(selected)
+	for item in group:
+		if item.lock:
+			notice.emit("音符已锁定，无法镜像。", "warning")
+			return false
 	_app.begin_edit()
-	note.mirror_u()
+	for item in group:
+		item.mirror_u()
 	_app.finish_edit()
 	queue_redraw()
-	notice.emit("已镜像音符 %d。" % note.id, "info")
+	notice.emit("已镜像 %d 个音符。" % group.size(), "info")
 	return true
 
 
@@ -948,6 +950,13 @@ func _draw_trace(note: Note, _plot: Rect2) -> void:
 
 func _draw_anchor(note: Note) -> void:
 	var p := Vector2(_u_to_x(fposmod(note.angle, 360.0) / 360.0), _beat_to_y(note.beat))
+	# 双押线：只由 id 较小的一颗画一次，连到同拍反向的伙伴。
+	var chart: Chart = _app.chart if _app != null else null
+	if chart != null:
+		var partner := chart.anchor_partner(note)
+		if partner != null and note.id < partner.id:
+			var q := Vector2(_u_to_x(fposmod(partner.angle, 360.0) / 360.0), _beat_to_y(partner.beat))
+			draw_line(p, q, Color(UITheme.VIOLET.r, UITheme.VIOLET.g, UITheme.VIOLET.b, 0.55), 1.2, true)
 	var selected := _is_note_selected(note.id)
 	_draw_diamond(p, 8.0 if selected else 6.5, UITheme.VIOLET)
 	draw_line(p + Vector2(0, -2), p + Vector2(0, 4), UITheme.VIOLET, 1.2, true)
@@ -1585,9 +1594,6 @@ func _drag_notes_update(screen: Vector2, event: InputEventMouseMotion) -> void:
 		var note: Note = item["note"]
 		if note.lock:
 			continue
-		if note.type == "anchor":
-			note.beat = maxf(0.0, _snap_beat_to_subdivision(float(item["beat"]) + delta_beat, event.alt_pressed))
-			continue
 		if note.type == "trace":
 			var new_beat := maxf(0.0, _snap_beat_to_subdivision(float(item["beat"]) + delta_beat, event.alt_pressed))
 			var offset := new_beat - note.beat
@@ -1646,19 +1652,23 @@ func _create_simple(type: String, beat: float, u: float) -> void:
 	var chart: Chart = _app.chart
 	if chart == null:
 		return
-	var note := Note.new(type, beat, u * 360.0, 60.0)
-	note.id = chart.next_note_id()
+	var added: Array[Note] = []
 	if type == "anchor":
-		note.width = 0.0
-		note.anchor_pair = -1
-	elif type == "bell":
-		note.width = 0.0
-		note.center_u = u
-		note.radius = 26.0
+		# Anchor 是双押配置：一次放两颗同拍反向的锚点。
+		added = chart.make_anchor_pair(beat, u * 360.0)
+	else:
+		var note := Note.new(type, beat, u * 360.0, 60.0)
+		note.id = chart.next_note_id()
+		if type == "bell":
+			note.width = 0.0
+			note.center_u = u
+			note.radius = 26.0
+		added = [note]
 	_app.begin_edit()
-	chart.notes.append(note)
+	for item in added:
+		chart.notes.append(item)
 	_app.finish_edit()
-	_app.select_note(note.id)
+	_app.select_note(added[0].id)
 
 
 func _create_sized_tap(beat: float, u: float) -> void:
@@ -2018,7 +2028,9 @@ func _delete_selection() -> void:
 		return
 	var chart: Chart = _app.chart
 	_app.begin_edit()
-	var note_ids: Array = _app.selected_notes.duplicate()
+	var note_ids: Array = []
+	for note in _app.selection_with_partners():
+		note_ids.append(note.id)
 	for note in chart.notes.duplicate():
 		if note_ids.has(note.id):
 			chart.notes.erase(note)

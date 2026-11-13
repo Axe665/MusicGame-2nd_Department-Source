@@ -91,7 +91,12 @@ func _audit_validation() -> void:
 	_make_note(good, "hold", 2.0)
 	_make_note(good, "path", 4.0)
 	_make_note(good, "trace", 6.0)
-	_make_note(good, "anchor", 8.0)
+	var anchor_a := _make_note(good, "anchor", 8.0)
+	var anchor_b := _make_note(good, "anchor", 8.0)
+	anchor_a.angle = 0.0
+	anchor_b.angle = 180.0
+	anchor_a.pair_id = "A0"
+	anchor_b.pair_id = "A0"
 	_make_note(good, "bell", 10.0)
 	_check("有效谱面通过校验", Validator.errors(Validator.validate(good)).is_empty(), str(Validator.errors(Validator.validate(good))))
 
@@ -113,6 +118,20 @@ func _audit_validation() -> void:
 	lone.pair_id = "A0"
 	lone.anchor_pair = 0
 	_check("Anchor 缺配对被拒绝", not Validator.errors(Validator.validate(anchor)).is_empty())
+
+	var triple := Chart.new()
+	for i in 3:
+		_make_note(triple, "anchor", 4.0).angle = float(i) * 120.0
+	_check("同拍超过双押上限被拒绝", not Validator.errors(Validator.validate(triple)).is_empty())
+
+	var free_angle := Chart.new()
+	var free_a := _make_note(free_angle, "anchor", 6.0)
+	var free_b := _make_note(free_angle, "anchor", 6.0)
+	free_a.angle = 10.0
+	free_b.angle = 95.0
+	free_a.pair_id = "A1"
+	free_b.pair_id = "A1"
+	_check("任意角度仍可配对", Validator.errors(Validator.validate(free_angle)).is_empty())
 
 	var shape := BoundaryShape.star("S", 380.0, 190.0, 5)
 	var shape_issues := shape.validate()
