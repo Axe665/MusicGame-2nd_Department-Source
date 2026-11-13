@@ -69,7 +69,7 @@ var has_custom_color: bool = false
 var custom_color: Color = DEFAULT_PATH_COLOR
 var lock: bool = false
 var center_u: float = 0.25
-## Seek: 0 = inward (wheel up), 1 = outward (wheel down).
+## Seek: 0 = outward (wheel up), 1 = inward (wheel down).
 var seek_orien: int = 0
 ## Transient editor state: freshly placed Seek waiting for W/S orientation.
 var seek_pending: bool = false

@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><style>
+/* Tamaki₃ 示意图共用样式：与 Path设计图 fig01–08 同一套配色 */
+:root{
+  --bg:#0A0B10; --panel:#12141C; --panel2:#191C25; --line:#2A2E38;
+  --ink:#F4EFE9; --paper:#E4D9CB; --red:#FF6242; --amber:#FFC08A;
+  --cyan:#5FD3D0; --muted:#9A948C; --faint:#5F5A55;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:1200px;height:760px;overflow:hidden}
+body{
+  background:radial-gradient(120% 90% at 50% 0%,#141722 0%,#0A0B10 62%);
+  color:var(--ink);
+  font-family:"Noto Sans CJK SC","Microsoft YaHei",sans-serif;
+  padding:44px 48px 0;
+  display:flex;flex-direction:column;
+}
+.kicker{font-family:"DejaVu Sans Mono",monospace;font-size:12px;letter-spacing:3px;color:var(--cyan)}
+h1{font-size:27px;font-weight:700;letter-spacing:.5px;margin-top:8px}
+.sub{font-size:14px;color:var(--muted);margin-top:6px}
+.body{flex:1;margin-top:24px;position:relative}
+.legend{
+  position:absolute;left:0;right:0;bottom:34px;height:52px;
+  background:var(--panel);border-radius:8px;
+  display:flex;align-items:center;gap:26px;padding:0 18px;
+}
+.legend span{font-size:13px;color:var(--ink);display:flex;align-items:center;gap:8px}
+.dot{width:11px;height:11px;border-radius:3px;display:inline-block}
+.note{position:absolute;left:0;bottom:0;font-size:12px;color:var(--faint)}
+table{width:100%;border-collapse:collapse;font-size:13.5px}
+th{
+  text-align:left;font-weight:600;color:var(--muted);font-size:12px;
+  letter-spacing:1px;padding:8px 10px;border-bottom:1px solid var(--line);
+  font-family:"DejaVu Sans Mono",monospace;text-transform:uppercase;
+}
+td{padding:9px 10px;border-bottom:1px solid #1D2029;color:var(--paper);vertical-align:top}
+td.k{color:var(--ink);font-weight:600;white-space:nowrap}
+td .mono{font-family:"DejaVu Sans Mono",monospace;font-size:12px;color:var(--amber)}
+td .dim{color:var(--muted)}
+.pill{display:inline-block;padding:1px 7px;border-radius:9px;font-size:11.5px;line-height:18px}
+.yes{background:rgba(255,98,66,.16);color:#FF9A80}
+.no{background:rgba(95,211,208,.13);color:var(--cyan)}
+.half{background:rgba(255,192,138,.14);color:var(--amber)}
+
+</style>
+<title>变速不变调缓存</title></head>
+<body>
+<div class="kicker">TAMAKI₃ / RATE</div>
+<h1>倍速不变调：预生成一份拉伸音频，而不是实时变调</h1>
+<div class="sub">每个新倍速首次要等几秒；同一倍速之后直接读缓存。没有 ffmpeg 时退回变调。</div>
+<div class="body">
+<svg viewBox="0 0 1100 400" width="1100" height="400">
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#5FD3D0"/>
+    </marker>
+    <marker id="arw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#FFC08A"/>
+    </marker>
+  </defs>
+  <!-- 源 -->
+  <rect x="40" y="140" width="200" height="86" rx="10" fill="#12141C" stroke="#2A2E38"/>
+  <text x="58" y="170" fill="#5FD3D0" font-family="DejaVu Sans Mono" font-size="11" letter-spacing="2">SOURCE</text>
+  <text x="58" y="194" fill="#F4EFE9" font-family="Noto Sans CJK SC" font-size="14">原始音频（任意格式）</text>
+  <text x="58" y="214" fill="#9A948C" font-family="DejaVu Sans Mono" font-size="11">track.mp3 · 18.0s</text>
+
+  <!-- atempo -->
+  <rect x="330" y="140" width="230" height="86" rx="10" fill="#12141C" stroke="#2A2E38"/>
+  <text x="348" y="170" fill="#5FD3D0" font-family="DejaVu Sans Mono" font-size="11" letter-spacing="2">FFMPEG</text>
+  <text x="348" y="194" fill="#F4EFE9" font-family="Noto Sans CJK SC" font-size="14">atempo = 倍速</text>
+  <text x="348" y="214" fill="#9A948C" font-family="DejaVu Sans Mono" font-size="11">0.50 – 2.00</text>
+
+  <!-- 缓存 -->
+  <rect x="650" y="132" width="410" height="102" rx="10" fill="#12141C" stroke="#2A2E38"/>
+  <text x="668" y="160" fill="#5FD3D0" font-family="DejaVu Sans Mono" font-size="11" letter-spacing="2">CACHE</text>
+  <text x="668" y="184" fill="#E4D9CB" font-family="DejaVu Sans Mono" font-size="12.5">user://media/track_&lt;digest&gt;_rate1.20.ogg</text>
+  <text x="668" y="206" fill="#9A948C" font-family="Noto Sans CJK SC" font-size="12">键含倍速 + 源文件 mtime / 大小，换歌或换倍速自动重生成</text>
+  <text x="668" y="224" fill="#FFC08A" font-family="DejaVu Sans Mono" font-size="11">2.00× · 18.0s → 8.99s</text>
+
+  <!-- 使用方 -->
+  <rect x="330" y="286" width="330" height="80" rx="10" fill="#12141C" stroke="#2A2E38"/>
+  <text x="348" y="314" fill="#5FD3D0" font-family="DejaVu Sans Mono" font-size="11" letter-spacing="2">PLAYTEST</text>
+  <text x="348" y="338" fill="#F4EFE9" font-family="Noto Sans CJK SC" font-size="14">READY 圆弧显示生成进度</text>
+  <text x="348" y="356" fill="#9A948C" font-family="Noto Sans CJK SC" font-size="12">缓存命中则零等待</text>
+
+  <rect x="690" y="286" width="370" height="80" rx="10" fill="#12141C" stroke="#2A2E38"/>
+  <text x="708" y="314" fill="#5FD3D0" font-family="DejaVu Sans Mono" font-size="11" letter-spacing="2">EDITOR PREVIEW</text>
+  <text x="708" y="338" fill="#F4EFE9" font-family="Noto Sans CJK SC" font-size="14">同一份缓存，弹进度框</text>
+  <text x="708" y="356" fill="#9A948C" font-family="Noto Sans CJK SC" font-size="12">流内 1 秒 = 谱面 N 秒</text>
+
+  <!-- 箭头 -->
+  <line x1="240" y1="183" x2="322" y2="183" stroke="#5FD3D0" stroke-width="2" marker-end="url(#ar)"/>
+  <line x1="560" y1="183" x2="642" y2="183" stroke="#5FD3D0" stroke-width="2" marker-end="url(#ar)"/>
+  <line x1="855" y1="234" x2="855" y2="278" stroke="#5FD3D0" stroke-width="2" marker-end="url(#ar)"/>
+  <path d="M 650 200 L 600 200 L 600 326 L 668 326" fill="none" stroke="#5FD3D0" stroke-width="2" marker-end="url(#ar)"/>
+
+  <!-- 回退 -->
+  <rect x="40" y="286" width="250" height="80" rx="10" fill="rgba(255,98,66,.08)" stroke="#5A2820"/>
+  <text x="58" y="314" fill="#FF9A80" font-family="DejaVu Sans Mono" font-size="11" letter-spacing="2">FALLBACK</text>
+  <text x="58" y="338" fill="#F4EFE9" font-family="Noto Sans CJK SC" font-size="13">无 ffmpeg / 生成失败</text>
+  <text x="58" y="356" fill="#9A948C" font-family="Noto Sans CJK SC" font-size="12">pitch_scale 变调加速 + 提示</text>
+  <line x1="165" y1="286" x2="165" y2="234" stroke="#FFC08A" stroke-width="2" stroke-dasharray="5 5" marker-end="url(#arw)"/>
+</svg>
+<div class="legend">
+  <span><i class="dot" style="background:#5FD3D0"></i>正常路径</span>
+  <span><i class="dot" style="background:#FFC08A"></i>回退路径</span>
+  <span><i class="dot" style="background:#E4D9CB"></i>缓存文件</span>
+</div>
+<div class="note">倍速只对本次运行有效；局中改倍速要重开本局才生效，READY 倒计时始终是真实 2 秒。</div>
+</div>
+</body></html>

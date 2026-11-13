@@ -851,7 +851,7 @@ func test_style_presets() -> bool:
 	ok(not Playtest.hold_release_grace_alive(1000.0, 1000.0 + Playtest.HOLD_RELEASE_GRACE_MS),
 		"a release past the grace ends the hold")
 	near(Preview3D.end_fade_beats(120.0), 0.2, 0.0001, "0.1s of exit fade is 0.2 beats at 120 BPM")
-	eq(Playtest.BAD_MS, 250.0, "bad tier extends to 250ms")
+	eq(Playtest.BAD_MS, 200.0, "bad tier extends to 200ms")
 	return true
 
 
@@ -865,7 +865,7 @@ func test_timing_stats() -> bool:
 	var tiers := Playtest.new()
 	eq(tiers._tier_for(150.0), "GOOD", "good tier stays at 170ms")
 	eq(tiers._tier_for(200.0), "BAD", "200ms late lands in the bad tier")
-	eq(tiers._tier_for(260.0), "MISS", "beyond 250ms is a miss")
+	eq(tiers._tier_for(210.0), "MISS", "beyond 200ms is a miss")
 	tiers.free()
 	eq(Playtest.DYNAMIC_SAMPLE_MIN, 8, "dynamic offset waits for 8 hits")
 	eq(Playtest.DYNAMIC_LIMIT_MS, 50.0, "dynamic offset is capped at 50ms")
@@ -880,6 +880,7 @@ func test_position_judgement() -> bool:
 	eq(run._distance_to_polyline(Vector2(10, 20), PackedVector2Array([Vector2(10, 0)])), 20.0, "distance to a point note")
 	# 早按只认 EARLY_MS：更早的按键不进判定，避免乱按把后面的音符打掉。
 	eq(Playtest.HIT_WINDOW_MS, Playtest.BAD_MS, "late presses keep the BAD window")
+	eq(Playtest.LATE_PENALTY_MS, 40.0, "a late match pays 40ms so the next note wins ties")
 	eq(run._tier_for(-60.0), "PERFECT", "a 60ms early press is PERFECT")
 	eq(run._tier_for(-115.0), "GREAT", "the earliest accepted press is GREAT")
 	eq(run._tier_for(-260.0), "MISS", "a 260ms early press is outside the window")
@@ -960,11 +961,29 @@ func test_press_space_priority() -> bool:
 	var late_steal := {"on_shape": false, "error": 35.0, "rank": 47.0, "distance": 0.0}
 	var upcoming := {"on_shape": false, "error": 40.0, "rank": 40.0, "distance": 0.0}
 	ok(Playtest.prefer_press_pair(upcoming, late_steal), "an upcoming note beats a late steal")
+	# 40ms 迟到代价的实际效果：20ms 晚于前一颗、40ms 早于后一颗时，按键归后一颗。
+	var late_previous := {"on_shape": false, "error": 20.0,
+		"rank": 20.0 + Playtest.LATE_PENALTY_MS, "distance": 0.0}
+	var early_next := {"on_shape": false, "error": 40.0, "rank": 40.0, "distance": 0.0}
+	ok(Playtest.prefer_press_pair(early_next, late_previous), "the upcoming note takes the press from a stale one")
 	# 刚命中后的额外按键不能提前吃下一颗。
 	ok(Playtest.press_is_stray(2020.0, 2095.0, 2000.0), "a stray press right after a hit is ignored")
 	ok(not Playtest.press_is_stray(2020.0, 2095.0, -1.0e9), "a normal press is not treated as stray")
 	ok(not Playtest.press_is_stray(2060.0, 2095.0, 2000.0), "a press inside the perfect window is kept")
 	ok(not Playtest.press_is_stray(2095.0, 2095.0, 2000.0), "an on-time press is kept")
+	# 滚轮方向门：上下交替永远凑不出有效方向，同向连滚照常。
+	ok(Playtest.seek_tick_allowed(0, -1, 0.0), "the first wheel tick always counts")
+	ok(Playtest.seek_tick_allowed(0, 0, 5.0), "same-direction ticks keep counting")
+	ok(not Playtest.seek_tick_allowed(0, 1, 79.0), "a reversal inside 80ms is ignored")
+	ok(Playtest.seek_tick_allowed(0, 1, 80.0), "a reversal after 80ms counts")
+	var alternating_ok := Playtest.seek_tick_allowed(0, -1, 0.0)
+	var prev := 0
+	for i in 8:
+		var dir := 1 - (i % 2)
+		if Playtest.seek_tick_allowed(dir, prev, 10.0):
+			alternating_ok = false
+		prev = dir
+	ok(alternating_ok, "alternating wheel ticks never pass the guard")
 	return true
 
 

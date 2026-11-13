@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><style>
+/* Tamaki₃ 示意图共用样式：与 Path设计图 fig01–08 同一套配色 */
+:root{
+  --bg:#0A0B10; --panel:#12141C; --panel2:#191C25; --line:#2A2E38;
+  --ink:#F4EFE9; --paper:#E4D9CB; --red:#FF6242; --amber:#FFC08A;
+  --cyan:#5FD3D0; --muted:#9A948C; --faint:#5F5A55;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:1200px;height:760px;overflow:hidden}
+body{
+  background:radial-gradient(120% 90% at 50% 0%,#141722 0%,#0A0B10 62%);
+  color:var(--ink);
+  font-family:"Noto Sans CJK SC","Microsoft YaHei",sans-serif;
+  padding:44px 48px 0;
+  display:flex;flex-direction:column;
+}
+.kicker{font-family:"DejaVu Sans Mono",monospace;font-size:12px;letter-spacing:3px;color:var(--cyan)}
+h1{font-size:27px;font-weight:700;letter-spacing:.5px;margin-top:8px}
+.sub{font-size:14px;color:var(--muted);margin-top:6px}
+.body{flex:1;margin-top:24px;position:relative}
+.legend{
+  position:absolute;left:0;right:0;bottom:34px;height:52px;
+  background:var(--panel);border-radius:8px;
+  display:flex;align-items:center;gap:26px;padding:0 18px;
+}
+.legend span{font-size:13px;color:var(--ink);display:flex;align-items:center;gap:8px}
+.dot{width:11px;height:11px;border-radius:3px;display:inline-block}
+.note{position:absolute;left:0;bottom:0;font-size:12px;color:var(--faint)}
+table{width:100%;border-collapse:collapse;font-size:13.5px}
+th{
+  text-align:left;font-weight:600;color:var(--muted);font-size:12px;
+  letter-spacing:1px;padding:8px 10px;border-bottom:1px solid var(--line);
+  font-family:"DejaVu Sans Mono",monospace;text-transform:uppercase;
+}
+td{padding:9px 10px;border-bottom:1px solid #1D2029;color:var(--paper);vertical-align:top}
+td.k{color:var(--ink);font-weight:600;white-space:nowrap}
+td .mono{font-family:"DejaVu Sans Mono",monospace;font-size:12px;color:var(--amber)}
+td .dim{color:var(--muted)}
+.pill{display:inline-block;padding:1px 7px;border-radius:9px;font-size:11.5px;line-height:18px}
+.yes{background:rgba(255,98,66,.16);color:#FF9A80}
+.no{background:rgba(95,211,208,.13);color:var(--cyan)}
+.half{background:rgba(255,192,138,.14);color:var(--amber)}
+
+</style>
+<title>Path 判定组与走廊扫描</title></head>
+<body>
+<div class="kicker">TAMAKI₃ / PATH</div>
+<h1>中段不是逐点采样，而是“判定组 + 走廊”</h1>
+<div class="sub">允许粗略跟随、允许抄近路，也允许跳过一组；但短路径必须逐组通过。</div>
+<div class="body">
+<svg viewBox="0 0 1100 430" width="1100" height="430">
+  <!-- 走廊：0.25R -->
+  <polyline points="90,330 200,300 310,190 430,150 560,200 680,320 800,330 1010,250"
+    fill="none" stroke="#5FD3D0" stroke-opacity="0.14" stroke-width="86" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- 中轴 -->
+  <polyline points="90,330 200,300 310,190 430,150 560,200 680,320 800,330 1010,250"
+    fill="none" stroke="#E4D9CB" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- 判定组 -->
+  <g fill="#0A0B10" stroke="#5FD3D0" stroke-width="2.5">
+    <circle cx="90" cy="330" r="11"/><circle cx="200" cy="300" r="11"/>
+    <circle cx="310" cy="190" r="11"/><circle cx="370" cy="168" r="11"/>
+    <circle cx="490" cy="172" r="11"/><circle cx="620" cy="256" r="11"/>
+    <circle cx="800" cy="330" r="11"/><circle cx="1010" cy="250" r="11"/>
+  </g>
+  <g font-family="DejaVu Sans Mono" font-size="11" fill="#5FD3D0" text-anchor="middle">
+    <text x="90" y="311">1</text><text x="200" y="281">2</text><text x="310" y="171">3</text>
+    <text x="370" y="149">4</text><text x="490" y="153">5</text><text x="620" y="237">6</text>
+    <text x="800" y="311">7</text><text x="1010" y="231">8</text>
+  </g>
+  <!-- 头尾 -->
+  <circle cx="90" cy="330" r="20" fill="#FF6242"/>
+  <circle cx="1010" cy="250" r="20" fill="none" stroke="#FFC08A" stroke-width="6"/>
+  <text x="90" y="380" fill="#FF6242" font-family="DejaVu Sans Mono" font-size="12" text-anchor="middle" letter-spacing="2">HEAD</text>
+  <text x="1010" y="300" fill="#FFC08A" font-family="DejaVu Sans Mono" font-size="12" text-anchor="middle" letter-spacing="2">TAIL</text>
+  <!-- 跳过一组 -->
+  <path d="M 470 172 Q 500 110 610 236" fill="none" stroke="#FFC08A" stroke-width="2" stroke-dasharray="6 6"/>
+  <circle cx="560" cy="200" r="11" fill="none" stroke="#FFC08A" stroke-width="2" stroke-dasharray="4 4"/>
+  <text x="600" y="118" fill="#FFC08A" font-family="Noto Sans CJK SC" font-size="13">可跳 1 组</text>
+  <text x="600" y="138" fill="#9A948C" font-family="Noto Sans CJK SC" font-size="12">SKIP_TOLERANCE = 1</text>
+  <!-- 拐角加宽容差 -->
+  <circle cx="310" cy="190" r="34" fill="none" stroke="#FFC08A" stroke-width="2" stroke-dasharray="5 5"/>
+  <line x1="310" y1="156" x2="310" y2="96" stroke="#5F5A55" stroke-width="1"/>
+  <text x="310" y="86" fill="#FFC08A" font-family="Noto Sans CJK SC" font-size="13" text-anchor="middle">拐角 0.34R</text>
+  <!-- 常规宽容差 -->
+  <circle cx="620" cy="256" r="25" fill="none" stroke="#5FD3D0" stroke-width="2" stroke-dasharray="5 5"/>
+  <line x1="620" y1="231" x2="620" y2="176" stroke="#5F5A55" stroke-width="1"/>
+  <text x="620" y="166" fill="#5FD3D0" font-family="Noto Sans CJK SC" font-size="13" text-anchor="middle">常规 0.25R</text>
+  <!-- 短路径提示 -->
+  <rect x="700" y="60" width="340" height="62" rx="8" fill="#12141C" stroke="#2A2E38"/>
+  <text x="716" y="86" fill="#F4EFE9" font-family="Noto Sans CJK SC" font-size="13">三组以内的小滑条：</text>
+  <text x="716" y="108" fill="#9A948C" font-family="Noto Sans CJK SC" font-size="12">NO_SKIP_GROUP_LIMIT = 3，不允许跳过</text>
+</svg>
+<div class="legend">
+  <span><i class="dot" style="background:#FF6242"></i>头部判定</span>
+  <span><i class="dot" style="background:#FFC08A"></i>拐角 / 跳组</span>
+  <span><i class="dot" style="background:#5FD3D0"></i>判定组</span>
+  <span><i class="dot" style="background:#E4D9CB"></i>中轴</span>
+</div>
+<div class="note">组按弧长与拐角自动生成；半径按边界平均半径换算，不写死屏幕像素。</div>
+</div>
+</body></html>
