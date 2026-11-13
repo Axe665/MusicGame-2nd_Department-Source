@@ -2780,7 +2780,7 @@ func _input(event: InputEvent) -> void:
 		if typing and event.keycode != KEY_F5 and event.keycode != KEY_F6:
 			return
 		if _canvas != null and _canvas.has_pending_seek() and event.keycode in [KEY_W, KEY_S]:
-			_canvas.set_pending_seek_orientation(0 if event.keycode == KEY_W else 1)
+			_canvas.set_pending_seek_orientation(1 if event.keycode == KEY_W else 0)
 			accept_event()
 			return
 		# While a numeric editor (SpinBox or its inner LineEdit) has focus, let

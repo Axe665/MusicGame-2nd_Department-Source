@@ -3406,15 +3406,16 @@ func _draw_seeks(canvas: Control, chart: Chart, t: float) -> void:
 			continue
 		var grow := _approach(chart, note.beat, t)
 		var fade := clampf((note.beat + 0.5 - t) / 0.5, 0.0, 1.0)
-		var color := UITheme.SEEK_IN if note.seek_orien == 0 else UITheme.SEEK_OUT
+		var color := UITheme.SEEK_IN if note.seek_orien == 1 else UITheme.SEEK_OUT
 		var radius := ring_radius * grow
 		canvas.draw_arc(center, radius, 0.0, TAU, 48, Color(color.r, color.g, color.b, 0.16 * fade), 10.0, true)
 		canvas.draw_arc(center, radius, 0.0, TAU, 48, Color(color.r, color.g, color.b, 0.95 * fade), 3.0, true)
-		var inward := note.seek_orien == 0
+		var inward := note.seek_orien == 1
 		var count := 8
 		for i in count:
 			var a := TAU * float(i) / float(count) - PI * 0.5
 			var dir := Vector2(cos(a), sin(a))
+			# 里向心、外向外：方向与滚轮一致（外 = 上滑）。
 			var tip := center + dir * radius + dir * (-8.0 if inward else 8.0)
 			var base := center + dir * radius
 			var side := Vector2(-dir.y, dir.x) * 4.5

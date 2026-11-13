@@ -724,13 +724,13 @@ func _build_note_page_for(page: VBoxContainer, note: Note) -> void:
 	_label(anchor_body, "Anchor 只判时间；配对需同拍反向。", 11, UITheme.MUTED)
 
 	var seek_body := _note_group(page, "seek", "Seek")
-	var seek_orien := _option(seek_body, "朝向", ["里", "外"], note.seek_orien, func(index: int) -> void:
+	var seek_orien := _option(seek_body, "朝向", ["外", "里"], note.seek_orien, func(index: int) -> void:
 		if _active_note != null:
 			_active_note.seek_orien = 1 if index == 1 else 0
 			_active_note.seek_pending = false
 	)
 	_note_widgets["seek_orien"] = seek_orien
-	_label(seek_body, "里 = 滚轮上滑；外 = 滚轮下滑。", 11, UITheme.MUTED)
+	_label(seek_body, "外 = 滚轮上滑；里 = 滚轮下滑。", 11, UITheme.MUTED)
 
 	var misc := _note_group(page, "misc", "通用")
 	var color_group := _option(misc, "配色组", ["默认"], 0, func(index: int) -> void:

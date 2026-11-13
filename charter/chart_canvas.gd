@@ -894,16 +894,15 @@ func _draw_seek(note: Note) -> void:
 	var x1 := _u_to_x(1.0)
 	var color := UITheme.INK
 	if not note.seek_pending:
-		color = UITheme.SEEK_IN if note.seek_orien == 0 else UITheme.SEEK_OUT
+		color = UITheme.SEEK_OUT if note.seek_orien == 0 else UITheme.SEEK_IN
 	var width := 3.0 if selected else 1.6
 	draw_line(Vector2(x0, y), Vector2(x1, y), Color(color.r, color.g, color.b, 0.95), width, true)
 	if selected:
 		draw_line(Vector2(x0, y), Vector2(x1, y), Color(1, 1, 1, 0.25), width + 2.0, true)
 	if note.seek_pending:
 		return
-	# Inward arrows sit below the line; outward arrows sit above it and are
-	# deliberately small so they do not compete with the line itself.
-	var direction := 1.0 if note.seek_orien == 0 else -1.0
+	# 外在上、里在下；尖端指向滚轮方向（外 = 上滑）。
+	var direction := -1.0 if note.seek_orien == 0 else 1.0
 	var count := 12
 	for i in range(1, count):
 		var x := lerpf(x0, x1, float(i) / float(count))
@@ -914,7 +913,7 @@ func _draw_seek(note: Note) -> void:
 			Vector2(x + 2.5, y + 1.2 * direction),
 		]), color)
 	if _show_type_label(note):
-		_draw_type_label("SEEK IN" if note.seek_orien == 0 else "SEEK OUT", Vector2(x0 + 6.0, y - 6.0), color)
+		_draw_type_label("SEEK OUT" if note.seek_orien == 0 else "SEEK IN", Vector2(x0 + 6.0, y - 6.0), color)
 
 
 func _draw_trace(note: Note, _plot: Rect2) -> void:

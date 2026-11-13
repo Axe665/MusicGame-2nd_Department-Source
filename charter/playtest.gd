@@ -9,7 +9,8 @@ const PERFECT_MS := 65.0
 const GREAT_MS := 115.0
 const GOOD_MS := 170.0
 ## Estella 式 BAD 档：超出 GOOD 但在这一档内算 BAD（不断连、不计命中）。
-const BAD_MS := 250.0
+## 收窄到 200ms：与下一颗的窗口重叠更少，前一颗不容易把按键吃掉。
+const BAD_MS := 200.0
 const HIT_WINDOW_MS := BAD_MS
 ## 早按只认这么多：更早的按键不消耗音符，可以再按一次。
 ## 收到 GREAT 边界，误按早一点点不会把音符判成 GOOD。
@@ -18,6 +19,8 @@ const EARLY_MS := 115.0
 const PRESS_KEEP_MS := 34.0
 ## 同一个键 50ms 内的重复按下只算一次（手抖双击）。
 const KEY_DEBOUNCE_MS := 50.0
+## 滚轮反向之后，这么短时间内的再次反向滚动不计：上下交替蹭轮凑不出有效方向。
+const SEEK_REVERSE_GUARD_MS := 80.0
 ## 鼠标左右键当成两个独立“按键”（和键盘两键一样），用负数避开 Key 枚举。
 const MOUSE_KEY_LEFT := -2
 const MOUSE_KEY_RIGHT := -3
@@ -54,9 +57,9 @@ const TRACE_CONTACT_PX := 56.0
 const POSITION_TOLERANCE_PX := 120.0
 ## 光标离图形中线这么近就算“指着这颗”：分配按键时优先于时间更近的邻键。
 const ON_SHAPE_PX := 20.0
-## 比较按键归属时给“晚于音符”的匹配加一点代价：漏掉前一颗后，
-## 下一按不会立刻被前一颗补判走（那是“蹭”的另一半）。
-const LATE_PENALTY_MS := 10.0
+## 比较按键归属时给“晚于音符”的匹配加 40ms 代价：漏掉前一颗后，
+## 下一按优先给即将到来的那颗，不会连锁被前一颗补判走。
+const LATE_PENALTY_MS := 40.0
 ## 刚命中一颗后这么短时间内的额外按键，不再允许提前吃下一颗（防手指蹭键）。
 const STRAY_GUARD_MS := 50.0
 const HOLD_ARC_PAD := 10.0
@@ -115,6 +118,8 @@ var _key_presses: Array[Dictionary] = []
 ## 最近一次真正被按键命中的时间：用来识别“刚打完又蹭一下”的额外按键。
 var _last_hit_press_ms: float = -1.0e9
 var _seek_presses: Array[Dictionary] = []
+var _last_seek_orien: int = -1
+var _last_seek_ms: float = -1.0e9
 ## 上一帧的实际间隔（ms）：输入每帧刷新一次，按键只可能落在这段时间里。
 var _last_frame_ms: float = 16.7
 ## 连续多少个统计窗口装不下目标帧：用来给弱机自动降画质。
@@ -655,6 +660,8 @@ func _init_states() -> void:
 	_key_presses.clear()
 	_last_hit_press_ms = -1.0e9
 	_seek_presses.clear()
+	_last_seek_orien = -1
+	_last_seek_ms = -1.0e9
 	_last_frame_ms = 16.7
 	_slow_windows = 0
 	_last_press_ms.clear()
@@ -1242,7 +1249,7 @@ func _judge_seek(note: Note, ms: float, beat: float) -> void:
 		state["done"] = true
 		_preview.set_note_state(note.id, "hit")
 		_register_hit("PERFECT")
-		var color := UITheme.SEEK_IN if note.seek_orien == 0 else UITheme.SEEK_OUT
+		var color := UITheme.SEEK_IN if note.seek_orien == 1 else UITheme.SEEK_OUT
 		_pulse_at(0.0, beat, color, "PERFECT", 360.0, "seek", "SEEK", _preview.project_design(Vector2.ZERO))
 		_sfx.play("bell", randf_range(0.98, 1.02))
 		_record_error(float(press["time"]) - target, "Seek #%d PERFECT" % note.id, "PERFECT", float(press["time"]))
@@ -1914,6 +1921,14 @@ static func press_is_stray(stamp: float, target: float, last_hit: float) -> bool
 	return stamp < target - PERFECT_MS and stamp > last_hit + 0.1 and stamp - last_hit < STRAY_GUARD_MS
 
 
+## 滚轮只认“干净”的方向：反向后 SEEK_REVERSE_GUARD_MS 内的再次反向丢弃。
+## 上下交替蹭轮永远凑不出有效方向；同向连滚照常算。
+static func seek_tick_allowed(orien: int, last_orien: int, since_ms: float) -> bool:
+	if last_orien < 0 or orien == last_orien:
+		return true
+	return since_ms >= SEEK_REVERSE_GUARD_MS
+
+
 ## 按键分配排序：光标压在图形上的那颗优先；否则按“时间误差 + 晚到代价”，再按距离。
 static func prefer_press_pair(a: Dictionary, b: Dictionary) -> bool:
 	if bool(a["on_shape"]) != bool(b["on_shape"]):
@@ -2360,13 +2375,19 @@ func _input(event: InputEvent) -> void:
 			_queue_path_motion(point, _chart_ms() + float(_app.playtest_offset_ms if _app != null else 0.0))
 		return
 	if event is InputEventMouseButton and event.pressed and (event.button_index == MOUSE_BUTTON_WHEEL_UP or event.button_index == MOUSE_BUTTON_WHEEL_DOWN):
-		var span := _input_interval(_chart_ms() + float(_app.playtest_offset_ms if _app != null else 0.0))
-		_seek_presses.append({
-			"time": (span.x + span.y) * 0.5,
-			"lo": span.x,
-			"hi": span.y,
-			"orien": 0 if event.button_index == MOUSE_BUTTON_WHEEL_UP else 1,
-		})
+		var now_ms := _chart_ms() + float(_app.playtest_offset_ms if _app != null else 0.0)
+		var span := _input_interval(now_ms)
+		var orien := 0 if event.button_index == MOUSE_BUTTON_WHEEL_UP else 1
+		if seek_tick_allowed(orien, _last_seek_orien, now_ms - _last_seek_ms):
+			_seek_presses.append({
+				"time": (span.x + span.y) * 0.5,
+				"lo": span.x,
+				"hi": span.y,
+				"orien": orien,
+			})
+		# 被丢弃的那一笔也要记账，否则上下交替时每一笔都被上一次同向放行。
+		_last_seek_orien = orien
+		_last_seek_ms = now_ms
 		get_viewport().set_input_as_handled()
 		return
 	if event is InputEventMouseButton and (event.button_index == MOUSE_BUTTON_LEFT or event.button_index == MOUSE_BUTTON_RIGHT):
