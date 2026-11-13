@@ -46,7 +46,6 @@ var _right_hit: Dictionary = {}
 var _pending_path: Note = null
 var _pending_path_parent: Note = null
 var _pending_hold: Note = null
-var _trace_hint_shown: bool = false
 
 var _waveform_peaks: PackedFloat32Array = PackedFloat32Array()
 var _waveform_duration: float = 0.0
@@ -918,36 +917,6 @@ func _draw_seek(note: Note) -> void:
 		_draw_type_label("SEEK OUT" if note.seek_orien == 0 else "SEEK IN", Vector2(x0 + 6.0, y - 6.0), color)
 
 
-func _draw_trace(note: Note, _plot: Rect2) -> void:
-	var y0 := _beat_to_y(note.beat)
-	var y1 := _beat_to_y(note.end_beat)
-	var top := minf(y0, y1)
-	var height := maxf(12.0, absf(y1 - y0))
-	var selected := _is_note_selected(note.id)
-	var cx := _u_to_x(0.5)
-	var rect := Rect2(Vector2(cx - 24, top), Vector2(48, height))
-	draw_rect(rect, Color(UITheme.MINT.r, UITheme.MINT.g, UITheme.MINT.b, 0.12))
-	draw_rect(rect, Color(UITheme.MINT.r, UITheme.MINT.g, UITheme.MINT.b, 0.60), false, 1.0)
-	if selected:
-		draw_rect(rect, UITheme.INK, false, 1.0)
-	var mini := PackedVector2Array()
-	for point in note.trace_pts:
-		var px := float(point.get("x", 0.0))
-		var py := float(point.get("y", 0.0))
-		if note.trace_style == "slider":
-			px = px * 0.5 + 0.5
-			py = py * 0.5 + 0.5
-		var local_y := py if flow_down else 1.0 - py
-		mini.append(Vector2(cx - 20 + px * 40.0, top + 4 + local_y * maxf(4, height - 8)))
-	if mini.size() > 1:
-		draw_polyline(mini, UITheme.MINT, 2.0, true)
-	var marker_dir := 1.0 if flow_down else -1.0
-	draw_line(Vector2(cx - 19, y0 + 3.0 * marker_dir), Vector2(cx - 11, y0 + 11.0 * marker_dir), UITheme.MINT, 1.5, true)
-	draw_line(Vector2(cx - 11, y0 + 3.0 * marker_dir), Vector2(cx - 19, y0 + 11.0 * marker_dir), UITheme.MINT, 1.5, true)
-	if _show_type_label(note):
-		_draw_type_label("SLIDE" if note.trace_style == "slider" else "TRACE", Vector2(cx + 27.0, top + 10.0), UITheme.MINT)
-
-
 func _draw_anchor(note: Note) -> void:
 	var p := Vector2(_u_to_x(fposmod(note.angle, 360.0) / 360.0), _beat_to_y(note.beat))
 	# 双押线：只由 id 较小的一颗画一次，连到同拍反向的伙伴。
@@ -1311,7 +1280,7 @@ func _snap_dragged_notes(bypass: bool) -> void:
 		if note.type == "bell":
 			note.angle = fposmod(snapped.y * 360.0, 360.0)
 			note.center_u = snapped.y
-		elif note.type not in ["trace", "seek"]:
+		elif note.type != "seek":
 			note.angle = fposmod(note.angle + angle_delta, 360.0)
 			if note.type == "path":
 				note.tail_angle = fposmod(note.tail_angle + angle_delta, 360.0)
@@ -1484,11 +1453,11 @@ func _hit_test(pos: Vector2) -> Dictionary:
 		if note.type == "seek":
 			if absf(pos.y - _beat_to_y(note.beat)) <= 8.0:
 				return {"kind": "note", "id": note.id, "part": "body"}
-		if note.type == "hold" or note.type == "trace":
+		if note.type == "hold":
 			var y0 := _beat_to_y(note.beat)
 			var y1 := _beat_to_y(note.end_beat)
 			if pos.y >= minf(y0, y1) - 4 and pos.y <= maxf(y0, y1) + 4:
-				var body_x := _u_to_x(fposmod(note.angle, 360.0) / 360.0) if note.type != "trace" else _u_to_x(0.5)
+				var body_x := _u_to_x(fposmod(note.angle, 360.0) / 360.0)
 				if absf(pos.x - body_x) < 8.0:
 					return {"kind": "note", "id": note.id, "part": "body"}
 	for region in chart.regions:
@@ -1552,8 +1521,6 @@ func _note_positions(note: Note) -> Array[Dictionary]:
 			if tail_local.length() > 0.0001:
 				tail_angle = rad_to_deg(atan2(tail_local.y, tail_local.x))
 			result.append({"point": Vector2(_u_to_x(fposmod(tail_angle, 360.0) / 360.0), _beat_to_y(note.end_beat)), "part": "tail"})
-		"trace":
-			result.append({"point": Vector2(_u_to_x(0.5), _beat_to_y(note.beat)), "part": "head"})
 		"bell":
 			result.append({"point": Vector2(_u_to_x(note.center_u), _beat_to_y(note.beat)), "part": "head"})
 		"tap":
@@ -1593,12 +1560,6 @@ func _drag_notes_update(screen: Vector2, event: InputEventMouseMotion) -> void:
 	for item in _drag_notes:
 		var note: Note = item["note"]
 		if note.lock:
-			continue
-		if note.type == "trace":
-			var new_beat := maxf(0.0, _snap_beat_to_subdivision(float(item["beat"]) + delta_beat, event.alt_pressed))
-			var offset := new_beat - note.beat
-			note.beat = new_beat
-			note.end_beat = maxf(note.beat + 0.25, float(item["end"]) + offset)
 			continue
 		var new_beat := maxf(0.0, _snap_beat_to_subdivision(float(item["beat"]) + delta_beat, event.alt_pressed))
 		var new_angle := fposmod(float(item["angle"]) + delta_u * 360.0, 360.0)
@@ -1924,11 +1885,11 @@ func _note_in_marquee(note: Note) -> bool:
 		var seek_y := _beat_to_y(note.beat)
 		if _marquee.intersects(Rect2(Vector2(_u_to_x(0.0), seek_y - 4.0), Vector2(_u_to_x(1.0) - _u_to_x(0.0), 8.0))):
 			return true
-	if note.type == "hold" or note.type == "trace":
+	if note.type == "hold":
 		var y0 := _beat_to_y(note.beat)
 		var y1 := _beat_to_y(note.end_beat)
-		var body_x := _u_to_x(0.5) if note.type == "trace" else _u_to_x(fposmod(note.angle, 360.0) / 360.0)
-		var half_width := 24.0 if note.type == "trace" else 8.0
+		var body_x := _u_to_x(fposmod(note.angle, 360.0) / 360.0)
+		var half_width := 8.0
 		var body := Rect2(Vector2(body_x - half_width, minf(y0, y1)), Vector2(half_width * 2.0, maxf(2.0, absf(y1 - y0))))
 		if _marquee.intersects(body):
 			return true
@@ -1940,8 +1901,6 @@ func _note_point_radius(note: Note, part: String) -> float:
 		return 7.0 if part == "tail" else 9.0
 	if note.type == "hold" or note.type == "tap":
 		return 9.0
-	if note.type == "trace":
-		return 7.0
 	return 8.0
 
 

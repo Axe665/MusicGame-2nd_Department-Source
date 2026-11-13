@@ -37,7 +37,6 @@ var tail_angle: float = 0.0
 var tail_width: float = 45.0
 var hold: bool = true
 var hold_style: String = "straight"
-var move_px: float = 120.0
 var radius: float = 44.0
 var tolerance: float = 0.24
 var samples_per_beat: float = 4.0
@@ -58,7 +57,6 @@ var path_next_id: int = -1
 var path_chain: bool = false
 ## Transient: true when loaded from legacy Path JSON; ChartIO normalizes it.
 var path_legacy: bool = false
-var trace_style: String = "wipe"
 var space: String = "ring"
 var trace_pts: Array[Dictionary] = []
 var anchor_pair: int = -1
@@ -90,7 +88,7 @@ func _init(p_type: String = "tap", p_beat: float = 0.0, p_angle: float = 0.0, p_
 	# 45°/180° 的历史值也在这里收敛，绘制、判定、编辑器看到的是同一个长度。
 	if type == "bell":
 		width = clampf(width if width > 0.0 else BELL_MAX_WIDTH, BELL_MIN_WIDTH, BELL_MAX_WIDTH)
-	if type == "path" or type == "trace":
+	if type == "path":
 		space = "plane"
 
 
@@ -426,16 +424,6 @@ func to_dict() -> Dictionary:
 				data["head_y"] = snappedf(path_head_local.y, 0.0001)
 		"seek":
 			data["orien"] = 1 if seek_orien == 1 else 0
-		"trace":
-			data["end_beat"] = snappedf(end_beat, 0.001)
-			if wait_beat > 0.0:
-				data["wait"] = snappedf(wait_beat, 0.001)
-			data["move"] = snappedf(move_px, 0.001)
-			data["trace"] = _points_to_dict(trace_pts)
-			# 默认平面；贴环的 trace 必须显式写出来，老谱面才会被当成平面迁移。
-			data["space"] = space if space in ["ring", "plane"] else "plane"
-			if trace_style != "wipe":
-				data["trace_style"] = trace_style
 		"anchor":
 			if anchor_pair >= 0:
 				data["pair"] = anchor_pair
@@ -465,14 +453,12 @@ static func from_dict(raw: Dictionary) -> Note:
 	note.tail_width = float(raw.get("tail_width", note.width))
 	note.hold = bool(raw.get("hold", true))
 	note.hold_style = String(raw.get("hold_style", "straight"))
-	note.move_px = float(raw.get("move", 120.0))
 	note.radius = float(raw.get("radius", 24.0))
 	note.tolerance = float(raw.get("tolerance", 0.24))
 	note.samples_per_beat = float(raw.get("samples", 4.0))
 	note.path_speed = float(raw.get("speed", 1.0))
 	note.path_style = String(raw.get("path_style", "arc"))
-	note.trace_style = String(raw.get("trace_style", "wipe"))
-	note.space = "plane" if note.type in ["path", "trace"] else "ring"
+	note.space = "plane" if note.type == "path" else "ring"
 	note.anchor_pair = int(raw.get("pair", -1))
 	note.pair_id = String(raw.get("pair_id", ""))
 	note.center_u = float(raw.get("center_u", 0.25))
@@ -490,8 +476,6 @@ static func from_dict(raw: Dictionary) -> Note:
 		note.path_gaps = _ranges_from_array(raw.get("path_gaps", []))
 	if raw.has("trace"):
 		note.trace_pts = _points_from_array(raw.get("trace", []))
-		if note.type == "trace" and not raw.has("space") and note.trace_style != "slider":
-			note._migrate_legacy_trace_points()
 	if note.type == "seek":
 		note.seek_orien = 1 if int(raw.get("orien", 0)) == 1 else 0
 		note.angle = 0.0
@@ -527,12 +511,6 @@ static func from_dict(raw: Dictionary) -> Note:
 
 ## 旧版 Trace 的 x/y 是 0..1 的屏幕比例（老预览窗直接按像素铺开）。
 ## 这里换算成“环半径 = 1.0”的设计坐标，并按 16:9 的舞台铺满环内。
-func _migrate_legacy_trace_points() -> void:
-	for point in trace_pts:
-		point["x"] = (float(point.get("x", 0.5)) - 0.5) * 3.2
-		point["y"] = (float(point.get("y", 0.5)) - 0.5) * 1.8
-
-
 static func _ranges_to_array(ranges: Array[Dictionary]) -> Array[Dictionary]:
 	var result: Array[Dictionary] = []
 	for item in ranges:

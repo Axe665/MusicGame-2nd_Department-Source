@@ -36,7 +36,6 @@ const PATH_WAIT_MODES: Array[String] = ["off", "progress", "shrink"]
 const PATH_WAIT_LABELS: Array[String] = ["关闭", "环形进度", "淡蓝收缩圆环"]
 var path_wait_indicator: String = "progress"
 ## Trace 门框主色（默认银白）。
-var trace_color: Color = Color(0.78, 0.86, 1.0)
 var note_skin: String = "candy"
 ## 画质选项（视图 → 画质）。全部只影响渲染，不碰判定。
 var quality_preset: String = "high"
@@ -117,7 +116,6 @@ var debug_overlay: bool = false
 var waveform_visible: bool = true
 var ghost_regions: bool = false
 var boundary_mode: bool = false
-var trace_draw_mode: bool = false
 
 var undo := UndoStack.new()
 var _edit_before: Dictionary = {}
@@ -526,7 +524,6 @@ func _load_settings() -> void:
 			cursor_scale = clampf(float(data.get("cursor_scale", cursor_scale)), 0.5, 2.0)
 			flow_scale = clampf(float(data.get("flow_scale", flow_scale)), 0.05, 3.0)
 			star_speed = clampf(float(data.get("star_speed", star_speed)), 0.5, 2.0)
-			trace_color = Color.from_string(String(data.get("trace_color", "")), trace_color)
 	MediaIO.set_ffmpeg_exe(ffmpeg_path)
 	apply_frame_cap()
 	apply_visual_quality()
@@ -664,7 +661,7 @@ func effective_latency_sec() -> float:
 
 
 func save_settings() -> void:
-	var data := {"path_wait_indicator": path_wait_indicator, "note_skin": note_skin, "hit_fx_style": hit_fx_style, "hit_sfx_style": hit_sfx_style, "ffmpeg": ffmpeg_path, "frame_cap": frame_cap, "audio_buffer_ms": audio_buffer_ms, "playtest_offset_ms": playtest_offset_ms, "audio_latency_ms": audio_latency_ms, "dynamic_offset": dynamic_offset, "playtest_auto": playtest_auto, "osu_favorites": osu_favorites, "last_bias_ms": last_bias_ms, "cursor_scale": cursor_scale, "flow_scale": flow_scale, "star_speed": star_speed, "trace_color": trace_color.to_html(), "aa_2d_level": aa_2d_level, "note_detail_fine": note_detail_fine, "note_glow": note_glow, "cursor_trail": cursor_trail, "fx_budget": fx_budget, "ring_3d_scale": ring_3d_scale, "ring_3d_hz": ring_3d_hz, "bar_lines": bar_lines, "quality_preset": quality_preset,
+	var data := {"path_wait_indicator": path_wait_indicator, "note_skin": note_skin, "hit_fx_style": hit_fx_style, "hit_sfx_style": hit_sfx_style, "ffmpeg": ffmpeg_path, "frame_cap": frame_cap, "audio_buffer_ms": audio_buffer_ms, "playtest_offset_ms": playtest_offset_ms, "audio_latency_ms": audio_latency_ms, "dynamic_offset": dynamic_offset, "playtest_auto": playtest_auto, "osu_favorites": osu_favorites, "last_bias_ms": last_bias_ms, "cursor_scale": cursor_scale, "flow_scale": flow_scale, "star_speed": star_speed, "aa_2d_level": aa_2d_level, "note_detail_fine": note_detail_fine, "note_glow": note_glow, "cursor_trail": cursor_trail, "fx_budget": fx_budget, "ring_3d_scale": ring_3d_scale, "ring_3d_hz": ring_3d_hz, "bar_lines": bar_lines, "quality_preset": quality_preset,
 		"hud_scale": hud_scale, "hud_combo_mode": hud_combo_mode, "hud_progress_style": hud_progress_style,
 		"hud_judge_position": hud_judge_position, "hud_opacity": hud_opacity,
 		"hud_show_title": hud_show_title, "hud_show_difficulty": hud_show_difficulty,
@@ -1194,7 +1191,6 @@ func request_audio_detect() -> void:
 func set_tool(new_tool: String) -> void:
 	tool = new_tool
 	boundary_mode = new_tool == "boundary"
-	trace_draw_mode = false
 	tool_changed.emit(tool)
 	status_changed.emit()
 

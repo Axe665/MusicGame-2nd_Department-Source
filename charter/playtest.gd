@@ -52,8 +52,6 @@ const TAIL_GREAT_MS := 220.0
 const TAIL_GOOD_MS := 350.0
 ## maimai 的尾区停留最多把 Perfect/Great 的早到窗口扩到 22 帧（366.7ms）。
 const TAIL_EXT_MAX_MS := 366.6667
-const TRACE_HEAD_RADIUS := 72.0
-const TRACE_CONTACT_PX := 56.0
 ## 位置判定：鼠标到音符图形边缘外还有这么多像素也算命中。
 ## Tap / Hold 头 / Path 头 / Anchor 共用这一把尺子（再各自加上图形半径）。
 const POSITION_TOLERANCE_PX := 120.0
@@ -716,13 +714,6 @@ func _init_states() -> void:
 			"path_tail_perfect_early_ms": TAIL_PERFECT_MS,
 			"slide_cued": false,
 			"path_auto_index": 0,
-			"trace_started": false,
-			"trace_distance": 0.0,
-			"trace_last": Vector2.ZERO,
-			"trace_contact": false,
-			"trace_frac": 0.0,
-			"trace_away": 0.0,
-			"trace_reset": false,
 			"armed": false,
 		}
 	# 双押 Anchor：一对只由 owner 判定，找出同拍反向的伙伴。
@@ -1027,7 +1018,6 @@ func _auto_step(ms: float, beat: float, _delta: float) -> void:
 			break
 		_auto_press_note(note, state, beat)
 		_auto_index += 1
-	_auto_feed_trace(ms)
 	_auto_release_holds(ms)
 
 
@@ -1052,26 +1042,6 @@ func _auto_press_note(note: Note, state: Dictionary, beat: float) -> void:
 		_auto_hold_keys[note.id] = {"key": key, "end_ms": float(state["end_ms"])}
 
 
-## Trace 判定的是「鼠标走过的总距离」。轨迹比 move_px 短时真人也会来回蹭，
-## AUTO 直接把差的距离补上，保证演示一定打得完。
-func _auto_feed_trace(ms: float) -> void:
-	var star_speed := float(_app.star_speed if _app != null else 1.0)
-	var last := mini(_ordered_notes.size(), _judge_from + 64)
-	for i in range(maxi(0, _judge_from), last):
-		var note := _ordered_notes[i]
-		if note.type != "trace":
-			continue
-		var state: Dictionary = _states[note.id]
-		if bool(state.get("done", false)) or not bool(state.get("trace_started", false)):
-			continue
-		if ms > float(state["end_ms"]) + 200.0:
-			continue
-		var required := note.move_px * star_speed
-		if float(state["trace_distance"]) < required:
-			state["trace_distance"] = required
-		return
-
-
 func _auto_release_holds(ms: float) -> void:
 	for note_id in _auto_hold_keys.keys():
 		var info: Dictionary = _auto_hold_keys[note_id]
@@ -1081,7 +1051,7 @@ func _auto_release_holds(ms: float) -> void:
 		_auto_hold_keys.erase(note_id)
 
 
-## AUTO 光标往哪放：Bell 的窗口很短先满足它，其次 Path/Trace 的身体期，否则待机。
+## AUTO 光标往哪放：Bell 的窗口很短先满足它，其次 Path 的身体期，否则待机。
 func _auto_cursor_target(ms: float, beat: float) -> Vector2:
 	var center: Vector2 = _preview.project_design(Vector2.ZERO)
 	if not center.is_finite():
@@ -1104,7 +1074,7 @@ func _auto_cursor_target(ms: float, beat: float) -> Vector2:
 					var bell: Dictionary = _preview.bell_screen(note, beat)
 					if not bell.is_empty():
 						bell_point = bell["center"]
-			"path", "trace":
+			"path":
 				if not body.is_finite() and ms >= target - AUTO_PREVIEW_MS and ms <= end_ms + 120.0:
 					body = _auto_body_point(note, ms, beat, end_ms)
 	if bell_point.is_finite():
@@ -1119,16 +1089,9 @@ func _auto_cursor_target(ms: float, beat: float) -> Vector2:
 	return _auto_avoid_red(idle, beat, center)
 
 
-## Path 的进度点 / Trace 的进度采样点。
+## Path 的进度点。
 func _auto_body_point(note: Note, ms: float, beat: float, end_ms: float) -> Vector2:
-	if note.type == "path":
-		return _auto_path_point(note, ms, beat, end_ms)
-	var points: PackedVector2Array = _preview.trace_screen_points(note, beat)
-	if points.size() < 2:
-		return _preview.note_head_screen(note, beat)
-	var q := clampf((beat - note.beat) / maxf(0.001, note.duration()), 0.0, 1.0)
-	var index := clampi(int(round(q * float(points.size() - 1))), 0, points.size() - 1)
-	return points[index]
+	return _auto_path_point(note, ms, beat, end_ms)
 
 
 ## Path 的尾巴是「光标靠近就算」，半径 192px 很大：离判定时间还远时，
@@ -1241,8 +1204,6 @@ func _judge_all(ms: float, beat: float, delta: float) -> void:
 				_judge_path(note, ms, beat, mouse)
 			"seek":
 				_judge_seek(note, ms, beat)
-			"trace":
-				_judge_trace(note, ms, beat, delta, mouse)
 			"anchor":
 				_judge_anchor(note, ms, beat)
 			"bell":
@@ -1653,119 +1614,6 @@ func _record_path_input_frame(note: Note, state: Dictionary, tracker: PathProgre
 	_write_path_input_log(record)
 
 
-func _judge_trace(note: Note, ms: float, beat: float, delta: float, mouse: Vector2) -> void:
-	var state: Dictionary = _states[note.id]
-	var start_ms := float(_states[note.id]["target_ms"])
-	var end_ms := float(_states[note.id]["end_ms"])
-	var contact := _trace_contact(note, mouse, beat)
-	if not state["trace_started"]:
-		if ms < start_ms - EARLY_MS:
-			return
-		var started := false
-		if note.trace_style == "slider":
-			var press := _take_assigned_press(note.id)
-			if not press.is_empty():
-				started = true
-				_sfx.play("path", 0.94)
-		elif contact:
-			started = true
-		if started:
-			state["trace_started"] = true
-			state["trace_contact"] = true
-			state["trace_last"] = mouse
-			_add_log("TRACE #%d CONTACT" % note.id)
-			return
-		if ms > start_ms + HIT_WINDOW_MS:
-			state["done"] = true
-			_miss_count += 1
-			_combo = 0
-			_add_log("MISS Trace #%d (no contact)" % note.id)
-		return
-	if String(chart.metadata.get("slide_mode", "follow")) == "maimai":
-		# 舞萌扫圈：鼠标经过的轨迹抹掉，头部按键后只要结束窗口内仍碰到轨迹就完成。
-		if contact:
-			var sweep := _preview.trace_fraction(note, mouse, beat)
-			var sweep_frac := float(sweep.get("fraction", 0.0))
-			var sweep_prev := float(state.get("trace_frac", 0.0))
-			if sweep_frac > sweep_prev + 0.02:
-				_preview.cut_trace(note, sweep_prev, sweep_frac)
-				state["trace_frac"] = sweep_frac
-		if contact and ms >= end_ms - HIT_WINDOW_MS:
-			state["done"] = true
-			_hit_count += 1
-			_combo += 1
-			_max_combo = maxi(_max_combo, _combo)
-			_add_judgement("PERFECT")
-			_preview.add_hit_pulse(mouse, UITheme.MINT, "PERFECT", "trace")
-			_sfx.play("trace", randf_range(0.97, 1.03))
-			_add_log("TRACE #%d SWEEP HIT" % note.id)
-			return
-		if ms > end_ms + HIT_WINDOW_MS:
-			state["done"] = true
-			_miss_count += 1
-			_add_judgement("MISS")
-			_combo = 0
-			_preview.add_hit_pulse(mouse, UITheme.RED, "MISS", "trace")
-			_add_log("MISS Trace #%d (sweep)" % note.id)
-		return
-	if contact:
-		var info: Dictionary = _preview.trace_fraction(note, mouse, beat)
-		var fraction := float(info.get("fraction", 0.0))
-		var distance_to_path := float(info.get("distance", INF))
-		if state["trace_contact"]:
-			var last: Vector2 = state["trace_last"]
-			var step := last.distance_to(mouse)
-			var previous_fraction := float(state.get("trace_frac", 0.0))
-			var jumped := fraction >= previous_fraction + 0.02 and step > 60.0 and distance_to_path <= TRACE_CONTACT_PX
-			if jumped:
-				# 鼠标向前跳区：跳过的段落从画面削掉，且不累计移动距离。
-				_preview.cut_trace(note, previous_fraction, fraction)
-			elif fraction + 0.02 >= previous_fraction:
-				state["trace_distance"] = float(state["trace_distance"]) + step
-			state["trace_frac"] = maxf(previous_fraction, fraction)
-		state["trace_contact"] = true
-		state["trace_last"] = mouse
-	else:
-		state["trace_contact"] = false
-		state["trace_away"] = float(state.get("trace_away", 0.0)) + delta
-		if float(state["trace_away"]) > 0.25 and not bool(state.get("trace_reset", false)):
-			# 离开轨迹超过 250ms：保留宽限后重置已累计距离，需要重新跟一遍。
-			state["trace_reset"] = true
-			state["trace_distance"] = 0.0
-			_add_log("TRACE #%d FRAY (left path >250ms)" % note.id)
-	if contact:
-		state["trace_away"] = 0.0
-		state["trace_reset"] = false
-	var required := note.move_px * float(_app.star_speed if _app != null else 1.0)
-	if float(state["trace_distance"]) >= required:
-		state["done"] = true
-		_hit_count += 1
-		_combo += 1
-		_max_combo = maxi(_max_combo, _combo)
-		_add_judgement("PERFECT")
-		_preview.add_hit_pulse(mouse, UITheme.MINT, "PERFECT", "trace")
-		_sfx.play("trace", randf_range(0.97, 1.03))
-		_add_log("TRACE #%d HIT (%.0f/%.0f px)" % [note.id, float(state["trace_distance"]), required])
-		return
-	if ms > end_ms + HIT_WINDOW_MS:
-		state["done"] = true
-		_miss_count += 1
-		_add_judgement("MISS")
-		_combo = 0
-		if _preview != null:
-			_preview.add_hit_pulse(mouse, UITheme.RED, "MISS", "trace")
-		_add_log("MISS Trace #%d (distance %.0f/%.0f)" % [note.id, float(state["trace_distance"]), required])
-
-
-func _trace_contact(note: Note, mouse: Vector2, beat: float) -> bool:
-	if note.trace_pts.size() < 2:
-		return false
-	var polyline: Array[Vector2] = []
-	for point in _preview.trace_screen_points(note, beat):
-		polyline.append(point)
-	return JudgeMath.trace_distance(mouse, polyline) <= TRACE_CONTACT_PX
-
-
 func _judge_bell(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 	var state: Dictionary = _states[note.id]
 	var target := float(state["target_ms"])
@@ -2112,15 +1960,6 @@ func _press_target(note: Note, ms: float, beat: float) -> Dictionary:
 		"anchor":
 			# 成对 Anchor 由 _judge_anchor_pairs 整对收键，不走单键分配。
 			return {}
-		"trace":
-			if bool(state.get("trace_started", false)) or note.trace_style != "slider":
-				return {}
-			var trace := _preview.trace_screen_points(note, beat)
-			if trace.is_empty():
-				return {}
-			return {"id": note.id, "note": note, "lo": target - EARLY_MS, "hi": target + HIT_WINDOW_MS,
-				"target": target, "points": PackedVector2Array([trace[0]]),
-				"tolerance": TRACE_HEAD_RADIUS, "pad": 0.0, "dense": false}
 	return {}
 
 

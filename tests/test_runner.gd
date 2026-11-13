@@ -669,6 +669,37 @@ func test_note_flags_code() -> bool:
 	ok(loaded != null, "locked chart loads")
 	if loaded != null and not loaded.notes.is_empty():
 		ok(loaded.notes[0].lock, "lock survives the compact chart roundtrip")
+	# 紧凑代码丢不掉的字段走 note_extras，往返后必须还在。
+	var extras := Chart.new()
+	extras.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	var curved := Note.new("hold", 1.0, 0.0, 60.0)
+	curved.id = 1
+	curved.end_beat = 2.0
+	curved.hold_style = "curved"
+	curved.visual_pts = [{"db": 0.0, "da": 0.0, "x": 0.1, "y": 0.2}]
+	var plane_path := Note.new("path", 3.0, 0.0, 60.0)
+	plane_path.id = 2
+	plane_path.end_beat = 4.0
+	plane_path.tolerance = 0.31
+	plane_path.samples_per_beat = 6.0
+	plane_path.path_speed = 1.3
+	plane_path.path_gaps = [{"from": 0.2, "to": 0.3}]
+	plane_path.trace_pts = [{"x": 1.0, "y": 0.0, "db": 0.0}, {"x": 0.0, "y": 1.0, "db": 1.0}]
+	extras.notes = [curved, plane_path]
+	var extras_data := ChartIO.chart_to_dict(extras)
+	ok(extras_data.has("note_extras"), "lost fields go to the note_extras side map")
+	var extras_back := ChartIO.from_json(ChartIO.to_json(extras))
+	if extras_back != null:
+		for note in extras_back.notes:
+			if note.id == 1:
+				eq(note.hold_style, "curved", "hold style survives the roundtrip")
+				eq(note.visual_pts.size(), 1, "hold body survives the roundtrip")
+			elif note.id == 2:
+				near(note.tolerance, 0.31, 0.001, "path tolerance survives the roundtrip")
+				near(note.samples_per_beat, 6.0, 0.001, "path samples survive the roundtrip")
+				near(note.path_speed, 1.3, 0.001, "path speed survives the roundtrip")
+				eq(note.path_gaps.size(), 1, "path erase range survives the roundtrip")
+				eq(note.trace_pts.size(), 2, "path plane points survive the roundtrip")
 	return true
 
 
@@ -832,7 +863,6 @@ func test_style_presets() -> bool:
 	near(cursor.cursor_scale, 1.0, 0.0001, "cursor scale defaults to 1x")
 	cursor.free()
 	ok(Playtest.PATH_TAIL_RADIUS >= 180.0, "path tail judgement is forgiving")
-	ok(Playtest.TRACE_CONTACT_PX >= 50.0, "trace contact is forgiving")
 	eq(Playtest.BELL_WINDOW_MS, 130.0, "a gold note keeps a forgiving drag window")
 	eq(Preview3D.BELL_RADIAL_TOLERANCE, 55.0, "gold note presence keeps a 55px band")
 	eq(Playtest.PERFECT_MS, 65.0, "perfect window tightened")
@@ -1237,16 +1267,20 @@ func test_lbp_export() -> bool:
 	var lbp_hold := Note.new("hold", 0.0, 90.0, 60.0)
 	lbp_hold.id = 2
 	lbp_hold.end_beat = 2.0
+	var lbp_seek := Note.new("seek", 4.0, 0.0, 360.0)
+	lbp_seek.id = 4
+	lbp_seek.seek_orien = 1
 	var lbp_bell := Note.new("bell", 0.0, 0.0, 27.0)
 	lbp_bell.id = 3
 	lbp_bell.center_u = 0.25
 	lbp_bell.radius = 26.0
-	width_chart.notes = [lbp_tap, lbp_hold, lbp_bell]
+	width_chart.notes = [lbp_tap, lbp_hold, lbp_bell, lbp_seek]
 	var width_text := LBPIO.export_chart(width_chart)
 	ok(width_text.contains("tap,"), "lbp keeps taps")
 	ok(width_text.contains("hold,"), "lbp keeps holds")
 	ok(width_text.contains("90.000,30.000"), "lbp writes visible arc width")
 	ok(width_text.contains("width=27.000"), "lbp bell exports width option")
+	ok(width_text.contains("seek,"), "lbp exports seek instead of a tap")
 	var path := "user://test_export.lbp"
 	eq(LBPIO.export_to_file(chart, path), OK, "lbp write")
 	var read := FileAccess.get_file_as_string(path)

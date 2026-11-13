@@ -158,19 +158,6 @@ static func _check_notes(chart: Chart, issues: Array[Dictionary]) -> void:
 					if sqrt(x * x + y * y) > 1.05:
 						_add(issues, "error", "Path %d 的点越出环内平面" % note.id, "note:%d" % note.id)
 						break
-			"trace":
-				if note.end_beat <= note.beat + EPS:
-					_add(issues, "error", "Trace %d 的结束拍必须晚于开始拍" % note.id, "note:%d" % note.id)
-				if note.trace_pts.is_empty():
-					_add(issues, "error", "Trace %d 没有二维点" % note.id, "note:%d" % note.id)
-				for point in note.trace_pts:
-					var x := float(point.get("x", 0.0))
-					var y := float(point.get("y", 0.0))
-					# Trace 的 x/y 是“环半径 = 1.0”的设计坐标：环上与平面共用。
-					if sqrt(x * x + y * y) > 1.05:
-						var what := "Slide" if note.trace_style == "slider" else "Trace"
-						_add(issues, "error", "%s %d 的点越出环内平面" % [what, note.id], "note:%d" % note.id)
-						break
 			"bell":
 				if note.radius <= 0.0:
 					_add(issues, "error", "Bell %d 的半径必须为正" % note.id, "note:%d" % note.id)

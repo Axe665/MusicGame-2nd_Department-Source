@@ -691,21 +691,6 @@ func _build_note_page_for(page: VBoxContainer, note: Note) -> void:
 	hold_body.add_child(hold_preview)
 	_note_widgets["hold_preview"] = hold_preview
 
-	var trace_body := _note_group(page, "trace", "Trace")
-	var move := _spin(trace_body, "移动距离 px", note.move_px, 0.0, 1000.0, 1.0, func(value: float) -> void:
-		if _active_note != null:
-			_active_note.move_px = value
-	)
-	_note_widgets["trace_move"] = move
-	var trace_label := _label(trace_body, "", 11, UITheme.MUTED)
-	_note_widgets["trace_label"] = trace_label
-	_buttons(trace_body, [
-		{"text": "重画 Trace", "callback": func() -> void: _app.set_tool("trace")},
-		{"text": "贴到环上", "callback": func() -> void: _set_trace_space("ring")},
-		{"text": "改成平面", "callback": func() -> void: _set_trace_space("plane")},
-	])
-	_label(trace_body, "贴环 = 轨迹压到外缘半径 1.0；平面 = 保留点自己的半径。两者共用同一套绘制。", 11, UITheme.MUTED)
-
 	var anchor_body := _note_group(page, "anchor", "Anchor")
 	var pair_id := _text(anchor_body, "pairId", note.pair_id, func(value: String) -> void:
 		if _active_note != null:
@@ -846,7 +831,6 @@ func _refresh_note_page() -> void:
 	_note_groups["path"].visible = false
 	_note_groups["path_edit"].visible = note.type == "path"
 	_note_groups["hold"].visible = note.type == "hold"
-	_note_groups["trace"].visible = false
 	_note_groups["seek"].visible = note.type == "seek"
 	_note_groups["anchor"].visible = note.type == "anchor"
 	_note_widgets["anchor_pair"].get_parent().visible = note.type == "anchor"
@@ -884,8 +868,6 @@ func _refresh_note_page() -> void:
 		_note_widgets["seek_orien"].selected = 1 if note.seek_orien == 1 else 0
 	if note.type == "hold":
 		_note_widgets["hold_preview"].set_state(note.arc_width(), note.duration())
-	if note.type == "trace":
-		_note_widgets["trace_move"].value = note.move_px
 		var where := "贴环（外缘）" if note.space != "plane" else "平面"
 		_note_widgets["trace_label"].text = "%s；二维点：%d 个。在预览窗用 Trace 工具拖拽可重画。" % [where, note.trace_pts.size()]
 	if note.type == "anchor":
@@ -946,27 +928,6 @@ func _set_path_erase_width(note: Note, width: float) -> void:
 func _set_hold_style(note: Note, style: String) -> void:
 	_apply(func() -> void:
 		note.hold_style = style
-	)
-	_rebuild()
-
-
-## Trace 的空间切换：贴环就把每个点压到外缘半径 1.0（方向不变），
-## 平面则保留点自己的半径。两种空间共用同一套绘制，只是映射不同。
-func _set_trace_space(space: String) -> void:
-	var note := _active_note
-	if note == null or note.type != "trace":
-		return
-	_apply(func() -> void:
-		note.space = space
-		if space == "plane":
-			return
-		for point in note.trace_pts:
-			var local := Vector2(float(point.get("x", 0.0)), float(point.get("y", 0.0)))
-			if local.length() <= 0.0001:
-				continue
-			local = local.normalized()
-			point["x"] = local.x
-			point["y"] = local.y
 	)
 	_rebuild()
 
@@ -1543,7 +1504,7 @@ func _duplicate_note(note: Note) -> void:
 		var copy := Note.from_dict(item.to_dict())
 		copy.id = _app.chart.next_note_id()
 		copy.beat = item.beat + 1.0
-		if copy.type in ["hold", "path", "trace"]:
+		if copy.type in ["hold", "path"]:
 			copy.end_beat = item.end_beat + 1.0
 		copies.append(copy)
 	if note.type == "anchor" and copies.size() > 1:

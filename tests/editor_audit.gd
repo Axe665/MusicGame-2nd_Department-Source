@@ -37,7 +37,7 @@ func _part(name: String, detail: String) -> void:
 func _make_note(chart: Chart, type: String, beat: float) -> Note:
 	var note := Note.new(type, beat, 30.0, 60.0)
 	note.id = chart.next_note_id()
-	if type in ["hold", "path", "trace"]:
+	if type in ["hold", "path"]:
 		note.end_beat = beat + 2.0
 	if type == "path":
 		note.tail_angle = 150.0
@@ -45,8 +45,6 @@ func _make_note(chart: Chart, type: String, beat: float) -> Note:
 			{"x": 1.0, "y": 0.0, "db": 0.0},
 			{"x": 0.0, "y": 1.0, "db": 2.0},
 		]
-	if type == "trace":
-		note.trace_style = "slider"
 		note.trace_pts = [
 			{"x": 0.8, "y": 0.0, "db": 0.0},
 			{"x": 0.0, "y": 0.8, "db": 2.0},
@@ -73,7 +71,6 @@ func _audit_notes() -> void:
 	_check("Tap 保留可变宽度", _find(chart, "tap").width == 60.0, "width=%.0f" % _find(chart, "tap").width)
 	_check("Hold 头部+持续", _find(chart, "hold").duration() > 0.0)
 	_check("Path 头尾+平面点", _find(chart, "path").trace_pts.size() >= 2 and _find(chart, "path").duration() > 0.0)
-	_check("Trace 二维点", _find(chart, "trace").trace_pts.size() >= 2)
 	_check("Bell 圆心+半径", _find(chart, "bell").radius > 0.0 and _find(chart, "bell").center_u >= 0.0)
 	_check("Anchor 配对字段", _find(chart, "anchor").pair_id == "" and _find(chart, "anchor").anchor_pair == -1)
 
@@ -90,7 +87,6 @@ func _audit_validation() -> void:
 	_make_note(good, "tap", 0.0)
 	_make_note(good, "hold", 2.0)
 	_make_note(good, "path", 4.0)
-	_make_note(good, "trace", 6.0)
 	var anchor_a := _make_note(good, "anchor", 8.0)
 	var anchor_b := _make_note(good, "anchor", 8.0)
 	anchor_a.angle = 0.0
@@ -269,7 +265,6 @@ func _audit_source() -> void:
 	_check("F5 试玩", main_text.contains("KEY_F5"))
 	_check("波形/时间轴", canvas_text.contains("_draw_waveform") and canvas_text.contains("_draw_notes"))
 	_check("Path 预览绘制", preview_text.contains("_draw_one_path"))
-	_check("Trace 屏幕擦带", preview_text.contains("_draw_traces") and preview_text.contains("_append_trace_point"))
 	_check("框选", canvas_text.contains("_finish_marquee"))
 	_check("皮肤/特效设置", main_text.contains("_sync_appearance"))
 	var hold_start := preview_text.find("func _draw_holds(")

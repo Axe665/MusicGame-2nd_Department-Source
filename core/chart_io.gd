@@ -70,6 +70,34 @@ static func chart_to_dict(chart: Chart) -> Dictionary:
 	var meta := {}
 	for key in ["title", "artist", "creator", "version", "tags", "license", "background"]:
 		meta[key] = String(chart.metadata.get(key, ""))
+	# 紧凑代码丢不掉的字段旁挂在这里；旧版本读到会直接忽略。
+	var note_extras := {}
+	for note in chart.notes:
+		var extra := {}
+		match note.type:
+			"hold":
+				if note.hold_style != "straight":
+					extra["hold_style"] = note.hold_style
+				if not note.visual_pts.is_empty():
+					extra["visual"] = Note._points_to_dict(note.visual_pts)
+			"path":
+				extra["tolerance"] = snappedf(note.tolerance, 0.001)
+				extra["samples"] = snappedf(note.samples_per_beat, 0.001)
+				if note.path_speed != 1.0:
+					extra["speed"] = snappedf(note.path_speed, 0.001)
+				if note.path_style != "arc":
+					extra["path_style"] = note.path_style
+				if not note.path_gaps.is_empty():
+					extra["path_gaps"] = Note._ranges_to_array(note.path_gaps)
+				if not note.trace_pts.is_empty():
+					extra["trace"] = Note._points_to_dict(note.trace_pts)
+				if not note.visual_pts.is_empty():
+					extra["visual"] = Note._points_to_dict(note.visual_pts)
+			"bell":
+				if absf(note.bell_radius - 1.0) > 0.0001:
+					extra["bell_radius"] = snappedf(note.bell_radius, 0.001)
+		if not extra.is_empty():
+			note_extras[str(note.id)] = extra
 	var result := {
 		"format": FORMAT,
 		"version": VERSION,
@@ -109,7 +137,31 @@ static func chart_to_dict(chart: Chart) -> Dictionary:
 		result["note_colors"] = note_colors
 	if not note_flags.is_empty():
 		result["note_flags"] = note_flags
+	if not note_extras.is_empty():
+		result["note_extras"] = note_extras
 	return result
+
+
+## note_extras 侧表：补齐紧凑代码丢掉的 Hold/Path/Bell 字段。
+static func _apply_note_extras(note: Note, extra: Dictionary) -> void:
+	if extra.has("hold_style"):
+		note.hold_style = String(extra["hold_style"])
+	if extra.has("tolerance"):
+		note.tolerance = float(extra["tolerance"])
+	if extra.has("samples"):
+		note.samples_per_beat = float(extra["samples"])
+	if extra.has("speed"):
+		note.path_speed = float(extra["speed"])
+	if extra.has("path_style"):
+		note.path_style = String(extra["path_style"])
+	if extra.has("path_gaps"):
+		note.path_gaps = Note._ranges_from_array(extra["path_gaps"])
+	if extra.has("trace"):
+		note.trace_pts = Note._points_from_array(extra["trace"])
+	if extra.has("visual"):
+		note.visual_pts = Note._points_from_array(extra["visual"])
+	if extra.has("bell_radius"):
+		note.bell_radius = float(extra["bell_radius"])
 
 
 static func _palette_rows(chart: Chart) -> Array[Dictionary]:
@@ -291,6 +343,12 @@ static func chart_from_dict(data: Dictionary) -> Chart:
 			if String(raw.get("type", "")) == "tap" and String(raw.get("space", "ring")) == "plane":
 				continue
 			chart.notes.append(Note.from_dict(raw))
+	var extras_raw: Variant = data.get("note_extras", {})
+	if extras_raw is Dictionary:
+		for note in chart.notes:
+			var extra: Variant = extras_raw.get(str(note.id), {})
+			if extra is Dictionary and not (extra as Dictionary).is_empty():
+				_apply_note_extras(note, extra)
 	var stored_colors: Variant = data.get("note_colors", {})
 	if stored_colors is Dictionary:
 		_apply_note_colors(chart, stored_colors)
