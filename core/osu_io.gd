@@ -829,7 +829,53 @@ static func _extract_assets(zip: ZIPReader, files: PackedStringArray, chart: Cha
 				chart.video_path = target
 				report.append("视频：%s（直接解码）" % target)
 			break
+	# ── storyboard：包里 .osb 优先，否则用 .osu 内联的 [Events] ──────────
+	var sb_text := ""
+	var sb_name := ""
+	for name in files:
+		if name.get_extension().to_lower() == "osb":
+			sb_name = name
+			sb_text = zip.read_file(name).get_string_from_utf8()
+			break
+	if sb_text.is_empty():
+		sb_text = _inline_storyboard(text)
+	var sb_dir := target_dir + "/sb"
+	if not sb_text.is_empty():
+		var board := Storyboard.parse(sb_text, sb_name)
+		if not board.sprites.is_empty():
+			DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(sb_dir))
+			var copied := 0
+			var missing := 0
+			for ref in board.referenced_files:
+				var found := _find_file(files, ref)
+				if found.is_empty():
+					missing += 1
+					continue
+				_write_zip_file(zip, found, sb_dir + "/" + found.get_file())
+				copied += 1
+			var handle := FileAccess.open(sb_dir + "/storyboard.osb", FileAccess.WRITE)
+			if handle != null:
+				handle.store_string(sb_text)
+				handle.close()
+			chart.metadata["storyboard"] = sb_dir
+			report.append("故事板：%d 个对象 / %d 张素材（缺 %d）" % [board.sprites.size(), copied, missing])
 	return report
+
+
+## 从 .osu 的内联 [Events] 抽出 storyboard 行（Sprite / Animation）。
+static func _inline_storyboard(text: String) -> String:
+	var lines: Array[String] = []
+	var section := ""
+	for raw_line in text.split("\n"):
+		var line := raw_line.strip_edges()
+		if line.begins_with("[") and line.ends_with("]"):
+			section = line.substr(1, line.length() - 2).to_lower()
+			continue
+		if section != "events":
+			continue
+		if line.begins_with("Sprite") or line.begins_with("Animation"):
+			lines.append(line)
+	return "\n".join(lines)
 
 
 static func _find_file(files: PackedStringArray, wanted: String) -> String:

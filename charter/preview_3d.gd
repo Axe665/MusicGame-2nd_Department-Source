@@ -91,6 +91,36 @@ var auto_cursor: Vector2 = Vector2.INF
 var _bg: TextureRect
 var _background_image: TextureRect
 var _last_background_path: String = ""
+## osu! storyboard（.osb）：按谱面缓存一次，贴图按需载入。
+var _storyboard: Storyboard = null
+var _storyboard_dir := ""
+var _storyboard_chart: Chart = null
+var _storyboard_textures: Dictionary = {}
+var show_storyboard := true
+## 只画 Foreground/Overlay 层（关掉 storyboard 的背景层，让谱面背景图露出来）。
+var show_storyboard_background := true
+## 纯白铺满全屏的 storyboard 图（px.png 这种 2x2 白点放大）在 osu 里是黑幕，
+## 直接按白色画会在开场/转场出现一片刺眼的白，这里统一当黑色处理。
+var storyboard_white_is_black := true
+## 编辑器的窄预览里把整块 storyboard 等比缩到装得下（试玩保持按高度铺满）。
+var storyboard_fit := false
+## storyboard 采样按 30Hz 走（60fps 下每帧重算 700+ 对象太贵），中间帧复用同一份结果。
+const STORYBOARD_SAMPLE_MS := 33.0
+var _sb_sample_ms := -1.0e9
+var _sb_render_items: Array[Dictionary] = []
+## 贴图预取队列：storyboard 一次几百张图，全在用到的那一帧读会卡一下，
+## 改成每帧后台预取几张。
+var _sb_prefetch: Array[String] = []
+## storyboard 的 Background 层里有谱面背景图时，静态背景层要关掉（对照 lazer ReplacesBackground）。
+var _storyboard_replaces_background := false
+## 背景层（Background/Video）单独一层，垫在 3D 判定环下面。
+var _storyboard_bg: Control = null
+## 加色（P,A）元素单独一层：粒子/光晕走 BLEND_MODE_ADD，叠在普通层上面。
+var _storyboard_add_bg: Control = null
+var _storyboard_add_fg: Control = null
+## 背景调暗层：盖住背景和 storyboard，但压在 3D 判定环下面（osu 的 Background dim）。
+var _dim_layer: ColorRect = null
+var background_dim: int = 0
 var _video: VideoStreamPlayer
 var _viewport_container: SubViewportContainer
 var _subviewport: SubViewport
@@ -394,6 +424,47 @@ func _build_layers() -> void:
 	add_child(_cursor_layer)
 	_cursor_layer.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_viewport_container.visible = use_3d_ring
+	# storyboard 的 Background 层要垫在 3D 判定环下面，Foreground/Overlay 走 _overlay。
+	_storyboard_bg = Control.new()
+	_storyboard_bg.set_script(load("res://charter/preview_overlay.gd"))
+	_storyboard_bg.name = "StoryboardBackground"
+	_storyboard_bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_storyboard_bg.set("preview", self)
+	_storyboard_bg.set("storyboard_background", true)
+	add_child(_storyboard_bg)
+	_storyboard_bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	move_child(_storyboard_bg, _viewport_container.get_index())
+	var add_material := CanvasItemMaterial.new()
+	add_material.blend_mode = CanvasItemMaterial.BLEND_MODE_ADD
+	_storyboard_add_bg = Control.new()
+	_storyboard_add_bg.set_script(load("res://charter/preview_overlay.gd"))
+	_storyboard_add_bg.name = "StoryboardAdditive"
+	_storyboard_add_bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_storyboard_add_bg.material = add_material
+	_storyboard_add_bg.set("preview", self)
+	_storyboard_add_bg.set("storyboard_additive", true)
+	add_child(_storyboard_add_bg)
+	_storyboard_add_bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	move_child(_storyboard_add_bg, _viewport_container.get_index())
+	_dim_layer = ColorRect.new()
+	_dim_layer.name = "BackgroundDim"
+	_dim_layer.color = Color(0.0, 0.0, 0.0, 0.0)
+	_dim_layer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(_dim_layer)
+	_dim_layer.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	move_child(_dim_layer, _viewport_container.get_index())
+	var add_fg_material := CanvasItemMaterial.new()
+	add_fg_material.blend_mode = CanvasItemMaterial.BLEND_MODE_ADD
+	_storyboard_add_fg = Control.new()
+	_storyboard_add_fg.set_script(load("res://charter/preview_overlay.gd"))
+	_storyboard_add_fg.name = "StoryboardAdditiveFront"
+	_storyboard_add_fg.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_storyboard_add_fg.material = add_fg_material
+	_storyboard_add_fg.set("preview", self)
+	_storyboard_add_fg.set("storyboard_additive", true)
+	_storyboard_add_fg.set("additive_front", true)
+	add_child(_storyboard_add_fg)
+	_storyboard_add_fg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 
 
 func _build_3d() -> void:
@@ -579,6 +650,7 @@ func _process(_delta: float) -> void:
 		_mesh_dirty = false
 	_update_background(chart)
 	_update_video(chart, t)
+	_prefetch_storyboard_textures()
 	var beat_phase := fposmod(t, 1.0)
 	_glow_material.albedo_color = Color(0.37, 0.92, 0.86, 0.10 + 0.09 * exp(-beat_phase * 7.0))
 	if playtest_mode:
@@ -618,6 +690,12 @@ func _process(_delta: float) -> void:
 	var needs_overlay := time_changed or view_changed or flat_dirty or not _pulses.is_empty() or not _arc_flashes.is_empty() or not _note_pops.is_empty()
 	if needs_overlay:
 		_overlay.queue_redraw()
+		if _storyboard_bg != null:
+			_storyboard_bg.queue_redraw()
+		if _storyboard_add_bg != null:
+			_storyboard_add_bg.queue_redraw()
+		if _storyboard_add_fg != null:
+			_storyboard_add_fg.queue_redraw()
 	if mouse_moved or time_changed or view_changed or not _cursor_trail.is_empty():
 		_cursor_layer.queue_redraw()
 	if use_3d_ring:
@@ -1006,6 +1084,18 @@ func _update_video(chart: Chart, beat: float) -> void:
 
 ## 有 BGA 时不叠加谱面背景图：两张背景一起画既脏又浪费。
 func _refresh_background_layering() -> void:
+	# 有 storyboard 时舞台底层（渐变星空）也要关：osu 里故事板背后就是纯黑，
+	# 否则开场几秒会看到一块灰亮的渐变底色，像「亮屏」。
+	var sb_active := show_storyboard and _storyboard != null
+	if _bg != null:
+		# 不能直接隐藏：底下的面板是浅色的，会露出白色。改成把渐变底色压成纯黑。
+		_bg.visible = true
+		_bg.modulate = Color(0.0, 0.0, 0.0, 1.0) if sb_active else Color.WHITE
+	# 和 lazer 的 Storyboard.ReplacesBackground 一致：storyboard 的 Background 层里有谱面背景图时，
+	# 静态背景层要关掉——否则故事板想做的「黑屏 / 淡入」永远被一张不漏的底图垫住。
+	if sb_active and _storyboard_replaces_background and show_storyboard_background:
+		_background_image.visible = false
+		return
 	_background_image.visible = background_image_visible(_background_image.texture != null, _video.stream != null)
 
 
@@ -2012,6 +2102,201 @@ func _affine_point(point: Vector2, affine: Array) -> Vector2:
 	return center + x_axis * point.x + y_axis * point.y
 
 
+## 谱面切换时重建 storyboard 缓存。
+## 换谱/切标签后把故事板缓存清掉并重画（否则会一直显示上一个谱的故事板层）。
+func invalidate_storyboard() -> void:
+	_storyboard_chart = null
+	_storyboard = null
+	_storyboard_dir = ""
+	_storyboard_textures.clear()
+	_storyboard_replaces_background = false
+	_sb_sample_ms = -1.0e9
+	_sb_render_items = []
+	_refresh_background_layering()
+	if _storyboard_bg != null:
+		_storyboard_bg.queue_redraw()
+	if _storyboard_add_bg != null:
+		_storyboard_add_bg.queue_redraw()
+	if _overlay != null:
+		_overlay.queue_redraw()
+
+
+func _ensure_storyboard(chart: Chart) -> void:
+	if chart == _storyboard_chart:
+		return
+	_storyboard_chart = chart
+	_storyboard = null
+	_storyboard_dir = ""
+	_storyboard_textures.clear()
+	_storyboard_replaces_background = false
+	_sb_sample_ms = -1.0e9
+	_sb_render_items = []
+	_sb_prefetch.clear()
+	if chart == null:
+		_refresh_background_layering()
+		return
+	var dir := String(chart.metadata.get("storyboard", ""))
+	if dir.is_empty():
+		_refresh_background_layering()
+		return
+	var text := FileAccess.get_file_as_string(dir + "/storyboard.osb")
+	if text.is_empty():
+		_refresh_background_layering()
+		return
+	_storyboard = Storyboard.parse(text, "storyboard.osb")
+	if _storyboard.sprites.is_empty():
+		_storyboard = null
+		_refresh_background_layering()
+		return
+	_storyboard_dir = dir
+	_storyboard_replaces_background = _storyboard.replaces_background(String(chart.metadata.get("background", "")))
+	_sb_prefetch = _storyboard.referenced_files.duplicate()
+	_refresh_background_layering()
+
+func _prefetch_storyboard_textures() -> void:
+	if _sb_prefetch.is_empty() or _storyboard == null:
+		return
+	var budget := 6
+	while budget > 0 and not _sb_prefetch.is_empty():
+		var path: String = _sb_prefetch.pop_back()
+		if _storyboard_textures.has(path):
+			continue
+		_storyboard_texture(path)
+		budget -= 1
+
+
+func _storyboard_texture(path: String) -> Texture2D:
+	if _storyboard_textures.has(path):
+		return _storyboard_textures[path]
+	var full := _storyboard_dir + "/" + path.get_file()
+	var texture: Texture2D = null
+	if FileAccess.file_exists(full):
+		var image := Image.load_from_file(ProjectSettings.globalize_path(full))
+		if image != null and not image.is_empty():
+			texture = ImageTexture.create_from_image(image)
+	_storyboard_textures[path] = texture
+	return texture
+
+
+## 把 storyboard 的 640x480 坐标场映射到预览区域：
+## osu 是按 **高度** 缩放、场中心对齐屏幕中心（宽屏只是左右多露出来），
+## 不是 cover——之前用 max() 会把 1920x540 这种横条撑满整屏，把背景图盖死。
+func _storyboard_layout() -> Dictionary:
+	var scale := size.y / Storyboard.FIELD_HEIGHT
+	if storyboard_fit:
+		scale = minf(size.x / Storyboard.FIELD_WIDTH, size.y / Storyboard.FIELD_HEIGHT)
+	var field_center := Vector2(Storyboard.FIELD_WIDTH, Storyboard.FIELD_HEIGHT) * 0.5
+	var offset := size * 0.5 - field_center * scale
+	return {"scale": scale, "offset": offset}
+
+
+## 背景层（Background / Video）：垫在 3D 判定环下面。
+## osu 的 Background dim：0 = 不遮，100 = 全黑。只压背景/storyboard，不压判定环和音符。
+func set_background_dim(value: int) -> void:
+	background_dim = clampi(value, 0, 70)
+	if _dim_layer != null:
+		_dim_layer.color = Color(0.0, 0.0, 0.0, float(background_dim) / 100.0)
+
+
+func draw_storyboard_background(canvas: Control) -> void:
+	var chart := get_chart()
+	if chart == null:
+		return
+	_draw_storyboard_layers(canvas, chart, get_time_beat(), ["Video", "Background", "Fail", "Pass", "Foreground", "Overlay"], false)
+
+
+## 背景层的加色元素（粒子 / 光晕）。
+func draw_storyboard_additive_background(canvas: Control) -> void:
+	var chart := get_chart()
+	if chart == null:
+		return
+	_draw_storyboard_layers(canvas, chart, get_time_beat(), ["Video", "Background", "Fail", "Pass", "Foreground", "Overlay"], true)
+
+
+## 前景的加色元素。
+func draw_storyboard_additive_front(canvas: Control) -> void:
+	var chart := get_chart()
+	if chart == null:
+		return
+
+
+## osu! storyboard 图层：按图层名过滤后绘制。
+func _draw_storyboard_layers(canvas: Control, chart: Chart, t: float, layers: Array, additive_only: bool = false) -> void:
+	if not show_storyboard:
+		return
+	_ensure_storyboard(chart)
+	if _storyboard == null:
+		return
+	if not show_storyboard_background and (layers.has("Background") or layers.has("Video")):
+		return
+	var ms := chart.timing.beat_to_chart_ms(t) - chart.offset_ms
+	if absf(ms - _sb_sample_ms) >= STORYBOARD_SAMPLE_MS:
+		_sb_sample_ms = ms
+		_sb_render_items = _storyboard.sample(ms)
+	var items := _sb_render_items
+	if items.is_empty():
+		return
+	var layout := _storyboard_layout()
+	var scale: float = layout["scale"]
+	var offset: Vector2 = layout["offset"]
+	for item in items:
+		if not (String(item["layer"]) in layers):
+			continue
+		if bool(item["additive"]) != additive_only:
+			continue
+		var texture := _storyboard_texture(String(item["path"]))
+		if texture == null:
+			continue
+		var sprite_size := Vector2(texture.get_width(), texture.get_height())
+		var anchor := _storyboard_anchor(int(item["origin"]), sprite_size)
+		var pos: Vector2 = offset + (item["pos"] as Vector2) * scale
+		var sprite_scale: Vector2 = item["scale"] * scale
+		var rotation := deg_to_rad(float(item["rotation"]))
+		# 屏幕外的 sprite 直接丢掉：storyboard 里数百张图会一直“可见”，
+		# 大部分已经被 M 命令挪出画面，不剔除的话每帧白画几百次。
+		var local_center := sprite_size * 0.5 - anchor
+		var world_center := pos + local_center.rotated(rotation) * sprite_scale
+		var radius := local_center.length() * maxf(sprite_scale.x, sprite_scale.y) + 4.0
+		if world_center.x + radius < 0.0 or world_center.y + radius < 0.0 \
+				or world_center.x - radius > size.x or world_center.y - radius > size.y:
+			continue
+		var colour: Color = item["colour"]
+		if storyboard_white_is_black and colour.r > 0.94 and colour.g > 0.94 and colour.b > 0.94:
+			# 铺满屏幕的纯白 fill → 黑幕（osu 里这些是黑色遮罩 / 淡出层）
+			if sprite_size.x * sprite_size.y <= 16.0 and sprite_scale.x * 1.0 > size.x * 0.5:
+				colour = Color(0.0, 0.0, 0.0, colour.a)
+		colour.a *= clampf(float(item["alpha"]), 0.0, 1.0)
+		if additive_only:
+			# 加色层里几百张全屏图叠加会把画面直接刷白，压到 35% 更接近 osu 的光晕观感。
+			colour.a *= 0.35
+		canvas.draw_set_transform(pos, rotation, sprite_scale)
+		canvas.draw_texture(texture, -anchor, colour)
+		canvas.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+
+
+static func _storyboard_anchor(origin: int, sprite_size: Vector2) -> Vector2:
+	match origin:
+		0:
+			return Vector2.ZERO
+		1:
+			return Vector2(sprite_size.x * 0.5, 0.0)
+		2:
+			return Vector2(sprite_size.x, 0.0)
+		3:
+			return Vector2(0.0, sprite_size.y * 0.5)
+		4:
+			return sprite_size * 0.5
+		5:
+			return Vector2(sprite_size.x, sprite_size.y * 0.5)
+		6:
+			return Vector2(0.0, sprite_size.y)
+		7:
+			return Vector2(sprite_size.x * 0.5, sprite_size.y)
+		8:
+			return sprite_size
+	return Vector2.ZERO
+
+
 func _draw_flat_stage(canvas: Control, chart: Chart, t: float) -> void:
 	var affine := _screen_affine()
 	for radius in [360.0, 420.0, 620.0]:
@@ -2416,14 +2701,15 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 			var piece_length := 0.0
 			for i in piece.size() - 1:
 				piece_length += piece[i].distance_to(piece[i + 1])
-			var chevron_cap := 10 if visible_count < 4 else (8 if visible_count < 8 else 6)
-			var chevron_count := clampi(int(piece_length / maxf(40.0, 52.0 * ns)), 2, chevron_cap)
-			for k in chevron_count:
-				var fraction := (float(k) + 0.5) / float(chevron_count)
+			# 箭头按固定弧长等距排布（屏幕像素）：所有 Path 共用同一个间距，
+			# 短段自动不出箭头，长段也不会被“上限”压缩成稀疏几只。
+			var chevron_size := 12.0 * ns * PATH_SIZE_SCALE
+			var chevron_spacing := maxf(36.0, chevron_size * 2.3)
+			for fraction in chevron_fractions(piece, chevron_spacing, chevron_size * 1.9):
 				var sample: Dictionary = _polyline_sample(piece, fraction)
 				# 试玩时轨迹已经被擦到光标处，剩下的每一段都在前方，不该再按“piece 内比例”压暗。
 				var chevron_color := future if playtest_mode else (passed if fraction < progress else future)
-				_draw_chevron(canvas, sample["point"], sample["direction"], chevron_color, 12.0 * ns * PATH_SIZE_SCALE)
+				_draw_chevron(canvas, sample["point"], sample["direction"], chevron_color, chevron_size)
 	var selected_note: Note = _app.get_selected_note() if _app != null else null
 	var selected := selected_note != null and selected_note.id == note.id
 	if selected:
@@ -4334,14 +4620,13 @@ func _draw_play_hud(canvas: Control, chart: Chart, t: float) -> void:
 	var margin := 14.0 * s
 	var bold := UITheme.bold_font()
 	var mono := UITheme.mono_font()
-	var center := project_design(Vector2.ZERO)
-	if not _valid_point(center):
-		center = bounds * 0.5
+	var layout := _hud_layout()
+	var center: Vector2 = layout["center"]
 	var accuracy := hud_accuracy
 	var progress := clampf(t / maxf(1.0, chart.duration_beats()), 0.0, 1.0)
 	_draw_ring_gauge(canvas, progress, accuracy, s, op)
 	# 舞台外圈刻度大约在判定环的 1.19×；HUD 再退到 1.2×，避免压到装饰环。
-	var ring_r := _hud_ring_radius(t) * 1.2
+	var ring_r: float = float(layout["ring"]) * 1.2
 	var gap := 20.0 * s
 	var side := minf(center.x, bounds.x - center.x) - ring_r - margin - gap
 	var col_w := clampf(side, 90.0 * s, 320.0 * s)
@@ -4416,6 +4701,28 @@ func _draw_hud_score_column(canvas: Control, x: float, col_w: float, center_y: f
 
 
 ## 环的横向像素半径（取进度带所在的那一圈）；侧栏据此贴住环的切线。
+## HUD 左右列要贴着环，但相机带鼠标倾斜/视差，同一帧的投影会有几个 % 的漂移，
+## 直接用当帧投影会让「曲名省略成几个字」跟着鼠标来回跳。
+## 按「设计半径 + 视口尺寸」缓存一次布局：尺寸不变就不重算。
+var _hud_layout_cache: Dictionary = {}
+
+
+func _hud_layout() -> Dictionary:
+	var key := "%d|%dx%d" % [int(_max_design_radius), roundi(size.x), roundi(size.y)]
+	if _hud_layout_cache.has(key):
+		return _hud_layout_cache[key]
+	var center := project_design(Vector2.ZERO)
+	if not _valid_point(center):
+		center = size * 0.5
+	var ring := _hud_ring_radius(0.0)
+	if ring <= 1.0:
+		ring = minf(size.x, size.y) * 0.44
+	var layout := {"center": center, "ring": ring}
+	# 只留一份：换谱面 / 改窗口尺寸会生成新 key，旧的直接丢掉。
+	_hud_layout_cache = {key: layout}
+	return layout
+
+
 func _hud_ring_radius(t: float) -> float:
 	if _max_design_radius > 0.0:
 		var affine := _screen_affine()
@@ -4636,6 +4943,50 @@ func _draw_arrowhead(canvas: Control, point: Vector2, direction: Vector2, color:
 		point - dir * 5.0 - normal * 5.0,
 	])
 	canvas.draw_colored_polygon(points, color)
+
+
+## 方向箭头按「固定弧长间隔」排布：所有 Path 共用同一个间距；
+## 折得很厉害的轨迹（锯齿 / 来回折返）弧长很长但占的面积很小，
+## 再按屏幕距离去一次重，避免同一片区域堆一堆箭头。
+## 返回 0..1 的相对长度比例，调用方按比例取点画箭头。
+static func chevron_fractions(points: PackedVector2Array, spacing: float, min_gap: float) -> Array[float]:
+	var fractions: Array[float] = []
+	if points.size() < 2 or spacing <= 0.1:
+		return fractions
+	var lengths: Array[float] = []
+	var total := 0.0
+	for i in points.size() - 1:
+		var span := points[i].distance_to(points[i + 1])
+		lengths.append(span)
+		total += span
+	if total < spacing * 0.9:
+		return fractions
+	# 性能上限：箭头上限是 48 只；超出时整体把间距拉开，
+	# 而不是只铺满前面一段（否则长轨迹会在中途突然没有箭头）。
+	var wanted := maxi(1, int(total / spacing))
+	var count := mini(wanted, 48)
+	var step := total / float(count)
+	var placed: Array[Vector2] = []
+	for k in count:
+		var target := (float(k) + 0.5) * step
+		var cursor := 0.0
+		var spot := points[0]
+		for i in lengths.size():
+			if cursor + lengths[i] >= target:
+				var q := 0.0 if lengths[i] <= 0.0001 else (target - cursor) / lengths[i]
+				spot = points[i].lerp(points[i + 1], q)
+				break
+			cursor += lengths[i]
+		var crowded := false
+		for previous in placed:
+			if previous.distance_to(spot) < min_gap:
+				crowded = true
+				break
+		if crowded:
+			continue
+		placed.append(spot)
+		fractions.append(clampf(target / total, 0.0, 1.0))
+	return fractions
 
 
 func _draw_chevron(canvas: Control, point: Vector2, direction: Vector2, color: Color, size: float) -> void:

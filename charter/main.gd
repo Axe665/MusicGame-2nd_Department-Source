@@ -122,6 +122,10 @@ var _import_dir_dialog: FileDialog
 var _audio_dialog: FileDialog
 var _song_dialog: SongImportDialog
 var _chart_browser: ChartBrowser
+var _sb_dialog: FileDialog = null
+## 故事板编辑器（新建/编辑 .osb）。
+const StoryboardEditorScript := preload("res://charter/storyboard_editor.gd")
+var _sb_editor: AcceptDialog = null
 ## 独立的“在线 osu! 谱面”窗口（卡片式，只列 osu!std）。
 var _osu_browser: OsuBrowser
 ## 设置里「转码缓存」体积显示。
@@ -142,6 +146,11 @@ var _playtest_offset: SpinBox = null
 var _playtest_latency: SpinBox = null
 var _playtest_dynamic: CheckBox = null
 var _playtest_auto: CheckBox = null
+## 试玩设置里的「背景暗度」0-100。
+var _playtest_dim: SpinBox = null
+## 试玩设置里的「显示故事板」开关。
+var _playtest_storyboard: CheckBox = null
+var _playtest_sb_bg: CheckBox = null
 var _playtest_mouse: CheckBox = null
 var _playtest_bias: Label = null
 ## 试玩设置底部的「从头开始玩」按钮（试玩中隐藏）。
@@ -406,7 +415,7 @@ func _build_ui() -> void:
 	# 文件 0–9 / 15–19、编辑 10–14、视图 20–25、插入 30–38、事件 40–41、试玩 50–51。
 	brand_row.add_child(_menu("文件", [
 		["新建", 0], ["打开", 1], ["保存", 2], ["另存为", 3], ["-", 0],
-		["导入", [["歌曲 / 识别 BPM…", 9], ["导入视频…", 19], ["谱面 (.osz/.zip/.txt)", 6], ["舞萌文件夹", 8], ["在线舞萌谱面…", 15], ["在线 osu! 谱面…", 18]]],
+		["导入", [["歌曲 / 识别 BPM…", 9], ["导入视频…", 19], ["谱面 (.osz/.zip/.txt)", 6], ["舞萌文件夹", 8], ["在线舞萌谱面…", 15], ["故事板 (.osb)…", 28], ["在线 osu! 谱面…", 18]]],
 		["导出", [["导出 .lbp", 7]]],
 		["-", 0], ["恢复自动保存", 4], ["-", 0], ["退出", 5],
 	]))
@@ -416,12 +425,13 @@ func _build_ui() -> void:
 	]))
 	_view_menu = _menu("视图", [
 		["显示/隐藏 HUD", 20], ["调试叠层", 21], ["波形", 22], ["从上往下写入", 25], ["-", 0],
-		["边界状态轨", 23], ["时间 / BPM (F6)", 24],
+		["边界状态轨", 23], ["时间 / BPM (F6)", 24], ["-", 0], ["故事板", 27],
 	])
 	brand_row.add_child(_view_menu)
 	brand_row.add_child(_menu("插入", [
 		["Tap", 30], ["Hold", 31], ["Path", 32], ["Seek", 33], ["Anchor", 34], ["Bell", 35], ["Limit", 36],
 		["-", 0], ["BoundaryEvent", 37], ["RingState 关键帧", 38],
+		["-", 0], ["故事板编辑器…", 29],
 	]))
 	# 试玩只保留一个黄色按钮；F5 / Shift+F5 快捷键照旧生效。
 	var playtest_button := Button.new()
@@ -633,6 +643,10 @@ func _build_ui() -> void:
 	gear_popup.id_pressed.connect(_on_preview_menu)
 	preview_header.add_child(_preview_gear)
 	_preview = Preview3D.new()
+	_preview.show_storyboard = _app.show_storyboard if _app != null else true
+	_preview.set_background_dim(_app.playtest_dim if _app != null else 0)
+	_preview.storyboard_fit = true
+	_preview.show_storyboard_background = _app.show_storyboard_background if _app != null else true
 	_preview.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_preview.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_preview.cursor_changed.connect(_on_cursor_changed)
@@ -1507,6 +1521,8 @@ func _sync_appearance() -> void:
 
 
 func _sync_from_app() -> void:
+	if _preview != null and _app != null and _preview.get_chart() != _app.chart:
+		_preview.invalidate_storyboard()
 	if _app == null or _app.chart == null:
 		return
 	_refresh_import_difficulty()
@@ -2006,6 +2022,141 @@ func _close_tab_now(index: int) -> void:
 	_refresh_tabs()
 
 
+## 把 osu! 的 .osb 和同目录素材搬进 user://，挂到当前谱面上。
+## 谱师可以直接用 osu! 的 storyboard 编辑器（或手写 .osb）做完再导进来。
+func _import_storyboard_dialog() -> void:
+	if _app == null or _app.chart == null:
+		_show_toast("先打开一张谱面再导入故事板", "error")
+		return
+	if _sb_dialog == null:
+		_sb_dialog = FileDialog.new()
+		_sb_dialog.title = "导入 osu! 故事板 (.osb)"
+		_sb_dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
+		_sb_dialog.access = FileDialog.ACCESS_FILESYSTEM
+		_sb_dialog.filters = PackedStringArray(["*.osb ; osu! storyboard"])
+		_sb_dialog.file_selected.connect(_attach_storyboard)
+		add_child(_sb_dialog)
+	_sb_dialog.popup_centered_ratio(0.7)
+
+
+## 故事板编辑器：直接在当前谱面上新建 / 修改 storyboard。
+func _open_storyboard_editor() -> void:
+	if _app == null or _app.chart == null:
+		return
+	if _sb_editor == null:
+		_sb_editor = StoryboardEditorScript.new()
+		_sb_editor.saved.connect(_on_storyboard_saved)
+		_sb_editor.seek_requested.connect(_on_storyboard_seek)
+		_sb_editor.edited.connect(_on_storyboard_edited)
+		add_child(_sb_editor)
+	_sb_editor.open_for(_app.chart)
+
+
+## 时间轴拖播放头：直接跳到该时刻，预览跟着动。
+func _on_storyboard_seek(ms: float) -> void:
+	if _app == null or _app.chart == null:
+		return
+	_app.playhead_beat = _app.chart.ms_to_beat(ms)
+	_sync_from_app()
+	_preview.queue_redraw()
+	_preview._overlay.queue_redraw()
+	if _preview._storyboard_bg != null:
+		_preview._storyboard_bg.queue_redraw()
+
+
+## 编辑器里改了东西（还没存盘）：把编辑中的 board 直接塞给预览，边拖边看。
+func _on_storyboard_edited() -> void:
+	if _sb_editor == null or _app == null or _app.chart == null:
+		return
+	var board = _sb_editor._board
+	if board == null:
+		return
+	var dir := String(_sb_editor._dir)
+	if dir.is_empty():
+		dir = String(_app.chart.metadata.get("storyboard", ""))
+	_preview._storyboard = board
+	_preview._storyboard_chart = _app.chart
+	_preview._storyboard_dir = dir
+	_preview._storyboard_textures.clear()
+	_preview._sb_sample_ms = -1.0e9
+	_preview._sb_render_items = []
+	_preview._refresh_background_layering()
+	_preview.queue_redraw()
+	if _preview._storyboard_bg != null:
+		_preview._storyboard_bg.queue_redraw()
+
+
+func _on_storyboard_saved(path: String) -> void:
+	if _app == null:
+		return
+	_app.begin_edit()
+	_app.chart.metadata["storyboard"] = path.get_base_dir()
+	_app.finish_edit()
+	_preview._storyboard_chart = null
+	_preview._ensure_storyboard(_app.chart)
+	_preview._refresh_background_layering()
+	_preview._overlay.queue_redraw()
+	if _preview._storyboard_bg != null:
+		_preview._storyboard_bg.queue_redraw()
+	_show_toast("故事板已保存：%s" % path.get_file(), "info")
+
+
+func _attach_storyboard(osb_path: String) -> void:
+	var text := FileAccess.get_file_as_string(osb_path)
+	if text.is_empty():
+		_show_toast("读不到 %s" % osb_path, "error")
+		return
+	var board := Storyboard.parse(text, osb_path.get_file())
+	if board.sprites.is_empty():
+		_show_toast("这个 .osb 里没有 sprite", "error")
+		return
+	var dir := osb_path.get_base_dir()
+	var target := "user://storyboards/%s" % osb_path.md5_text().substr(0, 10)
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(target))
+	# 素材：osb 同目录（含 sb/ 这类子目录）里的所有图片，按文件名拍平。
+	var copied := 0
+	for file_name in DirAccess.get_files_at(dir):
+		if not _is_storyboard_image(file_name):
+			continue
+		if _copy_file(dir + "/" + file_name, target + "/" + file_name):
+			copied += 1
+	for sub_dir in DirAccess.get_directories_at(dir):
+		var sub_path := dir + "/" + sub_dir
+		for file_name in DirAccess.get_files_at(sub_path):
+			if not _is_storyboard_image(file_name):
+				continue
+			if _copy_file(sub_path + "/" + file_name, target + "/" + file_name):
+				copied += 1
+	_copy_file(osb_path, target + "/storyboard.osb")
+	_app.begin_edit()
+	_app.chart.metadata["storyboard"] = target
+	_app.finish_edit()
+	_preview._storyboard_chart = null
+	_preview._ensure_storyboard(_app.chart)
+	_preview._refresh_background_layering()
+	_preview._overlay.queue_redraw()
+	if _preview._storyboard_bg != null:
+		_preview._storyboard_bg.queue_redraw()
+	_show_toast("故事板已导入：%d 个对象 / %d 张图" % [board.sprites.size(), copied], "info")
+
+
+static func _is_storyboard_image(file_name: String) -> bool:
+	var ext := file_name.get_extension().to_lower()
+	return ext in ["png", "jpg", "jpeg", "webp", "bmp"]
+
+
+static func _copy_file(from: String, to: String) -> bool:
+	var data := FileAccess.get_file_as_bytes(from)
+	if data.is_empty():
+		return false
+	var handle := FileAccess.open(to, FileAccess.WRITE)
+	if handle == null:
+		return false
+	handle.store_buffer(data)
+	handle.close()
+	return true
+
+
 func _on_import_osz_selected(path: String, include_video: bool = true) -> void:
 	# 转谱：把来源里的所有难度转好，作为一个新标签页打开，不覆盖当前谱面。
 	if _app == null:
@@ -2299,6 +2450,10 @@ func _on_menu(id: int) -> void:
 				_inspector.open_video_picker()
 		15:
 			_chart_browser.popup_centered_ratio(0.8)
+		28:
+			_import_storyboard_dialog()
+		29:
+			_open_storyboard_editor()
 		18:
 			_osu_browser.popup_centered_ratio(0.8)
 		7:
@@ -2331,6 +2486,16 @@ func _on_menu(id: int) -> void:
 			_show_toast("边界状态轨：RingState 关键帧在视图页编辑。", "info")
 		24:
 			_inspector.current_tab = 5
+		27:
+			_preview.show_storyboard = not _preview.show_storyboard
+			_app.show_storyboard = _preview.show_storyboard
+			_app.save_settings()
+			_preview._refresh_background_layering()
+			if _preview._storyboard_bg != null:
+				_preview._storyboard_bg.visible = _preview.show_storyboard
+				_preview._storyboard_bg.queue_redraw()
+			_preview._overlay.queue_redraw()
+			_show_toast("故事板：%s" % ("显示" if _preview.show_storyboard else "隐藏"), "info")
 		30, 31, 32, 33, 34, 35, 36:
 			_set_tool(["tap", "hold", "path", "seek", "anchor", "bell", "limit"][id - 30])
 		37:
@@ -2400,6 +2565,8 @@ func _open_playtest_setup(from_start: bool) -> void:
 		if _playtest_start_button != null:
 			_playtest_start_button.visible = true
 	_playtest_rate.value = _rate
+	if _playtest_dim != null:
+		_playtest_dim.value = float(_app.playtest_dim)
 	_playtest_flow.value = _app.flow_scale
 	_playtest_star.value = _app.star_speed
 	if _playtest_cursor != null:
@@ -2412,6 +2579,10 @@ func _open_playtest_setup(from_start: bool) -> void:
 		_playtest_dynamic.button_pressed = bool(_app.dynamic_offset)
 	if _playtest_auto != null:
 		_playtest_auto.button_pressed = bool(_app.playtest_auto)
+	if _playtest_storyboard != null:
+		_playtest_storyboard.button_pressed = bool(_app.show_storyboard)
+	if _playtest_sb_bg != null:
+		_playtest_sb_bg.button_pressed = bool(_app.show_storyboard_background)
 	if _playtest_mouse != null:
 		_playtest_mouse.button_pressed = bool(_app.mouse_keys)
 	if _playtest_bias != null:
@@ -2602,6 +2773,8 @@ func _build_playtest_dialog() -> void:
 	_playtest_flow = _playtest_spin_row(box, "流速", 0.05, 3.0, 0.01, 1.0, "×")
 	_playtest_star = _playtest_spin_row(box, "星速", 0.5, 2.0, 0.05, 1.0, "×")
 	_playtest_cursor = _playtest_spin_row(box, "光标大小", 0.5, 2.0, 0.05, 1.0, "×")
+	_playtest_dim = _playtest_spin_row(box, "背景暗度", 0.0, 70.0, 1.0, 70.0, "%")
+	_playtest_dim.tooltip_text = "和 osu 的 Background dim 一样：0% 不遮，100% 全黑；只暗背景和故事板，不暗判定环和音符"
 	_playtest_offset = _playtest_spin_row(box, "判定偏移", -200.0, 200.0, 1.0, 0.0, "ms")
 	_playtest_latency = _playtest_spin_row(box, "输出延迟", 0.0, 250.0, 1.0, 0.0, "ms")
 	_playtest_latency.tooltip_text = "0 = 用驱动报告值；>0 = 强制覆盖（可升可降）。驱动明显不准时才手动填"
@@ -2615,6 +2788,16 @@ func _build_playtest_dialog() -> void:
 	_playtest_dynamic.text = "动态 offset（局内自动校准，≤±50ms）"
 	_playtest_dynamic.tooltip_text = "至少 8 次命中后，每次命中按偏差的 5% 自动微调判定偏移"
 	box.add_child(_playtest_dynamic)
+	_playtest_storyboard = CheckBox.new()
+	_playtest_storyboard.button_pressed = bool(_app.show_storyboard) if _app != null else true
+	_playtest_storyboard.text = "显示故事板（osu! storyboard）"
+	_playtest_storyboard.tooltip_text = "关闭后只留谱面背景和 BGA，storyboard 不再绘制；写进 settings.json"
+	box.add_child(_playtest_storyboard)
+	_playtest_sb_bg = CheckBox.new()
+	_playtest_sb_bg.button_pressed = bool(_app.show_storyboard_background) if _app != null else true
+	_playtest_sb_bg.text = "故事板背景层（取消勾选=只看谱面背景图 + 特效）"
+	_playtest_sb_bg.tooltip_text = "storyboard 的 Background/Video 层通常是一整张背景，取消后谱面背景图会露出来，只保留前景特效"
+	box.add_child(_playtest_sb_bg)
 	_playtest_auto = CheckBox.new()
 	_playtest_auto.text = "AUTO 自动演示（游戏内 F8 切换）"
 	_playtest_auto.tooltip_text = "自动完美演奏所有音符，用来快速看谱面；结算会标注 AUTO"
@@ -2692,6 +2875,11 @@ func _commit_playtest_settings() -> void:
 	if _app == null:
 		return
 	_rate = _playtest_rate.value
+	if _playtest_dim != null:
+		_app.playtest_dim = clampi(int(_playtest_dim.value), 0, 70)
+		_preview.set_background_dim(_app.playtest_dim)
+		if _playtest != null and _playtest._preview != null:
+			_playtest._preview.set_background_dim(_app.playtest_dim)
 	if _playtest_latency != null:
 		_app.audio_latency_ms = clampf(_playtest_latency.value, 0.0, 250.0)
 	_app.flow_scale = _playtest_flow.value
@@ -2704,6 +2892,19 @@ func _commit_playtest_settings() -> void:
 		_app.dynamic_offset = _playtest_dynamic.button_pressed
 	if _playtest_auto != null:
 		_app.playtest_auto = _playtest_auto.button_pressed
+	if _playtest_sb_bg != null:
+		_app.show_storyboard_background = _playtest_sb_bg.button_pressed
+		_preview.show_storyboard_background = _app.show_storyboard_background
+	if _playtest_storyboard != null:
+		_app.show_storyboard = _playtest_storyboard.button_pressed
+		_preview.show_storyboard = _app.show_storyboard
+		_preview.show_storyboard_background = _app.show_storyboard_background
+		if _preview._storyboard_bg != null:
+			_preview._storyboard_bg.visible = _app.show_storyboard
+		_preview._refresh_background_layering()
+		if _playtest != null and _playtest._preview != null:
+			_playtest._preview.show_storyboard = _app.show_storyboard
+	_playtest._preview.show_storyboard_background = _app.show_storyboard_background
 	if _playtest_mouse != null:
 		_app.mouse_keys = _playtest_mouse.button_pressed
 	if _playtest_trace_color != null:
@@ -2747,6 +2948,9 @@ func _start_playtest(from_start: bool) -> void:
 	_playtest.auto_play = bool(_app.playtest_auto) or "--auto" in OS.get_cmdline_user_args()
 	_playtest.next_playback_rate = _rate
 	add_child(_playtest)
+	_playtest._preview.show_storyboard = _app.show_storyboard
+	_playtest._preview.show_storyboard_background = _app.show_storyboard_background
+	_playtest._preview.set_background_dim(_app.playtest_dim)
 	_playtest.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_playtest.setup(_app.chart, 0.0 if from_start else _app.playhead_beat, _app.chart_path)
 	_playtest.exit_requested.connect(_end_playtest)
