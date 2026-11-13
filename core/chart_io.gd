@@ -68,7 +68,7 @@ static func chart_to_dict(chart: Chart) -> Dictionary:
 		if note.lock:
 			note_flags[str(note.id)] = {"lock": true}
 	var meta := {}
-	for key in ["title", "artist", "creator", "version", "tags", "license", "background"]:
+	for key in ["title", "artist", "creator", "version", "tags", "license", "background", "storyboard"]:
 		meta[key] = String(chart.metadata.get(key, ""))
 	var result := {
 		"format": FORMAT,
@@ -213,7 +213,7 @@ static func chart_from_dict(data: Dictionary) -> Chart:
 	chart.offset_ms = float(general.get("offset_ms", 0.0))
 	chart.difficulty = String(general.get("difficulty", "Normal"))
 	var meta: Dictionary = data.get("metadata", {})
-	for key in ["title", "artist", "creator", "version", "tags", "license", "background"]:
+	for key in ["title", "artist", "creator", "version", "tags", "license", "background", "storyboard"]:
 		chart.metadata[key] = String(meta.get(key, ""))
 	var timing_data: Dictionary = data.get("timing", {})
 	chart.timing = TimingMap.new()

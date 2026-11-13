@@ -73,6 +73,10 @@ var hud_show_watermark: bool = false
 var background_brightness: int = 100
 ## 试玩时鼠标左右键是否算 Tap（关掉后移动/滚轮照常）。
 var mouse_keys: bool = true
+## 试玩/预览里是否绘制 osu! storyboard。
+var show_storyboard: bool = true
+## storyboard 的背景层（Background/Video）是否绘制。
+var show_storyboard_background: bool = true
 ## 右侧预览宽度与折叠状态（编辑器布局记忆）。
 var preview_width: float = 340.0
 var preview_collapsed: bool = false
@@ -89,6 +93,10 @@ var audio_buffer_ms: int = 3
 var dynamic_offset: bool = false
 ## AUTO 自动演示：试玩时自动完美演奏，用来快速检查谱面（成绩不计入）。
 var playtest_auto: bool = false
+## 试玩背景暗度（0 = 原样，100 = 全黑），和 osu 的 Background dim 一样。
+var playtest_dim: int = 70
+## 启动时默认打开的标签页（set.json 绝对/用户路径列表）。
+var startup_tabs: Array[String] = []
 ## 上一局的平均判定偏差，供试玩设置显示。
 var last_bias_ms: float = 0.0
 
@@ -160,6 +168,16 @@ func _ready() -> void:
 	if child_window:
 		# 新开的转谱窗口默认最大化：编辑器三栏 + 顶部工具在 1600×900 以下会挤掉右侧控件。
 		DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_MAXIMIZED)
+	var tabs_arg := cmdline_value("--open-tabs=")
+	if tabs_arg.is_empty() and not startup_tabs.is_empty() \
+			and cmdline_value("--open-set=").is_empty() and cmdline_value("--import-source=").is_empty():
+		# 没带命令行参数时，按设置里记着的默认标签页开机。
+		tabs_arg = "|".join(startup_tabs)
+	if not tabs_arg.is_empty():
+		# 多标签启动：第一个当主标签，其余每个都开成新标签页。
+		set_chart(Chart.new(), "", false)
+		call_deferred("_boot_tabs_window", tabs_arg)
+		return
 	var set_arg := cmdline_value("--open-set=")
 	if not set_arg.is_empty():
 		# 转谱窗口：先放一张空谱占位，等主界面建好再载入套组。
@@ -192,6 +210,37 @@ static func cmdline_value(prefix: String) -> String:
 		if arg.begins_with(prefix):
 			return arg.substr(prefix.length())
 	return ""
+
+
+## 多标签启动：--open-tabs=a.set.json|b.set.json|...
+func _boot_tabs_window(paths_arg: String) -> void:
+	var paths := paths_arg.split("|", false)
+	var opened := 0
+	for path in paths:
+		if path.is_empty() or not FileAccess.file_exists(path):
+			continue
+		var ok := false
+		if path.ends_with(".set.json"):
+			ok = open_set_file(path)
+		else:
+			ok = load_chart(path)
+		if not ok:
+			continue
+		var title := path.get_file().get_basename()
+		if opened == 0:
+			ensure_tab()
+			if not tabs.is_empty():
+				tabs[tabs.size() - 1].title = title
+				tabs_changed.emit()
+		else:
+			add_tab_from_current(title)
+		opened += 1
+	if opened == 0:
+		notice.emit("多标签启动：一个都没打开", "error")
+		set_chart(DemoChart.make_demo(), "user://charts/demo.json", false)
+		ensure_tab()
+		return
+	activate_tab(0)
 
 
 ## 转谱窗口的启动流程：解析来源 → 建难度列表 → 导入第一份。
@@ -506,6 +555,8 @@ func _load_settings() -> void:
 			hud_show_watermark = bool(data.get("hud_show_watermark", hud_show_watermark))
 			background_brightness = clampi(int(data.get("background_brightness", background_brightness)), 0, 100)
 			mouse_keys = bool(data.get("mouse_keys", mouse_keys))
+			show_storyboard = bool(data.get("show_storyboard", show_storyboard))
+			show_storyboard_background = bool(data.get("show_storyboard_background", show_storyboard_background))
 			preview_width = clampf(float(data.get("preview_width", preview_width)), 280.0, 720.0)
 			preview_collapsed = bool(data.get("preview_collapsed", preview_collapsed))
 			hit_fx_style = String(data.get("hit_fx_style", hit_fx_style))
@@ -517,6 +568,10 @@ func _load_settings() -> void:
 			audio_latency_ms = clampf(float(data.get("audio_latency_ms", audio_latency_ms)), 0.0, 250.0)
 			dynamic_offset = bool(data.get("dynamic_offset", dynamic_offset))
 			playtest_auto = bool(data.get("playtest_auto", playtest_auto))
+			playtest_dim = clampi(int(data.get("playtest_dim", playtest_dim)), 0, 70)
+			startup_tabs.clear()
+			for item in data.get("startup_tabs", []):
+				startup_tabs.append(String(item))
 			osu_favorites.clear()
 			for value in data.get("osu_favorites", []):
 				osu_favorites.append(int(value))
@@ -664,13 +719,13 @@ func effective_latency_sec() -> float:
 
 
 func save_settings() -> void:
-	var data := {"path_wait_indicator": path_wait_indicator, "note_skin": note_skin, "hit_fx_style": hit_fx_style, "hit_sfx_style": hit_sfx_style, "ffmpeg": ffmpeg_path, "frame_cap": frame_cap, "audio_buffer_ms": audio_buffer_ms, "playtest_offset_ms": playtest_offset_ms, "audio_latency_ms": audio_latency_ms, "dynamic_offset": dynamic_offset, "playtest_auto": playtest_auto, "osu_favorites": osu_favorites, "last_bias_ms": last_bias_ms, "cursor_scale": cursor_scale, "flow_scale": flow_scale, "star_speed": star_speed, "trace_color": trace_color.to_html(), "aa_2d_level": aa_2d_level, "note_detail_fine": note_detail_fine, "note_glow": note_glow, "cursor_trail": cursor_trail, "fx_budget": fx_budget, "ring_3d_scale": ring_3d_scale, "ring_3d_hz": ring_3d_hz, "bar_lines": bar_lines, "quality_preset": quality_preset,
+	var data := {"path_wait_indicator": path_wait_indicator, "note_skin": note_skin, "hit_fx_style": hit_fx_style, "hit_sfx_style": hit_sfx_style, "ffmpeg": ffmpeg_path, "frame_cap": frame_cap, "audio_buffer_ms": audio_buffer_ms, "playtest_offset_ms": playtest_offset_ms, "audio_latency_ms": audio_latency_ms, "dynamic_offset": dynamic_offset, "playtest_auto": playtest_auto, "playtest_dim": playtest_dim, "startup_tabs": startup_tabs, "osu_favorites": osu_favorites, "last_bias_ms": last_bias_ms, "cursor_scale": cursor_scale, "flow_scale": flow_scale, "star_speed": star_speed, "trace_color": trace_color.to_html(), "aa_2d_level": aa_2d_level, "note_detail_fine": note_detail_fine, "note_glow": note_glow, "cursor_trail": cursor_trail, "fx_budget": fx_budget, "ring_3d_scale": ring_3d_scale, "ring_3d_hz": ring_3d_hz, "bar_lines": bar_lines, "quality_preset": quality_preset,
 		"hud_scale": hud_scale, "hud_combo_mode": hud_combo_mode, "hud_progress_style": hud_progress_style,
 		"hud_judge_position": hud_judge_position, "hud_opacity": hud_opacity,
 		"hud_show_title": hud_show_title, "hud_show_difficulty": hud_show_difficulty,
 		"hud_show_percent": hud_show_percent, "hud_show_time": hud_show_time,
 		"hud_show_watermark": hud_show_watermark,
-		"background_brightness": clampi(background_brightness, 0, 100), "mouse_keys": mouse_keys,
+		"background_brightness": clampi(background_brightness, 0, 100), "mouse_keys": mouse_keys, "show_storyboard": show_storyboard, "show_storyboard_background": show_storyboard_background,
 		"preview_width": preview_width, "preview_collapsed": preview_collapsed}
 	var file := FileAccess.open(SETTINGS_PATH, FileAccess.WRITE)
 	if file != null:

@@ -119,7 +119,13 @@ func _initialize() -> void:
 		"test_mouse_button_input",
 		"test_osu_star_color",
 		"test_osu_filters",
+		"test_storyboard_parse",
+		"test_storyboard_loops_and_easing",
+	"test_storyboard_serialize",
+	"test_storyboard_editor_model",
+		"test_storyboard_layers",
 		"test_osu_pill_rows",
+		"test_path_chevron_spacing",
 		"test_audio_clock",
 		"test_audio_clock_rate",
 		"test_calibration_offset",
@@ -3351,4 +3357,173 @@ func test_osu_pill_rows() -> bool:
 	eq(OsuBrowser.pill_rows(19, 1300), 2, "wide card fits 19 on two rows")
 	ok(OsuBrowser.pill_rows(19, 700) > OsuBrowser.pill_rows(19, 1300), "narrower card needs more rows")
 	eq(OsuBrowser.pill_rows(0, 900), 1, "no difficulties still one row (the toggle chip)")
+	return true
+
+
+## Path 方向箭头：固定弧长间距；锯齿状轨迹再按屏幕距离去重。
+func test_path_chevron_spacing() -> bool:
+	var line := PackedVector2Array([Vector2(0, 0), Vector2(300, 0)])
+	var fractions := Preview3D.chevron_fractions(line, 60.0, 40.0)
+	eq(fractions.size(), 5, "300px with 60px spacing gives 5 arrows")
+	for i in range(1, fractions.size()):
+		var gap := (fractions[i] - fractions[i - 1]) * 300.0
+		ok(absf(gap - 60.0) < 0.01, "arrow spacing is uniform (%.2f)" % gap)
+
+	# 短于间距的一条线：一只箭头都不画
+	ok(Preview3D.chevron_fractions(PackedVector2Array([Vector2(0, 0), Vector2(20, 0)]), 60.0, 40.0).is_empty(),
+		"short stub gets no arrow")
+
+	# 锯齿：弧长够长，但同一片区域反复折返 → 去重后数量明显变少
+	var zig := PackedVector2Array([Vector2(0, 0), Vector2(120, 0), Vector2(20, 12), Vector2(130, 24), Vector2(30, 36)])
+	var zig_fractions := Preview3D.chevron_fractions(zig, 40.0, 70.0)
+	var zig_arc := 0.0
+	for i in zig.size() - 1:
+		zig_arc += zig[i].distance_to(zig[i + 1])
+	ok(zig_fractions.size() < int(zig_arc / 40.0), "crowded zigzag drops overlapping arrows")
+	ok(zig_fractions.size() >= 2, "zigzag still gets some arrows")
+
+	# 超长轨迹：箭头上限 48 只时必须整体拉开间距、铺到终点，不能在 48 * spacing 处截断
+	var long_line := PackedVector2Array([Vector2(0, 0), Vector2(4000, 0)])
+	var long_fractions := Preview3D.chevron_fractions(long_line, 60.0, 30.0)
+	eq(long_fractions.size(), 48, "long path caps at 48 arrows")
+	ok(float(long_fractions[long_fractions.size() - 1]) > 0.9, "arrows still reach the end of a long path")
+	var long_gap := (float(long_fractions[1]) - float(long_fractions[0])) * 4000.0
+	var last_gap := (float(long_fractions[long_fractions.size() - 1]) - float(long_fractions[long_fractions.size() - 2])) * 4000.0
+	ok(absf(long_gap - last_gap) < 0.5, "capped long path keeps uniform spacing")
+	return true
+
+
+## osu! storyboard：静态 sprite + 单条命令插值。
+func test_storyboard_parse() -> bool:
+	var text := """[Events]
+Sprite,Background,Centre,"bg.jpg",320,240
+ F,0,0,1000,0,1
+ M,0,0,1000,100,200,300,400
+"""
+	var board := Storyboard.parse(text)
+	eq(board.sprites.size(), 1, "one sprite parsed")
+	var sprite: Storyboard.Sprite = board.sprites[0]
+	eq(sprite.layer, "Background", "layer")
+	eq(sprite.origin, 4, "centre origin")
+	eq(sprite.path, "bg.jpg", "path")
+
+	# 起始 alpha = 0 的 sprite 不参与绘制（osu 也是这样）
+	ok(board.sample(0.0).is_empty(), "alpha 0 sprite is culled")
+
+	var quarter := board.sample(250.0)
+	eq(quarter.size(), 1, "visible once faded in")
+	ok(absf(float(quarter[0]["alpha"]) - 0.25) < 0.01, "alpha starts at 0 and fades in")
+	var start_pos: Vector2 = quarter[0]["pos"]
+	ok(start_pos.distance_to(Vector2(150, 250)) < 0.5, "move start")
+
+	var mid := board.sample(500.0)
+	ok(absf(float(mid[0]["alpha"]) - 0.5) < 0.01, "alpha interpolates linearly")
+	var mid_pos: Vector2 = mid[0]["pos"]
+	ok(mid_pos.distance_to(Vector2(200, 300)) < 0.01, "move interpolates")
+
+	var end := board.sample(1000.0)
+	ok(absf(float(end[0]["alpha"]) - 1.0) < 0.001, "alpha ends at 1")
+
+	# lazer 的 EndTimeForDisplay：命令全部结束后对象就不存在了
+	ok(board.sample(1500.0).is_empty(), "sprite is gone after its last command")
+	return true
+
+
+## 故事板写回 .osb 后再解析，对象和命令数量要一致（覆盖编辑器的保存/导出）。
+func test_storyboard_serialize() -> bool:
+	var text := """[Events]
+Sprite,Background,Centre,"sb/a.png",320,240
+ F,0,0,1000,0,1
+ M,17,1000,2000,320,240,400,300
+Sprite,Foreground,TopCentre,"sb/b.png",320,0
+ S,0,0,,0.5
+ V,0,0,,2,3
+ R,0,0,90,0
+ C,0,0,,255,0,0
+"""
+	var board := Storyboard.parse(text, "test.osb")
+	eq(board.sprites.size(), 2, "serialize: 2 sprites")
+	eq(board.sprites[0].commands.size(), 2, "serialize: first sprite commands")
+	var written := board.to_osb_text()
+	var again := Storyboard.parse(written, "again.osb")
+	eq(again.sprites.size(), 2, "round-trip: sprite count")
+	eq(again.sprites[0].commands.size(), 2, "round-trip: first sprite commands")
+	eq(again.sprites[1].commands.size(), 4, "round-trip: second sprite commands")
+	ok(written.contains("Sprite,Background,Centre"), "writes sprite header")
+	ok(written.contains(" F,"), "writes alpha command")
+	return true
+
+
+## 编辑器新建对象 + 加命令后能保存并解析回来。
+func test_storyboard_editor_model() -> bool:
+	var board := Storyboard.create_blank()
+	var sprite := board.add_sprite("sb/x.png", "Foreground", 4, Vector2(320, 240))
+	board.add_command(sprite, "alpha", 0, 1000.0, 2000.0, [0.0], [1.0])
+	board.add_command(sprite, "move", 0, 0.0, 1000.0, [0.0, 0.0], [320.0, 240.0])
+	eq(board.sprites.size(), 1, "editor: sprite added")
+	eq(sprite.commands.size(), 2, "editor: commands added")
+	# 首条 alpha 是 0→1：按 lazer 的 StartTime 规则，生命周期从「第一个可见的 alpha」开始
+	ok(absf(sprite.start_time - 1000.0) < 0.001, "editor: start time follows lazer StartTime")
+	var text := board.to_osb_text()
+	var parsed := Storyboard.parse(text, "edit.osb")
+	eq(parsed.sprites.size(), 1, "editor: saved board parses back")
+	eq(parsed.sprites[0].commands.size(), 2, "editor: saved commands parse back")
+	return true
+
+
+## loop 展开 + 缓动。
+func test_storyboard_loops_and_easing() -> bool:
+	var text := """[Events]
+Sprite,Foreground,TopLeft,"p.png",0,0
+ L,1000,2
+  F,0,0,500,1,0
+ S,0,0,500,2,1
+"""
+	var board := Storyboard.parse(text)
+	eq(board.sprites.size(), 1, "sprite parsed")
+	var sprite: Storyboard.Sprite = board.sprites[0]
+	# 两轮 × 一条 F/S 命令 = 每条命令 2 段
+	eq((sprite.timeline.get("alpha", []) as Array).size(), 2, "loop expanded alpha into two commands")
+	eq((sprite.timeline.get("scale", []) as Array).size(), 2, "loop expanded scale into two commands")
+
+	var first := board.sample(1250.0)
+	ok(absf(float(first[0]["alpha"]) - 0.5) < 0.01, "first loop iteration fades")
+	ok(absf(float(first[0]["scale"].x) - 1.5) < 0.01, "first loop iteration scales")
+
+	var second := board.sample(1750.0)
+	ok(absf(float(second[0]["alpha"]) - 0.5) < 0.01, "second loop iteration repeats")
+
+	# 第二轮结束后 alpha 终值是 0，对象被剔除（osu 里也就是看不见）
+	ok(board.sample(2500.0).is_empty(), "loop ends at alpha 0 (culled)")
+
+	# 缓动：OutQuad（id=4）在 25% 处应大于线性
+	var eased := """[Events]
+Sprite,Background,Centre,"a.png",0,0
+ F,4,0,1000,0,1
+"""
+	var board2 := Storyboard.parse(eased)
+	var quarter := board2.sample(250.0)
+	ok(float(quarter[0]["alpha"]) > 0.4, "ease-out is ahead of linear at 25%")
+	eq(Storyboard.Easing.apply(0, 0.25), 0.25, "linear easing")
+	eq(Storyboard.Easing.apply(4, 0.5), 0.75, "out-quad at half")
+	eq(Storyboard.Easing.apply(35, 1.0), 1.0, "out-pow10 ends at 1")
+	return true
+
+
+## 图层 / 原点 / 动画帧。
+func test_storyboard_layers() -> bool:
+	var text := """[Events]
+Sprite,Background,Centre,"bg.png",320,240
+Sprite,Foreground,BottomRight,"fg.png",640,480
+Sprite,Overlay,TopLeft,"over.png",0,0
+Animation,Foreground,Centre,"anim.png",10,10,4,120,1
+"""
+	var board := Storyboard.parse(text)
+	eq(board.sprites.size(), 4, "four objects")
+	eq((board.sprites[1] as Storyboard.Sprite).layer, "Foreground", "foreground layer")
+	eq((board.sprites[2] as Storyboard.Sprite).origin, 0, "top-left origin")
+	var anim: Storyboard.Sprite = board.sprites[3]
+	eq(anim.frames, 4, "animation frames")
+	ok(absf(anim.frame_delay - 120.0) < 0.001, "frame delay")
+	eq(anim.loop_type, 1, "loop once")
 	return true
