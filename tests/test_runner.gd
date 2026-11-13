@@ -669,6 +669,37 @@ func test_note_flags_code() -> bool:
 	ok(loaded != null, "locked chart loads")
 	if loaded != null and not loaded.notes.is_empty():
 		ok(loaded.notes[0].lock, "lock survives the compact chart roundtrip")
+	# 紧凑代码丢不掉的字段走 note_extras，往返后必须还在。
+	var extras := Chart.new()
+	extras.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	var curved := Note.new("hold", 1.0, 0.0, 60.0)
+	curved.id = 1
+	curved.end_beat = 2.0
+	curved.hold_style = "curved"
+	curved.visual_pts = [{"db": 0.0, "da": 0.0, "x": 0.1, "y": 0.2}]
+	var plane_path := Note.new("path", 3.0, 0.0, 60.0)
+	plane_path.id = 2
+	plane_path.end_beat = 4.0
+	plane_path.tolerance = 0.31
+	plane_path.samples_per_beat = 6.0
+	plane_path.path_speed = 1.3
+	plane_path.path_gaps = [{"from": 0.2, "to": 0.3}]
+	plane_path.trace_pts = [{"x": 1.0, "y": 0.0, "db": 0.0}, {"x": 0.0, "y": 1.0, "db": 1.0}]
+	extras.notes = [curved, plane_path]
+	var extras_data := ChartIO.chart_to_dict(extras)
+	ok(extras_data.has("note_extras"), "lost fields go to the note_extras side map")
+	var extras_back := ChartIO.from_json(ChartIO.to_json(extras))
+	if extras_back != null:
+		for note in extras_back.notes:
+			if note.id == 1:
+				eq(note.hold_style, "curved", "hold style survives the roundtrip")
+				eq(note.visual_pts.size(), 1, "hold body survives the roundtrip")
+			elif note.id == 2:
+				near(note.tolerance, 0.31, 0.001, "path tolerance survives the roundtrip")
+				near(note.samples_per_beat, 6.0, 0.001, "path samples survive the roundtrip")
+				near(note.path_speed, 1.3, 0.001, "path speed survives the roundtrip")
+				eq(note.path_gaps.size(), 1, "path erase range survives the roundtrip")
+				eq(note.trace_pts.size(), 2, "path plane points survive the roundtrip")
 	return true
 
 
@@ -832,7 +863,6 @@ func test_style_presets() -> bool:
 	near(cursor.cursor_scale, 1.0, 0.0001, "cursor scale defaults to 1x")
 	cursor.free()
 	ok(Playtest.PATH_TAIL_RADIUS >= 180.0, "path tail judgement is forgiving")
-	ok(Playtest.TRACE_CONTACT_PX >= 50.0, "trace contact is forgiving")
 	eq(Playtest.BELL_WINDOW_MS, 130.0, "a gold note keeps a forgiving drag window")
 	eq(Preview3D.BELL_RADIAL_TOLERANCE, 55.0, "gold note presence keeps a 55px band")
 	eq(Playtest.PERFECT_MS, 65.0, "perfect window tightened")
@@ -940,6 +970,42 @@ func test_press_assignment() -> bool:
 	live._assign_presses(ms, 4.0)
 	ok(live._press_assignments.size() == 1, "one press cannot be spent twice in a frame")
 	live.free()
+	# 双押 Anchor：命中连击 +2、两个准确率样本；失败整对只记 1 MISS。
+	var anchor_chart := DemoChart.make_empty({"bpm": 120.0})
+	anchor_chart.notes.clear()
+	var anchor_a := Note.new("anchor", 4.0, 0.0, 0.0)
+	anchor_a.id = 1
+	anchor_a.pair_id = "P"
+	anchor_a.anchor_pair = 0
+	var anchor_b := Note.new("anchor", 4.0, 180.0, 0.0)
+	anchor_b.id = 2
+	anchor_b.pair_id = "P"
+	anchor_b.anchor_pair = 0
+	anchor_chart.notes = [anchor_a, anchor_b]
+	var pair_run := Playtest.new()
+	pair_run._preview = preview
+	pair_run.chart = anchor_chart
+	pair_run._init_states()
+	var pair_ms := float(pair_run._states[1]["target_ms"])
+	var point_a := preview.note_head_screen(anchor_a, 4.0)
+	var point_b := preview.note_head_screen(anchor_b, 4.0)
+	pair_run._key_presses = [
+		{"time": pair_ms, "lo": pair_ms, "hi": pair_ms, "mouse": point_a, "key": 65},
+		{"time": pair_ms, "lo": pair_ms, "hi": pair_ms, "mouse": point_b, "key": 66},
+	]
+	pair_run._judge_anchor_pairs(pair_ms, 4.0)
+	eq(pair_run._combo, 2, "an anchor pair adds two combo")
+	eq(pair_run._hit_count, 2, "both anchors count as hits")
+	eq(pair_run._judged_total, 2, "both anchors count for accuracy")
+	pair_run.free()
+	var miss_run := Playtest.new()
+	miss_run._preview = preview
+	miss_run.chart = anchor_chart
+	miss_run._init_states()
+	miss_run._judge_anchor_pairs(pair_ms + Playtest.HIT_WINDOW_MS + 20.0, 4.0)
+	eq(miss_run._miss_count, 1, "a failed pair counts one miss")
+	eq(miss_run._judged_total, 1, "a failed pair counts one accuracy sample")
+	miss_run.free()
 	preview.free()
 	return true
 
@@ -984,6 +1050,37 @@ func test_press_space_priority() -> bool:
 			alternating_ok = false
 		prev = dir
 	ok(alternating_ok, "alternating wheel ticks never pass the guard")
+	# 双押 Anchor：两个不同键、相差 ≤40ms 才成对，档次取较差的一次。
+	var two_keys := [
+		{"time": 995.0, "lo": 995.0, "hi": 995.0, "key": 65},
+		{"time": 1020.0, "lo": 1020.0, "hi": 1020.0, "key": 66},
+	]
+	var picked := Playtest._pick_anchor_pair(two_keys, 1000.0)
+	ok(not picked.is_empty(), "two keys within 40ms form an anchor pair")
+	eq(float(picked.get("error", 0.0)), 20.0, "the worse press decides the tier")
+	ok(Playtest._pick_anchor_pair([
+		{"time": 995.0, "lo": 995.0, "hi": 995.0, "key": 65},
+		{"time": 1045.0, "lo": 1045.0, "hi": 1045.0, "key": 66},
+	], 1000.0).is_empty(), "keys 50ms apart do not pair")
+	ok(Playtest._pick_anchor_pair([
+		{"time": 1000.0, "lo": 1000.0, "hi": 1000.0, "key": 65},
+		{"time": 1010.0, "lo": 1010.0, "hi": 1010.0, "key": 65},
+	], 1000.0).is_empty(), "the same physical key cannot double-press")
+	ok(Playtest._near_anchor(Vector2(10, 0), Vector2(0, 0), Vector2(300, 0), 140.0),
+		"aiming at either anchor counts")
+	ok(not Playtest._near_anchor(Vector2(150, 0), Vector2(0, 0), Vector2(300, 0), 140.0),
+		"the midpoint between two anchors counts for neither")
+	# 放置 Anchor 时一次生成同拍反向的一对。
+	var pair_chart := Chart.new()
+	var pair := pair_chart.make_anchor_pair(2.0, 30.0)
+	eq(pair.size(), 2, "placing an anchor creates a pair")
+	eq(pair[0].pair_id, pair[1].pair_id, "the pair shares one pairId")
+	near(JudgeMath.angle_distance(pair[0].angle, pair[1].angle), 180.0, 0.001, "the pair is opposite")
+	pair_chart.notes.append(pair[0])
+	pair_chart.notes.append(pair[1])
+	ok(pair_chart.anchor_partner(pair[0]) != null, "the pair resolves through the chart")
+	pair[1].angle = 95.0
+	ok(pair_chart.anchor_partner(pair[0]) != null, "any angle still pairs at the same beat")
 	return true
 
 
@@ -1170,16 +1267,20 @@ func test_lbp_export() -> bool:
 	var lbp_hold := Note.new("hold", 0.0, 90.0, 60.0)
 	lbp_hold.id = 2
 	lbp_hold.end_beat = 2.0
+	var lbp_seek := Note.new("seek", 4.0, 0.0, 360.0)
+	lbp_seek.id = 4
+	lbp_seek.seek_orien = 1
 	var lbp_bell := Note.new("bell", 0.0, 0.0, 27.0)
 	lbp_bell.id = 3
 	lbp_bell.center_u = 0.25
 	lbp_bell.radius = 26.0
-	width_chart.notes = [lbp_tap, lbp_hold, lbp_bell]
+	width_chart.notes = [lbp_tap, lbp_hold, lbp_bell, lbp_seek]
 	var width_text := LBPIO.export_chart(width_chart)
 	ok(width_text.contains("tap,"), "lbp keeps taps")
 	ok(width_text.contains("hold,"), "lbp keeps holds")
 	ok(width_text.contains("90.000,30.000"), "lbp writes visible arc width")
 	ok(width_text.contains("width=27.000"), "lbp bell exports width option")
+	ok(width_text.contains("seek,"), "lbp exports seek instead of a tap")
 	var path := "user://test_export.lbp"
 	eq(LBPIO.export_to_file(chart, path), OK, "lbp write")
 	var read := FileAccess.get_file_as_string(path)

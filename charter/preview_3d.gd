@@ -44,7 +44,6 @@ var path_judgement_states: Dictionary = {}
 var flow_scale: float = 1.0
 var star_speed: float = 1.0
 ## Trace 门框的主色（默认银白）。
-var trace_color: Color = Color(0.78, 0.86, 1.0)
 var custom_cursor_visible: bool = true
 ## 光标大小倍率（1.0 = 默认）。
 var cursor_scale: float = 1.0
@@ -152,7 +151,6 @@ var _last_3d_usec: int = 0
 ## 性能采样：draw_overlay 的平均耗时 + FPS，每 2 秒打印一次（仅试玩）。
 var _perf_draw_usec: int = 0
 var _perf_frames: int = 0
-## 分项耗时：[traces, paths, holds, notes, fx, 其他]（微秒）。
 ## [seeks, paths, holds, notes, fx, hud, bar, cursor, audio] 的累计微秒。
 var _perf_sections: Array[int] = [0, 0, 0, 0, 0, 0, 0, 0, 0]
 var _perf_proc_usec: int = 0
@@ -189,7 +187,6 @@ var _drag_visual_note: Note = null
 var _drag_visual_start: Vector2 = Vector2.ZERO
 var _drag_visual_db: float = 0.0
 var _drag_visual_da: float = 0.0
-var _drawing_trace: bool = false
 var _drawing_red: bool = false
 var _red_region: Region = null
 var _red_start_u: float = 0.0
@@ -203,7 +200,6 @@ var note_skin: String = "candy"
 var hit_fx_style: String = "burst"
 var _skin_cache: Dictionary = {}
 var _skin_cache_key: String = ""
-var trace_cuts: Dictionary = {}
 var path_cuts: Dictionary = {}
 ## 环分区擦除：note.id -> [{from,to}]，和 path_cuts 分开存，避免每帧的
 ## set_path_erased_to 把分区擦除覆盖掉。
@@ -220,7 +216,6 @@ var note_state_beats: Dictionary = {}
 var _drawing_path: bool = false
 var _path_points: Array[Vector2] = []
 var _path_head_angle: float = 0.0
-var _trace_points: Array[Vector2] = []
 
 
 func _ready() -> void:
@@ -1098,7 +1093,6 @@ func clear_note_states() -> void:
 
 func _on_chart_changed() -> void:
 	_sorted_notes_chart = null
-	trace_cuts.clear()
 	path_cuts.clear()
 	path_sector_cuts.clear()
 	_path_sector_cache.clear()
@@ -1123,7 +1117,6 @@ func _on_chart_changed() -> void:
 
 func _on_chart_live_changed() -> void:
 	_sorted_notes_chart = null
-	trace_cuts.clear()
 	path_cuts.clear()
 	path_sector_cuts.clear()
 	_path_sector_cache.clear()
@@ -1199,11 +1192,9 @@ func _gui_input(event: InputEvent) -> void:
 				_update_red_drag(event.position)
 			elif _drawing_path:
 				_append_path_point(event.position)
-			elif _drawing_trace:
-				_append_trace_point(event.position)
 		_update_cursor()
 		_cursor_layer.queue_redraw()
-		if _drag_segment >= 0 or _drag_visual >= 0 or _drawing_red or _drawing_path or _drawing_trace:
+		if _drag_segment >= 0 or _drag_visual >= 0 or _drawing_red or _drawing_path:
 			_overlay.queue_redraw()
 		accept_event()
 		return
@@ -1221,11 +1212,6 @@ func _on_left_press(event: InputEventMouseButton) -> void:
 	if not interactive or playtest_mode:
 		return
 	if _app == null:
-		return
-	if _app.trace_draw_mode:
-		_drawing_trace = true
-		_trace_points.clear()
-		_trace_points.append(event.position)
 		return
 	if _app.boundary_mode:
 		if event.double_click:
@@ -1325,9 +1311,6 @@ func _on_left_release(_event: InputEventMouseButton) -> void:
 		_red_region = null
 		if _app != null:
 			_app.finish_edit()
-	if _drawing_trace:
-		_drawing_trace = false
-		_create_trace()
 	if _drawing_path:
 		_drawing_path = false
 		_create_path()
@@ -1428,49 +1411,6 @@ func _update_red_drag(screen_position: Vector2) -> void:
 	_app.touch_chart()
 
 
-func _append_trace_point(point: Vector2) -> void:
-	var clamped := plane_clamp_screen(point)
-	if _trace_points.is_empty() or _trace_points[-1].distance_to(clamped) > 4.0:
-		_trace_points.append(clamped)
-		_overlay.queue_redraw()
-
-
-func _create_trace() -> void:
-	if _app == null or _trace_points.size() < 2:
-		_trace_points.clear()
-		return
-	var chart := get_chart()
-	if chart == null:
-		_trace_points.clear()
-		return
-	var start: float = _app.snap_beat(get_time_beat())
-	var end: float = start + 1.0
-	var note := Note.new("trace", start, 0.0, 0.0)
-	note.id = chart.next_note_id()
-	note.end_beat = end
-	note.move_px = 120.0
-	# 拖出来的屏幕点直接换算成“环半径 = 1.0”的设计坐标，
-	# 这样 trace 会跟着环一起倾斜，而不是贴在屏幕上。
-	var start_local := _design_to_path_local(_screen_to_ring_plane(_trace_points[0]))
-	# 从环边起笔 → 整条贴到环上；从中间起笔 → 留在平面里。两套都是同一种绘制。
-	note.space = "ring" if start_local.is_finite() and start_local.length() >= TRACE_RING_PICK else "plane"
-	for i in _trace_points.size():
-		var point := _trace_points[i]
-		var local := _design_to_path_local(_screen_to_ring_plane(point))
-		if not local.is_finite():
-			continue
-		note.trace_pts.append({
-			"x": local.x,
-			"y": local.y,
-			"db": 1.0 * float(i) / float(_trace_points.size() - 1),
-		})
-	_app.begin_edit()
-	chart.notes.append(note)
-	_app.finish_edit()
-	_app.select_note(note.id)
-	_trace_points.clear()
-
-
 func _append_path_point(screen: Vector2) -> void:
 	var design := _screen_to_ring_plane(screen)
 	if not design.is_finite():
@@ -1530,35 +1470,38 @@ func _create_note(type: String) -> void:
 		return
 	var beat: float = _app.snap_beat(get_time_beat())
 	var angle := fposmod(cursor_u * 360.0, 360.0)
-	var kind := type
-	var note := Note.new(kind, beat, angle, 60.0)
-	note.id = chart.next_note_id()
-	match type:
-		"hold":
-			note.end_beat = beat + 1.0
-			note.hold = true
-			note.hold_style = "straight"
-		"path":
-			note.end_beat = beat + 1.0
-			note.tail_angle = fposmod(angle + 60.0, 360.0)
-			note.tail_width = 45.0
-			note.tolerance = 0.24
-			note.samples_per_beat = 4.0
-			note.trace_pts = [
-				{"x": cos(deg_to_rad(angle)), "y": sin(deg_to_rad(angle)), "db": 0.0},
-				{"x": cos(deg_to_rad(note.tail_angle)) * 0.70, "y": sin(deg_to_rad(note.tail_angle)) * 0.70, "db": 1.0},
-			]
-		"anchor":
-			note.width = 0.0
-			note.anchor_pair = -1
-		"bell":
-			note.width = Note.BELL_MAX_WIDTH
-			note.center_u = cursor_u
-			note.radius = 26.0
+	var added: Array[Note] = []
+	if type == "anchor":
+		# Anchor 是双押配置：一次放两颗同拍反向的锚点。
+		added = chart.make_anchor_pair(beat, angle)
+	else:
+		var note := Note.new(type, beat, angle, 60.0)
+		note.id = chart.next_note_id()
+		match type:
+			"hold":
+				note.end_beat = beat + 1.0
+				note.hold = true
+				note.hold_style = "straight"
+			"path":
+				note.end_beat = beat + 1.0
+				note.tail_angle = fposmod(angle + 60.0, 360.0)
+				note.tail_width = 45.0
+				note.tolerance = 0.24
+				note.samples_per_beat = 4.0
+				note.trace_pts = [
+					{"x": cos(deg_to_rad(angle)), "y": sin(deg_to_rad(angle)), "db": 0.0},
+					{"x": cos(deg_to_rad(note.tail_angle)) * 0.70, "y": sin(deg_to_rad(note.tail_angle)) * 0.70, "db": 1.0},
+				]
+			"bell":
+				note.width = Note.BELL_MAX_WIDTH
+				note.center_u = cursor_u
+				note.radius = 26.0
+		added = [note]
 	_app.begin_edit()
-	chart.notes.append(note)
+	for item in added:
+		chart.notes.append(item)
 	_app.finish_edit()
-	_app.select_note(note.id)
+	_app.select_note(added[0].id)
 
 
 func _pick_control_point(screen: Vector2) -> Dictionary:
@@ -1608,8 +1551,6 @@ func _pick_note(screen: Vector2) -> int:
 	var best_distance := 20.0
 	for note in chart.notes:
 		match note.type:
-			"trace":
-				continue
 			"path":
 				var head := _flying_position(chart, note.angle, note.beat, t, pre)
 				var tail := _flying_position(chart, note.tail_angle, note.end_beat, t, pre)
@@ -1860,32 +1801,6 @@ func project_u(u: float, beat: float) -> Vector2:
 	if bool(data.get("gap", false)):
 		return Vector2(INF, INF)
 	return project_design(data.point)
-
-
-## Trace 工具的落点夹取：换算成“环半径 = 1.0”的局部坐标，把半径压在 1.0 以内再投回屏幕。
-## 所以能贴着外缘画（贴环 trace），也能在环内任意位置画（平面 trace）。
-func plane_clamp_screen(point: Vector2) -> Vector2:
-	var chart := get_chart()
-	if chart == null:
-		return point
-	var local := _design_to_path_local(_screen_to_ring_plane(point))
-	if not local.is_finite():
-		return point
-	if local.length() > 1.0:
-		local = local.normalized()
-	var screen := _path_local_screen(chart, local, get_time_beat())
-	if not _valid_point(screen):
-		return point
-	return screen
-
-
-## Trace 的屏幕折线（判定、拾取、绘制共用同一份几何）。
-## 环上与平面上只有“点怎么映射”不同，见 _trace_project。
-func trace_screen_points(note: Note, beat: float = 0.0, scale: float = 1.0) -> PackedVector2Array:
-	var chart := get_chart()
-	if chart == null or note.trace_pts.size() < 2:
-		return PackedVector2Array()
-	return _trace_path(chart, note, beat, clampf(scale, 0.0, 1.0))
 
 
 func draw_overlay(canvas: Control) -> void:
@@ -3297,7 +3212,7 @@ func _draw_notes(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 	# 试玩里音符留到判定出来为止（MISS 窗口最长 0.3s），编辑器预览仍只多留 0.3 拍。
 	var tail_beats := 2.0 if playtest_mode else 0.3
 	for note in _notes_around(chart, t, 0.1, 0.1):
-		if note.type in ["path", "hold", "trace", "seek"]:
+		if note.type in ["path", "hold", "seek"]:
 			continue
 		if t >= _spawn_beat(chart, note.beat) and t <= note.beat + tail_beats:
 			visible.append(note)
@@ -3311,9 +3226,16 @@ func _draw_notes(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 			"anchor":
 				var grow := _approach(chart, note.beat, t)
 				var p := _flying_position(chart, note.angle, note.beat, t, pre)
+				var ns := maxf(1.0, _note_scale())
 				if _valid_point(p):
-					canvas.draw_circle(p, 27.0 * grow, Color(UITheme.VIOLET.r, UITheme.VIOLET.g, UITheme.VIOLET.b, 0.14))
-				_draw_diamond(canvas, p, 16.0 * clampf(grow, 0.35, 1.0), UITheme.VIOLET)
+					canvas.draw_circle(p, 40.0 * ns * grow, Color(UITheme.VIOLET.r, UITheme.VIOLET.g, UITheme.VIOLET.b, 0.14))
+				# 多押线：两颗锚点之间一条细实线，随下落逐渐显现。
+				var partner := chart.anchor_partner(note)
+				if partner != null and note.id < partner.id:
+					var q := _flying_position(chart, partner.angle, partner.beat, t, pre)
+					if _valid_point(p) and _valid_point(q):
+						canvas.draw_line(p, q, Color(UITheme.VIOLET.r, UITheme.VIOLET.g, UITheme.VIOLET.b, 0.55 * grow), 2.0, true)
+				_draw_diamond(canvas, p, 24.0 * ns * clampf(grow, 0.35, 1.0), UITheme.VIOLET)
 			"bell":
 				_draw_bell(canvas, chart, note, t)
 
@@ -3424,231 +3346,6 @@ func _draw_seeks(canvas: Control, chart: Chart, t: float) -> void:
 			]), Color(color.r, color.g, color.b, 0.9 * fade))
 		var label := "SEEK IN" if inward else "SEEK OUT"
 		_draw_label(canvas, label, center + Vector2(radius + 12.0, -radius - 8.0), color)
-
-
-func cut_trace(note: Note, from_fraction: float, to_fraction: float) -> void:
-	var a := clampf(minf(from_fraction, to_fraction), 0.0, 1.0)
-	var b := clampf(maxf(from_fraction, to_fraction), 0.0, 1.0)
-	if b - a <= 0.004:
-		return
-	if not trace_cuts.has(note.id):
-		trace_cuts[note.id] = []
-	trace_cuts[note.id].append({"from": a, "to": b})
-	if _overlay != null:
-		_overlay.queue_redraw()
-
-
-func trace_fraction(note: Note, mouse: Vector2, beat: float) -> Dictionary:
-	var points := trace_screen_points(note, beat)
-	if points.size() < 2:
-		return {"fraction": 0.0, "distance": INF}
-	var best := INF
-	var best_fraction := 0.0
-	for i in points.size() - 1:
-		var a := points[i]
-		var b := points[i + 1]
-		var ab := b - a
-		var length_squared := ab.length_squared()
-		var t := 0.0 if length_squared <= 0.0001 else clampf((mouse - a).dot(ab) / length_squared, 0.0, 1.0)
-		var distance := mouse.distance_to(a + ab * t)
-		if distance < best:
-			best = distance
-			best_fraction = (float(i) + t) / float(points.size() - 1)
-	return {"fraction": best_fraction, "distance": best}
-
-
-## ── Trace：只有一个主体 ─────────────────────────────────────────────────
-## 环上和平面上是同一套绘制：导轨 + 门框 + 游标。
-## 唯一的差别是点怎么落到屏幕上（_trace_project），其余完全一致。
-## 形态参考 _work/design/trace_v3.html 的方案 02「闸门序列」。
-
-const TRACE_SAMPLES := 32              # 轨迹折线沿 db 均匀取样
-## Trace 工具起笔离外缘多近就当成“贴在环上写”（单位：环半径）。
-const TRACE_RING_PICK := 0.86
-const TRACE_RAIL_ALPHA := 0.40
-## 尺寸都以 note scale 为单位（环 330px 设计半径时 ×1.0），和 Tap/Hold/Path 同一套缩放。
-## 参考比例取自 trace_v3.html 方案 02：环半径 170px 时门框半长 11px、端臂 4.5px、游标 11px。
-const TRACE_RAIL_WIDTH := 1.4
-const TRACE_GATE_HALF := 21.0          # 门框半长
-const TRACE_GATE_CAP := 8.6            # 端臂半长
-const TRACE_GATE_STROKE := 3.0
-const TRACE_GATE_CAP_STROKE := 2.2
-const TRACE_GATE_COLLAPSE := 0.12      # 穿过之后合拢到这个比例
-const TRACE_CURSOR_SIZE := 20.0        # 方形游标边长
-const TRACE_TRAIL_BACK: Array[float] = [0.030, 0.018, 0.008]
-
-
-## trace 上相对拍 db 处的局部坐标（环半径 = 1.0）。
-func _trace_local(note: Note, db: float) -> Vector2:
-	return note.trace_local_at(db)
-
-
-## 唯一的空间映射：局部坐标 → 屏幕。
-## 平面 trace 保留点自己的半径；贴环的 trace 一律压到外缘半径 1.0。
-func _trace_project(chart: Chart, note: Note, local: Vector2, t: float, scale: float) -> Vector2:
-	if note.space != "plane":
-		var radius := local.length()
-		if radius <= 0.0001:
-			return project_design(Vector2.ZERO)
-		local = local / radius
-	return _path_local_screen(chart, local, t, scale)
-
-
-## 轨迹折线：判定、拾取、绘制共用。scale < 1 时整条轨迹从圆心长出来。
-func _trace_path(chart: Chart, note: Note, t: float, scale: float) -> PackedVector2Array:
-	var span := maxf(0.001, note.duration())
-	var points := PackedVector2Array()
-	for i in TRACE_SAMPLES + 1:
-		var db := span * float(i) / float(TRACE_SAMPLES)
-		var p := _trace_project(chart, note, _trace_local(note, db), t, scale)
-		if not _valid_point(p):
-			continue
-		points.append(p)
-	return points
-
-
-## 游标沿轨迹的进度：和试玩判定用同一套 wait + 星速。
-func _trace_progress(note: Note, t: float) -> float:
-	var total := maxf(0.001, note.duration())
-	var wait := clampf(note.wait_beat, 0.0, maxf(0.0, total - 0.001))
-	var move_total := maxf(0.001, total - wait)
-	return clampf((t - note.beat - wait) / move_total * star_speed, 0.0, 1.0)
-
-
-func _draw_trace(canvas: Control, chart: Chart, note: Note, t: float, grow: float) -> void:
-	if chart == null or note.trace_pts.size() < 2:
-		return
-	var span := maxf(0.001, note.duration())
-	var ns := _note_scale() * float(_skin()["scale"])
-	var base: Color = trace_color
-	var path := _trace_path(chart, note, t, grow)
-	if path.size() < 2:
-		return
-	var last := path.size() - 1
-	# 1) 导轨：轨迹本体。细线、不填充，和 Tap/Hold/Path 的“面”区分开。
-	for run in _trace_visible_runs(note, path):
-		if run.size() < 2:
-			continue
-		canvas.draw_polyline(run, Color(base.r, base.g, base.b, TRACE_RAIL_ALPHA), TRACE_RAIL_WIDTH * ns, false)
-	# 2) 门框：每拍一道（8 拍以上每 2 拍），沿轨迹切线立起来，穿过之后合拢。
-	var progress := _trace_progress(note, t)
-	var step := 1.0 if span <= 8.0 else 2.0
-	var count := maxi(1, int(floor(span / step)))
-	var gate_color := base.lightened(0.35)
-	var gate_half := TRACE_GATE_HALF * ns
-	var gate_cap := TRACE_GATE_CAP * ns
-	var gate_stroke := TRACE_GATE_STROKE * ns
-	var cap_stroke := TRACE_GATE_CAP_STROKE * ns
-	var cursor_side := TRACE_CURSOR_SIZE * ns
-	for i in count + 1:
-		var fraction := clampf(float(i) * step / span, 0.0, 1.0)
-		var index := clampi(int(round(fraction * float(last))), 0, last)
-		var pnt := path[index]
-		var unit := _trace_direction(path, index)
-		if unit == Vector2.ZERO:
-			continue
-		var normal := Vector2(-unit.y, unit.x)
-		if fraction <= progress:
-			var closed := gate_half * TRACE_GATE_COLLAPSE
-			canvas.draw_line(pnt - normal * closed, pnt + normal * closed, Color(base.r, base.g, base.b, 0.20), maxf(1.0, cap_stroke), false)
-			continue
-		var gate := Color(gate_color.r, gate_color.g, gate_color.b, 0.95)
-		var inner := pnt - normal * gate_half
-		var outer := pnt + normal * gate_half
-		canvas.draw_line(inner, outer, gate, gate_stroke, false)
-		var arm := unit * gate_cap
-		canvas.draw_line(inner - arm, inner + arm, gate, cap_stroke, false)
-		canvas.draw_line(outer - arm, outer + arm, gate, cap_stroke, false)
-	# 3) 游标 = 一个 note：预读时跟着轨迹一起从圆心长出来，落到起点后沿轨迹走。
-	var cursor := Vector2.INF
-	var cursor_angle := 0.0
-	var cursor_scale := 1.0
-	if t < note.beat:
-		cursor = path[0]
-		cursor_scale = clampf(grow, 0.0, 1.0)
-		var heading := _trace_direction(path, 0)
-		if heading != Vector2.ZERO:
-			cursor_angle = heading.angle()
-	else:
-		var head := clampi(int(round(progress * float(last))), 0, last)
-		cursor = path[head]
-		var heading := _trace_direction(path, head)
-		if heading != Vector2.ZERO:
-			cursor_angle = heading.angle()
-		for k in TRACE_TRAIL_BACK.size():
-			var back: float = TRACE_TRAIL_BACK[k]
-			var trail_index := clampi(int(round(clampf(progress - back, 0.0, 1.0) * float(last))), 0, last)
-			var trail_point := path[trail_index]
-			if not _valid_point(trail_point):
-				continue
-			var trail_side := cursor_side * (0.58 + back * 9.0)
-			_draw_trace_cursor(canvas, trail_point, cursor_angle, trail_side, Color(0.96, 0.98, 1.0, 0.24 - float(k) * 0.06), false, 0.0)
-	if not _valid_point(cursor):
-		return
-	_draw_trace_cursor(canvas, cursor, cursor_angle, cursor_side * (0.45 + 0.55 * cursor_scale), Color(0.97, 0.99, 1.0, 0.98), true, clampf(cursor_side * 0.10, 1.2, 2.4))
-	if show_debug:
-		_draw_label(canvas, "TRACE", cursor + Vector2(14, -14), UITheme.MINT)
-
-
-## 折线在第 index 个采样点的方向。轨迹末端常有重复点（数据里最后一段时间没有位移），
-## 所以先向前找第一个分得开的点，找不到再向后找。
-func _trace_direction(points: PackedVector2Array, index: int) -> Vector2:
-	var last := points.size() - 1
-	var origin := points[index]
-	var ahead := index
-	while ahead < last and points[ahead].distance_squared_to(origin) < 0.02:
-		ahead += 1
-	if points[ahead].distance_squared_to(origin) >= 0.02:
-		return (points[ahead] - origin).normalized()
-	var behind := index
-	while behind > 0 and points[behind].distance_squared_to(origin) < 0.02:
-		behind -= 1
-	if points[behind].distance_squared_to(origin) >= 0.02:
-		return (origin - points[behind]).normalized()
-	return Vector2.ZERO
-
-
-## 方形游标：跟着轨迹方向转，和星头、圆球区分开。
-func _draw_trace_cursor(canvas: Control, center: Vector2, angle: float, side: float, color: Color, outlined: bool, outline_width: float) -> void:
-	var half := maxf(0.5, side * 0.5)
-	var u := Vector2(cos(angle), sin(angle)) * half
-	var v := Vector2(-u.y, u.x)
-	var corners := PackedVector2Array([
-		center + u + v, center + u - v, center - u - v, center - u + v
-	])
-	canvas.draw_colored_polygon(corners, color)
-	if not outlined:
-		return
-	var loop := corners.duplicate()
-	loop.append(corners[0])
-	canvas.draw_polyline(loop, Color(0.05, 0.07, 0.12, 0.90), outline_width, false)
-
-
-func _trace_visible_runs(note: Note, points: PackedVector2Array) -> Array[PackedVector2Array]:
-	var result: Array[PackedVector2Array] = []
-	var run := PackedVector2Array()
-	for i in points.size():
-		if _trace_index_cut(note, i, points.size()):
-			if run.size() > 1:
-				result.append(run)
-			run = PackedVector2Array()
-			continue
-		run.append(points[i])
-	if run.size() > 1:
-		result.append(run)
-	return result
-
-
-func _trace_index_cut(note: Note, index: int, count: int) -> bool:
-	if not trace_cuts.has(note.id) or count <= 1:
-		return false
-	var fraction := float(index) / float(count - 1)
-	for cut in trace_cuts[note.id]:
-		if fraction >= float(cut.get("from", 0.0)) and fraction <= float(cut.get("to", 1.0)):
-			return true
-	return false
-
-
 
 
 func _draw_boundary_controls(canvas: Control, chart: Chart) -> void:
@@ -3820,7 +3517,14 @@ func add_note_pop(kind: String, note: Note, beat: float) -> void:
 		return
 	var ns := _note_scale()
 	var pop := {"kind": kind, "age": 0.0}
-	if kind == "path":
+	if kind == "anchor":
+		var point := note_head_screen(note, beat)
+		if not _valid_point(point):
+			return
+		pop["point"] = point
+		pop["color"] = UITheme.VIOLET
+		pop["base"] = 24.0 * maxf(1.0, _note_scale())
+	elif kind == "path":
 		# 只放大环上的星头标记；下落星星和尾环继续走原来的淡出。
 		var point := _path_screen_point(chart, note, 0.0, beat)
 		if not _valid_point(point):
@@ -3866,6 +3570,42 @@ func _draw_note_pops(canvas: Control) -> void:
 		var pop_scale := note_pop_scale(age)
 		var color: Color = pop["color"]
 		var flash := clampf(1.0 - age / 0.08, 0.0, 1.0)
+		if String(pop.get("kind", "")) == "anchor":
+			# 菱形放大淡出 + 四片小菱形向外濺开 + 白色十字光，观感对齐 Tap。
+			var point: Vector2 = pop["point"]
+			var s := float(pop["base"]) * pop_scale
+			var diamond := PackedVector2Array([
+				point + Vector2(0.0, -s),
+				point + Vector2(s, 0.0),
+				point + Vector2(0.0, s),
+				point + Vector2(-s, 0.0),
+				point + Vector2(0.0, -s),
+			])
+			canvas.draw_circle(point, s * 2.1, Color(color.r, color.g, color.b, 0.12 * alpha))
+			canvas.draw_circle(point, s * 1.4, Color(color.r, color.g, color.b, 0.16 * alpha))
+			var spread := s * (1.25 + 1.55 * t)
+			for i in 4:
+				var a := TAU * float(i) / 4.0 + PI * 0.25
+				var shard_center := point + Vector2(cos(a), sin(a)) * spread
+				var shard_r := s * 0.30 * (1.0 - 0.45 * t)
+				canvas.draw_colored_polygon(PackedVector2Array([
+					shard_center + Vector2(0.0, -shard_r),
+					shard_center + Vector2(shard_r, 0.0),
+					shard_center + Vector2(0.0, shard_r),
+					shard_center + Vector2(-shard_r, 0.0),
+				]), Color(color.r, color.g, color.b, 0.75 * alpha))
+			canvas.draw_polyline(diamond, Color(0, 0, 0, 0.60 * alpha), 5.0)
+			canvas.draw_polyline(diamond, Color(1, 1, 1, 0.92 * alpha), 3.0)
+			canvas.draw_colored_polygon(PackedVector2Array([diamond[0], diamond[1], diamond[2], diamond[3]]),
+				Color(color.r, color.g, color.b, 0.32 * alpha))
+			if flash > 0.0:
+				var arm := s * (1.5 + 0.9 * (1.0 - flash))
+				canvas.draw_line(point - Vector2(arm, 0.0), point + Vector2(arm, 0.0),
+					Color(1, 1, 1, 0.75 * flash), 2.5, true)
+				canvas.draw_line(point - Vector2(0.0, arm), point + Vector2(0.0, arm),
+					Color(1, 1, 1, 0.75 * flash), 2.5, true)
+				canvas.draw_circle(point, s * 0.9, Color(1, 1, 1, 0.30 * flash))
+			continue
 		if String(pop.get("kind", "")) == "path":
 			# 星头落点标记整体放大：软光 + 黑底 + 白环 + 颜色外弧。
 			var point: Vector2 = pop["point"]
@@ -3959,8 +3699,6 @@ func _draw_pulses(canvas: Control) -> void:
 		match kind:
 			"hold":
 				canvas.draw_line(point + Vector2(0, -92.0 * (1.0 - alpha)), point - Vector2(0, 20), Color(color.r, color.g, color.b, 0.35 * alpha), 12.0, false)
-			"trace":
-				canvas.draw_line(point - Vector2(52, 0), point + Vector2(52, 0), Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.5 * alpha), 9.0 * alpha + 1.0, false)
 		var label := String(pulse.get("label", ""))
 		# 试玩 HUD 只留档位；偏差明细在结算页和暂停页看。
 		var detail := "" if playtest_mode else String(pulse.get("detail", ""))

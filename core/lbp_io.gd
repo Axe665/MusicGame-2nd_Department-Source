@@ -164,13 +164,8 @@ static func _note_line(chart: Chart, note: Note) -> String:
 				_beat(chart, note.end_beat), _num(note.tail_angle), _num(note.tail_width),
 				suffix, options,
 			]
-		"trace":
-			var suffix := ",move=%s" % _num(note.move_px)
-			if note.trace_style != "wipe":
-				suffix += ",style=%s" % note.trace_style
-			if not note.trace_pts.is_empty():
-				suffix += ",pts=%s" % _trace_points(note.trace_pts)
-			return "trace,%s,%s%s%s" % [_beat(chart, note.beat), _beat(chart, note.end_beat), suffix, options]
+		"seek":
+			return "seek,%s,%d%s" % [_beat(chart, note.beat), 1 if note.seek_orien == 1 else 0, options]
 		"anchor":
 			var suffix := ""
 			if note.anchor_pair >= 0:

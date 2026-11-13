@@ -137,7 +137,6 @@ var _playtest_rate: SpinBox = null
 var _playtest_flow: SpinBox = null
 var _playtest_star: SpinBox = null
 var _playtest_cursor: SpinBox = null
-var _playtest_trace_color: ColorPickerButton = null
 var _playtest_offset: SpinBox = null
 var _playtest_latency: SpinBox = null
 var _playtest_dynamic: CheckBox = null
@@ -1516,7 +1515,6 @@ func _sync_from_app() -> void:
 	_preview.show_debug = _app.debug_overlay
 	_preview.flow_scale = _app.flow_scale
 	_preview.star_speed = _app.star_speed
-	_preview.trace_color = _app.trace_color
 	_preview.note_skin = _app.note_skin
 	_preview.hit_fx_style = _app.hit_fx_style
 	_preview.cursor_scale = _app.cursor_scale
@@ -2404,8 +2402,6 @@ func _open_playtest_setup(from_start: bool) -> void:
 	_playtest_star.value = _app.star_speed
 	if _playtest_cursor != null:
 		_playtest_cursor.value = _app.cursor_scale
-	if _playtest_trace_color != null:
-		_playtest_trace_color.color = _app.trace_color
 	if _playtest_offset != null:
 		_playtest_offset.value = float(_app.playtest_offset_ms)
 	if _playtest_dynamic != null:
@@ -2634,19 +2630,6 @@ func _build_playtest_dialog() -> void:
 	open_settings.tooltip_text = "统一设置窗口：画质、界面、音频与校准"
 	open_settings.pressed.connect(_open_settings)
 	box.add_child(open_settings)
-	var trace_row := HBoxContainer.new()
-	box.add_child(trace_row)
-	var trace_label := Label.new()
-	trace_label.text = "轨迹颜色"
-	trace_label.custom_minimum_size = Vector2(64, 0)
-	UITheme.style_mono(trace_label, 12, UITheme.MUTED)
-	trace_row.add_child(trace_label)
-	_playtest_trace_color = ColorPickerButton.new()
-	_playtest_trace_color.edit_alpha = false
-	_playtest_trace_color.custom_minimum_size = Vector2(0, 26)
-	_playtest_trace_color.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	trace_row.add_child(_playtest_trace_color)
-	trace_row.visible = false
 	# 底部只留两种开始方式：继续游玩（播放头）、从头开始玩；
 	# 试玩中从暂停菜单打开时只剩「完成」。
 	_playtest_start_button = _playtest_dialog.add_button("从头开始玩", true, "start_from_beginning")
@@ -2706,13 +2689,10 @@ func _commit_playtest_settings() -> void:
 		_app.playtest_auto = _playtest_auto.button_pressed
 	if _playtest_mouse != null:
 		_app.mouse_keys = _playtest_mouse.button_pressed
-	if _playtest_trace_color != null:
-		_app.trace_color = _playtest_trace_color.color
 	_app.save_settings()
 	_preview.flow_scale = _app.flow_scale
 	_preview.star_speed = _app.star_speed
 	_preview.playback_rate = _rate
-	_preview.trace_color = _app.trace_color
 	_preview.cursor_scale = _app.cursor_scale
 	_preview.request_redraw()
 	# 试玩中从暂停菜单改设置：直接应用到正在跑的预览。
@@ -2721,7 +2701,6 @@ func _commit_playtest_settings() -> void:
 		_playtest.next_playback_rate = _rate
 		_playtest._preview.flow_scale = _app.flow_scale
 		_playtest._preview.star_speed = _app.star_speed
-		_playtest._preview.trace_color = _app.trace_color
 		_playtest._preview.cursor_scale = _app.cursor_scale
 		_playtest._preview.request_redraw()
 	if _editor_flow_spin != null:

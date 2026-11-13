@@ -26,6 +26,37 @@ var events: Array[BoundaryEvent] = []
 var view_states: Array[ViewState] = []
 var regions: Array[Region] = []
 var notes: Array[Note] = []
+
+
+## Anchor 的配对：同一 pairId、同一拍即可，角度自由。
+func anchor_partner(note: Note) -> Note:
+	if note.type != "anchor" or note.pair_id.is_empty():
+		return null
+	for other in notes:
+		if other.id == note.id or other.type != "anchor":
+			continue
+		if other.pair_id != note.pair_id:
+			continue
+		if absf(other.beat - note.beat) > 0.0001:
+			continue
+		return other
+	return null
+
+
+## 放一颗 Anchor 时同时生成同拍反向的另一颗，返回 [a, b]。
+func make_anchor_pair(beat: float, angle: float) -> Array[Note]:
+	var a := Note.new("anchor", beat, fposmod(angle, 360.0), 0.0)
+	a.id = next_note_id()
+	a.anchor_pair = 0
+	a.pair_id = "P%d" % a.id
+	var b := Note.new("anchor", beat, fposmod(angle + 180.0, 360.0), 0.0)
+	b.id = next_note_id()
+	b.anchor_pair = 0
+	b.pair_id = a.pair_id
+	var out: Array[Note] = [a, b]
+	return out
+
+
 var editor: Dictionary = {}
 
 ## 配色分组：每组 {name, tap, hold, path}，颜色存 "#rrggbb" 字符串。

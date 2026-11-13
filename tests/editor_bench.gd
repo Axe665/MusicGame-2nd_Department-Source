@@ -45,9 +45,9 @@ func _ready() -> void:
 	var preview_ms := float(preview.total_us) / float(maxi(1, preview.draw_count)) / 1000.0
 	print("BENCH preview_overlay_ms=%.2f frames=%d" % [preview_ms, preview.draw_count])
 	print("BENCH preview_sections_ms ", preview.summary())
-	var counts := {"path": 0, "trace": 0, "hold": 0, "tap": 0}
+	var counts := {"path": 0, "hold": 0, "tap": 0}
 	for note in chart.notes:
-		if note.type in ["path", "trace", "hold"]:
+		if note.type in ["path", "hold"]:
 			if 400.0 >= note.beat - 2.0 and 400.0 <= note.end_beat + 0.5:
 				counts[note.type] += 1
 		elif absf(note.beat - 400.0) <= 2.0:
@@ -112,7 +112,7 @@ func _make_chart(count: int, segments: int) -> Chart:
 	chart.default_shape_id = "S0"
 	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4), TimingPoint.new(1000.0, 180.0, 4)]
 	chart.timing.sort_points()
-	var types: Array[String] = ["tap", "hold", "path", "trace", "anchor", "bell"]
+	var types: Array[String] = ["tap", "hold", "path", "anchor", "bell"]
 	for i in count:
 		var type := types[i % types.size()]
 		var beat := float(i) * 0.2
@@ -130,12 +130,6 @@ func _make_chart(count: int, segments: int) -> Chart:
 				{"x": cos(deg_to_rad(angle + 60.0)) * 0.7, "y": sin(deg_to_rad(angle + 60.0)) * 0.7, "db": 1.0},
 				{"x": cos(deg_to_rad(angle + 90.0)), "y": sin(deg_to_rad(angle + 90.0)), "db": 2.0},
 			]
-		elif type == "trace":
-			note.end_beat = beat + 2.0
-			note.trace_style = "slider"
-			for k in 6:
-				var a := deg_to_rad(angle + float(k) * 8.0)
-				note.trace_pts.append({"x": cos(a), "y": sin(a), "db": float(k)})
 		elif type == "bell":
 			note.center_u = angle / 360.0
 			note.radius = 40.0
