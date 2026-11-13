@@ -1863,6 +1863,8 @@ func _judge_anchor_pairs(ms: float, beat: float) -> void:
 			_preview.set_note_state(partner_id, "hit")
 			_preview.add_note_pop("anchor", owner_note, beat)
 			_preview.add_note_pop("anchor", partner_note, beat)
+			# 两颗都算完整命中：连击 +2、准确率两个样本、档位计数 +2。
+			_register_hit(tier)
 			_register_hit(tier)
 			# 判定字放在玩家实际靠近的那颗锚点上。
 			var aim_angle := owner_note.angle

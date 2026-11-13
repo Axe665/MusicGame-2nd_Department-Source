@@ -3884,7 +3884,7 @@ func _draw_note_pops(canvas: Control) -> void:
 		var color: Color = pop["color"]
 		var flash := clampf(1.0 - age / 0.08, 0.0, 1.0)
 		if String(pop.get("kind", "")) == "anchor":
-			# 菱形整体放大淡出：命中时和 Tap 的条带一样有“弹一下”的反馈。
+			# 菱形放大淡出 + 四片小菱形向外濺开 + 白色十字光，观感对齐 Tap。
 			var point: Vector2 = pop["point"]
 			var s := float(pop["base"]) * pop_scale
 			var diamond := PackedVector2Array([
@@ -3894,13 +3894,30 @@ func _draw_note_pops(canvas: Control) -> void:
 				point + Vector2(-s, 0.0),
 				point + Vector2(0.0, -s),
 			])
-			canvas.draw_circle(point, s * 1.8, Color(color.r, color.g, color.b, 0.14 * alpha))
+			canvas.draw_circle(point, s * 2.1, Color(color.r, color.g, color.b, 0.12 * alpha))
+			canvas.draw_circle(point, s * 1.4, Color(color.r, color.g, color.b, 0.16 * alpha))
+			var spread := s * (1.25 + 1.55 * t)
+			for i in 4:
+				var a := TAU * float(i) / 4.0 + PI * 0.25
+				var shard_center := point + Vector2(cos(a), sin(a)) * spread
+				var shard_r := s * 0.30 * (1.0 - 0.45 * t)
+				canvas.draw_colored_polygon(PackedVector2Array([
+					shard_center + Vector2(0.0, -shard_r),
+					shard_center + Vector2(shard_r, 0.0),
+					shard_center + Vector2(0.0, shard_r),
+					shard_center + Vector2(-shard_r, 0.0),
+				]), Color(color.r, color.g, color.b, 0.75 * alpha))
 			canvas.draw_polyline(diamond, Color(0, 0, 0, 0.60 * alpha), 5.0)
 			canvas.draw_polyline(diamond, Color(1, 1, 1, 0.92 * alpha), 3.0)
 			canvas.draw_colored_polygon(PackedVector2Array([diamond[0], diamond[1], diamond[2], diamond[3]]),
 				Color(color.r, color.g, color.b, 0.32 * alpha))
 			if flash > 0.0:
-				canvas.draw_circle(point, s * 0.9, Color(1, 1, 1, 0.35 * flash))
+				var arm := s * (1.5 + 0.9 * (1.0 - flash))
+				canvas.draw_line(point - Vector2(arm, 0.0), point + Vector2(arm, 0.0),
+					Color(1, 1, 1, 0.75 * flash), 2.5, true)
+				canvas.draw_line(point - Vector2(0.0, arm), point + Vector2(0.0, arm),
+					Color(1, 1, 1, 0.75 * flash), 2.5, true)
+				canvas.draw_circle(point, s * 0.9, Color(1, 1, 1, 0.30 * flash))
 			continue
 		if String(pop.get("kind", "")) == "path":
 			# 星头落点标记整体放大：软光 + 黑底 + 白环 + 颜色外弧。

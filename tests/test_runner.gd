@@ -940,6 +940,42 @@ func test_press_assignment() -> bool:
 	live._assign_presses(ms, 4.0)
 	ok(live._press_assignments.size() == 1, "one press cannot be spent twice in a frame")
 	live.free()
+	# 双押 Anchor：命中连击 +2、两个准确率样本；失败整对只记 1 MISS。
+	var anchor_chart := DemoChart.make_empty({"bpm": 120.0})
+	anchor_chart.notes.clear()
+	var anchor_a := Note.new("anchor", 4.0, 0.0, 0.0)
+	anchor_a.id = 1
+	anchor_a.pair_id = "P"
+	anchor_a.anchor_pair = 0
+	var anchor_b := Note.new("anchor", 4.0, 180.0, 0.0)
+	anchor_b.id = 2
+	anchor_b.pair_id = "P"
+	anchor_b.anchor_pair = 0
+	anchor_chart.notes = [anchor_a, anchor_b]
+	var pair_run := Playtest.new()
+	pair_run._preview = preview
+	pair_run.chart = anchor_chart
+	pair_run._init_states()
+	var pair_ms := float(pair_run._states[1]["target_ms"])
+	var point_a := preview.note_head_screen(anchor_a, 4.0)
+	var point_b := preview.note_head_screen(anchor_b, 4.0)
+	pair_run._key_presses = [
+		{"time": pair_ms, "lo": pair_ms, "hi": pair_ms, "mouse": point_a, "key": 65},
+		{"time": pair_ms, "lo": pair_ms, "hi": pair_ms, "mouse": point_b, "key": 66},
+	]
+	pair_run._judge_anchor_pairs(pair_ms, 4.0)
+	eq(pair_run._combo, 2, "an anchor pair adds two combo")
+	eq(pair_run._hit_count, 2, "both anchors count as hits")
+	eq(pair_run._judged_total, 2, "both anchors count for accuracy")
+	pair_run.free()
+	var miss_run := Playtest.new()
+	miss_run._preview = preview
+	miss_run.chart = anchor_chart
+	miss_run._init_states()
+	miss_run._judge_anchor_pairs(pair_ms + Playtest.HIT_WINDOW_MS + 20.0, 4.0)
+	eq(miss_run._miss_count, 1, "a failed pair counts one miss")
+	eq(miss_run._judged_total, 1, "a failed pair counts one accuracy sample")
+	miss_run.free()
 	preview.free()
 	return true
 
