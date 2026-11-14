@@ -139,6 +139,7 @@ var _import_progress_label: Label = null
 var _import_progress_bar: ProgressBar = null
 var _new_dialog: NewChartDialog
 var _playtest: Playtest
+## 导出视频的子进程：放完自动退出。
 ## 试玩前的设置窗口：倍速 / 流速 / 星速 / 星显。
 var _playtest_dialog: AcceptDialog = null
 var _playtest_rate: SpinBox = null
@@ -219,6 +220,9 @@ func _ready() -> void:
 	set_process(true)
 	if "--bench" in OS.get_cmdline_user_args():
 		call_deferred("_run_bench")
+	for arg in OS.get_cmdline_user_args():
+		if arg.begins_with("--replay="):
+			call_deferred("_open_replay_file", arg.get_slice("=", 1))
 
 
 ## 无人值守性能基准：载入 Apollo 谱，从扫圈段自动打 25 秒后退出。
@@ -2836,6 +2840,24 @@ func _commit_playtest_settings() -> void:
 	if _editor_flow_spin != null:
 		_editor_flow_spin.value = _app.flow_scale
 
+## 命令行打开一个 .tmkrpl：载入它记的谱面，然后直接进回放。
+func _open_replay_file(path: String) -> void:
+	var data := Replay.load_from(path)
+	if data == null:
+		print("[replay] 读不出回放：", path)
+		return
+	var chart_path := data.chart_path
+	if chart_path.is_empty() or not FileAccess.file_exists(chart_path):
+		print("[replay] 找不到回放对应的谱面：", chart_path)
+		return
+	var chart: Chart = ChartIO.load_chart(chart_path)
+	if chart == null:
+		print("[replay] 谱面读取失败：", ChartIO.last_error)
+		return
+	_app.set_chart(chart, chart_path, false)
+	_sync_from_app()
+	_start_replay(data)
+
 
 func _start_playtest(from_start: bool) -> void:
 	if _app == null or _app.chart == null or _playtest != null:
@@ -2861,6 +2883,30 @@ func _start_playtest(from_start: bool) -> void:
 	_playtest.exit_requested.connect(_end_playtest)
 	_playtest.settings_requested.connect(_open_settings)
 	_playtest.playtest_settings_requested.connect(func() -> void: _open_playtest_setup(false))
+	_playtest.replay_requested.connect(func(data: Replay) -> void: _start_replay.call_deferred(data))
+
+
+## 结算页点「回放本局」：按同一份谱面重开一局，输入全部来自录制。
+func _start_replay(data: Replay) -> void:
+	if data == null or _app == null or _app.chart == null:
+		return
+	if _playtest != null:
+		_end_playtest()
+	var editor_root := get_node("Root") as Control
+	editor_root.hide()
+	editor_root.process_mode = Node.PROCESS_MODE_DISABLED
+	_preview.set_suspended(true)
+	if not data.chart_hash.is_empty() and data.chart_hash != Replay.hash_chart(_app.chart):
+		_show_toast("谱面在录制之后被改过，回放结果可能和当时不同", "error")
+	_playtest = Playtest.new()
+	_playtest.replay_source = data
+	add_child(_playtest)
+	_playtest.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_playtest.setup(_app.chart, data.start_beat, _app.chart_path)
+	_playtest.exit_requested.connect(_end_playtest)
+	_playtest.settings_requested.connect(_open_settings)
+	_playtest.playtest_settings_requested.connect(func() -> void: _open_playtest_setup(false))
+	_playtest.replay_requested.connect(func(next: Replay) -> void: _start_replay.call_deferred(next))
 
 
 func _end_playtest() -> void:

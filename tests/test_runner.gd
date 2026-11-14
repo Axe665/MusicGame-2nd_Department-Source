@@ -129,6 +129,11 @@ func _initialize() -> void:
 		"test_chart_offset_for_bias",
 		"test_audio_buffer_override",
 		"test_bell_center_merges",
+		"test_replay_round_trip",
+		"test_replay_dispatch",
+		"test_replay_scrub",
+		"test_replay_file_name",
+		"test_playtest_ui_builds",
 	]
 	for test_name in tests:
 		if call(test_name) != true:
@@ -3514,6 +3519,140 @@ func test_judge_scatter() -> bool:
 	eq(chart.hits.size(), 0, "clearing the plot works")
 	chart.free()
 	return true
+
+func test_replay_round_trip() -> bool:
+	var replay := Replay.new()
+	replay.chart_path = "user://demo.json"
+	replay.chart_hash = "abc123"
+	replay.start_beat = 4.0
+	replay.settings = {"offset_ms": 12.5, "flow": 1.0}
+	replay.add_move(100.0, Vector2(10.5, 20.25))
+	replay.add_press(120.0, 116.0, 124.0, 65, Vector2(1.0, 2.0), 33.5, 0.25, true)
+	replay.add_release(160.0, 65)
+	replay.add_seek(200.0, 196.0, 204.0, 1)
+	replay.add_offset(240.0, -8.5)
+	replay.result = {"hit": 3, "tiers": {"PERFECT": 3}}
+	eq(replay.event_count(), 5, "replay records five events")
+	eq(String(replay.events[1]["k"]), "press", "replay keeps event kind")
+	near(float(replay.events[1]["t"]), 120.0, 0.001, "replay keeps press time")
+
+	var data := replay.to_dict()
+	eq(String(data["format"]), Replay.FORMAT, "replay dict carries format tag")
+	var loaded := Replay.from_dict(data)
+	ok(loaded != null, "replay dict loads")
+	if loaded == null:
+		return true
+	eq(loaded.event_count(), 5, "replay events survive round trip")
+	eq(loaded.chart_hash, "abc123", "replay keeps chart hash")
+	near(float(loaded.events[0]["x"]), 10.5, 0.01, "replay keeps move x")
+	eq(bool(loaded.events[1]["v"]), true, "replay keeps press validity")
+	eq(int(loaded.events[3]["dir"]), 1, "replay keeps seek direction")
+	near(float(loaded.events[4]["v"]), -8.5, 0.01, "replay keeps offset value")
+	eq(int(loaded.result["hit"]), 3, "replay keeps result summary")
+
+	# 格式/版本不符时拒绝加载，别把坏文件当成回放播出去。
+	var bad_format := data.duplicate(true)
+	bad_format["format"] = "something-else"
+	ok(Replay.from_dict(bad_format) == null, "replay rejects foreign format")
+	var bad_version := data.duplicate(true)
+	bad_version["version"] = 99
+	ok(Replay.from_dict(bad_version) == null, "replay rejects newer version")
+
+	var path := "user://test_replay_roundtrip.tmkrpl"
+	eq(replay.save_to(path), OK, "replay saves as gzip")
+	var from_file := Replay.load_from(path)
+	ok(from_file != null, "replay loads from gzip")
+	if from_file != null:
+		eq(from_file.event_count(), 5, "replay file keeps events")
+		near(float(from_file.events[1]["lo"]), 116.0, 0.01, "replay file keeps press window")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+
+	# 谱面哈希：同一张谱面稳定，改一个音符就变。
+	var chart := DemoChart.make_demo()
+	var hash_a := Replay.hash_chart(chart)
+	ok(not hash_a.is_empty(), "chart hash is not empty")
+	eq(Replay.hash_chart(chart), hash_a, "chart hash is stable")
+	if not chart.notes.is_empty():
+		chart.notes[0].beat += 0.5
+		ok(Replay.hash_chart(chart) != hash_a, "chart hash changes after edit")
+	return true
+
+
+## 回放分派：事件按时间喂回判定队列，按键带着录制时的光标和区间。
+func test_replay_dispatch() -> bool:
+	var run := Playtest.new()
+	var replay := Replay.new()
+	replay.add_move(100.0, Vector2(5.0, 6.0))
+	replay.add_press(120.0, 116.0, 124.0, 65, Vector2(7.0, 8.0), 45.0, 0.5, true)
+	replay.add_release(150.0, 65)
+	replay.add_seek(160.0, 156.0, 164.0, 1)
+	replay.add_offset(170.0, -12.0)
+	run._replay_events = replay.events
+	run._dispatch_replay(110.0)
+	eq(run._path_motion_samples.size(), 1, "replay applies move events")
+	eq(run._key_presses.size(), 0, "replay waits for future events")
+	run._dispatch_replay(165.0)
+	eq(run._key_presses.size(), 1, "replay applies press events")
+	near(float(run._key_presses[0]["time"]), 120.0, 0.001, "replayed press keeps its time")
+	eq(run._key_presses[0]["mouse"], Vector2(7.0, 8.0), "replayed press keeps its cursor")
+	near(float(run._key_presses[0]["lo"]), 116.0, 0.001, "replayed press keeps its frame window")
+	ok(not run._keys_held.has(65), "replayed release erases the held key")
+	eq(run._seek_presses.size(), 1, "replay applies seek events")
+	run._dispatch_replay(200.0)
+	near(run._offset_override, -12.0, 0.001, "replay applies offset changes")
+	near(run._active_offset(), -12.0, 0.001, "recorded offset beats the live setting")
+	eq(run._replay_index, 5, "every event is dispatched once")
+	run._dispatch_replay(500.0)
+	eq(run._replay_index, 5, "events are not dispatched twice")
+	run.free()
+	return true
+
+
+## 进度条比例：起点/终点要夹住，中间线性。
+func test_replay_scrub() -> bool:
+	var run := Playtest.new()
+	run._replay_start_ms = 1000.0
+	run._replay_total_ms = 5000.0
+	run._replay_ms = 3000.0
+	near(run._replay_fraction(), 0.5, 0.001, "scrub maps the middle of the song")
+	run._replay_ms = 1000.0
+	near(run._replay_fraction(), 0.0, 0.001, "scrub clamps at the start")
+	run._replay_ms = 9000.0
+	near(run._replay_fraction(), 1.0, 0.001, "scrub clamps past the end")
+	run._replay_start_ms = 0.0
+	run._replay_total_ms = 0.0
+	run._replay_ms = 0.0
+	near(run._replay_fraction(), 0.0, 0.001, "empty span does not divide by zero")
+	run.free()
+	return true
+
+
+## 回放文件名：Windows 非法字符要替换，空名字要有兜底。
+func test_replay_file_name() -> bool:
+	var run := Playtest.new()
+	eq(run._sanitize_file_name("a/b:c*?"), "a_b_c__", "file name replaces illegal characters")
+	eq(run._sanitize_file_name("  "), "replay", "blank file name falls back")
+	eq(run._sanitize_file_name("Sakura_紫"), "Sakura_紫", "normal names are kept")
+	run.free()
+	return true
+
+
+## 试玩界面构建冒烟测试：控件属性名写错时 _build_ui 会中途报错，
+## 这种错误单测和空跑都抓不到，只有真开一局试玩才会暴露。
+func test_playtest_ui_builds() -> bool:
+	var run := Playtest.new()
+	run._build_ui()
+	eq(run._replay_button.text, "回放本局", "results screen has a replay button")
+	eq(run._export_button.text, "导出视频", "results screen has an export button")
+	eq(run._export_button.get_parent() == run._replay_button.get_parent(), true,
+		"export button sits in the same row as the replay button")
+	eq(run._replay_bar != null and not run._replay_bar.visible, true, "replay bar is built but hidden")
+	eq(run._replay_exit_button != null and run._replay_exit_button.get_parent() == run._replay_bar.get_child(0),
+		true, "replay bar ends with an exit button")
+	eq(run._results != null, true, "results panel is built")
+	run.free()
+	return true
+
 
 ## 鼠标左右键当成两个独立键位，且不会和真实 Key 枚举相撞。
 func test_mouse_button_input() -> bool:
