@@ -74,6 +74,7 @@ func _initialize() -> void:
 		"test_trace_distance",
 		"test_sfx_assets",
 		"test_simai_import",
+		"test_simai_button_layout",
 		"test_osu_std_sentakki_rules",
 		"test_simai_directive_slot",
 		"test_simai_bend_shapes",
@@ -2124,6 +2125,7 @@ func test_simai_import() -> bool:
 	if chart == null:
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
 		return true
+	eq(String(chart.metadata.get("version", "")), "EASY 5", "simai chart uses difficulty name")
 	near(chart.offset_ms, -1000.0, 0.001, "simai first -> offset")
 	eq(chart.notes.size(), 4, "simai keeps four notes")
 	var types: Array[String] = []
@@ -2133,7 +2135,7 @@ func test_simai_import() -> bool:
 	eq(chart.notes[1].hold_style, "straight", "simai hold imports straight")
 	eq(Validator.errors(Validator.validate(chart)).size(), 0, "simai import is playable without double-hand conflicts")
 	if chart.notes.size() >= 3:
-		near(chart.notes[0].angle, 90.0, 0.001, "simai button 1 is top")
+		near(chart.notes[0].angle, 45.0, 0.001, "simai button 1 is top-right")
 		near(chart.notes[2].wait_beat, 1.0, 0.001, "maimai star waits one beat after the head tap")
 		near(chart.notes[2].end_beat, 4.0, 0.001, "slide tail is head + 1 beat wait + slide length")
 		var trace: Array = chart.notes[2].trace_pts
@@ -2143,8 +2145,34 @@ func test_simai_import() -> bool:
 			var held := Vector2(float(trace[1]["x"]), float(trace[1]["y"]))
 			near(float(trace[1]["db"]), 1.0, 0.001, "trace keeps the star at the head for the wait beat")
 			ok(held.distance_to(head) < 0.001, "star is parked during the wait beat")
-		near(chart.notes[2].tail_angle, 270.0, 0.001, "simai slide tail button 5")
+		near(chart.notes[2].tail_angle, 225.0, 0.001, "simai slide tail button 5")
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	return true
+
+
+func test_simai_button_layout() -> bool:
+	eq(SimaiSlide.button_angle(1), 45.0, "maimai button 1 is top-right")
+	eq(SimaiSlide.button_angle(2), 0.0, "maimai button 2 is right")
+	eq(SimaiSlide.button_angle(5), 225.0, "maimai button 5 is bottom-left")
+	eq(SimaiSlide.button_angle(8), 90.0, "maimai button 8 is top")
+	eq(SimaiSlide.button_angle(9), 45.0, "button index wraps")
+	var chart := _import_inote("(120){4}\n1,2,5,8,\n")
+	ok(chart != null, "button layout chart imports")
+	if chart != null:
+		var angles: Array[float] = []
+		for note in chart.notes:
+			if note.type == "tap":
+				angles.append(note.angle)
+		eq(angles.size(), 4, "four taps import")
+		if angles.size() == 4:
+			near(angles[0], 45.0, 0.01, "button 1 maps to top-right")
+			near(angles[1], 0.0, 0.01, "button 2 maps to right")
+			near(angles[2], 225.0, 0.01, "button 5 maps to bottom-left")
+			near(angles[3], 90.0, 0.01, "button 8 maps to top")
+	var touch := _import_inote("(120){4}\nD1,\n")
+	ok(touch != null, "D1 chart imports")
+	if touch != null and not touch.notes.is_empty():
+		near(touch.notes[0].angle, 67.5, 0.01, "D1 is counterclockwise from button 1")
 	return true
 
 
@@ -2853,7 +2881,7 @@ func test_simai_same_head_and_chain() -> bool:
 				paths.append(note)
 		eq(paths.size(), 1, "same-head group keeps one track")
 		if paths.size() == 1:
-			near(paths[0].tail_angle, 315.0, 0.01, "same-head keeps the tail nearest the next note")
+			near(paths[0].tail_angle, 270.0, 0.01, "same-head keeps the tail nearest the next note")
 	var chain := _import_inote("(120){4}\n1-4q7-2[4:2],\n")
 	ok(chain != null, "chain chart imports")
 	if chain != null:
@@ -2863,7 +2891,7 @@ func test_simai_same_head_and_chain() -> bool:
 				paths.append(note)
 		eq(paths.size(), 1, "chain is one path")
 		if paths.size() == 1:
-			near(paths[0].tail_angle, 45.0, 0.01, "chain ends on its final button")
+			near(paths[0].tail_angle, 0.0, 0.01, "chain ends on its final button")
 			near(paths[0].end_beat, 3.0, 0.01, "chain uses the final duration")
 	return true
 
@@ -2884,7 +2912,7 @@ func test_simai_touch_layers() -> bool:
 		near(bells[2].bell_radius, 1.0, 0.001, "C also joins the outer ring")
 		near(bells[3].bell_radius, 1.0, 0.001, "D is on the outer gap")
 		near(bells[4].bell_radius, 1.0, 0.001, "E joins the outer ring for mouse sweeps")
-		near(bells[0].angle, 90.0, 0.01, "A1 sits on button 1")
+		near(bells[0].angle, 45.0, 0.01, "A1 sits on button 1")
 		near(bells[3].angle, 67.5, 0.01, "D1 sits between button 1 and 2")
 		var restored := Note.from_dict(bells[2].to_dict())
 		near(restored.bell_radius, 1.0, 0.001, "legacy center bells roundtrip as outer ring bells")
@@ -3256,18 +3284,38 @@ func test_chart_browser_helpers() -> bool:
 
 	var levels := ChartBrowser.maj_levels(["", "5", "7+", "", "12", "13+", ""])
 	eq(levels.size(), 4, "majdata levels skip empty slots")
-	eq(int(levels[0].get("index", 0)), 1, "majdata keeps the difficulty index")
+	eq(int(levels[0].get("index", 0)), 2, "majdata normalizes 0-based API index")
 	eq(String(levels[3].get("level", "")), "13+", "majdata keeps Re:Master")
+	eq(int(levels[3].get("index", 0)), 6, "majdata Re:Master is index 6")
+	var all_levels := ChartBrowser.maj_levels(["1", "5", "7+", "", "12", "13+", "14?"])
+	eq(all_levels.size(), 6, "majdata keeps EASY and Utage")
+	eq(int(all_levels[0].get("index", 0)), 1, "majdata EASY is index 1")
+	eq(int(all_levels[5].get("index", 0)), 7, "majdata Utage is index 7")
 
 	var path := "user://test_maidata_levels.txt"
 	var file := FileAccess.open(path, FileAccess.WRITE)
-	file.store_string("&title=T\n&artist=A\n&lv_1=4\n&des_1=x\n&inote_1=(120){1},1,\n&lv_4=12+\n&des_4=y\n&inote_4=(120){1},2,\n")
+	file.store_string("&title=T\n&artist=A\n&lv_1=4\n&des_1=x\n&inote_1=(120){1},1,\n&lv_4=12+\n&des_4=y\n&inote_4=(120){1},2,\n&lv_6=13.2\n&inote_6=(120){1},3,\n&lv_7=12?\n&inote_7=(120){1},4,\n")
 	file.close()
 	var parsed := ChartBrowser.levels_from_maidata(path)
-	eq(parsed.size(), 2, "maidata parses only real difficulties")
+	eq(parsed.size(), 4, "maidata parses all seven difficulty slots")
 	eq(String(parsed[0].get("level", "")), "4", "maidata level is read")
 	eq(String(parsed[1].get("creator", "")), "y", "maidata designer is read")
+	eq(int(parsed[2].get("index", 0)), 6, "maidata keeps Re:MAS")
+	eq(int(parsed[3].get("index", 0)), 7, "maidata keeps Utage")
+	eq(String(parsed[3].get("level", "")), "12?", "maidata keeps unconfirmed level")
+	file = FileAccess.open(path, FileAccess.WRITE)
+	file.store_string("&title=T\n&lv_2=5\n&inote_2=\n&lv_3=7\n&inote_3=(120){1},1,\n")
+	file.close()
+	eq(ChartBrowser.levels_from_maidata(path).size(), 1, "maidata skips empty inote")
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+
+	eq(SimaiIO.difficulty_name(1), "EASY", "difficulty 1 is EASY")
+	eq(SimaiIO.difficulty_name(6), "Re:MAS", "difficulty 6 is Re:MAS")
+	eq(SimaiIO.difficulty_name(7), "宴", "difficulty 7 is Utage")
+	eq(SimaiIO.difficulty_label(2, "6.0"), "BASIC 6.0", "difficulty label includes tier")
+	eq(SimaiIO.difficulty_label(7, "?"), "宴 ?", "difficulty label keeps unknown level")
+	eq(ChartBrowser.favorites_from_json({"adx:11": {}}).size(), 0, "old favorites are cleared")
+	eq(ChartBrowser.favorites_from_json({"version": 2, "items": {"adx:11": {}}}).size(), 1, "new favorites load")
 
 	var spec := {
 		"files": [
