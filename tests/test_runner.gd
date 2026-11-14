@@ -133,6 +133,8 @@ func _initialize() -> void:
 		"test_osu_star_color",
 		"test_osu_filters",
 		"test_osu_difficulty_star_sort",
+		"test_osu_star_hints_json",
+		"test_osu_beatmap_set_id",
 		"test_import_label_stars",
 		"test_osu_pill_rows",
 		"test_audio_clock",
@@ -3722,6 +3724,44 @@ func test_osu_star_color() -> bool:
 	ok(green != yellow and yellow != orange and orange != red and red != violet, "each bucket has its own colour")
 	ok(violet == OsuBrowser.star_color(9.9), "purple bucket is stable")
 	return true
+## 镜像站返回的两种 JSON 都要能解析成「难度名 → 星数」。
+func test_osu_star_hints_json() -> bool:
+	# sayobot：data.bid_data[].version / star
+	var sayobot: Variant = JSON.parse_string('{"status":0,"data":{"bid_data":[{"version":"Insane","star":4.7},{"version":"Hard","star":2.5}]}}')
+	var from_sayobot := OsuIO.hints_from_json(sayobot)
+	eq(from_sayobot.size(), 2, "sayobot yields two difficulties")
+	ok(absf(float(from_sayobot.get("Insane", 0.0)) - 4.7) < 0.001, "sayobot star value")
+	ok(absf(float(from_sayobot.get("Hard", 0.0)) - 2.5) < 0.001, "sayobot second value")
+
+	# osu.direct：顶层 beatmaps[].version / difficulty_rating
+	var direct: Variant = JSON.parse_string('{"id":1,"beatmaps":[{"version":"Extra","difficulty_rating":6.39},{"version":"Normal","difficulty_rating":2.0}]}')
+	var from_direct := OsuIO.hints_from_json(direct)
+	eq(from_direct.size(), 2, "osu.direct yields two difficulties")
+	ok(absf(float(from_direct.get("Extra", 0.0)) - 6.39) < 0.001, "osu.direct rating value")
+
+	# 没有星数字段就返回空，调用方按文件顺序处理
+	ok(OsuIO.hints_from_json(JSON.parse_string('{"data":{"bid_data":[{"version":"X"}]}}')).is_empty(), "no star field means empty hints")
+	ok(OsuIO.hints_from_json(null).is_empty(), "null input is safe")
+	return true
+
+
+## .osu 文本里的 BeatmapSetID 能读出来。
+func test_osu_beatmap_set_id() -> bool:
+	var text := """osu file format v14
+
+[Metadata]
+Title:Shoujo A
+BeatmapID:4499482
+BeatmapSetID:2137985
+
+[Difficulty]
+CircleSize:4
+"""
+	eq(OsuIO._read_beatmap_set_id(text), 2137985, "BeatmapSetID parsed")
+	eq(OsuIO._read_beatmap_set_id("[Metadata]\nTitle:X\n"), 0, "missing id gives 0")
+	return true
+
+
 
 ## 难度按星数排序：升序、未知排最后、原始下标不变。
 func test_osu_difficulty_star_sort() -> bool:

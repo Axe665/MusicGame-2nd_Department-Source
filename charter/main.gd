@@ -2148,6 +2148,12 @@ func _on_import_osz_selected(path: String, include_video: bool = true, star_hint
 	if _app == null:
 		return
 	_app.ensure_tab()
+	if star_hints.is_empty():
+		# 本地 .osz 没有星数：用 BeatmapSetID 去镜像站查一次（离线/失败就按文件顺序）
+		var set_id := OsuIO.read_beatmap_set_id(path)
+		if set_id > 0:
+			_show_toast("读取难度星数…", "info")
+			star_hints = await OsuIO.fetch_star_hints(set_id)
 	if not _app.open_import_source(path, star_hints):
 		_app.restore_active_tab()
 		_show_toast("导入失败：%s" % _import_error_text(), "error")
