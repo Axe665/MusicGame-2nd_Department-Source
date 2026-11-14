@@ -8,6 +8,9 @@ const TOOL_ORDER := [
 
 var _app: Node = null
 var _preview: Preview3D
+var _preview_box: VBoxContainer
+var _main_row: Control
+var _ring_workspace: Control
 var _view_menu: MenuButton
 var _preview_panel: PanelContainer
 var _preview_grip: Control
@@ -26,14 +29,17 @@ var _hud_widgets: Dictionary = {}
 const QUALITY_OPTIONS := [
 	{"key": "preset", "label": "预设", "choices": [["极高（4× 抗锯齿）", 80], ["高（2× 抗锯齿）", 81], ["中", 82], ["低", 83]]},
 	{"key": "frame_cap", "label": "帧率上限", "choices": [["60", 90], ["120", 91], ["144", 92], ["240", 93], ["垂直同步", 94], ["不限", 95]]},
-	{"key": "aa_2d_level", "label": "2D 抗锯齿", "choices": [["关", 60], ["2×", 61], ["4×", 62]]},
+	{"key": "aa_2d_level", "label": "2D 抗锯齿", "choices": [["关", 60], ["MSAA 2×", 61], ["MSAA 4×", 62], ["MSAA 8×", 84]]},
+	{"key": "msaa_3d_level", "label": "3D 抗锯齿", "choices": [["关", 150], ["MSAA 2×", 151], ["MSAA 4×", 152], ["MSAA 8×", 153], ["FXAA（便宜）", 154], ["TAA（平滑，可能拖影）", 155], ["MSAA 2× + FXAA", 156], ["MSAA 4× + FXAA", 157]]},
+	{"key": "use_3d_ring", "label": "3D 环", "choices": [["开", 158], ["关", 159]]},
 	{"key": "note_detail_fine", "label": "音符精细度", "choices": [["全画质", 63], ["省电", 64]]},
 	{"key": "note_glow", "label": "音符光晕", "choices": [["开", 65], ["关", 66]]},
 	{"key": "cursor_trail", "label": "光标拖尾", "choices": [["长", 67], ["短", 68], ["关", 69]]},
 	{"key": "fx_budget", "label": "命中特效", "choices": [["完整", 70], ["精简", 71], ["关", 72]]},
-	{"key": "ring_3d_scale", "label": "3D 环分辨率", "choices": [["高", 73], ["中", 74], ["低", 75]]},
+	{"key": "ring_3d_scale", "label": "3D 环分辨率", "choices": [["原生", 160], ["超采样 1.25×", 161], ["超采样 1.5×", 162], ["高 0.85", 163], ["中 0.65", 164], ["低 0.5", 165]]},
 	{"key": "ring_3d_hz", "label": "3D 环刷新", "choices": [["60Hz", 76], ["30Hz", 77]]},
 	{"key": "bar_lines", "label": "小节线", "choices": [["开", 78], ["关", 79]]},
+	{"key": "background_brightness", "label": "背景明暗", "choices": [["关", 96], ["25%", 97], ["50%", 98], ["75%", 99], ["100%（默认）", 100]]},
 ]
 
 ## 界面（HUD）选项：和 视图 → 画质 同样的菜单结构，只影响显示。
@@ -41,7 +47,7 @@ const HUD_OPTIONS := [
 	{"key": "hud_scale", "label": "HUD 缩放", "choices": [["80%", 120], ["100%", 121], ["120%", 122]]},
 	{"key": "hud_combo_mode", "label": "连击", "choices": [["屏幕中心", 123], ["右侧", 124], ["关", 125]]},
 	{"key": "hud_progress_style", "label": "进度仪表", "choices": [["环外弧", 126], ["关", 127]]},
-	{"key": "hud_judge_position", "label": "判定字位置", "choices": [["跟音符", 128], ["屏幕中心", 129], ["关", 130]]},
+	{"key": "hud_judge_position", "label": "判定字位置", "choices": [["跟音符", 128], ["环内", 129], ["环外", 130], ["屏幕中心", 146], ["关", 147]]},
 	{"key": "hud_opacity", "label": "HUD 透明度", "choices": [["100%", 133], ["85%", 134], ["70%", 135]]},
 	{"key": "hud_show_title", "label": "左上：曲名", "choices": [["显示", 136], ["隐藏", 137]]},
 	{"key": "hud_show_difficulty", "label": "左上：难度", "choices": [["显示", 138], ["隐藏", 139]]},
@@ -82,7 +88,16 @@ var _stretch_error: Label
 var _stretch_syncing: bool = false
 var _audio: AudioStreamPlayer
 var _audio_path: String = ""
+var _audio_token: int = 0
+## 当前 _audio.stream 的时间伸缩倍率（1 = 原始；>1 = 已经 atempo 过）。
+var _audio_stream_rate: float = 1.0
+## 当前流是按哪个倍速准备的；倍速变了要重新加载。
+var _audio_rate_key: float = 1.0
+var _audio_loading := false
 var _playing: bool = false
+var _loop_enabled: bool = false
+var _loop_start: float = 0.0
+var _loop_end: float = 0.0
 var _rate: float = 1.0
 var _loop: bool = false
 var _metronome: bool = true
@@ -115,8 +130,13 @@ var _import_dir_dialog: FileDialog
 var _audio_dialog: FileDialog
 var _song_dialog: SongImportDialog
 var _chart_browser: ChartBrowser
-## 独立的“在线 osu! 谱面”窗口（只列 osu!std）。
-var _osu_browser: ChartBrowser
+## 独立的“在线 osu! 谱面”窗口（卡片式，只列 osu!std）。
+var _osu_browser: OsuBrowser
+## 设置里「转码缓存」体积显示。
+var _cache_label: Label = null
+var _import_progress: AcceptDialog = null
+var _import_progress_label: Label = null
+var _import_progress_bar: ProgressBar = null
 var _new_dialog: NewChartDialog
 var _playtest: Playtest
 ## 导出视频的子进程：放完自动退出。
@@ -126,13 +146,17 @@ var _playtest_rate: SpinBox = null
 var _playtest_flow: SpinBox = null
 var _playtest_star: SpinBox = null
 var _playtest_cursor: SpinBox = null
-var _playtest_trace_color: ColorPickerButton = null
 var _playtest_offset: SpinBox = null
 var _playtest_latency: SpinBox = null
 var _playtest_dynamic: CheckBox = null
 var _playtest_auto: CheckBox = null
+var _playtest_mouse: CheckBox = null
 var _playtest_bias: Label = null
+## 试玩设置底部的「从头开始玩」按钮（试玩中隐藏）。
+var _playtest_start_button: Button = null
 var _calibration_dialog: CalibrationDialog = null
+## 校准窗口关掉后要回到哪里："" / "settings" / "playtest"。
+var _calibration_return := ""
 var _playtest_from_start: bool = false
 ## 制谱界面保留的流速输入框（试玩设置改流速后要同步回来）。
 var _editor_flow_spin: SpinBox = null
@@ -385,14 +409,15 @@ func _build_ui() -> void:
 	_import_diff.visible = false
 	_import_diff.item_selected.connect(_on_import_difficulty_selected)
 	brand_row.add_child(_import_diff)
+	# 菜单和试玩按钮统一排到右上角：这里先放一个弹性占位，把它们顶过去。
 	var brand_spacer := Control.new()
 	brand_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	brand_row.add_child(brand_spacer)
 	# 菜单 id 全局唯一（_on_menu 的 match 先匹配先得，重复 id 会让后面的分支永远收不到）：
-	# 文件 0–9 / 15–18、编辑 10–14、视图 20–25、插入 30–38、事件 40–41、试玩 50–51。
+	# 文件 0–9 / 15–19、编辑 10–14、视图 20–25、插入 30–38、事件 40–41、试玩 50–51。
 	brand_row.add_child(_menu("文件", [
 		["新建", 0], ["打开", 1], ["保存", 2], ["另存为", 3], ["-", 0],
-		["导入", [["歌曲 / 识别 BPM…", 9], ["谱面 (.osz/.zip/.txt)", 6], ["舞萌文件夹", 8], ["在线舞萌谱面…", 15], ["在线 osu! 谱面…", 18]]],
+		["导入", [["歌曲 / 识别 BPM…", 9], ["导入视频…", 19], ["谱面 (.osz/.zip/.txt)", 6], ["舞萌文件夹", 8], ["在线舞萌谱面…", 15], ["在线 osu! 谱面…", 18]]],
 		["导出", [["导出 .lbp", 7]]],
 		["-", 0], ["恢复自动保存", 4], ["-", 0], ["退出", 5],
 	]))
@@ -402,16 +427,13 @@ func _build_ui() -> void:
 	]))
 	_view_menu = _menu("视图", [
 		["显示/隐藏 HUD", 20], ["调试叠层", 21], ["波形", 22], ["从上往下写入", 25], ["-", 0],
-		["边界状态轨", 23], ["时间 / BPM (F6)", 24],
+		["环编辑…", 39], ["时间 / BPM (F6)", 24],
 	])
 	brand_row.add_child(_view_menu)
 	brand_row.add_child(_menu("插入", [
 		["Tap", 30], ["Hold", 31], ["Path", 32], ["Seek", 33], ["Anchor", 34], ["Bell", 35], ["Limit", 36],
-		["-", 0], ["BoundaryEvent", 37], ["RingState 关键帧", 38],
 	]))
-	brand_row.add_child(_menu("试玩", [
-		["从播放头试玩（F5）", 50], ["从头试玩（Shift+F5）", 51], ["-", 0], ["校准判定偏移…", 52],
-	]))
+	# 试玩只保留一个黄色按钮；F5 / Shift+F5 快捷键照旧生效。
 	var playtest_button := Button.new()
 	playtest_button.text = "试玩 F5"
 	playtest_button.add_theme_color_override("font_color", UITheme.BG)
@@ -420,6 +442,7 @@ func _build_ui() -> void:
 	playtest_button.add_theme_stylebox_override("normal", UITheme._box(UITheme.ACCENT, UITheme.ACCENT, 3, 12, 5))
 	playtest_button.add_theme_stylebox_override("hover", UITheme._box(UITheme.ACCENT, Color.WHITE, 3, 12, 5))
 	playtest_button.add_theme_stylebox_override("pressed", UITheme._box(UITheme.ACCENT_DARK, UITheme.ACCENT_DARK, 3, 12, 5))
+	playtest_button.tooltip_text = "打开试玩设置：可选「继续游玩」（从播放头）或「从头开始玩」；F5 从播放头，Shift+F5 从头"
 	playtest_button.pressed.connect(func() -> void: _open_playtest_setup(false))
 	brand_row.add_child(playtest_button)
 
@@ -585,6 +608,7 @@ func _build_ui() -> void:
 	_preview_panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	main_row.add_child(_preview_panel)
 	var preview_box := VBoxContainer.new()
+	_preview_box = preview_box
 	preview_box.add_theme_constant_override("separation", 6)
 	_preview_panel.add_child(preview_box)
 	var preview_header := HBoxContainer.new()
@@ -683,6 +707,15 @@ func _build_ui() -> void:
 	main_row.move_child(_preview_grip, 2)
 	main_row.move_child(_preview_panel, 3)
 	main_row.move_child(_preview_reopen, 4)
+	_main_row = main_row
+	_ring_workspace = preload("res://charter/ring_workspace.gd").new()
+	add_child(_ring_workspace)
+	_ring_workspace.closed.connect(func() -> void:
+		_preview.set_process(true)
+		_preview.queue_redraw()
+	)
+	_ring_workspace.play_toggled.connect(_toggle_play)
+	_ring_workspace.loop_requested.connect(_set_loop)
 	if _app != null and _app.preview_collapsed:
 		_set_preview_collapsed(true, false)
 
@@ -1016,7 +1049,7 @@ func _hud_index(key: String) -> int:
 		"hud_progress_style":
 			return ["ring", "off"].find(_app.hud_progress_style)
 		"hud_judge_position":
-			return ["note", "center", "off"].find(_app.hud_judge_position)
+			return ["note", "ring_in", "ring_out", "center", "off"].find(_app.hud_judge_position)
 		"hud_opacity":
 			return [100, 85, 70].find(_app.hud_opacity)
 		"hud_show_title":
@@ -1041,7 +1074,7 @@ func _set_hud_index(key: String, index: int) -> void:
 		"hud_progress_style":
 			_app.hud_progress_style = ["ring", "off"][clampi(index, 0, 1)]
 		"hud_judge_position":
-			_app.hud_judge_position = ["note", "center", "off"][clampi(index, 0, 2)]
+			_app.hud_judge_position = ["note", "ring_in", "ring_out", "center", "off"][clampi(index, 0, 4)]
 		"hud_opacity":
 			_app.hud_opacity = [100, 85, 70][clampi(index, 0, 2)]
 		"hud_show_title":
@@ -1064,7 +1097,11 @@ func _quality_index(key: String) -> int:
 		"frame_cap":
 			return ["60", "120", "144", "240", "vsync", "unlimited"].find(_app.frame_cap)
 		"aa_2d_level":
-			return _app.aa_2d_level
+			return clampi(_app.aa_2d_level, 0, 3)
+		"msaa_3d_level":
+			return clampi(_app.msaa_3d_level, 0, 7)
+		"use_3d_ring":
+			return 0 if _app.use_3d_ring else 1
 		"note_detail_fine":
 			return 0 if _app.note_detail_fine else 1
 		"note_glow":
@@ -1074,11 +1111,13 @@ func _quality_index(key: String) -> int:
 		"fx_budget":
 			return ["full", "light", "off"].find(_app.fx_budget)
 		"ring_3d_scale":
-			return ["high", "mid", "low"].find(_app.ring_3d_scale)
+			return ["native", "ssaa12", "ssaa15", "high", "mid", "low"].find(_app.ring_3d_scale)
 		"ring_3d_hz":
 			return 0 if _app.ring_3d_hz >= 60 else 1
 		"bar_lines":
 			return 0 if _app.bar_lines else 1
+		"background_brightness":
+			return [0, 25, 50, 75, 100].find(_app.background_brightness)
 	return -1
 
 
@@ -1092,7 +1131,11 @@ func _set_quality_index(key: String, index: int) -> void:
 			_app.apply_frame_cap()
 			return
 		"aa_2d_level":
-			_app.aa_2d_level = clampi(index, 0, 2)
+			_app.aa_2d_level = clampi(index, 0, 3)
+		"msaa_3d_level":
+			_app.msaa_3d_level = clampi(index, 0, 7)
+		"use_3d_ring":
+			_app.use_3d_ring = index == 0
 		"note_detail_fine":
 			_app.note_detail_fine = index == 0
 		"note_glow":
@@ -1102,11 +1145,15 @@ func _set_quality_index(key: String, index: int) -> void:
 		"fx_budget":
 			_app.fx_budget = ["full", "light", "off"][clampi(index, 0, 2)]
 		"ring_3d_scale":
-			_app.ring_3d_scale = ["high", "mid", "low"][clampi(index, 0, 2)]
+			_app.ring_3d_scale = ["native", "ssaa12", "ssaa15", "high", "mid", "low"][clampi(index, 0, 5)]
 		"ring_3d_hz":
 			_app.ring_3d_hz = 60 if index == 0 else 30
 		"bar_lines":
 			_app.bar_lines = index == 0
+		"background_brightness":
+			_app.background_brightness = [0, 25, 50, 75, 100][clampi(index, 0, 4)]
+			# 背景明暗不是画质参数，别把预设打成「自定义」。
+			return
 	_app.quality_preset = "custom"
 
 
@@ -1117,13 +1164,16 @@ func _apply_visual_options() -> void:
 	_app.apply_visual_quality()
 	if _preview == null:
 		return
+	_preview.use_3d_ring = _app.use_3d_ring
 	_preview.note_detail_fine = _app.note_detail_fine
 	_preview.note_glow = _app.note_glow
 	_preview.cursor_trail_mode = _app.cursor_trail
 	_preview.fx_budget = _app.fx_budget
 	_preview.ring_3d_scale = _app.ring_3d_scale
+	_preview.msaa_3d_level = _app.msaa_3d_level
 	_preview.ring_3d_hz = _app.ring_3d_hz
 	_preview.bar_lines_visible = _app.bar_lines
+	_preview.set_background_brightness(float(_app.background_brightness) / 100.0)
 	_preview.hud_options = _app.hud_options()
 	_preview.apply_ring_quality()
 	_preview.request_redraw()
@@ -1137,6 +1187,7 @@ func _apply_visual_options() -> void:
 		inner.ring_3d_scale = _app.ring_3d_scale
 		inner.ring_3d_hz = _app.ring_3d_hz
 		inner.bar_lines_visible = _app.bar_lines
+		inner.set_background_brightness(float(_app.background_brightness) / 100.0)
 		inner.hud_options = _app.hud_options()
 		inner.apply_ring_quality()
 		inner.request_redraw()
@@ -1329,13 +1380,16 @@ func _volume_slider(label_text: String, bus_name: String) -> HBoxContainer:
 	label.text = label_text
 	label.add_theme_font_size_override("font_size", 10)
 	label.add_theme_color_override("font_color", UITheme.MUTED)
+	label.custom_minimum_size = Vector2(28, 0)
+	label.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	box.add_child(label)
 	var slider := HSlider.new()
 	slider.min_value = 0.0
 	slider.max_value = 100.0
 	slider.step = 1.0
 	slider.value = 100.0
-	slider.custom_minimum_size = Vector2(72, 16)
+	slider.custom_minimum_size = Vector2(0, 16)
+	slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	slider.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	slider.value_changed.connect(func(value: float) -> void: _set_bus_volume(bus_name, value))
 	box.add_child(slider)
@@ -1413,19 +1467,13 @@ func _build_dialogs() -> void:
 	_chart_browser.source_ready.connect(func(source_path: String) -> void:
 		_on_import_osz_selected(source_path)
 	)
-	_chart_browser.chart_imported.connect(func(chart: Chart) -> void:
-		_app.ensure_tab()
-		_app.set_chart(chart, "", true)
-		_app.add_tab_from_current(String(chart.metadata.get("title", "在线导入")))
-		_sync_from_app()
-		_refresh_tabs()
-		_show_report("已从在线谱面导入：%d 个 note，%d 个 BPM 点。\n%s" % [chart.notes.size(), chart.timing.points.size(), SimaiIO.last_report])
+	_chart_browser.warning.connect(func(message: String) -> void:
+		_show_toast(message, "warning")
 	)
 	add_child(_chart_browser)
-	_osu_browser = ChartBrowser.new()
-	_osu_browser.osu_only = true
+	_osu_browser = OsuBrowser.new()
 	_osu_browser.source_ready.connect(func(source_path: String) -> void:
-		_on_import_osz_selected(source_path)
+		_on_import_osz_selected(source_path, _osu_browser.take_include_video())
 	)
 	add_child(_osu_browser)
 	_lbp_dialog = FileDialog.new()
@@ -1498,7 +1546,6 @@ func _sync_from_app() -> void:
 	_preview.show_debug = _app.debug_overlay
 	_preview.flow_scale = _app.flow_scale
 	_preview.star_speed = _app.star_speed
-	_preview.trace_color = _app.trace_color
 	_preview.note_skin = _app.note_skin
 	_preview.hit_fx_style = _app.hit_fx_style
 	_preview.cursor_scale = _app.cursor_scale
@@ -1528,22 +1575,69 @@ func _ensure_audio() -> void:
 	if _app == null or _app.chart == null:
 		return
 	var path: String = _app.chart.audio_path
-	if path == _audio_path:
+	if path == _audio_path and is_equal_approx(_rate, _audio_rate_key):
+		if _audio_loading:
+			# 同一份音频正在准备：等它完成，避免 _start_play 用空流开跑。
+			while _audio_loading:
+				await get_tree().process_frame
 		return
 	_audio_path = path
+	_audio_rate_key = _rate
+	_audio_token += 1
+	var token := _audio_token
+	_audio_loading = true
 	_audio.stop()
 	_playing = false
 	var resolved := path
 	if not path.begins_with("res://") and not path.begins_with("user://") and not path.is_absolute_path() and not _app.chart_path.is_empty():
 		resolved = ChartIO.resolve_path(_app.chart_path, path)
-	var prepared := MediaIO.prepare_audio(resolved)
+	var prepared := resolved
+	if MediaIO.is_native_audio(resolved) or FileAccess.file_exists(MediaIO.audio_cache_path(resolved)):
+		# 原生格式 / 已有缓存：立刻返回，不阻塞。
+		prepared = MediaIO.prepare_audio(resolved)
+	else:
+		# FLAC / M4A 等要跑 ffmpeg：带进度异步转，编辑界面不冻结。
+		_show_import_progress()
+		prepared = await MediaIO.prepare_audio_async(resolved, get_tree(), func(ratio: float, seconds: float) -> void:
+			_import_progress_text("转码音频：%s" % resolved.get_file(), ratio, seconds))
+		_hide_import_progress()
+		if token != _audio_token:
+			return
 	if prepared.is_empty():
 		_audio.stream = null
+		_audio_loading = false
 		_show_toast("音频不可用：%s" % MediaIO.last_error, "warning")
 		return
-	var stream := ChartIO.audio_stream_from_path(prepared)
+	var base := ChartIO.audio_stream_from_path(prepared)
+	var stream := base
+	var stream_rate := 1.0
+	if absf(_rate - 1.0) >= 0.001:
+		if not MediaIO.has_ffmpeg():
+			_show_toast("变速不变调需要 ffmpeg（当前 PATH 找不到）；已回退变调", "warning")
+		else:
+			var cached := MediaIO.rate_audio_cache_path(prepared, _rate)
+			var total_sec := base.get_length() / maxf(0.1, _rate) if base != null else 0.0
+			var stretched := cached if FileAccess.file_exists(cached) else ""
+			if stretched.is_empty():
+				_show_import_progress()
+				stretched = await MediaIO.prepare_audio_at_rate_async(prepared, _rate, get_tree(), func(_ratio: float, seconds: float) -> void:
+					var ratio := clampf(seconds / total_sec, 0.0, 0.99) if total_sec > 0.0 else -1.0
+					_import_progress_text("变速音频：%s（%.2f×）" % [resolved.get_file(), _rate], ratio, seconds))
+				_hide_import_progress()
+				if token != _audio_token:
+					return
+			if not stretched.is_empty():
+				var fast := ChartIO.audio_stream_from_path(stretched)
+				if fast != null:
+					stream = fast
+					stream_rate = _rate
+			if stream_rate == 1.0:
+				_show_toast("变速音频生成失败，已回退变调：%s" % MediaIO.last_error, "warning")
 	_audio.stream = stream if stream is AudioStream else null
-	print("[audio] editor ", prepared, " -> ", _audio.stream, " bus=", _audio.bus)
+	_audio_stream_rate = stream_rate
+	_audio.pitch_scale = _rate / maxf(0.01, _audio_stream_rate)
+	_audio_loading = false
+	print("[audio] editor ", prepared, " -> ", _audio.stream, " stream_rate=", _audio_stream_rate, " bus=", _audio.bus)
 	if _audio.stream == null:
 		_show_toast("音频不可用：预览使用系统时钟。", "warning")
 
@@ -1586,6 +1680,31 @@ func _on_hover_changed(_u: float, _beat: float) -> void:
 	pass
 
 
+func _open_ring_workspace() -> void:
+	if _ring_workspace == null or _app == null or _app.chart == null:
+		return
+	_app.ring_editor_open = true
+	# 工作区是全屏覆盖层；底下那套编辑界面先藏起来，否则每帧还要再画一遍。
+	if _main_row != null:
+		_main_row.visible = false
+	_ring_workspace.open_workspace(_preview, func(preview: Preview3D) -> void:
+		var parent := _preview_box
+		if parent != null and preview.get_parent() != parent:
+			if preview.get_parent() != null:
+				preview.get_parent().remove_child(preview)
+			parent.add_child(preview)
+			preview.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+			preview.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			preview.size_flags_vertical = Control.SIZE_EXPAND_FILL
+			parent.move_child(preview, parent.get_child_count() - 1)
+		preview.ring_edit_mode = false
+		_app.ring_editor_open = false
+		if _main_row != null:
+			_main_row.visible = true
+		_app.chart_changed.emit()
+	)
+
+
 func _set_tool(tool: String) -> void:
 	_app.set_tool(tool)
 	_sync_tools()
@@ -1607,7 +1726,10 @@ func _toggle_play() -> void:
 func _start_play(beat: float) -> void:
 	if _app == null or _app.chart == null:
 		return
-	_ensure_audio()
+	# 倍速音频第一次要等 ffmpeg 生成；加载完再起播，别用旧流或空流开跑。
+	await _ensure_audio()
+	if _app == null or _app.chart == null:
+		return
 	_last_beat_int = -1
 	_build_sfx_events()
 	_playing = true
@@ -1626,8 +1748,8 @@ func _rebase_playback(beat: float) -> void:
 	_sfx_event_index = _first_sfx_event(beat)
 	_sfx_last_beat = beat - 0.001
 	if _audio.stream != null:
-		_audio.pitch_scale = _rate
-		var from_sec := maxf(0.0, (_play_start_chart_ms - _app.chart.offset_ms) / 1000.0)
+		_audio.pitch_scale = _rate / maxf(0.01, _audio_stream_rate)
+		var from_sec := maxf(0.0, (_play_start_chart_ms - _app.chart.offset_ms) / 1000.0) / maxf(0.01, _audio_stream_rate)
 		# 音频比谱面短（或跳到了音频末尾之后）就别播了，交给墙钟继续推，
 		# 否则 play() 立刻 finished，播放会被误停。
 		if from_sec < _audio.stream.get_length():
@@ -1654,7 +1776,14 @@ func _on_seek_fraction(fraction: float) -> void:
 	_update_transport(true)
 
 
+func _set_loop(start: float, end: float, enabled: bool) -> void:
+	_loop_enabled = enabled and end > start
+	_loop_start = start
+	_loop_end = end
+
+
 func _stop_play() -> void:
+	_loop_enabled = false
 	if _audio != null:
 		_audio.stop()
 	_playing = false
@@ -1743,10 +1872,16 @@ func _process(_delta: float) -> void:
 	if _playing:
 		var chart_ms := 0.0
 		if _audio.stream != null and _audio.playing:
-			chart_ms = (_audio.get_playback_position() + AudioServer.get_time_since_last_mix() - AudioServer.get_output_latency()) * 1000.0 + _app.chart.offset_ms
+			# 变速音频流里 1 秒 = 谱面 _audio_stream_rate 秒；驱动延迟/混音间隔
+			# 是真实秒，换算成谱面时间要乘倍速。
+			chart_ms = (_audio.get_playback_position() * _audio_stream_rate
+				+ (AudioServer.get_time_since_last_mix() - AudioServer.get_output_latency()) * _rate) * 1000.0 + _app.chart.offset_ms
 		else:
 			chart_ms = _play_start_chart_ms + float(Time.get_ticks_usec() - _play_start_usec) / 1000.0 * _rate
 		var beat: float = _app.chart.timing.chart_ms_to_beat(chart_ms)
+		if _loop_enabled and _loop_end > _loop_start and beat >= _loop_end:
+			_rebase_playback(_loop_start)
+			beat = _loop_start
 		_app.set_playhead(beat)
 		_fire_editor_sfx(beat)
 		var beat_int := floori(beat)
@@ -1767,7 +1902,7 @@ func _playback_total_ms() -> float:
 		return 0.0
 	var total_ms: float = _app.chart.timing.beat_to_chart_ms(_app.chart.duration_beats())
 	if _audio != null and _audio.stream != null:
-		total_ms = maxf(total_ms, _audio.stream.get_length() * 1000.0 + _app.chart.offset_ms)
+		total_ms = maxf(total_ms, _audio.stream.get_length() * 1000.0 * _audio_stream_rate + _app.chart.offset_ms)
 	return total_ms
 
 
@@ -1803,7 +1938,7 @@ func _update_status() -> void:
 	if _status_u != null:
 		_status_u.text = "u %.1f°" % (_cursor_u * 360.0)
 		_status_beat.text = "bar " + _app.chart.timing.format_beat(_app.playhead_beat)
-		_status_snap.text = "吸附 " + GridDivisions.label(_app.snap_division) + ("" if _app.time_flows_down else " · 反向")
+		_status_snap.text = "吸附 " + GridDivisions.label(_app.snap_division) + ("" if _app.time_flows_down else "（反向）")
 		_status_sel.text = "选中 %d" % _app.selected_notes.size()
 		_status_shape.text = "边界 " + _app.chart.default_shape_id
 		var errors: Array = Validator.errors(_issues)
@@ -1935,7 +2070,7 @@ func _close_tab_now(index: int) -> void:
 	_refresh_tabs()
 
 
-func _on_import_osz_selected(path: String) -> void:
+func _on_import_osz_selected(path: String, include_video: bool = true) -> void:
 	# 转谱：把来源里的所有难度转好，作为一个新标签页打开，不覆盖当前谱面。
 	if _app == null:
 		return
@@ -1944,6 +2079,10 @@ func _on_import_osz_selected(path: String) -> void:
 		_app.restore_active_tab()
 		_show_toast("导入失败：%s" % _import_error_text(), "error")
 		return
+	if not include_video:
+		# osu 详情页选了「不带视频」：先清掉再转码，别为不要的视频干活。
+		_drop_import_video()
+	await _prepare_import_media()
 	var count: int = _app.difficulties.size()
 	var title: String = _app.set_path.get_file().get_basename()
 	if title.is_empty():
@@ -1952,6 +2091,111 @@ func _on_import_osz_selected(path: String) -> void:
 	_sync_from_app()
 	_refresh_tabs()
 	_show_report("转谱完成：%d 个难度已放进新标签页「%s」，顶部可以切换难度。" % [count, title])
+
+
+## 「不带视频」：解绑所有难度的 BGA，并删掉导入目录里的视频副本（源 .osz 不动）。
+func _drop_import_video() -> void:
+	if _app == null:
+		return
+	var removed := 0
+	for entry in _app.difficulties:
+		var chart: Chart = entry.get("chart", null)
+		if chart == null or chart.video_path.is_empty():
+			continue
+		var path := chart.video_path
+		chart.video_path = ""
+		removed += 1
+		if path.begins_with("user://imports/"):
+			DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	if removed > 0:
+		_app.save_set_file()
+
+
+## 导入时先把 BGA / 需要转码的音频转好：带百分比进度，UI 不冻结。
+## 预览也会自己异步转码，但那里没有进度条；这里先转完，打开就是成品。
+func _prepare_import_media() -> void:
+	if _app == null or _app.difficulties.is_empty():
+		return
+	var videos: Array[String] = []
+	var audios: Array[String] = []
+	for entry in _app.difficulties:
+		var chart: Chart = entry.get("chart", null)
+		if chart == null:
+			continue
+		var video := chart.video_path
+		if not video.is_empty() and not ChartIO.can_decode_video_directly(video) and not FileAccess.file_exists(MediaIO.video_cache_path(video)) and not videos.has(video):
+			videos.append(video)
+		var audio := chart.audio_path
+		if audio.begins_with("user://imports/simai_zip_") and audio.get_extension().to_lower() != "ogg" and not audios.has(audio):
+			audios.append(audio)
+	if videos.is_empty() and audios.is_empty():
+		return
+	var total := videos.size() + audios.size()
+	var done := 0
+	_show_import_progress()
+	var tree := get_tree()
+	for video in videos:
+		var label := "转码 BGA %d/%d：%s" % [done + 1, total, video.get_file()]
+		_import_progress_text(label, 0.0, 0.0)
+		await MediaIO.prepare_video_async(video, tree, func(ratio: float, seconds: float) -> void:
+			_import_progress_text(label, ratio, seconds))
+		done += 1
+	for audio in audios:
+		var label := "转码音频 %d/%d：%s" % [done + 1, total, audio.get_file()]
+		_import_progress_text(label, 0.0, 0.0)
+		var prepared := await MediaIO.prepare_audio_async(audio, tree, func(ratio: float, seconds: float) -> void:
+			_import_progress_text(label, ratio, seconds))
+		done += 1
+		if prepared.is_empty():
+			continue
+		for entry in _app.difficulties:
+			var chart: Chart = entry.get("chart", null)
+			if chart != null and chart.audio_path == audio:
+				chart.audio_path = prepared
+	_hide_import_progress()
+	_app.save_set_file()
+
+
+func _show_import_progress() -> void:
+	if _import_progress == null:
+		_import_progress = AcceptDialog.new()
+		_import_progress.title = "媒体处理"
+		_import_progress.min_size = Vector2i(460, 150)
+		# 进度条只是告知，不抢独占焦点：否则试玩/设置对话框开着时会报
+		# "already has another exclusive child"。
+		_import_progress.exclusive = false
+		var box := VBoxContainer.new()
+		box.add_theme_constant_override("separation", 12)
+		_import_progress.add_child(box)
+		_import_progress_label = Label.new()
+		_import_progress_label.text = "准备转码…"
+		box.add_child(_import_progress_label)
+		_import_progress_bar = ProgressBar.new()
+		_import_progress_bar.max_value = 100.0
+		_import_progress_bar.show_percentage = true
+		_import_progress_bar.custom_minimum_size = Vector2(420, 24)
+		box.add_child(_import_progress_bar)
+		_import_progress.get_ok_button().visible = false
+		add_child(_import_progress)
+	_import_progress.popup_centered(Vector2i(460, 150))
+	_import_progress_bar.visible = true
+	_import_progress_bar.value = 0.0
+
+
+func _import_progress_text(label: String, ratio: float, seconds: float) -> void:
+	if _import_progress_label == null:
+		return
+	_import_progress_label.text = "%s，已转 %d 秒" % [label, int(maxf(0.0, seconds))]
+	if _import_progress_bar != null:
+		# 音频拿不到时长时只显示已转秒数，别把进度条钉在 0%。
+		_import_progress_bar.visible = ratio >= 0.0
+		if ratio >= 0.0:
+			_import_progress_bar.value = clampf(ratio, 0.0, 1.0) * 100.0
+
+
+func _hide_import_progress() -> void:
+	if _import_progress != null:
+		_import_progress.hide()
 
 
 func _import_error_text() -> String:
@@ -2010,6 +2254,7 @@ func _save_all_difficulties() -> void:
 func _import_into_current_window(path: String) -> void:
 	# 直接走难度组：多难度来源会一次性转好，顶部会出现难度下拉。
 	if _app != null and _app.open_import_source(path):
+		await _prepare_import_media()
 		_sync_from_app()
 		_show_report(_app.last_import_report)
 		return
@@ -2060,6 +2305,11 @@ func _import_maimai(path: String, difficulty_index: int) -> void:
 func _show_report(text: String) -> void:
 	if _report_dialog == null or text.is_empty():
 		return
+	# 在线浏览器还开着时再弹报告，两个 AcceptDialog 会抢独占焦点（日志报错）。
+	if _chart_browser != null:
+		_chart_browser.hide()
+	if _osu_browser != null:
+		_osu_browser.hide()
 	_report_dialog.dialog_text = text
 	_report_dialog.popup_centered_ratio(0.62)
 
@@ -2108,6 +2358,9 @@ func _on_menu(id: int) -> void:
 			_import_dir_dialog.popup_centered_ratio(0.75)
 		9:
 			_audio_dialog.popup_centered_ratio(0.75)
+		19:
+			if _inspector != null:
+				_inspector.open_video_picker()
 		15:
 			_chart_browser.popup_centered_ratio(0.8)
 		18:
@@ -2138,18 +2391,14 @@ func _on_menu(id: int) -> void:
 			_app.waveform_visible = not _app.waveform_visible
 		25:
 			_app.set_time_flows_down(not _app.time_flows_down)
-		23:
-			_show_toast("边界状态轨：RingState 关键帧在视图页编辑。", "info")
+		23, 37, 38, 39:
+			_open_ring_workspace()
 		24:
-			_inspector.current_tab = 5
+			_inspector.current_tab = 3
 		30, 31, 32, 33, 34, 35, 36:
 			_set_tool(["tap", "hold", "path", "seek", "anchor", "bell", "limit"][id - 30])
-		37:
-			_inspector._add_event()
-		38:
-			_inspector._add_view_state()
 		40:
-			_inspector._add_event()
+			_show_toast("形变事件在「视图 → 环编辑」里做：复制成 B 再拖时间轴。", "info")
 		41:
 			_set_tool("limit")
 		50:
@@ -2167,7 +2416,8 @@ func _save() -> void:
 		_sync_from_app()
 
 
-func _open_calibration() -> void:
+func _open_calibration(return_to: String = "") -> void:
+	_calibration_return = return_to
 	if _app == null:
 		return
 	if _calibration_dialog == null:
@@ -2178,7 +2428,12 @@ func _open_calibration() -> void:
 				_playtest_offset.value = float(_app.playtest_offset_ms)
 			if _playtest_latency != null:
 				_playtest_latency.value = float(_app.audio_latency_ms)
-			_open_playtest_setup(_playtest_from_start)
+			var target := _calibration_return
+			_calibration_return = ""
+			if target == "settings":
+				_open_settings()
+			elif target == "playtest":
+				_open_playtest_setup(_playtest_from_start)
 		)
 		add_child(_calibration_dialog)
 	if _playtest_dialog != null:
@@ -2195,23 +2450,31 @@ func _open_playtest_setup(from_start: bool) -> void:
 	if _playtest_dialog == null:
 		_build_playtest_dialog()
 	# 试玩中从暂停菜单打开时，确认键是"完成"而不是"开始"。
-	_playtest_dialog.ok_button_text = "完成" if _playtest != null else "开始"
+	if _playtest != null:
+		# 试玩中打开：只能应用设置并返回。
+		_playtest_dialog.ok_button_text = "完成"
+		if _playtest_start_button != null:
+			_playtest_start_button.visible = false
+	else:
+		_playtest_dialog.ok_button_text = "继续游玩"
+		if _playtest_start_button != null:
+			_playtest_start_button.visible = true
 	_playtest_rate.value = _rate
 	_playtest_flow.value = _app.flow_scale
 	_playtest_star.value = _app.star_speed
 	if _playtest_cursor != null:
 		_playtest_cursor.value = _app.cursor_scale
-	if _playtest_trace_color != null:
-		_playtest_trace_color.color = _app.trace_color
 	if _playtest_offset != null:
 		_playtest_offset.value = float(_app.playtest_offset_ms)
 	if _playtest_dynamic != null:
 		_playtest_dynamic.button_pressed = bool(_app.dynamic_offset)
 	if _playtest_auto != null:
 		_playtest_auto.button_pressed = bool(_app.playtest_auto)
+	if _playtest_mouse != null:
+		_playtest_mouse.button_pressed = bool(_app.mouse_keys)
 	if _playtest_bias != null:
 		_playtest_bias.text = "上次平均偏差 %+.1fms" % float(_app.last_bias_ms)
-	_playtest_dialog.popup_centered(Vector2i(470, 700))
+	_playtest_dialog.popup_centered(Vector2i(470, 520))
 
 
 ## 统一设置窗口：画质 / 界面 / 音频 / 校准。视图菜单只留显示开关。
@@ -2236,6 +2499,8 @@ func _open_settings() -> void:
 		_build_hud_rows(box)
 		box.add_child(HSeparator.new())
 		_build_audio_rows(box)
+		box.add_child(HSeparator.new())
+		_build_cache_rows(box)
 		box.add_child(HSeparator.new())
 		_build_calibration_rows(box)
 		add_child(_settings_dialog)
@@ -2310,6 +2575,51 @@ func _build_audio_rows(parent: Control) -> void:
 	grid.add_child(sfx_pick)
 
 
+func _build_cache_rows(parent: Control) -> void:
+	var title := Label.new()
+	title.text = "转码 / 变速缓存"
+	title.add_theme_font_size_override("font_size", 12)
+	parent.add_child(title)
+	_cache_label = Label.new()
+	_cache_label.add_theme_font_size_override("font_size", 11)
+	_cache_label.add_theme_color_override("font_color", UITheme.MUTED)
+	parent.add_child(_cache_label)
+	_refresh_cache_label()
+	var clear := Button.new()
+	clear.text = "清理转码 / 变速缓存…"
+	clear.pressed.connect(func() -> void:
+		var dialog := ConfirmationDialog.new()
+		dialog.title = "清理转码 / 变速缓存"
+		dialog.dialog_text = "删除 %s 的 BGA / 音频转码 / 变速音频文件；源文件不动，下次需要时重新生成。要继续吗？" % _format_bytes(MediaIO.cache_size())
+		dialog.confirmed.connect(func() -> void:
+			var freed := MediaIO.clear_cache()
+			_refresh_cache_label()
+			_show_toast("已清理缓存 %s" % _format_bytes(freed), "info")
+		)
+		add_child(dialog)
+		dialog.popup_centered()
+		dialog.confirmed.connect(dialog.queue_free)
+		dialog.canceled.connect(dialog.queue_free)
+	)
+	parent.add_child(clear)
+
+
+func _refresh_cache_label() -> void:
+	if _cache_label == null:
+		return
+	_cache_label.text = "user://media 当前占用 %s；音频转码、变速音频和无解码库时的视频兜底会写这里。" % _format_bytes(MediaIO.cache_size())
+
+
+func _format_bytes(value: int) -> String:
+	if value >= 1024 * 1024 * 1024:
+		return "%.1f GB" % (float(value) / (1024.0 * 1024.0 * 1024.0))
+	if value >= 1024 * 1024:
+		return "%.0f MB" % (float(value) / (1024.0 * 1024.0))
+	if value >= 1024:
+		return "%.0f KB" % (float(value) / 1024.0)
+	return "%d B" % value
+
+
 func _build_calibration_rows(parent: Control) -> void:
 	var title := Label.new()
 	title.text = "校准"
@@ -2326,7 +2636,7 @@ func _build_calibration_rows(parent: Control) -> void:
 	open_cal.pressed.connect(func() -> void:
 		if _settings_dialog != null:
 			_settings_dialog.hide()
-		_open_calibration()
+		_open_calibration("settings")
 	)
 	parent.add_child(open_cal)
 
@@ -2338,7 +2648,7 @@ func _build_playtest_dialog() -> void:
 	_playtest_dialog.min_size = Vector2i(360, 220)
 	# 选项越加越多，内容放进滚动区，小窗口也不会把按钮挤出屏幕。
 	var scroll := ScrollContainer.new()
-	scroll.custom_minimum_size = Vector2(400, 540)
+	scroll.custom_minimum_size = Vector2(400, 350)
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	_playtest_dialog.add_child(scroll)
 	var box := VBoxContainer.new()
@@ -2346,17 +2656,19 @@ func _build_playtest_dialog() -> void:
 	box.add_theme_constant_override("separation", 10)
 	scroll.add_child(box)
 	_playtest_rate = _playtest_spin_row(box, "倍速", 0.5, 2.0, 0.05, 1.0, "×")
+	_playtest_rate.tooltip_text = "试玩和编辑器试听都按这个速度走；声音不变调（每个新倍速首次生成缓存）；局中修改在重开本局后生效；只对本次运行有效"
 	_playtest_flow = _playtest_spin_row(box, "流速", 0.05, 3.0, 0.01, 1.0, "×")
 	_playtest_star = _playtest_spin_row(box, "星速", 0.5, 2.0, 0.05, 1.0, "×")
 	_playtest_cursor = _playtest_spin_row(box, "光标大小", 0.5, 2.0, 0.05, 1.0, "×")
 	_playtest_offset = _playtest_spin_row(box, "判定偏移", -200.0, 200.0, 1.0, 0.0, "ms")
 	_playtest_latency = _playtest_spin_row(box, "输出延迟", 0.0, 250.0, 1.0, 0.0, "ms")
 	_playtest_latency.tooltip_text = "0 = 用驱动报告值；>0 = 强制覆盖（可升可降）。驱动明显不准时才手动填"
-	var calibrate := Button.new()
-	calibrate.text = "校准判定偏移…"
-	calibrate.tooltip_text = "① 跟声音点 8 次 或 ② 跟脉冲点 8 次（二选一）→ 写「判定偏移」"
-	calibrate.pressed.connect(_open_calibration)
-	box.add_child(calibrate)
+	var calib_hint := Label.new()
+	calib_hint.text = "判定偏移校准在「设置 → 校准」里（8 次点击后自动写回）"
+	calib_hint.add_theme_font_size_override("font_size", 11)
+	calib_hint.add_theme_color_override("font_color", UITheme.MUTED)
+	calib_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	box.add_child(calib_hint)
 	_playtest_dynamic = CheckBox.new()
 	_playtest_dynamic.text = "动态 offset（局内自动校准，≤±50ms）"
 	_playtest_dynamic.tooltip_text = "至少 8 次命中后，每次命中按偏差的 5% 自动微调判定偏移"
@@ -2365,6 +2677,10 @@ func _build_playtest_dialog() -> void:
 	_playtest_auto.text = "AUTO 自动演示（游戏内 F8 切换）"
 	_playtest_auto.tooltip_text = "自动完美演奏所有音符，用来快速看谱面；结算会标注 AUTO"
 	box.add_child(_playtest_auto)
+	_playtest_mouse = CheckBox.new()
+	_playtest_mouse.text = "鼠标左右键算 Tap"
+	_playtest_mouse.tooltip_text = "关掉后左右键不参与判定；鼠标移动、滚轮 Seek 照常（暂停菜单也能改）"
+	box.add_child(_playtest_mouse)
 	_playtest_bias = Label.new()
 	_playtest_bias.text = "上次平均偏差 +0.0ms"
 	_playtest_bias.add_theme_font_size_override("font_size", 11)
@@ -2372,25 +2688,21 @@ func _build_playtest_dialog() -> void:
 	box.add_child(_playtest_bias)
 	box.add_child(HSeparator.new())
 	var open_settings := Button.new()
-	open_settings.text = "画质 / 界面 / 音频设置…"
+	open_settings.text = "画质 / 界面 / 音频 / 校准设置…"
 	open_settings.tooltip_text = "统一设置窗口：画质、界面、音频与校准"
 	open_settings.pressed.connect(_open_settings)
 	box.add_child(open_settings)
-	var trace_row := HBoxContainer.new()
-	box.add_child(trace_row)
-	var trace_label := Label.new()
-	trace_label.text = "轨迹颜色"
-	trace_label.custom_minimum_size = Vector2(64, 0)
-	UITheme.style_mono(trace_label, 12, UITheme.MUTED)
-	trace_row.add_child(trace_label)
-	_playtest_trace_color = ColorPickerButton.new()
-	_playtest_trace_color.edit_alpha = false
-	_playtest_trace_color.custom_minimum_size = Vector2(0, 26)
-	_playtest_trace_color.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	trace_row.add_child(_playtest_trace_color)
-	trace_row.visible = false
+	# 底部只留两种开始方式：继续游玩（播放头）、从头开始玩；
+	# 试玩中从暂停菜单打开时只剩「完成」。
+	_playtest_start_button = _playtest_dialog.add_button("从头开始玩", true, "start_from_beginning")
 	add_child(_playtest_dialog)
 	_playtest_dialog.confirmed.connect(_begin_playtest_with_settings)
+	_playtest_dialog.custom_action.connect(func(action: StringName) -> void:
+		if String(action) == "start_from_beginning":
+			_playtest_from_start = true
+			_playtest_dialog.hide()
+			_begin_playtest_with_settings()
+	)
 	# × 或 Esc 关闭时同样保留设置（只保存，不开始试玩）。
 	_playtest_dialog.canceled.connect(_commit_playtest_settings)
 
@@ -2437,19 +2749,20 @@ func _commit_playtest_settings() -> void:
 		_app.dynamic_offset = _playtest_dynamic.button_pressed
 	if _playtest_auto != null:
 		_app.playtest_auto = _playtest_auto.button_pressed
-	if _playtest_trace_color != null:
-		_app.trace_color = _playtest_trace_color.color
+	if _playtest_mouse != null:
+		_app.mouse_keys = _playtest_mouse.button_pressed
 	_app.save_settings()
 	_preview.flow_scale = _app.flow_scale
 	_preview.star_speed = _app.star_speed
-	_preview.trace_color = _app.trace_color
+	_preview.playback_rate = _rate
 	_preview.cursor_scale = _app.cursor_scale
 	_preview.request_redraw()
 	# 试玩中从暂停菜单改设置：直接应用到正在跑的预览。
 	if _playtest != null:
+		# 倍速不即时改：写进下一局，重开本局才换速度。
+		_playtest.next_playback_rate = _rate
 		_playtest._preview.flow_scale = _app.flow_scale
 		_playtest._preview.star_speed = _app.star_speed
-		_playtest._preview.trace_color = _app.trace_color
 		_playtest._preview.cursor_scale = _app.cursor_scale
 		_playtest._preview.request_redraw()
 	if _editor_flow_spin != null:
@@ -2491,11 +2804,13 @@ func _start_playtest(from_start: bool) -> void:
 	_playtest = Playtest.new()
 	_playtest.bench_mode = "--bench" in OS.get_cmdline_user_args()
 	_playtest.auto_play = bool(_app.playtest_auto) or "--auto" in OS.get_cmdline_user_args()
+	_playtest.next_playback_rate = _rate
 	add_child(_playtest)
 	_playtest.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_playtest.setup(_app.chart, 0.0 if from_start else _app.playhead_beat, _app.chart_path)
 	_playtest.exit_requested.connect(_end_playtest)
 	_playtest.settings_requested.connect(_open_settings)
+	_playtest.playtest_settings_requested.connect(func() -> void: _open_playtest_setup(false))
 	_playtest.replay_requested.connect(func(data: Replay) -> void: _start_replay.call_deferred(data))
 
 
@@ -2518,6 +2833,7 @@ func _start_replay(data: Replay) -> void:
 	_playtest.setup(_app.chart, data.start_beat, _app.chart_path)
 	_playtest.exit_requested.connect(_end_playtest)
 	_playtest.settings_requested.connect(_open_settings)
+	_playtest.playtest_settings_requested.connect(func() -> void: _open_playtest_setup(false))
 	_playtest.replay_requested.connect(func(next: Replay) -> void: _start_replay.call_deferred(next))
 
 
@@ -2547,7 +2863,7 @@ func _input(event: InputEvent) -> void:
 		if typing and event.keycode != KEY_F5 and event.keycode != KEY_F6:
 			return
 		if _canvas != null and _canvas.has_pending_seek() and event.keycode in [KEY_W, KEY_S]:
-			_canvas.set_pending_seek_orientation(0 if event.keycode == KEY_W else 1)
+			_canvas.set_pending_seek_orientation(1 if event.keycode == KEY_W else 0)
 			accept_event()
 			return
 		# While a numeric editor (SpinBox or its inner LineEdit) has focus, let
@@ -2595,7 +2911,7 @@ func _input(event: InputEvent) -> void:
 				_open_playtest_setup(event.shift_pressed)
 				accept_event()
 			KEY_F6:
-				_inspector.current_tab = 5
+				_inspector.current_tab = 3
 				accept_event()
 			KEY_H:
 				_app.hud_visible = not _app.hud_visible
@@ -2623,7 +2939,7 @@ func _input(event: InputEvent) -> void:
 				accept_event()
 			KEY_V:
 				if event.ctrl_pressed and event.shift_pressed:
-					_inspector.current_tab = 4
+					_inspector.current_tab = 2
 					_show_toast("视频属性在「视图/设置」页；offset / FPS / 透明度 / 隐藏都在那里。", "info")
 					accept_event()
 				elif event.ctrl_pressed:
@@ -2645,8 +2961,7 @@ func _input(event: InputEvent) -> void:
 				_app.rotate_selected_notes(90.0)
 				accept_event()
 			KEY_K:
-				_inspector.add_view_state_at_playhead()
-				_inspector.current_tab = 4
+				_open_ring_workspace()
 				accept_event()
 			KEY_DELETE:
 				_canvas._delete_selection()

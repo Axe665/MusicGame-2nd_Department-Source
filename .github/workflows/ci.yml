@@ -1,0 +1,45 @@
+name: CI
+
+# PR 到 main 和 push 到 main 都跑；ruleset 把 tests 设成必需检查。
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Godot 4.7.2
+        run: |
+          curl -fsSL -o /tmp/godot.zip \
+            https://github.com/godotengine/godot/releases/download/4.7.2-stable/Godot_v4.7.2-stable_linux.x86_64.zip
+          mkdir -p "$HOME/godot"
+          unzip -q /tmp/godot.zip -d "$HOME/godot"
+          sudo ln -sf "$HOME/godot/Godot_v4.7.2-stable_linux.x86_64" /usr/local/bin/godot
+          godot --version
+
+      # 有 ffmpeg 才能真跑 atempo / 转码用例，否则它们被 has_ffmpeg 守卫跳过。
+      - name: Ensure ffmpeg
+        run: command -v ffmpeg || (sudo apt-get update && sudo apt-get install -y ffmpeg)
+
+      # .godot/ 没进仓库，先导入资源再跑测试。
+      - name: Import assets
+        run: godot --headless --path . --import
+
+      - name: test_runner
+        run: godot --headless --path . --script res://tests/test_runner.gd
+
+      - name: path_judgement
+        run: godot --headless --path . --script res://tests/path_judgement.gd
+
+      - name: sfx_playback
+        run: godot --headless --path . --script res://tests/sfx_playback.gd

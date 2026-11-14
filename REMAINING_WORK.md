@@ -69,10 +69,14 @@
 - [x] adxdls 目录、搜索、版本/曲风筛选、下载、难度选择、curl 超时。
 - [x] majdata 搜索、下载、难度选择、curl 绕过 Cloudflare。
 - [x] 实时下载进度：KB / 总大小 / 百分比 + 进度条。
+- [x] 卡片列表：封面、曲名/艺术家、难度色块、收藏、详情、分页（30 条/页）。
+- [x] adxdls 按页懒加载封面 + maidata 等级，落盘缓存。
+- [x] BGA 可选下载（adxdls pv.mp4 / majdata /video），失败不阻断导入。
+- [x] majdata 分页（上一页 / 下一页 / 页码）。
+- [x] 收藏持久化 + 只看收藏。
 
 未完成：
 
-- [ ] majdata 分页（目前只 page 0）。
 - [ ] majdata 按等级/标签筛选。
 - [x] 下载百分比进度（HEAD Content-Length + 后台 curl 轮询）。
 - [ ] 失败重试 UI / 取消下载。

@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>六类音符</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:1200px;height:760px;overflow:hidden}
+body{background:#FAF7F2;color:#1F1B18;font-family:"Noto Sans CJK SC",sans-serif;padding:40px 48px 0}
+.k{font-family:"DejaVu Sans Mono",monospace;font-size:12px;letter-spacing:4px;color:#9A8C7A}
+h1{font-size:26px;margin-top:8px;font-weight:700}
+.sub{font-size:13.5px;color:#6B6259;margin-top:6px}
+.grid{margin-top:18px;display:grid;grid-template-columns:repeat(4,1fr);grid-template-rows:repeat(2,1fr);gap:12px;height:540px}
+.c{border:1px solid #E6DCCE;background:#FFFDFA;border-radius:8px;padding:10px 12px;display:flex;flex-direction:column}
+.n{font-family:"DejaVu Sans Mono",monospace;font-size:14px;font-weight:700;letter-spacing:1px}
+.d{font-size:12px;color:#6B6259;line-height:1.5;margin-top:6px}
+.foot{font-size:12px;color:#8A7F72;margin-top:12px}
+svg{display:block;margin:6px auto 0}
+</style></head><body>
+<div class="k">TAMAKI₃ / CHARTER · NOTE TYPES</div>
+<h1>六类音符与区域</h1>
+<div class="sub">卡组按玩家动作分类；判定只看时间、逻辑角度与接触范围，不看画面像素。</div>
+<div class="grid">
+  <div class="c"><div class="n" style="color:#C0392B">TAP</div><div class="d">时间 + 逻辑角度；定位后按键</div>
+    <svg width="220" height="120" viewBox="0 0 220 120"><circle cx="110" cy="66" r="46" fill="none" stroke="#D8CFC2" stroke-width="1.5"/>
+      <path d="M 78 34 A 46 46 0 0 1 142 34" fill="none" stroke="#C0392B" stroke-width="11" stroke-linecap="round"/></svg></div>
+  <div class="c"><div class="n" style="color:#C0392B">HOLD</div><div class="d">只判头部；持续保持键盘，松手时机定评级</div>
+    <svg width="220" height="120" viewBox="0 0 220 120"><circle cx="110" cy="66" r="46" fill="none" stroke="#D8CFC2" stroke-width="1.5"/>
+      <path d="M 110 20 A 46 46 0 0 1 110 112" fill="none" stroke="#1F1B18" stroke-width="8" opacity=".3"/>
+      <circle cx="110" cy="20" r="8" fill="#C0392B"/><circle cx="110" cy="112" r="5" fill="none" stroke="#1F1B18" stroke-width="2"/></svg></div>
+  <div class="c"><div class="n" style="color:#C0392B">PATH</div><div class="d">头尾判定；中段判定组 + 走廊，可跳 1 组</div>
+    <svg width="220" height="120" viewBox="0 0 220 120"><path d="M 40 92 C 70 24 150 24 184 86" fill="none" stroke="#1F1B18" stroke-width="3"/>
+      <path d="M 40 92 C 70 24 150 24 184 86" fill="none" stroke="#1F1B18" stroke-opacity=".12" stroke-width="26" stroke-linecap="round"/>
+      <circle cx="40" cy="92" r="7" fill="#C0392B"/><circle cx="184" cy="86" r="6" fill="none" stroke="#B07A3A" stroke-width="3"/></svg></div>
+  <div class="c"><div class="n" style="color:#2A7F7C">SEEK</div><div class="d">滚轮上／下擦带；只判 PERFECT / MISS，±200ms</div>
+    <svg width="220" height="120" viewBox="0 0 220 120"><circle cx="110" cy="66" r="46" fill="none" stroke="#D8CFC2" stroke-width="1.5" stroke-dasharray="4 6"/>
+      <path d="M 74 86 C 96 46 124 78 146 42" fill="none" stroke="#2A7F7C" stroke-width="12" stroke-opacity=".25" stroke-linecap="round"/>
+      <path d="M 74 86 C 96 46 124 78 146 42" fill="none" stroke="#2A7F7C" stroke-width="2.5" stroke-dasharray="5 5"/></svg></div>
+  <div class="c"><div class="n">ANCHOR</div><div class="d">成对双押：瞄准任一锚点，同按两键</div>
+    <svg width="220" height="120" viewBox="0 0 220 120"><circle cx="110" cy="66" r="46" fill="none" stroke="#D8CFC2" stroke-width="1.5"/>
+      <line x1="110" y1="28" x2="110" y2="104" stroke="#B07A3A" stroke-width="1.2" opacity=".55"/>
+      <rect x="103" y="14" width="14" height="14" fill="#B07A3A" transform="rotate(45 110 21)"/>
+      <rect x="103" y="97" width="14" height="14" fill="#B07A3A" transform="rotate(45 110 104)" opacity=".85"/></svg></div>
+  <div class="c"><div class="n" style="color:#B07A3A">BELL</div><div class="d">圆形范围，目标±130ms；设计上只记收集率</div>
+    <svg width="220" height="120" viewBox="0 0 220 120"><circle cx="110" cy="66" r="46" fill="none" stroke="#D8CFC2" stroke-width="1.5"/>
+      <circle cx="150" cy="34" r="18" fill="none" stroke="#B07A3A" stroke-width="1.5" stroke-dasharray="4 5"/>
+      <circle cx="150" cy="34" r="9" fill="#B07A3A"/></svg></div>
+  <div class="c"><div class="n" style="color:#C0392B">LIMIT</div><div class="d">Region；连续停留 200ms 断连，最长 4 拍</div>
+    <svg width="220" height="120" viewBox="0 0 220 120"><circle cx="110" cy="66" r="46" fill="none" stroke="#D8CFC2" stroke-width="1.5"/>
+      <path d="M 110 66 L 128 24 A 46 46 0 0 1 152 44 Z" fill="#C0392B" opacity=".3" stroke="#C0392B" stroke-width="1.5"/></svg></div>
+  <div class="c"><div class="n">BELL ≠ REGION</div><div class="d">Bell 是 type=bell 的 Note；只有 Limit 走 Region</div>
+    <svg width="220" height="120" viewBox="0 0 220 120">
+      <rect x="24" y="34" width="76" height="52" rx="6" fill="#FFF" stroke="#B07A3A"/>
+      <text x="62" y="66" text-anchor="middle" font-family="DejaVu Sans Mono" font-size="12" fill="#B07A3A">NOTE</text>
+      <rect x="120" y="34" width="76" height="52" rx="6" fill="#FFF" stroke="#C0392B"/>
+      <text x="158" y="66" text-anchor="middle" font-family="DejaVu Sans Mono" font-size="12" fill="#C0392B">REGION</text></svg></div>
+</div>
+<div class="foot">Path 的颜色来自配色组（tap / hold / path 单色槽），单条音符可以覆盖；Seek、Anchor 与区域使用固定分类色。</div>
+</body></html>

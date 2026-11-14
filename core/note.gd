@@ -37,7 +37,6 @@ var tail_angle: float = 0.0
 var tail_width: float = 45.0
 var hold: bool = true
 var hold_style: String = "straight"
-var move_px: float = 120.0
 var radius: float = 44.0
 var tolerance: float = 0.24
 var samples_per_beat: float = 4.0
@@ -58,11 +57,7 @@ var path_next_id: int = -1
 var path_chain: bool = false
 ## Transient: true when loaded from legacy Path JSON; ChartIO normalizes it.
 var path_legacy: bool = false
-var trace_style: String = "wipe"
 var space: String = "ring"
-var plane_x: float = 0.5
-var plane_y: float = 0.5
-var plane_radius: float = 0.10
 var trace_pts: Array[Dictionary] = []
 var anchor_pair: int = -1
 var pair_id: String = ""
@@ -72,7 +67,7 @@ var has_custom_color: bool = false
 var custom_color: Color = DEFAULT_PATH_COLOR
 var lock: bool = false
 var center_u: float = 0.25
-## Seek: 0 = inward (wheel up), 1 = outward (wheel down).
+## Seek: 0 = outward (wheel up), 1 = inward (wheel down).
 var seek_orien: int = 0
 ## Transient editor state: freshly placed Seek waiting for W/S orientation.
 var seek_pending: bool = false
@@ -93,7 +88,7 @@ func _init(p_type: String = "tap", p_beat: float = 0.0, p_angle: float = 0.0, p_
 	# 45°/180° 的历史值也在这里收敛，绘制、判定、编辑器看到的是同一个长度。
 	if type == "bell":
 		width = clampf(width if width > 0.0 else BELL_MAX_WIDTH, BELL_MIN_WIDTH, BELL_MAX_WIDTH)
-	if type == "path" or type == "trace":
+	if type == "path":
 		space = "plane"
 
 
@@ -364,8 +359,6 @@ func mirror_u() -> void:
 	angle = fposmod(angle + 180.0, 360.0)
 	tail_angle = fposmod(tail_angle + 180.0, 360.0)
 	center_u = fposmod(center_u + 0.5, 1.0)
-	plane_x = 1.0 - plane_x
-	plane_y = 1.0 - plane_y
 	for point in trace_pts:
 		# Plane/trace coordinates are centred on the ring: a 180° rotation
 		# negates both axes.
@@ -385,11 +378,6 @@ func to_dict() -> Dictionary:
 		"color": color,
 		"lock": lock,
 	}
-	if space != "ring" and type != "path" and type != "trace":
-		data["space"] = space
-		data["plane_x"] = snappedf(plane_x, 0.0001)
-		data["plane_y"] = snappedf(plane_y, 0.0001)
-		data["plane_radius"] = snappedf(plane_radius, 0.0001)
 	match type:
 		"tap":
 			if sized:
@@ -436,16 +424,6 @@ func to_dict() -> Dictionary:
 				data["head_y"] = snappedf(path_head_local.y, 0.0001)
 		"seek":
 			data["orien"] = 1 if seek_orien == 1 else 0
-		"trace":
-			data["end_beat"] = snappedf(end_beat, 0.001)
-			if wait_beat > 0.0:
-				data["wait"] = snappedf(wait_beat, 0.001)
-			data["move"] = snappedf(move_px, 0.001)
-			data["trace"] = _points_to_dict(trace_pts)
-			# 默认平面；贴环的 trace 必须显式写出来，老谱面才会被当成平面迁移。
-			data["space"] = space if space in ["ring", "plane"] else "plane"
-			if trace_style != "wipe":
-				data["trace_style"] = trace_style
 		"anchor":
 			if anchor_pair >= 0:
 				data["pair"] = anchor_pair
@@ -475,17 +453,12 @@ static func from_dict(raw: Dictionary) -> Note:
 	note.tail_width = float(raw.get("tail_width", note.width))
 	note.hold = bool(raw.get("hold", true))
 	note.hold_style = String(raw.get("hold_style", "straight"))
-	note.move_px = float(raw.get("move", 120.0))
 	note.radius = float(raw.get("radius", 24.0))
 	note.tolerance = float(raw.get("tolerance", 0.24))
 	note.samples_per_beat = float(raw.get("samples", 4.0))
 	note.path_speed = float(raw.get("speed", 1.0))
 	note.path_style = String(raw.get("path_style", "arc"))
-	note.trace_style = String(raw.get("trace_style", "wipe"))
-	note.space = String(raw.get("space", "plane" if note.type in ["path", "trace"] else "ring"))
-	note.plane_x = float(raw.get("plane_x", 0.5))
-	note.plane_y = float(raw.get("plane_y", 0.5))
-	note.plane_radius = float(raw.get("plane_radius", 0.10))
+	note.space = "plane" if note.type == "path" else "ring"
 	note.anchor_pair = int(raw.get("pair", -1))
 	note.pair_id = String(raw.get("pair_id", ""))
 	note.center_u = float(raw.get("center_u", 0.25))
@@ -503,8 +476,6 @@ static func from_dict(raw: Dictionary) -> Note:
 		note.path_gaps = _ranges_from_array(raw.get("path_gaps", []))
 	if raw.has("trace"):
 		note.trace_pts = _points_from_array(raw.get("trace", []))
-		if note.type == "trace" and not raw.has("space") and note.trace_style != "slider":
-			note._migrate_legacy_trace_points()
 	if note.type == "seek":
 		note.seek_orien = 1 if int(raw.get("orien", 0)) == 1 else 0
 		note.angle = 0.0
@@ -540,12 +511,6 @@ static func from_dict(raw: Dictionary) -> Note:
 
 ## 旧版 Trace 的 x/y 是 0..1 的屏幕比例（老预览窗直接按像素铺开）。
 ## 这里换算成“环半径 = 1.0”的设计坐标，并按 16:9 的舞台铺满环内。
-func _migrate_legacy_trace_points() -> void:
-	for point in trace_pts:
-		point["x"] = (float(point.get("x", 0.5)) - 0.5) * 3.2
-		point["y"] = (float(point.get("y", 0.5)) - 0.5) * 1.8
-
-
 static func _ranges_to_array(ranges: Array[Dictionary]) -> Array[Dictionary]:
 	var result: Array[Dictionary] = []
 	for item in ranges:
@@ -579,14 +544,35 @@ func to_code() -> String:
 	var a := _code_num(angle)
 	match type:
 		"tap":
+			# 旧格式 [id]tap(beat,angle)；宽度/大小 Tap 只在非默认时追加。
+			if sized:
+				return "[%d]tap(%s,%s,%s,1,%s)" % [id, b, a, _code_num(width), _code_num(size_ratio)]
+			if not is_equal_approx(width, 60.0):
+				return "[%d]tap(%s,%s,%s)" % [id, b, a, _code_num(width)]
 			return "[%d]tap(%s,%s)" % [id, b, a]
 		"hold":
+			# 旧格式 [id]hold(beat,end,angle)；非默认宽度追加第 4 段。
+			if not is_equal_approx(width, 60.0):
+				return "[%d]hold(%s,%s,%s,%s)" % [id, b, _code_num(end_beat), a, _code_num(width)]
 			return "[%d]hold(%s,%s,%s)" % [id, b, _code_num(end_beat), a]
 		"seek":
 			return "[%d]seek(%s,%d)" % [id, b, 1 if seek_orien == 1 else 0]
 		"anchor":
+			if anchor_pair >= 0:
+				return "[%d]anchor(%s,%s,%s,%d)" % [id, b, a, pair_id, anchor_pair]
 			return "[%d]anchor(%s,%s,%s)" % [id, b, a, pair_id]
 		"bell":
+			# 旧格式 [id]bell(beat,angle)；弧宽/半径非默认时追加，半径需要宽度占位。
+			var bell_width_value := bell_width()
+			var bell_radius_value := snappedf(radius, 0.001)
+			var has_width := not is_equal_approx(bell_width_value, BELL_MAX_WIDTH)
+			var has_radius := not is_equal_approx(bell_radius_value, 26.0)
+			if has_width and has_radius:
+				return "[%d]bell(%s,%s,%s,%s)" % [id, b, a, _code_num(bell_width_value), _code_num(bell_radius_value)]
+			if has_width:
+				return "[%d]bell(%s,%s,%s)" % [id, b, a, _code_num(bell_width_value)]
+			if has_radius:
+				return "[%d]bell(%s,%s,%s,%s)" % [id, b, a, _code_num(BELL_MAX_WIDTH), _code_num(bell_radius_value)]
 			return "[%d]bell(%s,%s)" % [id, b, a]
 		"path":
 			return "[%d]path{%s}" % [id, path_part_code()]
@@ -626,10 +612,18 @@ static func from_code(code: String) -> Note:
 		"tap":
 			note.beat = float(parts[0]) if parts.size() > 0 else 0.0
 			note.angle = float(parts[1]) if parts.size() > 1 else 0.0
+			if parts.size() > 2:
+				note.width = float(parts[2])
+			if parts.size() > 3:
+				note.sized = int(parts[3]) == 1
+			if parts.size() > 4:
+				note.size_ratio = clampf(float(parts[4]), SIZED_TAP_MIN, SIZED_TAP_MAX)
 		"hold":
 			note.beat = float(parts[0]) if parts.size() > 0 else 0.0
 			note.end_beat = float(parts[1]) if parts.size() > 1 else note.beat
 			note.angle = float(parts[2]) if parts.size() > 2 else 0.0
+			if parts.size() > 3:
+				note.width = float(parts[3])
 		"seek":
 			note.beat = float(parts[0]) if parts.size() > 0 else 0.0
 			note.end_beat = note.beat
@@ -638,15 +632,22 @@ static func from_code(code: String) -> Note:
 			note.width = 360.0
 		"anchor":
 			note.beat = float(parts[0]) if parts.size() > 0 else 0.0
+			note.end_beat = note.beat
 			note.angle = float(parts[1]) if parts.size() > 1 else 0.0
 			note.pair_id = parts[2].strip_edges() if parts.size() > 2 else ""
 			note.width = 0.0
+			if parts.size() > 3:
+				note.anchor_pair = int(parts[3])
 		"bell":
 			note.beat = float(parts[0]) if parts.size() > 0 else 0.0
+			note.end_beat = note.beat
 			note.angle = float(parts[1]) if parts.size() > 1 else 0.0
+			if parts.size() > 2:
+				note.width = float(parts[2])
 			note.center_u = fposmod(note.angle / 360.0, 1.0)
 			note.radius = 26.0
-			note.width = 0.0
+			if parts.size() > 3:
+				note.radius = float(parts[3])
 		_:
 			return null
 	return note

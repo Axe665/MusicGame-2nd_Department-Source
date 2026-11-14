@@ -33,7 +33,7 @@ var _read_ok: bool = false
 
 func _ready() -> void:
 	_app = get_node_or_null("/root/App")
-	title = "导入歌曲 · 自动识别 BPM / offset"
+	title = "导入歌曲：自动识别 BPM / offset"
 	ok_button_text = "应用"
 	min_size = Vector2i(520, 300)
 	exclusive = true
@@ -214,14 +214,20 @@ func _populate() -> void:
 		if _app != null and _app.chart != null:
 			_bpm_spin.set_value_no_signal(_app.chart.timing.bpm_at(0.0))
 			_offset_spin.set_value_no_signal(_app.chart.offset_ms)
-	_measure_playback()
+	await _measure_playback()
 	_refresh_checks()
 
 
 func _measure_playback() -> void:
 	_stream_ms = -1.0
 	_stream_error = ""
-	var prepared := MediaIO.prepare_audio(_path)
+	var prepared := _path
+	if not MediaIO.is_native_audio(_path) and not FileAccess.file_exists(MediaIO.audio_cache_path(_path)):
+		# 非原生格式先带状态栏异步转码，别把主线程压在 ffmpeg 上。
+		_status.text = "转码音频：%s" % _path.get_file()
+		prepared = await MediaIO.prepare_audio_async(_path, get_tree())
+	else:
+		prepared = MediaIO.prepare_audio(_path)
 	if prepared.is_empty():
 		_stream_error = MediaIO.last_error
 		return
@@ -248,13 +254,13 @@ func _refresh_checks() -> void:
 	var duration_ok := (decoded_ms > 0.0 and _stream_ms > 0.0
 		and absf(_stream_ms - decoded_ms) <= maxf(200.0, decoded_ms * 0.01))
 	_read_ok = bpm_ok and offset_ok and duration_ok
-	var checks := "BPM %s · offset %s · 时长 %s" % [
+	var checks := "BPM %s，offset %s，时长 %s" % [
 		"通过" if bpm_ok else "失败",
 		"通过" if offset_ok else "失败",
 		"通过" if duration_ok else "失败",
 	]
 	var confidence := int(round(float(_result.get("confidence", 0.0)) * 100.0))
-	var detail := "置信度 %d%% · 匹配 %d 拍 · 解码 %.2fs / 播放 %.2fs\n%s" % [
+	var detail := "置信度 %d%%，匹配 %d 拍，解码 %.2fs / 播放 %.2fs\n%s" % [
 		confidence, int(_result.get("beats", 0)),
 		decoded_ms / 1000.0, maxf(0.0, _stream_ms) / 1000.0, checks,
 	]

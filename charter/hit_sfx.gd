@@ -4,7 +4,7 @@ extends Node
 ## Shared hit-sound pool for editor playback and playtest.
 
 const VOLUME_DB := -3.0
-const KIND_DB := {"don": -3.0, "kat": -3.5, "hold_end": -4.0, "path": -3.5, "anchor": -2.0, "bell": -4.0, "trace": -5.0, "tail": -3.5, "slide": 0.0}
+const KIND_DB := {"don": -3.0, "kat": -3.5, "hold_end": -4.0, "path": -3.5, "anchor": -2.0, "bell": -4.0, "tail": -3.5, "slide": 0.0}
 const STYLE_PITCH := {"default": 1.0, "crisp": 1.18, "deep": 0.84}
 const STYLE_DB := {"default": 0.0, "crisp": -1.0, "deep": 1.5}
 const PATHS := {
@@ -14,7 +14,6 @@ const PATHS := {
 	"anchor": "res://audio/sfx/anchor.wav",
 	"kat": "res://audio/sfx/tap_kat.wav",
 	"bell": "res://audio/sfx/bell.ogg",
-	"trace": "res://audio/sfx/trace.wav",
 	"tail": "res://audio/sfx/path_tail.wav",
 	# 星星可以开始划的提示音（比 path 头音更高更亮）。
 	"slide": "res://audio/sfx/slide.wav",

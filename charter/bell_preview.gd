@@ -19,23 +19,11 @@ func set_arc_width(value: float) -> void:
 
 
 func _draw() -> void:
-	var t := clampf((arc_width - Note.BELL_MIN_WIDTH) / (Note.BELL_MAX_WIDTH - Note.BELL_MIN_WIDTH), 0.0, 1.0)
-	var span := lerpf(52.0, maxf(52.0, size.x - 28.0), t)
-	var half := minf(15.0, (size.y - 16.0) * 0.36)
-	var p := size * Vector2(0.5, 0.46)
-	_key(p, span, half)
-	draw_string(UITheme.mono_font(), Vector2(10.0, size.y - 6.0), "%.0f°" % arc_width,
+	var center := Vector2(size.x * 0.38, size.y * 0.48)
+	var rx := clampf(size.x * 0.20, 56.0, 90.0)
+	var ry := minf(30.0, size.y * 0.34)
+	NoteGlyph.ring(self, center, rx, ry, Color(1, 1, 1, 0.14), 1.4, 48)
+	var span := clampf(arc_width, Note.BELL_MIN_WIDTH, Note.BELL_MAX_WIDTH)
+	NoteGlyph.bell_band(self, center, rx, ry, 90.0 - span * 0.5, 90.0 + span * 0.5, 9.0, 5.0)
+	draw_string(UITheme.mono_font(), Vector2(center.x + rx + 12.0, center.y + 4.0), "%.0f°" % arc_width,
 		HORIZONTAL_ALIGNMENT_LEFT, -1, 11, UITheme.MUTED)
-
-
-func _key(p: Vector2, span: float, half: float) -> void:
-	_bar(p, span, half + 5.0, Color(UITheme.KEY_YELLOW.r, UITheme.KEY_YELLOW.g, UITheme.KEY_YELLOW.b, 0.10))
-	_bar(p, span, half + 2.0, Color(0, 0, 0, 0.5))
-	_bar(p, span, half, Color(1, 1, 1, 0.94))
-	_bar(p, span, half * 0.62, UITheme.KEY_YELLOW)
-
-
-func _bar(p: Vector2, span: float, half: float, color: Color) -> void:
-	draw_rect(Rect2(p + Vector2(-span * 0.5, -half), Vector2(span, half * 2.0)), color)
-	draw_circle(p + Vector2(-span * 0.5, 0.0), half, color)
-	draw_circle(p + Vector2(span * 0.5, 0.0), half, color)

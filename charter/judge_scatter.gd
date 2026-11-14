@@ -93,6 +93,6 @@ func _draw() -> void:
 	var mean_y := mid - clampf(mean, -SPAN_MS, SPAN_MS) / SPAN_MS * half_height
 	draw_line(Vector2(left, mean_y), Vector2(right, mean_y), Color(1.0, 0.86, 0.35, 0.75), 1.2)
 	# 顶部信息：样本数 / 平均 / 时间范围
-	var info := "判定散布 %d 次 · 平均 %+.1fms · %s – %s" % [hits.size(), mean, _clock(0.0), _clock(span)]
+	var info := "判定散布 %d 次，平均 %+.1fms，%s – %s" % [hits.size(), mean, _clock(0.0), _clock(span)]
 	var info_w := mono.get_string_size(info, HORIZONTAL_ALIGNMENT_LEFT, -1, 10).x
 	draw_string(mono, Vector2(right - info_w, top - 5.0), info, HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(0.72, 0.78, 0.88))

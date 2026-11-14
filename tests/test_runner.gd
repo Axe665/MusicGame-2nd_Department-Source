@@ -8,6 +8,9 @@ func _initialize() -> void:
 	var tests := [
 		"test_timing",
 		"test_boundary_circle",
+		"test_boundary_vertices",
+		"test_boundary_keys_io",
+		"test_ring_compat_rules",
 		"test_boundary_batch",
 		"test_boundary_frame",
 		"test_live_edit_notifications",
@@ -17,8 +20,14 @@ func _initialize() -> void:
 		"test_demo_path_migration",
 		"test_legacy_path_chart_migration",
 		"test_seek_and_limit_code",
+		"test_note_width_code",
+		"test_note_flags_code",
+		"test_plane_tap_dropped",
 		"test_compact_chart_code",
 		"test_path_judgement_label_pos",
+		"test_judge_label_geometry",
+		"test_note_glyph_geometry",
+		"test_note_width_controls",
 		"test_path_chain_code",
 		"test_path_chain_judgement",
 		"test_path_erase_overlap",
@@ -50,6 +59,9 @@ func _initialize() -> void:
 		"test_note_span_defaults",
 		"test_judgement_text_font",
 		"test_playtest_countdown",
+		"test_background_layering",
+		"test_video_direct_decode",
+		"test_osu_browser_alignment",
 		"test_hold_stack_alpha",
 		"test_osu_taiko_import",
 		"test_osu_taiko_flow",
@@ -103,10 +115,16 @@ func _initialize() -> void:
 		"test_import_window_set",
 		"test_bpm_change_approach",
 		"test_osu_std_filter",
+		"test_chart_browser_helpers",
 		"test_path_slide_start",
 		"test_hold_seam_interval",
 		"test_judge_scatter",
+		"test_mouse_button_input",
+		"test_osu_star_color",
+		"test_osu_filters",
+		"test_osu_pill_rows",
 		"test_audio_clock",
+		"test_audio_clock_rate",
 		"test_calibration_offset",
 		"test_chart_offset_for_bias",
 		"test_audio_buffer_override",
@@ -215,6 +233,131 @@ func test_boundary_circle() -> bool:
 	return true
 
 
+func test_boundary_vertices() -> bool:
+	var shape := BoundaryShape.circle("S0", 330.0, 8)
+	eq(shape.vertex_count(), 8, "circle preset exposes 8 vertices")
+	# 拖顶点：相邻两段一起动，环不断接。
+	shape.set_vertex(0, Vector2(400, 0))
+	near(shape.vertices()[0].distance_to(Vector2(400, 0)), 0.0, 0.0001, "vertex drag moves the vertex")
+	near(shape.point_at(0.0).point.distance_to(Vector2(400, 0)), 0.0, 0.0001, "seam follows the dragged vertex")
+	eq(shape.validate().size(), 0, "dragged vertex ring still validates")
+	# 加点不改轮廓：新顶点落在原来的边上。
+	var before: Vector2 = shape.point_at(0.37).point
+	ok(shape.insert_vertex(2), "vertex insert succeeds")
+	eq(shape.vertex_count(), 9, "vertex insert adds one vertex")
+	near(shape.point_at(0.37).point.distance_to(before), 0.0, 0.01, "vertex insert keeps the outline")
+	eq(shape.validate().size(), 0, "inserted ring still validates")
+	# 删点只合并那个角。
+	var vertices_before := shape.vertices()
+	ok(shape.remove_vertex(4), "vertex remove succeeds")
+	eq(shape.vertex_count(), 8, "vertex remove drops one vertex")
+	near(shape.vertices()[0].distance_to(vertices_before[0]), 0.0, 0.0001, "other vertices stay put")
+	# 凹形允许保存。
+	shape.set_vertex(3, Vector2(60, 60))
+	eq(shape.validate().size(), 0, "concave outline is allowed")
+	# 超过 48 段的老谱面降到 48；32 段保持原样。
+	var legacy := BoundaryShape.circle("L", 330.0, 64)
+	legacy.normalize()
+	eq(legacy.vertex_count(), 48, "over-dense shape downsamples to 48")
+	var mid := BoundaryShape.circle("M", 330.0, 32)
+	mid.normalize()
+	eq(mid.vertex_count(), 32, "32-segment shape keeps its detail")
+	eq(legacy.validate().size(), 0, "downsampled shape validates")
+	# 缺口在插入顶点后仍然存在。
+	var gapped := BoundaryShape.circle("G", 330.0, 8)
+	gapped.set_gap(0, true)
+	gapped.insert_vertex(0)
+	var gaps := 0
+	for i in gapped.vertex_count():
+		if gapped.segment_has_gap(i):
+			gaps += 1
+	eq(gaps, 2, "gap splits into two gaps when inserting")
+	return true
+
+
+func test_boundary_keys_io() -> bool:
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	chart.shapes["S1"] = BoundaryShape.circle("S1", 200.0, 12)
+	chart.shape_keys = [
+		{"beat": 2.0, "shape_id": "S1", "easing": "linear"},
+		{"beat": 4.0, "shape_id": "S0", "easing": "linear"},
+	]
+	# 首帧之前从默认形状渐变过去：S0 330 → S1 200。
+	near(BoundaryRuntime.eval_point(chart, 0.0, 1.0).point.x, 265.0, 0.5, "intro morphs default → first key")
+	near(BoundaryRuntime.eval_point(chart, 0.0, 3.0).point.x, 265.0, 0.5, "keyframe morph midpoint")
+	near(BoundaryRuntime.eval_point(chart, 0.0, 5.0).point.x, 330.0, 0.5, "last key holds after the end")
+	var data := ChartIO.chart_to_dict(chart)
+	ok(data.has("boundary_keys"), "keys are written to json")
+	ok(data.has("events") and (data["events"] as Array).size() >= 2, "legacy events are dual-written")
+	var back := ChartIO.from_json(ChartIO.to_json(chart))
+	eq(back.shape_keys.size(), 2, "keys survive the roundtrip")
+	near(BoundaryRuntime.eval_point(back, 0.0, 3.0).point.x, 265.0, 0.5, "roundtrip keeps the morph")
+	# 旧谱只有事件：载入时迁移成关键帧。
+	var legacy := {
+		"format": "tamaki3-chart",
+		"version": 1,
+		"timing": {"points": [{"beat": 0.0, "bpm": 120.0, "beats_per_bar": 4}]},
+		"shapes": [{"id": "S0", "closed": true, "segments": []}],
+		"events": [
+			{"id": "E0", "start_beat": 4.0, "end_beat": 8.0, "target_u0": 0.0, "target_u1": 1.0,
+				"from_shape": "S0", "to_shape": "S0", "easing": "linear", "end_behavior": "hold",
+				"restore_duration": 0.0, "restore_easing": "in-out"},
+		],
+	}
+	var migrated := ChartIO.chart_from_dict(legacy)
+	ok(migrated != null, "legacy event chart loads")
+	if migrated != null:
+		eq(migrated.shape_keys.size(), 2, "legacy events become keys")
+		eq(migrated.events.size(), 0, "legacy events are cleared after migration")
+	return true
+
+
+func test_ring_compat_rules() -> bool:
+	# 旧谱的局部 u 事件：拒绝打开，而不是悄悄改成整环。
+	var partial := {
+		"format": "tamaki3-chart",
+		"version": 1,
+		"timing": {"points": [{"beat": 0.0, "bpm": 120.0, "beats_per_bar": 4}]},
+		"shapes": [{"id": "S0", "closed": true, "segments": []}],
+		"events": [
+			{"id": "E0", "start_beat": 4.0, "end_beat": 8.0, "target_u0": 0.25, "target_u1": 0.75,
+				"from_shape": "S0", "to_shape": "S0", "easing": "linear", "end_behavior": "hold",
+				"restore_duration": 0.0, "restore_easing": "in-out"},
+		],
+	}
+	var rejected := ChartIO.chart_from_dict(partial)
+	ok(rejected == null, "partial-u legacy event chart is rejected")
+	ok(ChartIO.last_error.contains("局部形变"), "rejection explains the partial event")
+	# 旧段曲线：载入时降级为直线，并留下提示。
+	var curved := {
+		"format": "tamaki3-chart",
+		"version": 1,
+		"timing": {"points": [{"beat": 0.0, "bpm": 120.0, "beats_per_bar": 4}]},
+		"shapes": [{"id": "S0", "closed": true, "segments": [
+			{"u0": 0.0, "u1": 0.5, "x0": 0.0, "y0": 0.0, "x1": 100.0, "y1": 0.0, "ix": "si", "iy": "l"},
+			{"u0": 0.5, "u1": 1.0, "x0": 100.0, "y0": 0.0, "x1": 0.0, "y1": 0.0, "ix": "l", "iy": "l"},
+		]}],
+	}
+	var loaded := ChartIO.chart_from_dict(curved)
+	ok(loaded != null, "curved legacy chart loads")
+	if loaded != null:
+		ok(not loaded.load_warnings.is_empty(), "curve downgrade is reported")
+		eq(loaded.get_shape("S0").segments[0].ix, "l", "legacy curve becomes a straight segment")
+	# RingState：zoom/rotation 插值，tilt/ellipse 到关键帧瞬切。
+	var chart := Chart.new()
+	chart.view_states = [
+		ViewState.new(0.0, 1.0, 0.0, 0.0, 1.0, 0.0),
+		ViewState.new(4.0, 1.2, 20.0, 10.0, 1.2, 40.0),
+	]
+	var mid := ViewState.evaluate(chart.view_states, 2.0)
+	near(float(mid["zoom"]), 1.1, 0.001, "zoom interpolates")
+	near(float(mid["rotation"]), 20.0, 0.001, "rotation interpolates")
+	near(float(mid["tilt_x"]), 0.0, 0.001, "tilt steps on the left keyframe")
+	eq(float(mid["ellipse"]), 1.0, "ellipse steps on the left keyframe")
+	return true
+
+
 func test_boundary_batch() -> bool:
 	var chart := DemoChart.make_demo()
 	# Cover unordered segments, gaps, both morph directions and exact seams.
@@ -229,17 +372,14 @@ func test_boundary_batch() -> bool:
 			if (points[i].point as Vector2).distance_to(expected.point) > 0.00001 or points[i].gap != expected.gap:
 				matches = false
 	ok(matches, "batch boundary samples match point evaluation through morph and restore")
-	chart.events[0].target_u0 = 0.25
-	chart.events[0].target_u1 = 0.75
-	chart.events[0].end_behavior = "hold"
 	matches = true
-	for beat in [8.0, 9.0, 12.0, 12.5]:
+	for beat in [0.0, 4.0, 9.0, 12.2, 12.5, 20.0, 24.4]:
 		var points := BoundaryRuntime.eval_shape(chart, beat, 128)
 		for i in points.size():
 			var expected := BoundaryRuntime.eval_point(chart, float(i) / 128.0, beat)
 			if (points[i].point as Vector2).distance_to(expected.point) > 0.00001 or points[i].gap != expected.gap:
 				matches = false
-	ok(matches, "batch boundary samples preserve partial event and hold behavior")
+	ok(matches, "batch boundary samples match point evaluation across keyframes")
 	var shape := chart.get_default_shape()
 	var segment := shape.segment_at(0.125)
 	segment.p1 += Vector2(10, 0)
@@ -302,7 +442,8 @@ func test_live_edit_notifications() -> bool:
 	app.touch_chart()
 	app.finish_edit()
 	eq(counts.live, 2, "release flushes the final mouse position")
-	eq(counts.validation, 1, "release validates the committed chart")
+	app._process(0.2)
+	eq(counts.validation, 1, "release validates the committed chart once the debounce fires")
 	app.undo_chart()
 	near(app.chart.notes[0].angle, 0.0, 0.001, "drag remains one undo step")
 	app.redo_chart()
@@ -319,17 +460,9 @@ func test_live_edit_notifications() -> bool:
 func test_self_intersection() -> bool:
 	var circle := BoundaryShape.circle("C", 330.0, 32)
 	eq(circle.validate().size(), 0, "circle is simple and convex")
+	# 凹形（星形）现在允许保存，只拦自交。
 	var star := BoundaryShape.star("STAR", 380.0, 190.0, 5)
-	var star_issues := star.validate()
-	var non_convex := false
-	for message in star_issues:
-		if String(message).contains("非凸"):
-			non_convex = true
-	if non_convex:
-		passed += 1
-	else:
-		failed += 1
-		push_error("non-convex star was not rejected")
+	eq(star.validate().size(), 0, "concave star is allowed")
 	var bow := BoundaryShape.new()
 	bow.id = "BOW"
 	bow.closed = true
@@ -496,6 +629,89 @@ func test_seek_and_limit_code() -> bool:
 	return true
 
 
+func test_note_width_code() -> bool:
+	var sized_tap := Note.new("tap", 1.0, 90.0, 80.0)
+	sized_tap.id = 3
+	sized_tap.set_size_ratio(0.75)
+	eq(sized_tap.to_code(), "[3]tap(1.0,90.0,80.0,1,0.75)", "sized tap writes width and size")
+	var sized_back := Note.from_code(sized_tap.to_code())
+	ok(sized_back != null, "sized tap parses")
+	if sized_back != null:
+		near(sized_back.width, 80.0, 0.001, "sized tap keeps base width")
+		ok(sized_back.sized, "sized tap keeps sized flag")
+		near(sized_back.size_ratio, 0.75, 0.001, "sized tap keeps size ratio")
+		near(sized_back.arc_width(), 60.0, 0.001, "sized tap arc width is width x size")
+
+	var normal := Note.new("tap", 1.0, 90.0, 60.0)
+	normal.id = 4
+	eq(normal.to_code(), "[4]tap(1.0,90.0)", "normal tap stays compact")
+	var wide := Note.new("tap", 1.0, 90.0, 72.0)
+	wide.id = 5
+	eq(wide.to_code(), "[5]tap(1.0,90.0,72.0)", "width-only tap writes one extra field")
+	var wide_back := Note.from_code(wide.to_code())
+	if wide_back != null:
+		near(wide_back.width, 72.0, 0.001, "width-only tap keeps width")
+		ok(not wide_back.sized, "width-only tap stays unsized")
+
+	var hold := Note.new("hold", 2.0, 0.0, 48.0)
+	hold.id = 6
+	hold.end_beat = 4.0
+	eq(hold.to_code(), "[6]hold(2.0,4.0,0.0,48.0)", "wide hold writes width")
+	var hold_back := Note.from_code(hold.to_code())
+	if hold_back != null:
+		near(hold_back.width, 48.0, 0.001, "wide hold keeps width")
+
+	var bell := Note.new("bell", 3.0, 0.0, 27.0)
+	bell.id = 7
+	eq(bell.to_code(), "[7]bell(3.0,0.0,27.0,44.0)", "narrow bell writes width and radius")
+	var bell_back := Note.from_code(bell.to_code())
+	if bell_back != null:
+		near(bell_back.bell_width(), 27.0, 0.001, "narrow bell keeps width")
+		near(bell_back.radius, 44.0, 0.001, "narrow bell keeps radius")
+	var default_bell := Note.new("bell", 3.0, 0.0, 30.0)
+	default_bell.id = 8
+	default_bell.radius = 26.0
+	eq(default_bell.to_code(), "[8]bell(3.0,0.0)", "default bell stays compact")
+	var default_bell_back := Note.from_code(default_bell.to_code())
+	if default_bell_back != null:
+		near(default_bell_back.bell_width(), 30.0, 0.001, "default bell loads 30 degrees")
+	var radius_only_bell := Note.new("bell", 3.0, 0.0, 30.0)
+	radius_only_bell.id = 9
+	radius_only_bell.radius = 44.0
+	eq(radius_only_bell.to_code(), "[9]bell(3.0,0.0,30.0,44.0)", "radius-only bell uses a width placeholder")
+
+	var anchor := Note.new("anchor", 2.0, 90.0, 0.0)
+	anchor.id = 10
+	anchor.pair_id = "p1"
+	anchor.anchor_pair = 45
+	eq(anchor.to_code(), "[10]anchor(2.0,90.0,p1,45)", "anchor writes pair angle")
+	var anchor_back := Note.from_code(anchor.to_code())
+	if anchor_back != null:
+		eq(anchor_back.pair_id, "p1", "anchor keeps pair id")
+		eq(anchor_back.anchor_pair, 45, "anchor keeps pair angle")
+
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	sized_tap.id = 1
+	hold.id = 2
+	bell.id = 3
+	chart.notes = [sized_tap, hold, bell]
+	var loaded := ChartIO.from_json(ChartIO.to_json(chart))
+	ok(loaded != null, "compact chart with widths loads")
+	if loaded != null:
+		var by_id := {}
+		for note in loaded.notes:
+			by_id[note.id] = note
+		if by_id.has(1):
+			near(by_id[1].arc_width(), 60.0, 0.001, "json keeps sized tap arc width")
+		if by_id.has(2):
+			near(by_id[2].width, 48.0, 0.001, "json keeps hold width")
+		if by_id.has(3):
+			near(by_id[3].bell_width(), 27.0, 0.001, "json keeps bell width")
+			near(by_id[3].radius, 44.0, 0.001, "json keeps bell radius")
+	return true
+
+
 func test_path_judgement_label_pos() -> bool:
 	var bounds := Vector2(1600, 900)
 	var center := Vector2(800, 450)
@@ -511,6 +727,121 @@ func test_path_judgement_label_pos() -> bool:
 	var tight := Preview3D.path_label_pos(Vector2(1590, 450), center, Vector2(300, 200), block, ascent)
 	ok(tight.x >= 10.0 and tight.x + block.x <= 290.0, "star label stays inside a tight viewport")
 	ok(tight.y - ascent >= 10.0 and tight.y + block.y <= 190.0, "star label stays above the bottom edge")
+	return true
+
+
+func test_judge_label_geometry() -> bool:
+	var center := Vector2(800, 450)
+	var ring := Vector2(1250, 450)
+	var outer := Preview3D.judge_label_anchor(ring, center, 450.0, 30.0, true)
+	var inner := Preview3D.judge_label_anchor(ring, center, 450.0, 30.0, false)
+	near(outer.x, 1280.0, 0.5, "ring-out label sits outside the note")
+	near(inner.x, 1220.0, 0.5, "ring-in label sits inside the note")
+	near(outer.y, 450.0, 0.5, "ring label keeps the note angle")
+	# 同角度的第二条判定沿半径继续外推，不叠在第一条上。
+	var stacked := Preview3D.judge_label_anchor(ring, center, 450.0, 30.0, true, 22.0)
+	near(stacked.x, 1302.0, 0.5, "stacked ring label moves outward")
+	# 落点在圆心时退回环半径，不把字画到中心。
+	var fallback := Preview3D.judge_label_anchor(center, center, 100.0, 20.0, true)
+	near(fallback.x, 800.0, 0.5, "center fallback keeps x")
+	near(fallback.y, 330.0, 0.5, "center fallback uses ring radius and points up")
+	return true
+
+
+func test_note_glyph_geometry() -> bool:
+	var center := Vector2(50, 50)
+	var top := NoteGlyph.ellipse_point(center, 20, 10, 0)
+	near(top.x, 50.0, 0.01, "0deg sits at the top")
+	near(top.y, 40.0, 0.01, "0deg is above the center")
+	var right := NoteGlyph.ellipse_point(center, 20, 10, 90)
+	near(right.x, 70.0, 0.01, "90deg sits on the right")
+	near(right.y, 50.0, 0.01, "90deg keeps the center height")
+	var arc := NoteGlyph.ring_points(center, 20, 10, -20, 20, 8)
+	eq(arc.size(), 9, "arc points include both ends")
+	var sector := NoteGlyph.sector_polygon(center, 20, 10, -30, 30, 8)
+	eq(sector.size(), 10, "sector starts at the center plus the arc")
+	ok(sector[0] == center, "sector polygon starts at the ring center")
+	var annular := NoteGlyph.annular_sector_polygon(center, 20, 10, 0.5, -30, 30, 8)
+	eq(annular.size(), 18, "annular sector joins outer and inner arcs")
+	var normal := NoteGlyph.ring_normal(center, 20, 10, 0)
+	near(normal.y, -1.0, 0.01, "top normal points up")
+	eq(NotePalette.CARDS.size(), 7, "palette keeps seven note cards")
+	eq(String(NotePalette.CARDS[5].get("type", "")), "bell", "bell card stays in the palette")
+	return true
+
+
+func test_note_width_controls() -> bool:
+	ok(Inspector.shows_width_row("tap"), "tap shows the common width row")
+	ok(Inspector.shows_width_row("hold"), "hold shows the common width row")
+	ok(not Inspector.shows_width_row("bell"), "bell uses its own arc width row")
+	ok(Inspector.shows_length_row("tap"), "tap shows the length row")
+	ok(not Inspector.shows_length_row("hold"), "hold has no sized length")
+	return true
+
+
+func test_note_flags_code() -> bool:
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	var tap := Note.new("tap", 1.0, 90.0, 60.0)
+	tap.id = 1
+	tap.lock = true
+	chart.notes = [tap]
+	var data := ChartIO.chart_to_dict(chart)
+	ok(data.has("note_flags"), "locked notes use the note_flags side map")
+	var loaded := ChartIO.from_json(ChartIO.to_json(chart))
+	ok(loaded != null, "locked chart loads")
+	if loaded != null and not loaded.notes.is_empty():
+		ok(loaded.notes[0].lock, "lock survives the compact chart roundtrip")
+	# 紧凑代码丢不掉的字段走 note_extras，往返后必须还在。
+	var extras := Chart.new()
+	extras.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	var curved := Note.new("hold", 1.0, 0.0, 60.0)
+	curved.id = 1
+	curved.end_beat = 2.0
+	curved.hold_style = "curved"
+	curved.visual_pts = [{"db": 0.0, "da": 0.0, "x": 0.1, "y": 0.2}]
+	var plane_path := Note.new("path", 3.0, 0.0, 60.0)
+	plane_path.id = 2
+	plane_path.end_beat = 4.0
+	plane_path.tolerance = 0.31
+	plane_path.samples_per_beat = 6.0
+	plane_path.path_speed = 1.3
+	plane_path.path_gaps = [{"from": 0.2, "to": 0.3}]
+	plane_path.trace_pts = [{"x": 1.0, "y": 0.0, "db": 0.0}, {"x": 0.0, "y": 1.0, "db": 1.0}]
+	extras.notes = [curved, plane_path]
+	var extras_data := ChartIO.chart_to_dict(extras)
+	ok(extras_data.has("note_extras"), "lost fields go to the note_extras side map")
+	var extras_back := ChartIO.from_json(ChartIO.to_json(extras))
+	if extras_back != null:
+		for note in extras_back.notes:
+			if note.id == 1:
+				eq(note.hold_style, "curved", "hold style survives the roundtrip")
+				eq(note.visual_pts.size(), 1, "hold body survives the roundtrip")
+			elif note.id == 2:
+				near(note.tolerance, 0.31, 0.001, "path tolerance survives the roundtrip")
+				near(note.samples_per_beat, 6.0, 0.001, "path samples survive the roundtrip")
+				near(note.path_speed, 1.3, 0.001, "path speed survives the roundtrip")
+				eq(note.path_gaps.size(), 1, "path erase range survives the roundtrip")
+				eq(note.trace_pts.size(), 2, "path plane points survive the roundtrip")
+	return true
+
+
+func test_plane_tap_dropped() -> bool:
+	var data := {
+		"format": "tamaki3-chart",
+		"version": 1,
+		"timing": {"points": [{"beat": 0.0, "bpm": 120.0, "beats_per_bar": 4}]},
+		"notes": [
+			{"id": 1, "type": "tap", "beat": 1.0, "angle": 0.0, "width": 60.0, "space": "plane", "plane_x": 0.5, "plane_y": 0.5, "plane_radius": 0.1},
+			{"id": 2, "type": "tap", "beat": 2.0, "angle": 90.0, "width": 60.0},
+		],
+	}
+	var chart := ChartIO.chart_from_dict(data)
+	ok(chart != null, "legacy plane tap chart loads")
+	if chart != null:
+		eq(chart.notes.size(), 1, "legacy plane tap is dropped")
+		if not chart.notes.is_empty():
+			eq(chart.notes[0].id, 2, "ring tap survives")
 	return true
 
 
@@ -655,7 +986,6 @@ func test_style_presets() -> bool:
 	near(cursor.cursor_scale, 1.0, 0.0001, "cursor scale defaults to 1x")
 	cursor.free()
 	ok(Playtest.PATH_TAIL_RADIUS >= 180.0, "path tail judgement is forgiving")
-	ok(Playtest.TRACE_CONTACT_PX >= 50.0, "trace contact is forgiving")
 	eq(Playtest.BELL_WINDOW_MS, 130.0, "a gold note keeps a forgiving drag window")
 	eq(Preview3D.BELL_RADIAL_TOLERANCE, 55.0, "gold note presence keeps a 55px band")
 	eq(Playtest.PERFECT_MS, 65.0, "perfect window tightened")
@@ -674,7 +1004,7 @@ func test_style_presets() -> bool:
 	ok(not Playtest.hold_release_grace_alive(1000.0, 1000.0 + Playtest.HOLD_RELEASE_GRACE_MS),
 		"a release past the grace ends the hold")
 	near(Preview3D.end_fade_beats(120.0), 0.2, 0.0001, "0.1s of exit fade is 0.2 beats at 120 BPM")
-	eq(Playtest.BAD_MS, 250.0, "bad tier extends to 250ms")
+	eq(Playtest.BAD_MS, 200.0, "bad tier extends to 200ms")
 	return true
 
 
@@ -688,7 +1018,7 @@ func test_timing_stats() -> bool:
 	var tiers := Playtest.new()
 	eq(tiers._tier_for(150.0), "GOOD", "good tier stays at 170ms")
 	eq(tiers._tier_for(200.0), "BAD", "200ms late lands in the bad tier")
-	eq(tiers._tier_for(260.0), "MISS", "beyond 250ms is a miss")
+	eq(tiers._tier_for(210.0), "MISS", "beyond 200ms is a miss")
 	tiers.free()
 	eq(Playtest.DYNAMIC_SAMPLE_MIN, 8, "dynamic offset waits for 8 hits")
 	eq(Playtest.DYNAMIC_LIMIT_MS, 50.0, "dynamic offset is capped at 50ms")
@@ -703,6 +1033,7 @@ func test_position_judgement() -> bool:
 	eq(run._distance_to_polyline(Vector2(10, 20), PackedVector2Array([Vector2(10, 0)])), 20.0, "distance to a point note")
 	# 早按只认 EARLY_MS：更早的按键不进判定，避免乱按把后面的音符打掉。
 	eq(Playtest.HIT_WINDOW_MS, Playtest.BAD_MS, "late presses keep the BAD window")
+	eq(Playtest.LATE_PENALTY_MS, 40.0, "a late match pays 40ms so the next note wins ties")
 	eq(run._tier_for(-60.0), "PERFECT", "a 60ms early press is PERFECT")
 	eq(run._tier_for(-115.0), "GREAT", "the earliest accepted press is GREAT")
 	eq(run._tier_for(-260.0), "MISS", "a 260ms early press is outside the window")
@@ -762,6 +1093,42 @@ func test_press_assignment() -> bool:
 	live._assign_presses(ms, 4.0)
 	ok(live._press_assignments.size() == 1, "one press cannot be spent twice in a frame")
 	live.free()
+	# 双押 Anchor：命中连击 +2、两个准确率样本；失败整对只记 1 MISS。
+	var anchor_chart := DemoChart.make_empty({"bpm": 120.0})
+	anchor_chart.notes.clear()
+	var anchor_a := Note.new("anchor", 4.0, 0.0, 0.0)
+	anchor_a.id = 1
+	anchor_a.pair_id = "P"
+	anchor_a.anchor_pair = 0
+	var anchor_b := Note.new("anchor", 4.0, 180.0, 0.0)
+	anchor_b.id = 2
+	anchor_b.pair_id = "P"
+	anchor_b.anchor_pair = 0
+	anchor_chart.notes = [anchor_a, anchor_b]
+	var pair_run := Playtest.new()
+	pair_run._preview = preview
+	pair_run.chart = anchor_chart
+	pair_run._init_states()
+	var pair_ms := float(pair_run._states[1]["target_ms"])
+	var point_a := preview.note_head_screen(anchor_a, 4.0)
+	var point_b := preview.note_head_screen(anchor_b, 4.0)
+	pair_run._key_presses = [
+		{"time": pair_ms, "lo": pair_ms, "hi": pair_ms, "mouse": point_a, "key": 65},
+		{"time": pair_ms, "lo": pair_ms, "hi": pair_ms, "mouse": point_b, "key": 66},
+	]
+	pair_run._judge_anchor_pairs(pair_ms, 4.0)
+	eq(pair_run._combo, 2, "an anchor pair adds two combo")
+	eq(pair_run._hit_count, 2, "both anchors count as hits")
+	eq(pair_run._judged_total, 2, "both anchors count for accuracy")
+	pair_run.free()
+	var miss_run := Playtest.new()
+	miss_run._preview = preview
+	miss_run.chart = anchor_chart
+	miss_run._init_states()
+	miss_run._judge_anchor_pairs(pair_ms + Playtest.HIT_WINDOW_MS + 20.0, 4.0)
+	eq(miss_run._miss_count, 1, "a failed pair counts one miss")
+	eq(miss_run._judged_total, 1, "a failed pair counts one accuracy sample")
+	miss_run.free()
 	preview.free()
 	return true
 
@@ -783,11 +1150,60 @@ func test_press_space_priority() -> bool:
 	var late_steal := {"on_shape": false, "error": 35.0, "rank": 47.0, "distance": 0.0}
 	var upcoming := {"on_shape": false, "error": 40.0, "rank": 40.0, "distance": 0.0}
 	ok(Playtest.prefer_press_pair(upcoming, late_steal), "an upcoming note beats a late steal")
+	# 40ms 迟到代价的实际效果：20ms 晚于前一颗、40ms 早于后一颗时，按键归后一颗。
+	var late_previous := {"on_shape": false, "error": 20.0,
+		"rank": 20.0 + Playtest.LATE_PENALTY_MS, "distance": 0.0}
+	var early_next := {"on_shape": false, "error": 40.0, "rank": 40.0, "distance": 0.0}
+	ok(Playtest.prefer_press_pair(early_next, late_previous), "the upcoming note takes the press from a stale one")
 	# 刚命中后的额外按键不能提前吃下一颗。
 	ok(Playtest.press_is_stray(2020.0, 2095.0, 2000.0), "a stray press right after a hit is ignored")
 	ok(not Playtest.press_is_stray(2020.0, 2095.0, -1.0e9), "a normal press is not treated as stray")
 	ok(not Playtest.press_is_stray(2060.0, 2095.0, 2000.0), "a press inside the perfect window is kept")
 	ok(not Playtest.press_is_stray(2095.0, 2095.0, 2000.0), "an on-time press is kept")
+	# 滚轮方向门：上下交替永远凑不出有效方向，同向连滚照常。
+	ok(Playtest.seek_tick_allowed(0, -1, 0.0), "the first wheel tick always counts")
+	ok(Playtest.seek_tick_allowed(0, 0, 5.0), "same-direction ticks keep counting")
+	ok(not Playtest.seek_tick_allowed(0, 1, 79.0), "a reversal inside 80ms is ignored")
+	ok(Playtest.seek_tick_allowed(0, 1, 80.0), "a reversal after 80ms counts")
+	var alternating_ok := Playtest.seek_tick_allowed(0, -1, 0.0)
+	var prev := 0
+	for i in 8:
+		var dir := 1 - (i % 2)
+		if Playtest.seek_tick_allowed(dir, prev, 10.0):
+			alternating_ok = false
+		prev = dir
+	ok(alternating_ok, "alternating wheel ticks never pass the guard")
+	# 双押 Anchor：两个不同键、相差 ≤40ms 才成对，档次取较差的一次。
+	var two_keys := [
+		{"time": 995.0, "lo": 995.0, "hi": 995.0, "key": 65},
+		{"time": 1020.0, "lo": 1020.0, "hi": 1020.0, "key": 66},
+	]
+	var picked := Playtest._pick_anchor_pair(two_keys, 1000.0)
+	ok(not picked.is_empty(), "two keys within 40ms form an anchor pair")
+	eq(float(picked.get("error", 0.0)), 20.0, "the worse press decides the tier")
+	ok(Playtest._pick_anchor_pair([
+		{"time": 995.0, "lo": 995.0, "hi": 995.0, "key": 65},
+		{"time": 1045.0, "lo": 1045.0, "hi": 1045.0, "key": 66},
+	], 1000.0).is_empty(), "keys 50ms apart do not pair")
+	ok(Playtest._pick_anchor_pair([
+		{"time": 1000.0, "lo": 1000.0, "hi": 1000.0, "key": 65},
+		{"time": 1010.0, "lo": 1010.0, "hi": 1010.0, "key": 65},
+	], 1000.0).is_empty(), "the same physical key cannot double-press")
+	ok(Playtest._near_anchor(Vector2(10, 0), Vector2(0, 0), Vector2(300, 0), 140.0),
+		"aiming at either anchor counts")
+	ok(not Playtest._near_anchor(Vector2(150, 0), Vector2(0, 0), Vector2(300, 0), 140.0),
+		"the midpoint between two anchors counts for neither")
+	# 放置 Anchor 时一次生成同拍反向的一对。
+	var pair_chart := Chart.new()
+	var pair := pair_chart.make_anchor_pair(2.0, 30.0)
+	eq(pair.size(), 2, "placing an anchor creates a pair")
+	eq(pair[0].pair_id, pair[1].pair_id, "the pair shares one pairId")
+	near(JudgeMath.angle_distance(pair[0].angle, pair[1].angle), 180.0, 0.001, "the pair is opposite")
+	pair_chart.notes.append(pair[0])
+	pair_chart.notes.append(pair[1])
+	ok(pair_chart.anchor_partner(pair[0]) != null, "the pair resolves through the chart")
+	pair[1].angle = 95.0
+	ok(pair_chart.anchor_partner(pair[0]) != null, "any angle still pairs at the same beat")
 	return true
 
 
@@ -823,10 +1239,11 @@ func test_bar_lines() -> bool:
 
 func test_pre_read() -> bool:
 	var chart := Chart.new()
-	chart.shapes["S1"] = BoundaryShape.ellipse("S1", 410.0, 245.0, 32)
-	var event := BoundaryEvent.new("E0", 8.0, 12.0, 0.0, 1.0, "S0", "S1")
-	event.end_behavior = "hold"
-	chart.events.append(event)
+	chart.shapes["S1"] = BoundaryShape.ellipse("S1", 410.0, 245.0, 24)
+	chart.shape_keys = [
+		{"beat": 8.0, "shape_id": "S0", "easing": "linear"},
+		{"beat": 12.0, "shape_id": "S1", "easing": "linear"},
+	]
 	for u in [0.0, 0.2, 0.5, 0.85]:
 		for target in [4.0, 10.0, 14.0]:
 			var p := _preview_point(chart, u, target, target)
@@ -840,10 +1257,10 @@ func test_shrink_example() -> bool:
 	chart.timing.points = [TimingPoint.new(0.0, 60.0, 4)]
 	chart.shapes["S0"] = BoundaryShape.circle("S0", 330.0, 64)
 	chart.shapes["S1"] = BoundaryShape.circle("S1", 180.0, 64)
-	var event := BoundaryEvent.new("E0", 0.0, 1.0, 0.0, 1.0, "S0", "S1")
-	event.easing = "linear"
-	event.end_behavior = "hold"
-	chart.events.append(event)
+	chart.shape_keys = [
+		{"beat": 0.0, "shape_id": "S0", "easing": "linear"},
+		{"beat": 1.0, "shape_id": "S1", "easing": "linear"},
+	]
 	chart.pre_read_ms = 1000.0
 	var u := 0.0
 	var p_mid := _preview_point(chart, u, 1.0, 0.5)
@@ -858,12 +1275,11 @@ func test_event_restore() -> bool:
 	chart.timing.points = [TimingPoint.new(0.0, 60.0, 4)]
 	chart.shapes["S0"] = BoundaryShape.circle("S0", 330.0, 64)
 	chart.shapes["S1"] = BoundaryShape.circle("S1", 180.0, 64)
-	var event := BoundaryEvent.new("E0", 0.0, 1.0, 0.0, 1.0, "S0", "S1")
-	event.easing = "linear"
-	event.end_behavior = "restore"
-	event.restore_duration = 1.0
-	event.restore_easing = "linear"
-	chart.events.append(event)
+	chart.shape_keys = [
+		{"beat": 0.0, "shape_id": "S0", "easing": "linear"},
+		{"beat": 1.0, "shape_id": "S1", "easing": "linear"},
+		{"beat": 2.0, "shape_id": "S0", "easing": "linear"},
+	]
 	var mid: Vector2 = BoundaryRuntime.eval_point(chart, 0.0, 0.5).point
 	near(mid.x, 255.0, 0.5, "event mid 255px")
 	var restoring: Vector2 = BoundaryRuntime.eval_point(chart, 0.0, 1.5).point
@@ -913,7 +1329,38 @@ func test_media_formats() -> bool:
 	ok(MediaIO.is_supported_audio("a.flac"), "flac is accepted through the decode cache")
 	ok(not MediaIO.is_native_audio("a.flac"), "flac is not a native stream class")
 	ok(MediaIO.is_native_video("a.ogv"), "ogv is native video")
+	ok(MediaIO.is_supported_video("a.mp4"), "mp4 is accepted through the video cache")
+	ok(not MediaIO.is_native_video("a.mp4"), "mp4 is not a native stream class")
+	ok(not MediaIO.is_supported_video("a.txt"), "text is not a video")
+	ok(MediaIO.video_cache_path("a.mp4").ends_with(".ogv"), "video cache is ogv")
+	var cache_file := "user://test_video_cache.mp4"
+	var cache_write := FileAccess.open(cache_file, FileAccess.WRITE)
+	if cache_write != null:
+		cache_write.store_string("x")
+		cache_write.close()
+	var cache_a := MediaIO.video_cache_path(cache_file)
+	cache_write = FileAccess.open(cache_file, FileAccess.WRITE)
+	if cache_write != null:
+		cache_write.store_string("xx")
+		cache_write.close()
+	var cache_b := MediaIO.video_cache_path(cache_file)
+	ok(cache_a != cache_b, "video cache key follows source size")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(cache_file))
+	near(MediaIO.progress_seconds("out_time_us=2500000\nprogress=continue\n"), 2.5, 0.01, "ffmpeg progress microseconds")
+	near(MediaIO.progress_seconds("out_time=00:00:03.500000\n"), 3.5, 0.01, "ffmpeg progress timecode")
 	eq(MediaIO.prepare_audio("res://audio/demo_click.wav"), "res://audio/demo_click.wav", "native audio passes through")
+	var rate2 := MediaIO.rate_audio_cache_path("res://audio/demo_click.wav", 2.0)
+	ok(rate2.ends_with(".ogg"), "rate cache is ogg")
+	ok(rate2 != MediaIO.rate_audio_cache_path("res://audio/demo_click.wav", 0.5), "rate cache key includes the rate")
+	eq(MediaIO.prepare_audio_at_rate("res://audio/demo_click.wav", 1.0), "res://audio/demo_click.wav",
+		"1x rate passes the original audio through")
+	if MediaIO.has_ffmpeg():
+		var rendered := MediaIO.prepare_audio_at_rate("res://audio/demo_click.wav", 2.0)
+		ok(FileAccess.file_exists(rendered), "atempo renders a rate cache")
+		var rendered_stream := ChartIO.audio_stream_from_path(rendered)
+		ok(rendered_stream != null, "rate cache loads as an audio stream")
+		if rendered_stream != null:
+			near(rendered_stream.get_length(), 9.0, 0.6, "2x atempo halves the duration")
 	return true
 
 
@@ -935,6 +1382,28 @@ func test_lbp_export() -> bool:
 	ok(gap_text.contains("erase=0.400:0.600"), "lbp keeps path erase range")
 	chart.notes.erase(gap_note)
 	ok(not text.contains("\r"), "lbp uses LF")
+	var width_chart := Chart.new()
+	width_chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	var lbp_tap := Note.new("tap", 0.0, 90.0, 60.0)
+	lbp_tap.id = 1
+	lbp_tap.set_size_ratio(0.5)
+	var lbp_hold := Note.new("hold", 0.0, 90.0, 60.0)
+	lbp_hold.id = 2
+	lbp_hold.end_beat = 2.0
+	var lbp_seek := Note.new("seek", 4.0, 0.0, 360.0)
+	lbp_seek.id = 4
+	lbp_seek.seek_orien = 1
+	var lbp_bell := Note.new("bell", 0.0, 0.0, 27.0)
+	lbp_bell.id = 3
+	lbp_bell.center_u = 0.25
+	lbp_bell.radius = 26.0
+	width_chart.notes = [lbp_tap, lbp_hold, lbp_bell, lbp_seek]
+	var width_text := LBPIO.export_chart(width_chart)
+	ok(width_text.contains("tap,"), "lbp keeps taps")
+	ok(width_text.contains("hold,"), "lbp keeps holds")
+	ok(width_text.contains("90.000,30.000"), "lbp writes visible arc width")
+	ok(width_text.contains("width=27.000"), "lbp bell exports width option")
+	ok(width_text.contains("seek,"), "lbp exports seek instead of a tap")
 	var path := "user://test_export.lbp"
 	eq(LBPIO.export_to_file(chart, path), OK, "lbp write")
 	var read := FileAccess.get_file_as_string(path)
@@ -1403,8 +1872,47 @@ func test_playtest_countdown() -> bool:
 	chart.pre_read_ms = 1000.0
 	near(Playtest.timeline_start_beat(chart, 8.0, 1000.0), 5.0, 0.26,
 		"a mid-chart start rewinds one pre-read plus half a second")
-	near(Playtest.timeline_start_beat(chart, 0.0, 1000.0), 0.0, 0.001,
-		"the chart start never goes negative")
+	near(Playtest.timeline_start_beat(chart, 0.0, 1000.0), -3.0, 0.001,
+		"the chart start now keeps the lead-in as negative beats")
+	eq(Playtest.audio_delay_ms(-3000.0, -500.0), 2500.0, "negative beats delay the audio")
+	eq(Playtest.audio_delay_ms(0.0, -500.0), 0.0, "audio ahead of the timeline starts at once")
+	return true
+
+
+func test_video_direct_decode() -> bool:
+	var mp4 := "user://test_direct_decode.mp4"
+	ok(ChartIO.can_decode_video_directly("a.ogv"), "ogv is always decodable")
+	var has_ffmpeg := ChartIO.ffmpeg_video_available()
+	eq(ChartIO.can_decode_video_directly(mp4), has_ffmpeg, "mp4 decodes directly once gdffmpeg is loaded")
+	eq(ChartIO.can_decode_video_directly("x.m4v"), has_ffmpeg, "osu BGA (m4v) decodes directly too")
+	ok(MediaIO.SUPPORTED_VIDEO.has("m4v"), "m4v is in the supported video list")
+	ok(not ChartIO.can_decode_video_directly(""), "empty paths never decode")
+	# 没装扩展时必须返回 null，让预览退回转码而不是崩。
+	if has_ffmpeg:
+		var stream := ChartIO.video_stream_from_path("res://icon.svg")
+		ok(stream == null, "non-video files do not become streams")
+	else:
+		ok(ChartIO.video_stream_from_path(mp4) == null, "no extension means no direct stream")
+	return true
+
+
+func test_osu_browser_alignment() -> bool:
+	eq(OsuBrowser.PAGE_SIZE, 30, "osu browser pages 30 at a time")
+	eq(OsuBrowser._thousands(168089), "168,089", "play counts get thousands separators")
+	eq(OsuBrowser._thousands(999), "999", "short counts stay as-is")
+	eq(OsuBrowser._thousands(0), "0", "zero stays zero")
+	return true
+
+
+func test_background_layering() -> bool:
+	near(Preview3D.background_alpha(1.0), 0.32, 0.001, "default background keeps 32% alpha")
+	near(Preview3D.background_alpha(0.5), 0.16, 0.001, "brightness scales the still image")
+	near(Preview3D.background_alpha(0.0), 0.0, 0.001, "zero brightness hides the image")
+	ok(not Preview3D.background_image_visible(true, true), "BGA hides the chart background image")
+	ok(Preview3D.background_image_visible(true, false), "still image returns without BGA")
+	ok(not Preview3D.background_image_visible(false, false), "no image without a texture")
+	near(Preview3D.video_alpha(0.35, 1.0), 0.35, 0.001, "BGA keeps the chart opacity")
+	near(Preview3D.video_alpha(0.35, 2.0), 0.70, 0.001, "global brightness multiplies the BGA")
 	return true
 
 
@@ -2694,7 +3202,7 @@ func test_import_window_set() -> bool:
 	ok(reopened.switch_difficulty(1), "reopened set can switch difficulty")
 	ok(reopened.chart.notes.size() > 0, "switched difficulty has notes")
 	# 静态小工具：命令行参数解析与标签拼装。
-	eq(app.import_label("Lv.9", "Song", "me", "std"), "Lv.9  [std]  ·  Song  (me)", "import label format")
+	eq(app.import_label("Lv.9", "Song", "me", "std"), "Lv.9  [std]  Song  (me)", "import label format")
 	eq(app.import_label("", "", "", ""), "未命名难度", "empty label falls back")
 	reopened.free()
 	app.free()
@@ -2743,28 +3251,80 @@ func test_bpm_change_approach() -> bool:
 	flat.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
 	near(flat.timing.spawn_beat(10.0, 1000.0), 8.0, 0.001, "flat BPM keeps the old two-beat pre-read")
 	return true
+func test_chart_browser_helpers() -> bool:
+	var items: Array = []
+	for i in 65:
+		items.append(i)
+	eq(ChartBrowser.paginate(items, 0, 30).size(), 30, "first page holds 30")
+	eq(int(ChartBrowser.paginate(items, 2, 30)[0]), 60, "third page starts at 60")
+	eq(ChartBrowser.paginate(items, 3, 30).size(), 0, "past the end is empty")
+
+	var levels := ChartBrowser.maj_levels(["", "5", "7+", "", "12", "13+", ""])
+	eq(levels.size(), 4, "majdata levels skip empty slots")
+	eq(int(levels[0].get("index", 0)), 1, "majdata keeps the difficulty index")
+	eq(String(levels[3].get("level", "")), "13+", "majdata keeps Re:Master")
+
+	var path := "user://test_maidata_levels.txt"
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	file.store_string("&title=T\n&artist=A\n&lv_1=4\n&des_1=x\n&inote_1=(120){1},1,\n&lv_4=12+\n&des_4=y\n&inote_4=(120){1},2,\n")
+	file.close()
+	var parsed := ChartBrowser.levels_from_maidata(path)
+	eq(parsed.size(), 2, "maidata parses only real difficulties")
+	eq(String(parsed[0].get("level", "")), "4", "maidata level is read")
+	eq(String(parsed[1].get("creator", "")), "y", "maidata designer is read")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+
+	var spec := {
+		"files": [
+			{"name": "maidata.txt", "url": "/adxcs/11/maidata.txt", "bytes": 100},
+			{"name": "track.mp3", "url": "https://x/11/track.mp3", "bytes": 200},
+			{"name": "bg.png", "url": "https://x/11/bg.png", "bytes": 300},
+			{"name": "pv.mp4", "url": "https://x/11/pv.mp4", "bytes": 400},
+		],
+	}
+	var covers := ChartBrowser.adx_cover_urls(spec)
+	eq(covers.size(), 2, "adx cover tries webp then png")
+	ok(String(covers[0]).ends_with(".webp"), "adx cover prefers webp")
+	var bga := ChartBrowser.adx_bga_info(spec)
+	eq(String(bga.get("state", "")), "yes", "adx spec reports BGA")
+	eq(int(bga.get("size", 0)), 400, "adx BGA size comes from the catalog")
+	var with_bga := ChartBrowser.download_files(spec, true)
+	var without_bga := ChartBrowser.download_files(spec, false)
+	eq(with_bga.size(), 4, "BGA download keeps all files")
+	eq(without_bga.size(), 3, "non-BGA download drops the video")
+	eq(ChartBrowser.download_size(with_bga), 1000, "BGA download size includes the video")
+	eq(ChartBrowser.download_size(without_bga), 600, "non-BGA download size skips the video")
+	var mp4 := PackedByteArray([0, 0, 0, 0x18, 0x66, 0x74, 0x79, 0x70, 0, 0, 0, 0])
+	var webm := PackedByteArray([0x1A, 0x45, 0xDF, 0xA3, 0, 0, 0, 0, 0, 0, 0, 0])
+	ok(ChartBrowser.is_video(mp4), "mp4 header is accepted")
+	ok(ChartBrowser.is_video(webm), "webm header is accepted")
+	ok(not ChartBrowser.is_video("<!DOCTYPE html>".to_utf8_buffer()), "HTML error page is not a video")
+	eq(ChartBrowser.favorite_key("adx", "11"), "adx:11", "favorite key is source-scoped")
+	return true
+
+
 ## 在线 osu!：只列 osu!std，链接 / 纯 ID 能被识别成直接下载。
 func test_osu_std_filter() -> bool:
 	var only_taps := {"title": "A", "artist": "a", "id": 1, "beatmaps": [{"mode_int": 0}, {"mode_int": 0}]}
 	var taiko_only := {"title": "B", "artist": "b", "id": 2, "beatmaps": [{"mode_int": 1}, {"mode_int": 3}]}
 	var mixed := {"title": "C", "artist": "c", "id": 3, "beatmaps": [{"mode_int": 1}, {"mode_int": 0}]}
-	eq(ChartBrowser.osu_std_count(only_taps), 2, "std count on a std set")
-	eq(ChartBrowser.osu_std_count(taiko_only), 0, "taiko/mania sets have no std difficulty")
-	eq(ChartBrowser.osu_std_count(mixed), 1, "mixed set counts only the std difficulty")
+	eq(OsuBrowser.osu_std_count(only_taps), 2, "std count on a std set")
+	eq(OsuBrowser.osu_std_count(taiko_only), 0, "taiko/mania sets have no std difficulty")
+	eq(OsuBrowser.osu_std_count(mixed), 1, "mixed set counts only the std difficulty")
 
-	var set_link := ChartBrowser.parse_osu_input("https://osu.ppy.sh/beatmapsets/2356114#osu/5073664")
+	var set_link := OsuBrowser.parse_osu_input("https://osu.ppy.sh/beatmapsets/2356114#osu/5073664")
 	eq(String(set_link.get("kind", "")), "set", "beatmapset link is a set download")
 	eq(int(set_link.get("id", 0)), 2356114, "beatmapset id parsed")
-	var map_link := ChartBrowser.parse_osu_input("https://osu.ppy.sh/beatmaps/5073664")
+	var map_link := OsuBrowser.parse_osu_input("https://osu.ppy.sh/beatmaps/5073664")
 	eq(String(map_link.get("kind", "")), "beatmap", "beatmap link needs resolving")
 	eq(int(map_link.get("id", 0)), 5073664, "beatmap id parsed")
-	var short_link := ChartBrowser.parse_osu_input("https://osu.ppy.sh/s/2356114")
+	var short_link := OsuBrowser.parse_osu_input("https://osu.ppy.sh/s/2356114")
 	eq(int(short_link.get("id", 0)), 2356114, "short /s/ link parsed")
-	var bare := ChartBrowser.parse_osu_input("5073664")
+	var bare := OsuBrowser.parse_osu_input("5073664")
 	eq(String(bare.get("kind", "")), "set", "bare number is tried as a set id")
 	eq(int(bare.get("id", 0)), 5073664, "bare number parsed")
-	ok(ChartBrowser.parse_osu_input("camellia").is_empty(), "plain text stays a search query")
-	ok(ChartBrowser.parse_osu_input("").is_empty(), "empty input is a no-op")
+	ok(OsuBrowser.parse_osu_input("camellia").is_empty(), "plain text stays a search query")
+	ok(OsuBrowser.parse_osu_input("").is_empty(), "empty input is a no-op")
 	return true
 ## “起划”音效的时刻 = 星星开始沿轨迹移动的拍（note.beat + wait），不是头部接住的时刻。
 func test_path_slide_start() -> bool:
@@ -2799,6 +3359,32 @@ func test_hold_seam_interval() -> bool:
 	near(JudgeMath.total_length(full), 360.0, 0.001, "full circle covers the ring")
 	return true
 ## 结算页散布图：只收合法样本，等级颜色互不相同。
+func test_audio_clock_rate() -> bool:
+	var wall := AudioClock.new()
+	wall.start(0.0, 0)
+	near(wall.update(16000, false, 0.0, 0.0, 0.0, 0.0, 2.0), 32.0, 0.01,
+		"the wall clock advances at the playback rate")
+	var fast := AudioClock.new()
+	fast.start(0.0, 0)
+	var now := 0
+	for i in 40:
+		now += 16000
+		fast.update(now, true, float(now) / 1000000.0 * 2.0, 0.0, 0.0, 0.0, 2.0)
+	near(fast.clock_ms, float(now) / 1000.0 * 2.0, 8.0,
+		"the clock follows 2x audio without falling behind")
+	# 延迟和混音间隔是真实秒数，2× 下换算成流位置要翻倍。
+	var latency := AudioClock.new()
+	latency.start(380.0, 0)
+	near(latency.update(16000, true, 0.5, 0.0, 0.05, 0.0, 2.0), 400.0, 0.01,
+		"output latency is scaled by the playback rate")
+	# 预拉伸的 2× 流：流里 0.5s 对应谱面 1s，延迟 50ms 也按 2× 换成谱面 100ms。
+	var stretched := AudioClock.new()
+	stretched.start(900.0, 0)
+	near(stretched.update(16000, true, 0.5, 0.0, 0.05, 0.0, 2.0, 2.0), 900.0, 0.01,
+		"a pre-stretched stream maps stream time and latency back to chart time")
+	return true
+
+
 func test_calibration_offset() -> bool:
 	var samples: Array[float] = [-40.0, -20.0, -10.0, 0.0, 10.0, 20.0, 30.0, 40.0]
 	near(CalibrationDialog.offset_for_errors(samples), -10.0, 0.01, "late taps produce a negative offset")
@@ -3068,5 +3654,59 @@ func test_playtest_ui_builds() -> bool:
 	return true
 
 
+## 鼠标左右键当成两个独立键位，且不会和真实 Key 枚举相撞。
+func test_mouse_button_input() -> bool:
+	eq(Playtest.mouse_button_key(MOUSE_BUTTON_LEFT), Playtest.MOUSE_KEY_LEFT, "left button maps to its own key")
+	eq(Playtest.mouse_button_key(MOUSE_BUTTON_RIGHT), Playtest.MOUSE_KEY_RIGHT, "right button maps to its own key")
+	ok(Playtest.MOUSE_KEY_LEFT != Playtest.MOUSE_KEY_RIGHT, "left and right are distinct keys")
+	ok(Playtest.MOUSE_KEY_LEFT < 0 and Playtest.MOUSE_KEY_RIGHT < 0, "synthetic keys stay out of the Key enum")
+	eq(Playtest.mouse_button_key(MOUSE_BUTTON_MIDDLE), 0, "other buttons are not judgement input")
+	eq(Playtest.mouse_button_key(MOUSE_BUTTON_WHEEL_UP), 0, "wheel stays a seek input")
+	return true
 
 
+## osu 卡片药丸颜色：按星数分五档。
+func test_osu_star_color() -> bool:
+	var green := OsuBrowser.star_color(1.4)
+	var yellow := OsuBrowser.star_color(3.2)
+	var orange := OsuBrowser.star_color(4.4)
+	var red := OsuBrowser.star_color(6.0)
+	var violet := OsuBrowser.star_color(7.5)
+	ok(green == OsuBrowser.star_color(2.4), "green bucket is stable")
+	ok(green != yellow and yellow != orange and orange != red and red != violet, "each bucket has its own colour")
+	ok(violet == OsuBrowser.star_color(9.9), "purple bucket is stable")
+	return true
+
+
+## osu 官方筛选：类型 / 语言 / 标签（tags 是 AND）。
+func test_osu_filters() -> bool:
+	var tokens := OsuBrowser.tag_tokens("anime, JPop  Anime")
+	eq(tokens.size(), 2, "tokens are lowercased and deduped")
+	ok(tokens.has("anime") and tokens.has("jpop"), "both words are kept")
+	ok(OsuBrowser.tag_tokens("").is_empty(), "empty text has no tokens")
+	eq(OsuBrowser.tag_tokens("动画，电子").size(), 2, "full-width comma splits too")
+
+	var anime := {"genre_id": 2, "language_id": 3, "tags": "anime j-pop vocaloid", "title": "X", "artist": "Y"}
+	var rock := {"genre_id": 9, "language_id": 5, "tags": "rock guitar", "title": "Z", "artist": "W"}
+	ok(OsuBrowser.matches_filters(anime, 0, 0, []), "no filter keeps everything")
+	ok(OsuBrowser.matches_filters(anime, 2, 0, []), "genre matches")
+	ok(not OsuBrowser.matches_filters(rock, 2, 0, []), "genre mismatch drops")
+	ok(OsuBrowser.matches_filters(anime, 0, 3, []), "language matches")
+	ok(not OsuBrowser.matches_filters(rock, 0, 3, []), "language mismatch drops")
+	ok(not OsuBrowser.matches_filters(anime, 0, OsuBrowser.LANGUAGE_OTHER, []), "known language is not the other bucket")
+	ok(not OsuBrowser.matches_filters(rock, 0, OsuBrowser.LANGUAGE_OTHER, []), "known languages are not 'other'")
+	ok(OsuBrowser.matches_filters(anime, 0, 0, ["anime"]), "tag matches")
+	ok(not OsuBrowser.matches_filters(rock, 0, 0, ["anime"]), "tag mismatch drops")
+	ok(OsuBrowser.matches_filters(anime, 0, 0, ["anime", "vocaloid"]), "tags are AND")
+	ok(not OsuBrowser.matches_filters(anime, 0, 0, ["anime", "guitar"]), "AND fails on a missing tag")
+	ok(OsuBrowser.matches_filters(anime, 0, 0, ["J-POP"]), "tag matching ignores case")
+	return true
+
+
+## 展开后药丸的行数：宽卡片行数少，窄卡片行数多。
+func test_osu_pill_rows() -> bool:
+	eq(OsuBrowser.pill_rows(3, 1200), 1, "few difficulties stay on one row")
+	eq(OsuBrowser.pill_rows(19, 1300), 2, "wide card fits 19 on two rows")
+	ok(OsuBrowser.pill_rows(19, 700) > OsuBrowser.pill_rows(19, 1300), "narrower card needs more rows")
+	eq(OsuBrowser.pill_rows(0, 900), 1, "no difficulties still one row (the toggle chip)")
+	return true

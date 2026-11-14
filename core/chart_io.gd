@@ -12,9 +12,33 @@ static func chart_to_dict(chart: Chart) -> Dictionary:
 	for point in chart.timing.points:
 		timing_points.append(point.to_dict())
 	var shape_code := BoundaryShape.shapes_to_code(chart.sorted_shapes())
+	var key_rows: Array[Dictionary] = []
+	for key in chart.sorted_shape_keys():
+		key_rows.append({
+			"beat": snappedf(float(key.get("beat", 0.0)), 0.001),
+			"shape": String(key.get("shape_id", "")),
+			"easing": String(key.get("easing", "in-out")),
+		})
 	var event_list: Array[Dictionary] = []
-	for event in chart.events:
-		event_list.append(event.to_dict())
+	if key_rows.is_empty():
+		for event in chart.events:
+			event_list.append(event.to_dict())
+	else:
+		# 关键帧是真源；这里同时写一份旧事件，旧版本打开时还能看到形变。
+		var legacy_index := 0
+		var first := chart.sorted_shape_keys()[0]
+		var default_shape := chart.get_default_shape()
+		var first_beat := float(first.get("beat", 0.0))
+		if default_shape != null and first_beat > 0.001 and String(first.get("shape_id", "")) != default_shape.id:
+			event_list.append(_legacy_event(legacy_index, 0.0, first_beat, default_shape.id,
+				String(first.get("shape_id", "")), String(first.get("easing", "in-out"))))
+			legacy_index += 1
+		var keys := chart.sorted_shape_keys()
+		for i in keys.size() - 1:
+			event_list.append(_legacy_event(legacy_index, float(keys[i].get("beat", 0.0)),
+				float(keys[i + 1].get("beat", 0.0)), String(keys[i].get("shape_id", "")),
+				String(keys[i + 1].get("shape_id", "")), String(keys[i].get("easing", "in-out"))))
+			legacy_index += 1
 	event_list.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
 		if float(a["start_beat"]) == float(b["start_beat"]):
 			return String(a["id"]) < String(b["id"])
@@ -62,9 +86,42 @@ static func chart_to_dict(chart: Chart) -> Dictionary:
 			entry["rgb"] = "#" + note.custom_color.to_html(false)
 		if not entry.is_empty():
 			note_colors[str(note.id)] = entry
+	# 锁定同样旁挂，避免每个音符代码都多一段。
+	var note_flags := {}
+	for note in chart.notes:
+		if note.lock:
+			note_flags[str(note.id)] = {"lock": true}
 	var meta := {}
 	for key in ["title", "artist", "creator", "version", "tags", "license", "background"]:
 		meta[key] = String(chart.metadata.get(key, ""))
+	# 紧凑代码丢不掉的字段旁挂在这里；旧版本读到会直接忽略。
+	var note_extras := {}
+	for note in chart.notes:
+		var extra := {}
+		match note.type:
+			"hold":
+				if note.hold_style != "straight":
+					extra["hold_style"] = note.hold_style
+				if not note.visual_pts.is_empty():
+					extra["visual"] = Note._points_to_dict(note.visual_pts)
+			"path":
+				extra["tolerance"] = snappedf(note.tolerance, 0.001)
+				extra["samples"] = snappedf(note.samples_per_beat, 0.001)
+				if note.path_speed != 1.0:
+					extra["speed"] = snappedf(note.path_speed, 0.001)
+				if note.path_style != "arc":
+					extra["path_style"] = note.path_style
+				if not note.path_gaps.is_empty():
+					extra["path_gaps"] = Note._ranges_to_array(note.path_gaps)
+				if not note.trace_pts.is_empty():
+					extra["trace"] = Note._points_to_dict(note.trace_pts)
+				if not note.visual_pts.is_empty():
+					extra["visual"] = Note._points_to_dict(note.visual_pts)
+			"bell":
+				if absf(note.bell_radius - 1.0) > 0.0001:
+					extra["bell_radius"] = snappedf(note.bell_radius, 0.001)
+		if not extra.is_empty():
+			note_extras[str(note.id)] = extra
 	var result := {
 		"format": FORMAT,
 		"version": VERSION,
@@ -82,6 +139,7 @@ static func chart_to_dict(chart: Chart) -> Dictionary:
 		"default_shape": chart.default_shape_id,
 		"shapes": shape_code,
 		"events": event_list,
+		"boundary_keys": key_rows,
 		"view_states": view_list,
 		"regions": region_list,
 		"timing": {
@@ -102,7 +160,71 @@ static func chart_to_dict(chart: Chart) -> Dictionary:
 		result["palette"] = _palette_rows(chart)
 	if not note_colors.is_empty():
 		result["note_colors"] = note_colors
+	if not note_flags.is_empty():
+		result["note_flags"] = note_flags
+	if not note_extras.is_empty():
+		result["note_extras"] = note_extras
 	return result
+
+
+## 旧谱迁移：整环事件 → 形状关键帧。局部 u 事件没有对应表达，直接丢弃。
+static func _keys_from_events(chart: Chart) -> Array[Dictionary]:
+	var keys: Array[Dictionary] = []
+	var events := chart.events.duplicate()
+	events.sort_custom(func(a: BoundaryEvent, b: BoundaryEvent) -> bool: return a.start_beat < b.start_beat)
+	for event in events:
+		keys.append({"beat": event.start_beat, "shape_id": event.from_shape, "easing": event.easing})
+		var restore_easing: String = event.restore_easing if event.end_behavior == "restore" else "in-out"
+		keys.append({"beat": event.end_beat, "shape_id": event.to_shape, "easing": restore_easing})
+		if event.end_behavior == "restore" and event.restore_duration > 0.0001:
+			keys.append({"beat": event.end_beat + event.restore_duration, "shape_id": event.from_shape, "easing": "in-out"})
+	# 同一拍只留最后一个。
+	var merged: Array[Dictionary] = []
+	for key in keys:
+		if not merged.is_empty() and absf(float(merged[-1]["beat"]) - float(key["beat"])) < 0.0005:
+			merged[-1] = key
+		else:
+			merged.append(key)
+	return merged
+
+
+## 旧版本只认 BoundaryEvent：由关键帧推导出等价的 hold 链。
+static func _legacy_event(index: int, start: float, end: float, from_id: String, to_id: String, easing: String) -> Dictionary:
+	return {
+		"id": "E%d" % (index + 1),
+		"start_beat": snappedf(start, 0.001),
+		"end_beat": snappedf(end, 0.001),
+		"target_u0": 0.0,
+		"target_u1": 1.0,
+		"from_shape": from_id,
+		"to_shape": to_id,
+		"easing": easing,
+		"end_behavior": "hold",
+		"restore_duration": 0.0,
+		"restore_easing": "in-out",
+	}
+
+
+## note_extras 侧表：补齐紧凑代码丢掉的 Hold/Path/Bell 字段。
+static func _apply_note_extras(note: Note, extra: Dictionary) -> void:
+	if extra.has("hold_style"):
+		note.hold_style = String(extra["hold_style"])
+	if extra.has("tolerance"):
+		note.tolerance = float(extra["tolerance"])
+	if extra.has("samples"):
+		note.samples_per_beat = float(extra["samples"])
+	if extra.has("speed"):
+		note.path_speed = float(extra["speed"])
+	if extra.has("path_style"):
+		note.path_style = String(extra["path_style"])
+	if extra.has("path_gaps"):
+		note.path_gaps = Note._ranges_from_array(extra["path_gaps"])
+	if extra.has("trace"):
+		note.trace_pts = Note._points_from_array(extra["trace"])
+	if extra.has("visual"):
+		note.visual_pts = Note._points_from_array(extra["visual"])
+	if extra.has("bell_radius"):
+		note.bell_radius = float(extra["bell_radius"])
 
 
 static func _palette_rows(chart: Chart) -> Array[Dictionary]:
@@ -152,6 +274,22 @@ static func _apply_note_colors(chart: Chart, stored: Dictionary) -> void:
 					note.has_custom_color = true
 		elif raw is int or raw is float:
 			note.color = maxi(0, int(raw))
+
+
+static func _apply_note_flags(chart: Chart, stored: Dictionary) -> void:
+	var by_id := {}
+	for note in chart.notes:
+		by_id[note.id] = note
+	for key in stored.keys():
+		var id_text := String(key)
+		if not id_text.is_valid_int():
+			continue
+		var note: Note = by_id.get(int(id_text), null)
+		if note == null:
+			continue
+		var raw: Variant = stored[key]
+		if raw is Dictionary and bool(raw.get("lock", false)):
+			note.lock = true
 
 
 static func _note_code(note: Note, by_id: Dictionary) -> String:
@@ -222,14 +360,39 @@ static func chart_from_dict(data: Dictionary) -> Chart:
 			if shapes_raw[key] is Dictionary:
 				var shape := BoundaryShape.from_dict(shapes_raw[key])
 				chart.shapes[shape.id] = shape
+	for shape in chart.shapes.values():
+		if shape is BoundaryShape:
+			# 老谱每段的自定义曲线（si/so/s/b）没有关键帧模型里的等价物，
+			# 载入后按直线重采样；这里留一条提示，避免以为是文件坏了。
+			for segment in shape.segments:
+				if segment.ix != "l" or segment.iy != "l":
+					chart.load_warnings.append("形状 %s 的自定义曲线已按直线处理" % shape.id)
+					break
+			shape.normalize()
 	if chart.shapes.is_empty():
-		chart.shapes["S0"] = BoundaryShape.circle("S0", 330.0, 32)
+		chart.shapes["S0"] = BoundaryShape.circle("S0", 330.0, 48)
 	if not chart.shapes.has(chart.default_shape_id):
 		chart.default_shape_id = chart.shapes.keys()[0]
 	chart.events.clear()
+	chart.shape_keys.clear()
+	for raw in data.get("boundary_keys", []):
+		if raw is Dictionary:
+			chart.shape_keys.append({
+				"beat": float(raw.get("beat", 0.0)),
+				"shape_id": String(raw.get("shape", raw.get("shape_id", ""))),
+				"easing": String(raw.get("easing", "in-out")),
+			})
 	for raw in data.get("events", []):
 		if raw is Dictionary:
 			chart.events.append(BoundaryEvent.from_dict(raw))
+	if chart.shape_keys.is_empty() and not chart.events.is_empty():
+		# 旧谱的局部 u 事件没有对应的关键帧表达：拒绝打开，避免悄悄改掉形变。
+		for event in chart.events:
+			if event.target_u0 > 0.0001 or event.target_u1 < 0.9999:
+				last_error = "旧谱里的局部形变事件 %s 无法转换，请先在旧版本合并成整环再保存" % event.id
+				return null
+		chart.shape_keys = _keys_from_events(chart)
+		chart.events.clear()
 	chart.view_states.clear()
 	for raw in data.get("view_states", []):
 		if raw is Dictionary:
@@ -264,10 +427,22 @@ static func chart_from_dict(data: Dictionary) -> Chart:
 				if parsed != null:
 					chart.notes.append(parsed)
 		elif raw is Dictionary and String(raw.get("type", "")) != "trace":
+			# 旧 plane Tap 已移除；旧数据直接跳过，不转成 0° 环上 Tap。
+			if String(raw.get("type", "")) == "tap" and String(raw.get("space", "ring")) == "plane":
+				continue
 			chart.notes.append(Note.from_dict(raw))
+	var extras_raw: Variant = data.get("note_extras", {})
+	if extras_raw is Dictionary:
+		for note in chart.notes:
+			var extra: Variant = extras_raw.get(str(note.id), {})
+			if extra is Dictionary and not (extra as Dictionary).is_empty():
+				_apply_note_extras(note, extra)
 	var stored_colors: Variant = data.get("note_colors", {})
 	if stored_colors is Dictionary:
 		_apply_note_colors(chart, stored_colors)
+	var stored_flags: Variant = data.get("note_flags", {})
+	if stored_flags is Dictionary:
+		_apply_note_flags(chart, stored_flags)
 	# Normalize legacy Path JSON to the new centrifuge/axis representation on
 	# every chart load, not just for the bundled demo.
 	for note in chart.notes:
@@ -471,16 +646,42 @@ static func audio_stream_from_path(path: String) -> AudioStream:
 	return load(path) as AudioStream
 
 
+## 视频流：.ogv 走引擎自带 Theora；其他格式用 gdffmpeg 直接解码（不转码）。
+## 没装解码扩展时返回 null，调用方再退回 ffmpeg 转码缓存。
 static func video_stream_from_path(path: String) -> VideoStream:
 	if path.is_empty():
 		return null
-	if path.begins_with("res://"):
-		return load(path) as VideoStream
-	if path.get_extension().to_lower() == "ogv":
+	var ext := path.get_extension().to_lower()
+	if ext == "ogv":
+		if path.begins_with("res://"):
+			return load(path) as VideoStream
 		var theora := VideoStreamTheora.new()
 		theora.file = ProjectSettings.globalize_path(path) if path.begins_with("user://") else path
 		return theora
-	return null
+	if not ffmpeg_video_available() or not FileAccess.file_exists(path):
+		return null
+	if not (ext in MediaIO.SUPPORTED_VIDEO):
+		return null
+	var stream: Variant = ClassDB.instantiate("FFmpegVideoStream")
+	if stream == null:
+		return null
+	stream.set("file", ProjectSettings.globalize_path(path) if path.begins_with("user://") else path)
+	return stream as VideoStream
+
+
+## gdffmpeg 扩展是否加载成功（addons/ffmpeg）。
+static func ffmpeg_video_available() -> bool:
+	return ClassDB.class_exists("FFmpegVideoStream")
+
+
+## 能否不转码直接播：原生 ogv，或装了 gdffmpeg 且扩展名在支持表里。
+static func can_decode_video_directly(path: String) -> bool:
+	if path.is_empty():
+		return false
+	var ext := path.get_extension().to_lower()
+	if ext == "ogv":
+		return true
+	return ffmpeg_video_available() and ext in MediaIO.SUPPORTED_VIDEO
 
 
 static func resolve_path(_chart_path: String, path: String) -> String:

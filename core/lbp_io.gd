@@ -67,6 +67,16 @@ static func export_chart(chart: Chart) -> String:
 				segment.ix, segment.iy, suffix,
 			])
 	lines.append("")
+	if not chart.shape_keys.is_empty():
+		lines.append("[BoundaryKeys]")
+		var keys := chart.sorted_shape_keys()
+		for key in keys:
+			lines.append("key,%s,%s,%s" % [
+				_beat(chart, float(key.get("beat", 0.0))),
+				String(key.get("shape_id", "")),
+				String(key.get("easing", "in-out")),
+			])
+		lines.append("")
 	if not chart.events.is_empty():
 		lines.append("[BoundaryEvents]")
 		var events := chart.events.duplicate()
@@ -136,17 +146,14 @@ static func _note_line(chart: Chart, note: Note) -> String:
 	var options := _note_options(note)
 	match note.type:
 		"tap":
-			var suffix := ""
-			if note.space == "plane":
-				suffix = ",space=plane,px=%s,py=%s,pr=%s" % [_num(note.plane_x), _num(note.plane_y), _num(note.plane_radius)]
-			return "tap,%s,%s,%s%s%s" % [_beat(chart, note.beat), _num(note.angle), _num(note.width), suffix, options]
+			return "tap,%s,%s,%s%s" % [_beat(chart, note.beat), _num(note.angle), _num(note.arc_width()), options]
 		"hold":
 			var suffix := ""
 			if note.hold_style == "curved":
 				suffix = ",style=curved"
 			if not note.visual_pts.is_empty():
 				suffix += ",body=%s" % _points(note.visual_pts)
-			return "hold,%s,%s,%s,%s%s%s" % [_beat(chart, note.beat), _num(note.angle), _num(note.width), _beat(chart, note.end_beat), suffix, options]
+			return "hold,%s,%s,%s,%s%s%s" % [_beat(chart, note.beat), _num(note.angle), _num(note.arc_width()), _beat(chart, note.end_beat), suffix, options]
 		"path":
 			var suffix := ",tol=%s,samples=%s" % [_num(note.tolerance), _num(note.samples_per_beat)]
 			if not note.visual_pts.is_empty():
@@ -167,13 +174,8 @@ static func _note_line(chart: Chart, note: Note) -> String:
 				_beat(chart, note.end_beat), _num(note.tail_angle), _num(note.tail_width),
 				suffix, options,
 			]
-		"trace":
-			var suffix := ",move=%s" % _num(note.move_px)
-			if note.trace_style != "wipe":
-				suffix += ",style=%s" % note.trace_style
-			if not note.trace_pts.is_empty():
-				suffix += ",pts=%s" % _trace_points(note.trace_pts)
-			return "trace,%s,%s%s%s" % [_beat(chart, note.beat), _beat(chart, note.end_beat), suffix, options]
+		"seek":
+			return "seek,%s,%d%s" % [_beat(chart, note.beat), 1 if note.seek_orien == 1 else 0, options]
 		"anchor":
 			var suffix := ""
 			if note.anchor_pair >= 0:
@@ -182,7 +184,8 @@ static func _note_line(chart: Chart, note: Note) -> String:
 				suffix += ",pairId=%s" % _clean(note.pair_id)
 			return "anchor,%s,%s%s%s" % [_beat(chart, note.beat), _num(note.angle), suffix, options]
 		"bell":
-			return "bell,%s,%s,%s%s" % [_beat(chart, note.beat), _num(note.center_u), _num(note.radius), options]
+			var suffix := ",width=%s" % _num(note.bell_width())
+			return "bell,%s,%s,%s%s%s" % [_beat(chart, note.beat), _num(note.center_u), _num(note.radius), suffix, options]
 	return "tap,%s,%s,%s%s" % [_beat(chart, note.beat), _num(note.angle), _num(note.width), options]
 
 

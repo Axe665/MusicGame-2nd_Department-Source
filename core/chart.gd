@@ -23,9 +23,45 @@ var timing: TimingMap = TimingMap.new()
 var default_shape_id: String = "S0"
 var shapes: Dictionary = {}
 var events: Array[BoundaryEvent] = []
+## 形状关键帧：{beat, shape_id, easing}。easing 管“从这一帧到下一帧”。
+## 运行时以关键帧为准；events 只用于读旧谱和给旧版本双写。
+var shape_keys: Array[Dictionary] = []
+## 载入时产生的兼容提示（曲线降级等），由编辑器弹一次。
+var load_warnings: Array[String] = []
 var view_states: Array[ViewState] = []
 var regions: Array[Region] = []
 var notes: Array[Note] = []
+
+
+## Anchor 的配对：同一 pairId、同一拍即可，角度自由。
+func anchor_partner(note: Note) -> Note:
+	if note.type != "anchor" or note.pair_id.is_empty():
+		return null
+	for other in notes:
+		if other.id == note.id or other.type != "anchor":
+			continue
+		if other.pair_id != note.pair_id:
+			continue
+		if absf(other.beat - note.beat) > 0.0001:
+			continue
+		return other
+	return null
+
+
+## 放一颗 Anchor 时同时生成同拍反向的另一颗，返回 [a, b]。
+func make_anchor_pair(beat: float, angle: float) -> Array[Note]:
+	var a := Note.new("anchor", beat, fposmod(angle, 360.0), 0.0)
+	a.id = next_note_id()
+	a.anchor_pair = 0
+	a.pair_id = "P%d" % a.id
+	var b := Note.new("anchor", beat, fposmod(angle + 180.0, 360.0), 0.0)
+	b.id = next_note_id()
+	b.anchor_pair = 0
+	b.pair_id = a.pair_id
+	var out: Array[Note] = [a, b]
+	return out
+
+
 var editor: Dictionary = {}
 
 ## 配色分组：每组 {name, tap, hold, path}，颜色存 "#rrggbb" 字符串。
@@ -44,7 +80,7 @@ var _next_event_id: int = 1
 
 
 func _init() -> void:
-	shapes["S0"] = BoundaryShape.circle("S0", 330.0, 32)
+	shapes["S0"] = BoundaryShape.circle("S0", 330.0, 48)
 	view_states = [ViewState.new(0.0, 1.0, 0.0, 0.0, 1.0, 0.0, "linear")]
 
 
@@ -57,6 +93,23 @@ func get_default_shape() -> BoundaryShape:
 	if shape == null and not shapes.is_empty():
 		shape = shapes.values()[0]
 	return shape
+
+
+func sorted_shape_keys() -> Array[Dictionary]:
+	var result: Array[Dictionary] = []
+	for key in shape_keys:
+		if key is Dictionary:
+			result.append(key)
+	result.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return float(a.get("beat", 0.0)) < float(b.get("beat", 0.0)))
+	return result
+
+
+## 播放头正好落在关键帧上时返回那一帧，否则返回空字典。
+func shape_key_at(beat: float) -> Dictionary:
+	for key in shape_keys:
+		if absf(float(key.get("beat", -1.0)) - beat) < 0.0005:
+			return key
+	return {}
 
 
 func sorted_shapes() -> Array[BoundaryShape]:

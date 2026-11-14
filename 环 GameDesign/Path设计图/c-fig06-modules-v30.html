@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>模块划分</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:1200px;height:760px;overflow:hidden}
+body{background:#FAF7F2;color:#1F1B18;font-family:"Noto Sans CJK SC",sans-serif;padding:44px 52px 0}
+.k{font-family:"DejaVu Sans Mono",monospace;font-size:12px;letter-spacing:4px;color:#9A8C7A}
+h1{font-size:26px;margin-top:8px;font-weight:700}
+.sub{font-size:13.5px;color:#6B6259;margin-top:6px}
+.body{position:relative;height:560px;margin-top:14px}
+.b{border:1px solid #DCD2C3;background:#FFFDFA;border-radius:8px;padding:8px 10px;font-size:12.5px}
+.h{font-family:"DejaVu Sans Mono",monospace;font-size:11px;letter-spacing:2px;color:#8A7F72;margin-bottom:4px}
+.mono{font-family:"DejaVu Sans Mono",monospace;font-size:11.5px;color:#4A423A}
+.foot{font-size:12px;color:#8A7F72;margin-top:6px}
+</style></head><body>
+<div class="k">TAMAKI₃ / CHARTER · MODULES</div>
+<h1>模块划分：一份 core，两个前端</h1>
+<div class="sub">编辑器与试玩共用同一套 u / C / P / RingTransform 数学；JSON 是工程格式，.lbp 只作导出。</div>
+<div class="body">
+  <!-- 输入 -->
+  <div class="b" style="position:absolute;left:0;top:0;width:190px">
+    <div class="h">INPUT</div>
+    <div class="mono">JSON  tamaki3-chart v1</div>
+    <div class="mono" style="color:#8A7F72">.lbp → 导出</div>
+  </div>
+  <div class="b" style="position:absolute;left:0;top:96px;width:190px">
+    <div class="h">IMPORT</div>
+    <div class="mono">osu!std / taiko .osz</div>
+    <div class="mono">Simai maidata.txt</div>
+  </div>
+  <div class="b" style="position:absolute;left:0;top:196px;width:190px">
+    <div class="h">ONLINE</div>
+    <div class="mono">舞萌下载器 (adxdls)</div>
+    <div class="mono">osu! 在线曲库</div>
+  </div>
+
+  <!-- 箭头 -->
+  <svg width="120" height="260" style="position:absolute;left:196px;top:20px" viewBox="0 0 120 260">
+    <defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#C0392B"/></marker></defs>
+    <line x1="4" y1="30" x2="104" y2="120" stroke="#C0392B" stroke-width="2" marker-end="url(#a)"/>
+    <line x1="4" y1="126" x2="104" y2="128" stroke="#C0392B" stroke-width="2" marker-end="url(#a)"/>
+    <line x1="4" y1="226" x2="104" y2="140" stroke="#C0392B" stroke-width="2" marker-end="url(#a)"/>
+  </svg>
+
+  <!-- core -->
+  <div class="b" style="position:absolute;left:330px;top:52px;width:360px;border-color:#DDBFA8;background:#FDF6EF">
+    <div class="h">CHARTCORE　GDScript · Godot 4.7.2</div>
+    <div class="mono">Document / Command（200 步撤销）</div>
+    <div class="mono">BoundaryShape / BoundaryEvent / RingState</div>
+    <div class="mono">Note（tap·hold·path·seek·anchor·bell）</div>
+    <div class="mono">Region（limit） / TimingMap / ChartIO</div>
+    <div class="mono" style="color:#8A7F72">同一份校验器：Validator / PathProgress</div>
+  </div>
+
+  <!-- 前端 -->
+  <div class="b" style="position:absolute;left:740px;top:20px;width:330px">
+    <div class="h">CHARTER UI</div>
+    <div class="mono">左画布 u×时间 / 中检查器 7 页 / 右预览</div>
+    <div class="mono">事件轨 + 边界状态轨</div>
+  </div>
+  <div class="b" style="position:absolute;left:740px;top:132px;width:330px">
+    <div class="h">PLAYTEST</div>
+    <div class="mono">同一套 u / C / P / RingTransform</div>
+    <div class="mono">HUD v3 · 倍速 · 判定日志</div>
+  </div>
+  <div class="b" style="position:absolute;left:740px;top:244px;width:330px">
+    <div class="h">TESTS</div>
+    <div class="mono">test_runner / path_judgement / sfx_playback</div>
+    <div class="mono" style="color:#8A7F72">GitHub Actions 上作为必需检查</div>
+  </div>
+
+  <svg width="120" height="200" style="position:absolute;left:624px;top:70px" viewBox="0 0 120 200">
+    <line x1="4" y1="30" x2="100" y2="20" stroke="#8A7F72" stroke-width="2" marker-end="url(#a)"/>
+    <line x1="4" y1="80" x2="100" y2="92" stroke="#8A7F72" stroke-width="2" marker-end="url(#a)"/>
+    <line x1="4" y1="140" x2="100" y2="160" stroke="#8A7F72" stroke-width="2" marker-end="url(#a)"/>
+  </svg>
+</div>
+<div class="foot">没有“宿主服务”层：编辑器是独立 Godot 工具，不嵌入 Malody；预览与试玩也不另写一套判定。</div>
+</body></html>

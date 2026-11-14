@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>中段三档</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:1200px;height:760px;overflow:hidden}
+body{background:radial-gradient(120% 90% at 50% 0%,#141722 0%,#0A0B10 62%);color:#F4EFE9;
+ font-family:"Noto Sans CJK SC",sans-serif;padding:44px 48px 0;display:flex;flex-direction:column}
+.k{font-family:"DejaVu Sans Mono",monospace;font-size:12px;letter-spacing:3px;color:#5FD3D0}
+h1{font-size:27px;margin-top:8px}
+.sub{font-size:14px;color:#9A948C;margin-top:6px}
+.panels{flex:1;margin-top:22px;display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+.p{background:#12141C;border:1px solid #2A2E38;border-radius:10px;padding:14px;display:flex;flex-direction:column}
+.t{font-family:"DejaVu Sans Mono",monospace;font-size:15px;letter-spacing:2px}
+.d{font-size:12.5px;color:#9A948C;margin-top:6px;line-height:1.6}
+.foot{font-size:12px;color:#5F5A55;margin:12px 0 22px}
+</style></head><body>
+<div class="k">TAMAKI₃ / PATH</div>
+<h1>中段是走廊，不给每个点打分</h1>
+<div class="sub">组按弧长与拐角生成；常规容差 0.25R、拐角 0.34R，一次移动可跳 1 组。头尾仍各按自己的窗口判。</div>
+<div class="panels">
+  <div class="p"><div class="t" style="color:#5FD3D0">FULL</div><div class="d">全部判定组通过</div>
+    <svg viewBox="0 0 320 260" width="320" height="260">
+      <path d="M 50 190 C 100 60 220 60 270 170" fill="none" stroke="#5FD3D0" stroke-opacity=".14" stroke-width="48" stroke-linecap="round"/>
+      <path d="M 50 190 C 100 60 220 60 270 170" fill="none" stroke="#E4D9CB" stroke-width="3"/>
+      <g fill="#0A0B10" stroke="#5FD3D0" stroke-width="2.5">
+        <circle cx="50" cy="190" r="10"/><circle cx="110" cy="92" r="10"/><circle cx="180" cy="80" r="10"/><circle cx="250" cy="150" r="10"/>
+      </g>
+      <circle cx="50" cy="190" r="16" fill="#FF6242"/>
+      <text x="160" y="236" fill="#5FD3D0" font-family="DejaVu Sans Mono" font-size="12" text-anchor="middle">4 / 4 GROUPS</text>
+    </svg></div>
+  <div class="p"><div class="t" style="color:#FFC08A">FRAY</div><div class="d">漏组，但在尾段前补回；扣点，不断连</div>
+    <svg viewBox="0 0 320 260" width="320" height="260">
+      <path d="M 50 190 C 100 60 220 60 270 170" fill="none" stroke="#5FD3D0" stroke-opacity=".14" stroke-width="48" stroke-linecap="round"/>
+      <path d="M 50 190 C 100 60 220 60 270 170" fill="none" stroke="#E4D9CB" stroke-width="3" opacity=".55"/>
+      <g fill="#0A0B10" stroke="#5FD3D0" stroke-width="2.5">
+        <circle cx="50" cy="190" r="10"/><circle cx="110" cy="92" r="10"/><circle cx="250" cy="150" r="10"/>
+      </g>
+      <circle cx="180" cy="80" r="10" fill="none" stroke="#FFC08A" stroke-width="2.5" stroke-dasharray="4 4"/>
+      <path d="M 130 120 Q 180 40 236 140" fill="none" stroke="#FFC08A" stroke-width="2" stroke-dasharray="6 6"/>
+      <circle cx="50" cy="190" r="16" fill="#FF6242"/>
+      <text x="160" y="236" fill="#FFC08A" font-family="DejaVu Sans Mono" font-size="12" text-anchor="middle">3 / 4，尾前补回</text>
+    </svg></div>
+  <div class="p"><div class="t" style="color:#FF6242">LOST</div><div class="d">到尾部仍未补回；扣点，不断连</div>
+    <svg viewBox="0 0 320 260" width="320" height="260">
+      <path d="M 50 190 C 100 60 220 60 270 170" fill="none" stroke="#FF6242" stroke-opacity=".10" stroke-width="48" stroke-linecap="round"/>
+      <path d="M 50 190 C 100 60 220 60 270 170" fill="none" stroke="#E4D9CB" stroke-width="3" opacity=".45"/>
+      <g fill="#0A0B10" stroke="#9A948C" stroke-width="2.5">
+        <circle cx="50" cy="190" r="10"/><circle cx="110" cy="92" r="10"/>
+      </g>
+      <circle cx="180" cy="80" r="10" fill="none" stroke="#FF6242" stroke-width="2.5"/>
+      <circle cx="250" cy="150" r="10" fill="none" stroke="#FF6242" stroke-width="2.5"/>
+      <circle cx="50" cy="190" r="16" fill="#FF6242"/>
+      <text x="160" y="236" fill="#FF6242" font-family="DejaVu Sans Mono" font-size="12" text-anchor="middle">2 / 4，尾部缺口</text>
+    </svg></div>
+</div>
+<div class="foot">三档结果只影响这一条 Path 的评级与固定扣点；不触发断连，也不影响同刻其他音符。</div>
+</body></html>
