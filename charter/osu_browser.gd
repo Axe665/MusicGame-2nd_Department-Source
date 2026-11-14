@@ -5,7 +5,8 @@ extends AcceptDialog
 ## 搜索走 osu.direct 镜像（mode=0），下载走 sayobot 去视频包，失败退回 osu.direct。
 ## 拿到 .osz 交给 source_ready，和本地导入走同一套转谱管线。
 
-signal source_ready(source_path: String)
+## [param star_hints] 难度名 → 星数（osu! 接口的 difficulty_rating），导入时用来排序和显示。
+signal source_ready(source_path: String, star_hints: Dictionary)
 
 const SEARCH_URL := "https://osu.direct/api/v2/search?query=%s&mode=0&amount=25"
 const DOWNLOAD_URLS := [
@@ -674,9 +675,30 @@ func _download_osu(entry: Dictionary) -> void:
 		_include_video = true
 		return
 	_finish_progress("下载完成，开始转谱")
+	var hints := await _star_hints_for(entry, set_id)
 	# 先关窗口再交棒：导入时会弹进度/报告对话框。
 	hide()
-	source_ready.emit(target)
+	source_ready.emit(target, hints)
+
+
+## 收集这个谱面包每个难度的星数：搜索/收藏的缓存里通常已经带 beatmaps，
+## 没有就再查一次单包详情（失败就算了，只影响排序不阻塞导入）。
+func _star_hints_for(entry: Dictionary, set_id: int) -> Dictionary:
+	var hints := {}
+	var maps: Array = entry.get("beatmaps", []) if entry.get("beatmaps", []) is Array else []
+	if maps.is_empty() and set_id > 0:
+		var meta := await _fetch_set_meta(set_id)
+		if meta.get("beatmaps", []) is Array:
+			maps = meta["beatmaps"]
+	for item in maps:
+		if not item is Dictionary:
+			continue
+		var map: Dictionary = item
+		var version := String(map.get("version", ""))
+		if version.is_empty():
+			continue
+		hints[version] = float(map.get("difficulty_rating", 0.0))
+	return hints
 
 
 func _download_osz(set_id: int) -> String:

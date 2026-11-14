@@ -1520,8 +1520,8 @@ func _build_dialogs() -> void:
 	)
 	add_child(_chart_browser)
 	_osu_browser = OsuBrowser.new()
-	_osu_browser.source_ready.connect(func(source_path: String) -> void:
-		_on_import_osz_selected(source_path, _osu_browser.take_include_video())
+	_osu_browser.source_ready.connect(func(source_path: String, star_hints: Dictionary) -> void:
+		_on_import_osz_selected(source_path, _osu_browser.take_include_video(), star_hints)
 	)
 	add_child(_osu_browser)
 	_lbp_dialog = FileDialog.new()
@@ -2143,12 +2143,12 @@ func _close_tab_now(index: int) -> void:
 	_refresh_tabs()
 
 
-func _on_import_osz_selected(path: String, include_video: bool = true) -> void:
+func _on_import_osz_selected(path: String, include_video: bool = true, star_hints: Dictionary = {}) -> void:
 	# 转谱：把来源里的所有难度转好，作为一个新标签页打开，不覆盖当前谱面。
 	if _app == null:
 		return
 	_app.ensure_tab()
-	if not _app.open_import_source(path):
+	if not _app.open_import_source(path, star_hints):
 		_app.restore_active_tab()
 		_show_toast("导入失败：%s" % _import_error_text(), "error")
 		return

@@ -132,6 +132,8 @@ func _initialize() -> void:
 		"test_mouse_button_input",
 		"test_osu_star_color",
 		"test_osu_filters",
+		"test_osu_difficulty_star_sort",
+		"test_import_label_stars",
 		"test_osu_pill_rows",
 		"test_audio_clock",
 		"test_audio_clock_rate",
@@ -3720,6 +3722,40 @@ func test_osu_star_color() -> bool:
 	ok(green != yellow and yellow != orange and orange != red and red != violet, "each bucket has its own colour")
 	ok(violet == OsuBrowser.star_color(9.9), "purple bucket is stable")
 	return true
+
+## 难度按星数排序：升序、未知排最后、原始下标不变。
+func test_osu_difficulty_star_sort() -> bool:
+	var entries := [
+		{"index": 0, "version": "ANOTHER", "stars": 6.5},
+		{"index": 1, "version": "BEGINNER", "stars": 1.2},
+		{"index": 2, "version": "HYPER", "stars": 4.0},
+		{"index": 3, "version": "LOCAL ONLY", "stars": -1.0},
+	]
+	var sorted := OsuIO.sort_by_stars(entries)
+	eq(sorted.size(), 4, "keeps every difficulty")
+	eq(String(sorted[0]["version"]), "BEGINNER", "lowest stars first")
+	eq(String(sorted[1]["version"]), "HYPER", "then middle")
+	eq(String(sorted[2]["version"]), "ANOTHER", "then highest")
+	eq(String(sorted[3]["version"]), "LOCAL ONLY", "unknown stars go last")
+	eq(int(sorted[2]["index"]), 0, "original zip index is preserved")
+	eq(int(sorted[0]["index"]), 1, "original zip index follows the entry")
+
+	# 没有星数时顺序原样保留
+	var plain := OsuIO.sort_by_stars([{"index": 0, "version": "B"}, {"index": 1, "version": "A"}])
+	eq(String(plain[0]["version"]), "B", "no stars keeps file order")
+	return true
+
+
+## 难度标签末尾追加星数。
+func test_import_label_stars() -> bool:
+	var app_script := load("res://charter/app.gd")
+	var with_stars := String(app_script.import_label("Insane", "Song", "Mapper", "std", 5.42))
+	ok(with_stars.ends_with("5.42★"), "star rating appended at the end, got: %s" % with_stars)
+	ok(with_stars.contains("Insane"), "version still in label")
+	var without := String(app_script.import_label("Insane", "Song", "Mapper", "std"))
+	ok(not without.contains("★"), "no star when rating is unknown")
+	return true
+
 
 
 ## osu 官方筛选：类型 / 语言 / 标签（tags 是 AND）。

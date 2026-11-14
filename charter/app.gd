@@ -230,7 +230,7 @@ func _boot_set_window(path: String) -> void:
 
 ## 打开一个导入来源（.osz/.zip/maidata.txt），把来源里的所有难度都转好放进难度组，
 ## 所以不管在哪个窗口导入，顶部都会出现难度下拉框。
-func open_import_source(source: String) -> bool:
+func open_import_source(source: String, star_hints: Dictionary = {}) -> bool:
 	if source.is_empty() or not FileAccess.file_exists(source):
 		return false
 	import_source = source
@@ -253,7 +253,7 @@ func open_import_source(source: String) -> bool:
 				"label": import_label(label, String(item.get("title", "")), String(item.get("creator", "")), ""),
 			})
 	else:
-		var diffs := OsuIO.list_osz_difficulties(source)
+		var diffs := OsuIO.list_osz_difficulties(source, star_hints)
 		if diffs.is_empty():
 			import_source = ""
 			return false
@@ -262,10 +262,13 @@ func open_import_source(source: String) -> bool:
 			var item: Dictionary = diffs[i]
 			var mode_label := "taiko" if int(item.get("mode", 0)) == 1 else "std"
 			var version := String(item.get("version", ""))
+			var stars := float(item.get("stars", -1.0))
 			import_difficulties.append({
-				"index": i,
+				# 排序后的顺序 ≠ 压缩包里的顺序，取 .osu 要按原始下标
+				"index": int(item.get("index", i)),
 				"name": version if not version.is_empty() else "未命名难度",
-				"label": import_label(version, String(item.get("title", "")), String(item.get("creator", "")), mode_label),
+				"stars": stars,
+				"label": import_label(version, String(item.get("title", "")), String(item.get("creator", "")), mode_label, stars),
 			})
 	# 一次性把每个难度都转出来：切换是瞬时的，也不会因为重新导入丢改动。
 	for i in import_difficulties.size():
@@ -450,15 +453,20 @@ static func _safe_file_name(text: String) -> String:
 	return out.strip_edges()
 
 
-static func import_label(version: String, title: String, creator: String, mode_label: String) -> String:
+static func import_label(version: String, title: String, creator: String, mode_label: String, stars: float = -1.0) -> String:
 	var head := version if not version.is_empty() else "未命名难度"
 	if not mode_label.is_empty():
 		head += "  [%s]" % mode_label
-	if title.is_empty() and creator.is_empty():
-		return head
-	if creator.is_empty():
-		return "%s  %s" % [head, title]
-	return "%s  %s  (%s)" % [head, title, creator]
+	var label := head
+	if not (title.is_empty() and creator.is_empty()):
+		if creator.is_empty():
+			label = "%s  %s" % [head, title]
+		else:
+			label = "%s  %s  (%s)" % [head, title, creator]
+	# 星数放在最末尾，和 osu 的难度显示顺序对得上
+	if stars > 0.0:
+		label += "  %.2f★" % stars
+	return label
 
 
 func import_difficulty_label(position: int) -> String:

@@ -8,7 +8,11 @@ const STD_STREAM_STEP := 45.0
 const STD_JUMP_DISTANCE := 128.0
 
 
-static func list_osz_difficulties(path: String) -> Array[Dictionary]:
+## 列出 .osz 里的难度。
+##
+## [param star_hints] 是「难度名 → 星数」，在线导入时由 osu! 接口带下来；
+## 有星数时按星数升序排列（osu 那边的习惯），没有就保持文件顺序。
+static func list_osz_difficulties(path: String, star_hints: Dictionary = {}) -> Array[Dictionary]:
 	var result: Array[Dictionary] = []
 	var zip := ZIPReader.new()
 	if zip.open(path) != OK:
@@ -19,16 +23,39 @@ static func list_osz_difficulties(path: String) -> Array[Dictionary]:
 			continue
 		var text := zip.read_file(name).get_string_from_utf8()
 		var meta := _read_osu_meta(text)
+		var version := String(meta.get("version", ""))
 		result.append({
+			# 这里必须是"压缩包里的原始顺序"，转谱时按它取 .osu，排序后不能改。
 			"index": result.size(),
 			"file": name,
 			"title": String(meta.get("title", name.get_file().get_basename())),
 			"artist": String(meta.get("artist", "")),
 			"creator": String(meta.get("creator", "")),
-			"version": String(meta.get("version", "")),
+			"version": version,
 			"mode": int(meta.get("mode", 0)),
+			"stars": float(star_hints.get(version, -1.0)),
 		})
 	zip.close()
+	return sort_by_stars(result)
+
+
+## 按星数升序；没有星数（<=0）的排到最后，各自保持原顺序。
+static func sort_by_stars(entries: Array) -> Array[Dictionary]:
+	var ranked: Array[Dictionary] = []
+	var unknown: Array[Dictionary] = []
+	for item in entries:
+		if not item is Dictionary:
+			continue
+		var entry: Dictionary = item
+		if float(entry.get("stars", -1.0)) > 0.0:
+			ranked.append(entry)
+		else:
+			unknown.append(entry)
+	ranked.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return float(a.get("stars", 0.0)) < float(b.get("stars", 0.0)))
+	var result: Array[Dictionary] = []
+	result.append_array(ranked)
+	result.append_array(unknown)
 	return result
 
 
