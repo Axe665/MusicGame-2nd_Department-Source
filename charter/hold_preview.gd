@@ -41,6 +41,6 @@ func _draw() -> void:
 		draw_line(top + Vector2(0, -4), top + Vector2(0, 4), UITheme.AMBER, 2.0, true)
 	var label := "弧宽 %.0f°" % span
 	if duration > 0.0:
-		label += " · 时长 %.2f 拍" % duration
+		label += "，时长 %.2f 拍" % duration
 	draw_string(UITheme.mono_font(), Vector2(8.0, size.y - 8.0), label,
 		HORIZONTAL_ALIGNMENT_LEFT, -1, 11, UITheme.MUTED)

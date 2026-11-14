@@ -53,7 +53,9 @@ class ShapeSampler:
 var chart: Chart
 var beat: float
 var _base: ShapeSampler
-var _events: Array[Dictionary] = []
+var _from: ShapeSampler = null
+var _to: ShapeSampler = null
+var _p: float = 0.0
 var _points: Dictionary = {}
 var _samplers: Dictionary = {}
 
@@ -67,25 +69,12 @@ func _init(source: Chart, time: float, previous: BoundaryFrame = null) -> void:
 		for shape in chart.sorted_shapes():
 			_samplers[shape] = ShapeSampler.new(shape)
 	_base = _samplers.get(chart.get_default_shape())
-	for event in chart.events:
-		var tail := event.end_beat
-		if event.end_behavior == "restore":
-			tail += maxf(0.0, event.restore_duration)
-		if beat + 0.000001 < event.start_beat or beat > tail + 0.000001:
-			continue
-		var from: ShapeSampler = _samplers.get(chart.get_shape(event.from_shape))
-		var to: ShapeSampler = _samplers.get(chart.get_shape(event.to_shape))
-		var p := 0.0
-		if beat <= event.end_beat:
-			p = Ease.apply(event.easing, (beat - event.start_beat) / maxf(0.000001, event.duration()))
-		elif event.end_behavior == "hold":
-			p = 1.0
-		elif event.restore_duration > 0.000001:
-			var swap := from
-			from = to
-			to = swap
-			p = Ease.apply(event.restore_easing, clampf((beat - event.end_beat) / event.restore_duration, 0.0, 1.0))
-		_events.append({"event": event, "from": from, "to": to, "p": p})
+	var pair := BoundaryRuntime.pair_at(chart, beat)
+	if pair.is_empty():
+		return
+	_from = _samplers.get(pair.get("from"))
+	_to = _samplers.get(pair.get("to"))
+	_p = float(pair.get("p", 0.0))
 
 
 func point_at(u: float) -> Dictionary:
@@ -97,51 +86,38 @@ func point_at(u: float) -> Dictionary:
 
 
 func _evaluate(u: float) -> Dictionary:
-	if _base == null:
-		return {"point": Vector2.ZERO, "gap": true}
-	for i in range(_events.size() - 1, -1, -1):
-		var state := _events[i]
-		var event: BoundaryEvent = state.event
-		if not event.covers_u(u):
-			continue
-		var from: ShapeSampler = state.from
-		var to: ShapeSampler = state.to
-		if from == null or to == null:
-			return _base.point_at(u)
-		var a := from.point_at(u)
-		var b := to.point_at(u)
-		var p: float = state.p
-		var from_vec: Vector2 = a.point
-		return {"point": from_vec.lerp(b.point, p), "gap": a.gap if p < 0.5 else b.gap, "segment": null}
-	return _base.point_at(u)
+	if _from == null or _to == null:
+		if _base == null:
+			return {"point": Vector2.ZERO, "gap": true}
+		return _base.point_at(u)
+	var a := _from.point_at(u)
+	var b := _to.point_at(u)
+	return {
+		"point": (a.point as Vector2).lerp(b.point, _p),
+		"gap": a.gap if _p < 0.5 else b.gap,
+		"segment": null,
+	}
 
 
 func sample_points(count: int) -> Array[Dictionary]:
 	var safe_count := maxi(count, 8)
-	if _base == null:
-		var empty: Array[Dictionary] = []
-		for i in safe_count:
-			empty.append(point_at(float(i) / float(safe_count)))
-		return empty
-	var base_points := _base.sample_points(safe_count)
-	var result := base_points.duplicate()
-	for state in _events:
-		var event: BoundaryEvent = state.event
-		var from: ShapeSampler = state.from
-		var to: ShapeSampler = state.to
-		var from_points: Array[Dictionary] = from.sample_points(safe_count) if from != null else []
-		var to_points: Array[Dictionary] = to.sample_points(safe_count) if to != null else []
-		var p: float = state.p
-		for i in safe_count:
-			if not event.covers_u(float(i) / float(safe_count)):
-				continue
-			if from == null or to == null:
-				result[i] = base_points[i]
-				continue
-			var a := from_points[i]
-			var b := to_points[i]
-			var from_vec: Vector2 = a.point
-			result[i] = {"point": from_vec.lerp(b.point, p), "gap": a.gap if p < 0.5 else b.gap, "segment": null}
+	if _from == null or _to == null:
+		if _base == null:
+			var empty: Array[Dictionary] = []
+			for i in safe_count:
+				empty.append(point_at(float(i) / float(safe_count)))
+			return empty
+		return _base.sample_points(safe_count)
+	var from_points := _from.sample_points(safe_count)
+	var to_points := _to.sample_points(safe_count)
+	var result: Array[Dictionary] = []
 	for i in safe_count:
+		var a: Dictionary = from_points[i]
+		var b: Dictionary = to_points[i]
+		result.append({
+			"point": (a.point as Vector2).lerp(b.point, _p),
+			"gap": a.gap if _p < 0.5 else b.gap,
+			"segment": null,
+		})
 		_points[float(i) / float(safe_count)] = result[i]
 	return result

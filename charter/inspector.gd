@@ -57,7 +57,7 @@ func _ready() -> void:
 
 
 func _build_tabs() -> void:
-	for title in ["音符", "区域", "边界", "事件", "视图", "时间", "谱面"]:
+	for title in ["音符", "区域", "视图", "时间", "谱面"]:
 		var scroll := ScrollContainer.new()
 		scroll.name = title
 		scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -80,22 +80,18 @@ func _on_selection_changed() -> void:
 		current_tab = 0
 	elif _app.selected_region_id >= 0:
 		current_tab = 1
-	elif not _app.selected_event_id.is_empty():
-		current_tab = 3
 	_rebuild()
 
 
 func _on_chart_changed() -> void:
+	if _app != null and _app.ring_editor_open:
+		return
 	if not _applying:
 		_rebuild()
 
 
 func _on_tool_changed(tool: String) -> void:
-	if tool == "boundary":
-		current_tab = 2
-	elif tool == "event":
-		current_tab = 3
-	elif tool == "limit":
+	if tool == "limit":
 		current_tab = 1
 	_rebuild()
 
@@ -130,14 +126,10 @@ func _rebuild() -> void:
 		1:
 			_build_region_page(_pages["区域"])
 		2:
-			_build_boundary_page(_pages["边界"])
-		3:
-			_build_event_page(_pages["事件"])
-		4:
 			_build_view_page(_pages["视图"])
-		5:
+		3:
 			_build_timing_page(_pages["时间"])
-		6:
+		4:
 			_build_chart_page(_pages["谱面"])
 	refresh_tab_titles()
 	_rebuilding = false
@@ -147,14 +139,12 @@ func refresh_tab_titles() -> void:
 	if _app == null:
 		return
 	var note_count: int = _app.selected_notes.size()
-	# 标题保持七个短名，避免 TabBar 溢出把「时间」「谱面」折叠进箭头后面。
+	# 环相关编辑都在「环编辑」工作区；这里保留音符/区域/视图/时间/谱面。
 	set_tab_title(0, "音符")
 	set_tab_title(1, "区域" if _app.selected_region_id < 0 else "区域 %d" % _app.selected_region_id)
-	set_tab_title(2, "边界")
-	set_tab_title(3, "事件" if _app.selected_event_id.is_empty() else "事件 %s" % _app.selected_event_id)
-	set_tab_title(4, "视图")
-	set_tab_title(5, "时间")
-	set_tab_title(6, "谱面")
+	set_tab_title(2, "视图")
+	set_tab_title(3, "时间")
+	set_tab_title(4, "谱面")
 	if note_count > 0:
 		set_tab_title(0, "音符 %d" % note_count)
 
@@ -335,6 +325,14 @@ func _buttons(page: VBoxContainer, specs: Array[Dictionary]) -> HBoxContainer:
 		row.add_child(button)
 	page.add_child(row)
 	return row
+
+
+func _quality_changed() -> void:
+	_app.quality_preset = "custom"
+	_app.save_settings()
+	_app.apply_visual_quality()
+	_app.appearance_changed.emit()
+	call_deferred("_rebuild")
 
 
 func _apply(callback: Callable) -> void:
@@ -744,7 +742,7 @@ func _build_note_page_for(page: VBoxContainer, note: Note) -> void:
 			if _active_note != null:
 				_apply(func() -> void: _active_note.has_custom_color = false)},
 		{"text": "管理配色…", "callback": func() -> void:
-			current_tab = 6},
+			current_tab = 4},
 		{"text": "定位播放头", "callback": func() -> void:
 			if _active_note != null:
 				_app.set_playhead(_active_note.beat)},
@@ -833,7 +831,6 @@ func _refresh_note_page() -> void:
 	_note_groups["hold"].visible = note.type == "hold"
 	_note_groups["seek"].visible = note.type == "seek"
 	_note_groups["anchor"].visible = note.type == "anchor"
-	_note_widgets["anchor_pair"].get_parent().visible = note.type == "anchor"
 	_note_widgets["bell_u"].value = note.center_u
 	_note_widgets["bell_w"].value = note.bell_width()
 	_note_widgets["bell_preview"].set_arc_width(note.bell_width())
@@ -868,10 +865,7 @@ func _refresh_note_page() -> void:
 		_note_widgets["seek_orien"].selected = 1 if note.seek_orien == 1 else 0
 	if note.type == "hold":
 		_note_widgets["hold_preview"].set_state(note.arc_width(), note.duration())
-		var where := "贴环（外缘）" if note.space != "plane" else "平面"
-		_note_widgets["trace_label"].text = "%s；二维点：%d 个。在预览窗用 Trace 工具拖拽可重画。" % [where, note.trace_pts.size()]
 	if note.type == "anchor":
-		_note_widgets["anchor_pair"].value = note.anchor_pair
 		_note_widgets["anchor_pair_id"].text = note.pair_id
 	_note_widgets["lock"].button_pressed = note.lock
 	_applying = false
@@ -1008,7 +1002,7 @@ func _build_region_page(page: VBoxContainer) -> void:
 		_empty("区域", "用 Limit 工具（7）在画布拖拽创建限制区；长度上限 4 拍。")
 		_buttons(page, [{"text": "Limit 工具", "callback": func() -> void: _app.set_tool("limit")}])
 		return
-	_section(page, "Limit · #%d" % region.id)
+	_section(page, "Limit #%d" % region.id)
 	_row(page, "类型", _readonly(region.kind))
 	_beat(page, "开始拍", region.start_beat, func(value: float) -> void: region.start_beat = value)
 	_beat(page, "结束拍", region.end_beat, func(value: float) -> void: region.end_beat = value)
@@ -1027,95 +1021,6 @@ func _build_region_page(page: VBoxContainer) -> void:
 	_buttons(page, [
 		{"text": "定位播放头", "callback": func() -> void: _app.set_playhead(region.start_beat)},
 		{"text": "删除", "callback": func() -> void: _delete_region(region)},
-	])
-
-
-func _build_boundary_page(page: VBoxContainer) -> void:
-	var shape: BoundaryShape = _app.get_selected_shape()
-	if shape == null:
-		_empty("边界", "选择或新建一个 BoundaryShape。")
-		_buttons(page, [{"text": "新建圆形", "callback": func() -> void: _add_shape()}])
-		return
-	var shape_ids: Array[String] = []
-	for item in _app.chart.sorted_shapes():
-		shape_ids.append(item.id)
-	_option(page, "形状", shape_ids, maxi(0, shape_ids.find(shape.id)), func(index: int) -> void:
-		_app.select_shape(shape_ids[index])
-	)
-	_check(page, "闭合 closed", shape.closed, func(value: bool) -> void: shape.closed = value)
-	_row(page, "默认形状", _readonly(_app.chart.default_shape_id))
-	_buttons(page, [
-		{"text": "设为默认", "callback": func() -> void: _app.chart.default_shape_id = shape.id},
-		{"text": "新建", "callback": func() -> void: _add_shape()},
-		{"text": "删除", "callback": func() -> void: _delete_shape(shape)},
-	])
-	_section(page, "分段")
-	var list := ItemList.new()
-	list.custom_minimum_size = Vector2(0, 126)
-	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	var sorted := shape.sorted_segments()
-	for i in sorted.size():
-		var segment: BoundarySegment = sorted[i]
-		list.add_item("%02d  %.3f–%.3f%s" % [i, segment.u0, segment.u1, "  GAP" if segment.gap else ""])
-	if _app.selected_segment_index >= 0 and _app.selected_segment_index < list.item_count:
-		list.select(_app.selected_segment_index)
-	list.item_selected.connect(func(index: int) -> void: _app.select_segment(index))
-	page.add_child(list)
-	_buttons(page, [
-		{"text": "加段", "callback": func() -> void: _add_segment(shape)},
-		{"text": "删段", "callback": func() -> void: _delete_segment(shape)},
-		{"text": "在 u 中点分割", "callback": func() -> void: _split_segment_mid(shape)},
-	])
-	_section(page, "预设")
-	_buttons(page, [
-		{"text": "圆", "callback": func() -> void: _preset(shape, "circle")},
-		{"text": "椭圆", "callback": func() -> void: _preset(shape, "ellipse")},
-		{"text": "竖椭圆", "callback": func() -> void: _preset(shape, "tall")},
-		{"text": "切一刀", "callback": func() -> void: _preset(shape, "gap")},
-	])
-	var segment: BoundarySegment = _app.get_selected_segment()
-	if segment != null:
-		_section(page, "段 %d" % _app.selected_segment_index)
-		_spin(page, "u0", segment.u0, 0.0, 1.0, 0.001, func(value: float) -> void: segment.u0 = value)
-		_spin(page, "u1", segment.u1, 0.0, 1.0, 0.001, func(value: float) -> void: segment.u1 = value)
-		_spin(page, "x0", segment.p0.x, -2000.0, 2000.0, 1.0, func(value: float) -> void: segment.p0 = Vector2(value, segment.p0.y))
-		_spin(page, "y0", segment.p0.y, -2000.0, 2000.0, 1.0, func(value: float) -> void: segment.p0 = Vector2(segment.p0.x, value))
-		_spin(page, "x1", segment.p1.x, -2000.0, 2000.0, 1.0, func(value: float) -> void: segment.p1 = Vector2(value, segment.p1.y))
-		_spin(page, "y1", segment.p1.y, -2000.0, 2000.0, 1.0, func(value: float) -> void: segment.p1 = Vector2(segment.p1.x, value))
-		var curves: Array[String] = ["l", "s", "si", "so", "b"]
-		_option(page, "X 插值", curves, maxi(0, curves.find(segment.ix)), func(index: int) -> void: segment.ix = curves[index])
-		_option(page, "Y 插值", curves, maxi(0, curves.find(segment.iy)), func(index: int) -> void: segment.iy = curves[index])
-		_check(page, "缺口 gap（不渲染/不判定）", segment.gap, func(value: bool) -> void: segment.gap = value)
-		_label(page, "提示：在预览窗直接拖拽控制点；双击分段可在点击处拆分。", 11, UITheme.MUTED)
-
-
-func _build_event_page(page: VBoxContainer) -> void:
-	var event: BoundaryEvent = _app.get_selected_event()
-	if event == null:
-		_empty("事件", "E 或下方按钮新建 BoundaryEvent；同一时刻 target 不得相交。")
-		_buttons(page, [{"text": "新建事件", "callback": func() -> void: _add_event()}])
-		return
-	_section(page, "BoundaryEvent · %s" % event.id)
-	_beat(page, "开始拍", event.start_beat, func(value: float) -> void: event.start_beat = value)
-	_beat(page, "结束拍", event.end_beat, func(value: float) -> void: event.end_beat = value)
-	_spin(page, "target u0", event.target_u0, 0.0, 1.0, 0.001, func(value: float) -> void: event.target_u0 = value)
-	_spin(page, "target u1", event.target_u1, 0.0, 1.0, 0.001, func(value: float) -> void: event.target_u1 = value)
-	var shape_ids: Array[String] = []
-	for shape in _app.chart.sorted_shapes():
-		shape_ids.append(shape.id)
-	_option(page, "fromShape", shape_ids, maxi(0, shape_ids.find(event.from_shape)), func(index: int) -> void: event.from_shape = shape_ids[index])
-	_option(page, "toShape", shape_ids, maxi(0, shape_ids.find(event.to_shape)), func(index: int) -> void: event.to_shape = shape_ids[index])
-	var easings: Array[String] = ["linear", "in-out", "cubic-bezier"]
-	_option(page, "缓动", easings, maxi(0, easings.find(event.easing)), func(index: int) -> void: event.easing = easings[index])
-	var behaviors: Array[String] = ["restore", "hold"]
-	_option(page, "结束行为", behaviors, maxi(0, behaviors.find(event.end_behavior)), func(index: int) -> void: event.end_behavior = behaviors[index])
-	_spin(page, "恢复拍数", event.restore_duration, 0.0, 8.0, 0.25, func(value: float) -> void: event.restore_duration = value)
-	_option(page, "恢复缓动", easings, maxi(0, easings.find(event.restore_easing)), func(index: int) -> void: event.restore_easing = easings[index])
-	_label(page, "事件只改 C(u,t)，不改音符的 u/角度/宽度/时间。", 11, UITheme.MUTED)
-	_buttons(page, [
-		{"text": "定位播放头", "callback": func() -> void: _app.set_playhead(event.start_beat)},
-		{"text": "复制", "callback": func() -> void: _duplicate_event(event)},
-		{"text": "删除", "callback": func() -> void: _delete_event(event)},
 	])
 
 
@@ -1207,31 +1112,7 @@ func _build_view_page(page: VBoxContainer) -> void:
 	_spin(page, "videoOffset ms", _app.chart.video_offset_ms, -10000.0, 10000.0, 1.0, func(value: float) -> void: _app.chart.video_offset_ms = value)
 	_spin(page, "FPS 提示", _app.chart.video_fps, 1.0, 240.0, 1.0, func(value: float) -> void: _app.chart.video_fps = value)
 	_spin(page, "不透明度", _app.chart.video_opacity, 0.0, 1.0, 0.01, func(value: float) -> void: _app.chart.video_opacity = value)
-	_section(page, "RingState 关键帧")
-	var list := ItemList.new()
-	list.custom_minimum_size = Vector2(0, 100)
-	for i in _app.chart.view_states.size():
-		var state: ViewState = _app.chart.view_states[i]
-		list.add_item("%02d  beat %.2f  zoom %.2f" % [i, state.beat, state.zoom])
-	if _app.selected_view_index >= 0 and _app.selected_view_index < list.item_count:
-		list.select(_app.selected_view_index)
-	list.item_selected.connect(func(index: int) -> void: _app.select_view(index))
-	page.add_child(list)
-	var state: ViewState = _app.get_selected_view()
-	if state != null:
-		_beat(page, "关键帧拍", state.beat, func(value: float) -> void: state.beat = value)
-		_spin(page, "zoom", state.zoom, 0.75, 1.4, 0.01, func(value: float) -> void: state.zoom = value)
-		_spin(page, "tiltX", state.tilt_x, -60.0, 60.0, 1.0, func(value: float) -> void: state.tilt_x = value)
-		_spin(page, "tiltY", state.tilt_y, -60.0, 60.0, 1.0, func(value: float) -> void: state.tilt_y = value)
-		_spin(page, "ellipse", state.ellipse, 0.5, 1.5, 0.01, func(value: float) -> void: state.ellipse = value)
-		_spin(page, "rotation", state.rotation, -180.0, 180.0, 1.0, func(value: float) -> void: state.rotation = value)
-		var easings: Array[String] = ["linear", "in-out", "cubic-bezier"]
-		_option(page, "缓动", easings, maxi(0, easings.find(state.easing)), func(index: int) -> void: state.easing = easings[index])
-		_buttons(page, [{"text": "删除关键帧", "callback": func() -> void: _delete_view_state(state)}])
-	_buttons(page, [
-		{"text": "添加关键帧", "callback": func() -> void: _add_view_state()},
-		{"text": "定位播放头", "callback": func() -> void: _app.set_playhead(_app.playhead_beat)},
-	])
+	_label(page, "RingState 关键帧在「视图 → 环编辑」里用滚轮/菱形调。", 11, UITheme.MUTED)
 
 
 func _build_chart_page(page: VBoxContainer) -> void:
@@ -1241,9 +1122,6 @@ func _build_chart_page(page: VBoxContainer) -> void:
 	_text(page, "曲师", String(chart.metadata.get("artist", "")), func(value: String) -> void: chart.metadata["artist"] = value)
 	_text(page, "谱师", String(chart.metadata.get("creator", "")), func(value: String) -> void: chart.metadata["creator"] = value)
 	_text(page, "难度", chart.difficulty, func(value: String) -> void: chart.difficulty = value)
-	_option(page, "滑条判定", ["连续跟随", "舞萌扫圈"], 1 if String(chart.metadata.get("slide_mode", "follow")) == "maimai" else 0, func(index: int) -> void:
-		_app.mutate(func() -> void: chart.metadata["slide_mode"] = "maimai" if index == 1 else "follow")
-	)
 	_text(page, "音频路径", chart.audio_path, func(value: String) -> void: chart.audio_path = value)
 	_text(page, "视频路径", chart.video_path, func(value: String) -> void: chart.video_path = value)
 	_label(page, "时间/BPM/offset 已统一移到“时间”页。", 11, UITheme.MUTED)
@@ -1525,146 +1403,6 @@ func _delete_region(region: Region) -> void:
 	_app.clear_selection()
 
 
-func _add_shape() -> void:
-	var index := 1
-	var id := "S%d" % index
-	while _app.chart.shapes.has(id):
-		index += 1
-		id = "S%d" % index
-	_app.begin_edit()
-	_app.chart.shapes[id] = BoundaryShape.circle(id, 330.0, 32)
-	_app.finish_edit()
-	_app.select_shape(id)
-
-
-func _delete_shape(shape: BoundaryShape) -> void:
-	if _app.chart.shapes.size() <= 1:
-		return
-	_app.begin_edit()
-	_app.chart.shapes.erase(shape.id)
-	if _app.chart.default_shape_id == shape.id:
-		_app.chart.default_shape_id = _app.chart.shapes.keys()[0]
-	_app.finish_edit()
-	_app.select_shape(_app.chart.default_shape_id)
-
-
-func _add_segment(shape: BoundaryShape) -> void:
-	var sorted := shape.sorted_segments()
-	var last: BoundarySegment = sorted[-1]
-	var mid := (last.u0 + last.u1) * 0.5
-	var point: Vector2 = last.point_at(0.5)
-	_app.begin_edit()
-	shape.segments.append(BoundarySegment.new(mid, last.u1, point, last.p1, last.ix, last.iy, last.gap))
-	last.u1 = mid
-	last.p1 = point
-	_app.finish_edit()
-	_app.select_segment(shape.sorted_segments().find(last))
-
-
-func _delete_segment(shape: BoundaryShape) -> void:
-	var sorted := shape.sorted_segments()
-	if sorted.size() <= 1 or _app.selected_segment_index < 0:
-		return
-	var index: int = _app.selected_segment_index
-	var segment: BoundarySegment = sorted[index]
-	_app.begin_edit()
-	if index > 0:
-		var previous := sorted[index - 1]
-		previous.u1 = segment.u1
-		previous.p1 = segment.p1
-	else:
-		var next := sorted[1]
-		next.u0 = segment.u0
-		next.p0 = segment.p0
-	shape.segments.erase(segment)
-	_app.finish_edit()
-	_app.select_segment(0)
-
-
-func _split_segment_mid(shape: BoundaryShape) -> void:
-	var segment: BoundarySegment = _app.get_selected_segment()
-	if segment == null:
-		return
-	var u: float = (segment.u0 + segment.u1) * 0.5
-	var point: Vector2 = segment.point_at(0.5)
-	var first := BoundarySegment.new(segment.u0, u, segment.p0, point, segment.ix, segment.iy, segment.gap)
-	var second := BoundarySegment.new(u, segment.u1, point, segment.p1, segment.ix, segment.iy, segment.gap)
-	_app.begin_edit()
-	shape.segments.erase(segment)
-	shape.segments.append(first)
-	shape.segments.append(second)
-	shape.segments.sort_custom(func(a: BoundarySegment, b: BoundarySegment) -> bool: return a.u0 < b.u0)
-	_app.finish_edit()
-	_app.select_segment(shape.sorted_segments().find(first))
-
-
-func _preset(shape: BoundaryShape, kind: String) -> void:
-	var replacement: BoundaryShape
-	match kind:
-		"circle":
-			replacement = BoundaryShape.circle(shape.id, 330.0, 32)
-		"ellipse":
-			replacement = BoundaryShape.ellipse(shape.id, 410.0, 245.0, 32)
-		"tall":
-			replacement = BoundaryShape.ellipse(shape.id, 300.0, 400.0, 32)
-		"gap":
-			replacement = BoundaryShape.circle(shape.id, 330.0, 32)
-			if not replacement.segments.is_empty():
-				replacement.segments[0].gap = true
-		_:
-			return
-	_app.begin_edit()
-	shape.segments = replacement.segments
-	shape.closed = replacement.closed
-	_app.finish_edit()
-
-
-func _add_event() -> void:
-	var event := BoundaryEvent.new(_app.chart.next_event_id(), _app.playhead_beat, _app.playhead_beat + 4.0, 0.0, 1.0, _app.chart.default_shape_id, _app.chart.default_shape_id)
-	_app.begin_edit()
-	_app.chart.events.append(event)
-	_app.finish_edit()
-	_app.select_event(event.id)
-
-
-func _duplicate_event(event: BoundaryEvent) -> void:
-	var copy := BoundaryEvent.from_dict(event.to_dict())
-	copy.id = _app.chart.next_event_id()
-	copy.start_beat += 4.0
-	copy.end_beat += 4.0
-	_app.begin_edit()
-	_app.chart.events.append(copy)
-	_app.finish_edit()
-	_app.select_event(copy.id)
-
-
-func _delete_event(event: BoundaryEvent) -> void:
-	_app.begin_edit()
-	_app.chart.events.erase(event)
-	_app.finish_edit()
-	_app.clear_selection()
-
-
-func add_view_state_at_playhead() -> void:
-	_add_view_state()
-
-
-func _add_view_state() -> void:
-	var state := ViewState.new(_app.playhead_beat, 1.0, 0.0, 0.0, 1.0, 0.0, "in-out")
-	_app.begin_edit()
-	_app.chart.view_states.append(state)
-	_app.finish_edit()
-	_app.select_view(_app.chart.view_states.size() - 1)
-
-
-func _delete_view_state(state: ViewState) -> void:
-	_app.begin_edit()
-	_app.chart.view_states.erase(state)
-	_app.finish_edit()
-	_app.selected_view_index = -1
-
-
-## 顶部菜单和检查器按钮共用的入口。
 func open_video_picker() -> void:
 	_pick_video()
 

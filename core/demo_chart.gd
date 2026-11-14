@@ -29,7 +29,7 @@ static func make_empty(meta: Dictionary) -> Chart:
 	))
 	chart.timing.offset_ms = chart.offset_ms
 	chart.shapes.clear()
-	chart.shapes["S0"] = BoundaryShape.circle("S0", 330.0, 32)
+	chart.shapes["S0"] = BoundaryShape.circle("S0", 330.0, 48)
 	chart.default_shape_id = "S0"
 	chart.view_states.clear()
 	chart.view_states.append(ViewState.new(0.0, 1.0, 0.0, 0.0, 1.0, 0.0, "linear"))
@@ -50,19 +50,17 @@ static func make_demo() -> Chart:
 		"beats_per_bar": 4,
 		"difficulty": "Insane",
 	})
-	chart.shapes["S1"] = BoundaryShape.ellipse("S1", 410.0, 245.0, 32)
-	chart.shapes["S2"] = BoundaryShape.ellipse("S2", 300.0, 400.0, 32)
+	chart.shapes["S1"] = BoundaryShape.ellipse("S1", 410.0, 245.0, 48)
+	chart.shapes["S2"] = BoundaryShape.ellipse("S2", 300.0, 400.0, 48)
 
-	var e0 := BoundaryEvent.new("E0", 8.0, 12.0, 0.0, 1.0, "S0", "S1")
-	e0.easing = "in-out"
-	e0.end_behavior = "restore"
-	e0.restore_duration = 0.5
-	chart.events.append(e0)
-	var e1 := BoundaryEvent.new("E1", 20.0, 24.0, 0.0, 1.0, "S0", "S2")
-	e1.easing = "in-out"
-	e1.end_behavior = "restore"
-	e1.restore_duration = 0.5
-	chart.events.append(e1)
+	chart.shape_keys = [
+		{"beat": 8.0, "shape_id": "S0", "easing": "in-out"},
+		{"beat": 12.0, "shape_id": "S1", "easing": "in-out"},
+		{"beat": 12.5, "shape_id": "S0", "easing": "in-out"},
+		{"beat": 20.0, "shape_id": "S0", "easing": "in-out"},
+		{"beat": 24.0, "shape_id": "S2", "easing": "in-out"},
+		{"beat": 24.5, "shape_id": "S0", "easing": "in-out"},
+	]
 	chart.refresh_ids()
 
 	chart.view_states.clear()

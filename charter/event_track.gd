@@ -66,15 +66,19 @@ func _draw() -> void:
 		if x < 0.0 or x > size.x:
 			continue
 		draw_line(Vector2(x, 1), Vector2(x, size.y - 1), Color(1, 1, 1, 0.10), 1.0)
-	for event in chart.events:
-		var x0 := _beat_to_x(event.start_beat)
-		var x1 := _beat_to_x(event.end_beat + event.restore_duration)
-		var rect := Rect2(Vector2(x0, 10), Vector2(maxf(2.0, x1 - x0), 7))
-		var selected: bool = _app.selected_event_id == event.id
-		draw_rect(rect, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.30 if selected else 0.22))
-		draw_rect(rect, UITheme.CYAN if selected else Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.55), false, 1.0)
-		if x1 - x0 > 34.0:
-			draw_string(UITheme.mono_font(), Vector2(x0 + 3, 16), event.id, HORIZONTAL_ALIGNMENT_LEFT, -1, 8, Color(1, 1, 1, 0.75))
+	var keys := chart.sorted_shape_keys()
+	for i in keys.size():
+		var x := _beat_to_x(float(keys[i].get("beat", 0.0)))
+		if x < -6.0 or x > size.x + 6.0:
+			continue
+		var next_beat := float(keys[i + 1].get("beat", float(keys[i].get("beat", 0.0)))) if i + 1 < keys.size() else float(keys[i].get("beat", 0.0))
+		var x1 := _beat_to_x(next_beat)
+		if x1 > x + 2.0:
+			draw_line(Vector2(x, 13), Vector2(x1, 13), Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.25), 3.0)
+		var diamond := PackedVector2Array([Vector2(x, 9), Vector2(x + 5, 14), Vector2(x, 19), Vector2(x - 5, 14)])
+		draw_colored_polygon(diamond, UITheme.CYAN)
+		if x1 - x > 30.0:
+			draw_string(UITheme.mono_font(), Vector2(x + 7, 17), String(keys[i].get("shape_id", "")), HORIZONTAL_ALIGNMENT_LEFT, -1, 8, Color(1, 1, 1, 0.7))
 	for region in chart.regions:
 		var x0 := _beat_to_x(region.start_beat)
 		var x1 := _beat_to_x(region.end_beat)
@@ -86,8 +90,8 @@ func _draw() -> void:
 			draw_string(UITheme.mono_font(), Vector2(x0 + 3, 25), "LIMIT", HORIZONTAL_ALIGNMENT_LEFT, -1, 8, Color(1, 1, 1, 0.75))
 	var playhead_x := _beat_to_x(_app.playhead_beat)
 	draw_line(Vector2(playhead_x, 0), Vector2(playhead_x, size.y), Color(UITheme.CORAL.r, UITheme.CORAL.g, UITheme.CORAL.b, 0.9), 1.5)
-	if chart.events.is_empty() and chart.regions.is_empty():
-		draw_string(UITheme.mono_font(), Vector2(8, 18), "事件轨 · E 新建 BoundaryEvent", HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(1, 1, 1, 0.30))
+	if chart.shape_keys.is_empty() and chart.regions.is_empty():
+		draw_string(UITheme.mono_font(), Vector2(8, 18), "形状关键帧：视图 → 环编辑", HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(1, 1, 1, 0.30))
 
 
 func _gui_input(event: InputEvent) -> void:
@@ -107,12 +111,12 @@ func _gui_input(event: InputEvent) -> void:
 
 
 func _press(pos: Vector2, event: InputEventMouseButton) -> void:
-	for event_item in _app.chart.events:
-		var x0 := _beat_to_x(event_item.start_beat)
-		var x1 := _beat_to_x(event_item.end_beat + event_item.restore_duration)
-		if pos.x >= minf(x0, x1) - 2 and pos.x <= maxf(x0, x1) + 2 and pos.y >= 9 and pos.y <= 18:
-			_app.select_event(event_item.id)
-			return
+	if pos.y >= 8 and pos.y <= 20:
+		for key in _app.chart.sorted_shape_keys():
+			var x := _beat_to_x(float(key.get("beat", 0.0)))
+			if absf(pos.x - x) <= 6.0:
+				_app.seek(float(key.get("beat", 0.0)))
+				return
 	for region in _app.chart.regions:
 		var x0 := _beat_to_x(region.start_beat)
 		var x1 := _beat_to_x(region.end_beat)

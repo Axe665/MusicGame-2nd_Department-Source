@@ -632,6 +632,7 @@ static func from_code(code: String) -> Note:
 			note.width = 360.0
 		"anchor":
 			note.beat = float(parts[0]) if parts.size() > 0 else 0.0
+			note.end_beat = note.beat
 			note.angle = float(parts[1]) if parts.size() > 1 else 0.0
 			note.pair_id = parts[2].strip_edges() if parts.size() > 2 else ""
 			note.width = 0.0
@@ -639,6 +640,7 @@ static func from_code(code: String) -> Note:
 				note.anchor_pair = int(parts[3])
 		"bell":
 			note.beat = float(parts[0]) if parts.size() > 0 else 0.0
+			note.end_beat = note.beat
 			note.angle = float(parts[1]) if parts.size() > 1 else 0.0
 			if parts.size() > 2:
 				note.width = float(parts[2])

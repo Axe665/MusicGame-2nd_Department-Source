@@ -23,6 +23,11 @@ var timing: TimingMap = TimingMap.new()
 var default_shape_id: String = "S0"
 var shapes: Dictionary = {}
 var events: Array[BoundaryEvent] = []
+## 形状关键帧：{beat, shape_id, easing}。easing 管“从这一帧到下一帧”。
+## 运行时以关键帧为准；events 只用于读旧谱和给旧版本双写。
+var shape_keys: Array[Dictionary] = []
+## 载入时产生的兼容提示（曲线降级等），由编辑器弹一次。
+var load_warnings: Array[String] = []
 var view_states: Array[ViewState] = []
 var regions: Array[Region] = []
 var notes: Array[Note] = []
@@ -75,7 +80,7 @@ var _next_event_id: int = 1
 
 
 func _init() -> void:
-	shapes["S0"] = BoundaryShape.circle("S0", 330.0, 32)
+	shapes["S0"] = BoundaryShape.circle("S0", 330.0, 48)
 	view_states = [ViewState.new(0.0, 1.0, 0.0, 0.0, 1.0, 0.0, "linear")]
 
 
@@ -88,6 +93,23 @@ func get_default_shape() -> BoundaryShape:
 	if shape == null and not shapes.is_empty():
 		shape = shapes.values()[0]
 	return shape
+
+
+func sorted_shape_keys() -> Array[Dictionary]:
+	var result: Array[Dictionary] = []
+	for key in shape_keys:
+		if key is Dictionary:
+			result.append(key)
+	result.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return float(a.get("beat", 0.0)) < float(b.get("beat", 0.0)))
+	return result
+
+
+## 播放头正好落在关键帧上时返回那一帧，否则返回空字典。
+func shape_key_at(beat: float) -> Dictionary:
+	for key in shape_keys:
+		if absf(float(key.get("beat", -1.0)) - beat) < 0.0005:
+			return key
+	return {}
 
 
 func sorted_shapes() -> Array[BoundaryShape]:

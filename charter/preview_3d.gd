@@ -3,6 +3,9 @@ extends Control
 
 signal cursor_changed(u: float, valid: bool)
 signal notice(message: String, level: String)
+## 环编辑工作区：滚轮缩放、拖空白旋转，由工作区写进镜头关键帧。
+signal ring_zoom(delta: float)
+signal ring_rotate(degrees: float)
 
 const RING_WIDTH := 4.0
 const GLOW_WIDTH := 18.0
@@ -31,6 +34,8 @@ const NOTE_POP_SEC := 0.28
 const NOTE_POP_SCALE := 1.5
 
 var chart_override: Chart = null
+## 洋葱皮：相邻关键帧的轮廓，由环工作区填。
+var onion_shapes: Array = []
 var follow_app: bool = true
 var time_beat: float = 0.0
 var playing: bool = false
@@ -148,6 +153,7 @@ var _last_mouse_screen: Vector2 = Vector2(-9999, -9999)
 var _cursor_trail: Array[Dictionary] = []
 ## 3D 视口上次重画时间（试玩时限频，不影响 2D/游戏帧率）。
 var _last_3d_usec: int = 0
+var _last_3d_key: String = ""
 ## 性能采样：draw_overlay 的平均耗时 + FPS，每 2 秒打印一次（仅试玩）。
 var _perf_draw_usec: int = 0
 var _perf_frames: int = 0
@@ -179,9 +185,7 @@ var _boundary_frame_cache: BoundaryFrame = null
 var _max_design_radius: float = -1.0
 var _path_local_cache: Dictionary = {}
 
-var _drag_segment: int = -1
-var _drag_endpoint: int = -1
-var _drag_shape_backup: Dictionary = {}
+var _drag_vertex: int = -1
 var _drag_visual: int = -1
 var _drag_visual_note: Note = null
 var _drag_visual_start: Vector2 = Vector2.ZERO
@@ -213,6 +217,10 @@ var _path_head_state: Dictionary = {}
 var note_states: Dictionary = {}
 ## 判成 MISS 时的谱面拍：hold 整条按 0.24 拍淡出，不硬切。
 var note_state_beats: Dictionary = {}
+## 环编辑工作区模式：左键拖空白旋转、滚轮缩放。
+var ring_edit_mode: bool = false
+var _ring_rotating: bool = false
+var _ring_rot_last: float = 0.0
 var _drawing_path: bool = false
 var _path_points: Array[Vector2] = []
 var _path_head_angle: float = 0.0
@@ -255,6 +263,8 @@ var fx_budget: String = "full"
 var bar_lines_visible: bool = true
 ## 3D 背景渲染分辨率与刷新率（2D 与判定永远按游戏帧率）。
 var ring_3d_scale: String = "high"
+## 0 = 关，1 = 2x，2 = 4x
+var msaa_3d_level: int = 1
 var ring_3d_hz: int = 60
 
 
@@ -270,8 +280,14 @@ func set_quality_level(level: int) -> void:
 func apply_ring_quality() -> void:
 	if _subviewport == null:
 		return
-	var scale := 0.8
+	var scale := 1.0
 	match ring_3d_scale:
+		"ssaa15":
+			scale = 1.5
+		"ssaa12":
+			scale = 1.25
+		"high":
+			scale = 0.85
 		"mid":
 			scale = 0.65
 		"low":
@@ -279,6 +295,27 @@ func apply_ring_quality() -> void:
 	if quality_level > 0:
 		scale = maxf(0.4, scale - 0.15)
 	_subviewport.scaling_3d_scale = scale
+	# 抗锯齿按模式组合：MSAA / FXAA / TAA / MSAA+FXAA。
+	_subviewport.msaa_3d = Viewport.MSAA_DISABLED
+	_subviewport.screen_space_aa = Viewport.SCREEN_SPACE_AA_DISABLED
+	_subviewport.use_taa = false
+	match msaa_3d_level:
+		1:
+			_subviewport.msaa_3d = Viewport.MSAA_2X
+		2:
+			_subviewport.msaa_3d = Viewport.MSAA_4X
+		3:
+			_subviewport.msaa_3d = Viewport.MSAA_8X
+		4:
+			_subviewport.screen_space_aa = Viewport.SCREEN_SPACE_AA_FXAA
+		5:
+			_subviewport.use_taa = true
+		6:
+			_subviewport.msaa_3d = Viewport.MSAA_2X
+			_subviewport.screen_space_aa = Viewport.SCREEN_SPACE_AA_FXAA
+		7:
+			_subviewport.msaa_3d = Viewport.MSAA_4X
+			_subviewport.screen_space_aa = Viewport.SCREEN_SPACE_AA_FXAA
 	if _overlay != null:
 		_overlay.queue_redraw()
 
@@ -368,7 +405,8 @@ func _build_layers() -> void:
 	_subviewport.own_world_3d = true
 	_subviewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 	_subviewport.size = Vector2i(maxi(1, int(size.x)), maxi(1, int(size.y)))
-	_subviewport.scaling_3d_scale = 0.8
+	_subviewport.scaling_3d_scale = 1.0
+	_subviewport.msaa_3d = Viewport.MSAA_2X
 	_subviewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
 	_viewport_container.add_child(_subviewport)
 
@@ -561,15 +599,13 @@ func _process(_delta: float) -> void:
 	var view_changed := _update_transform(t)
 	var flat_dirty := _mesh_dirty and not use_3d_ring
 	if use_3d_ring and (_mesh_dirty or mesh_key != _last_mesh_key):
-		# 形变动画只需 30Hz；拖动几何时立即重建，避免手感发飘。
-		var now_usec := Time.get_ticks_usec()
-		if _mesh_dirty or now_usec - _last_mesh_usec >= 33333:
-			var mesh_start := Time.get_ticks_usec()
-			_update_ring_mesh(chart, t)
-			_perf_mesh_usec += Time.get_ticks_usec() - mesh_start
-			_last_mesh_key = mesh_key
-			_last_mesh_usec = now_usec
-			view_changed = true
+		# 形变时每帧重建：30Hz 的几何更新会让环比音符慢半拍，看起来就是卡顿。
+		var mesh_start := Time.get_ticks_usec()
+		_update_ring_mesh(chart, t)
+		_perf_mesh_usec += Time.get_ticks_usec() - mesh_start
+		_last_mesh_key = mesh_key
+		_last_mesh_usec = Time.get_ticks_usec()
+		view_changed = true
 	if not use_3d_ring and _mesh_dirty:
 		_mesh_dirty = false
 	_update_background(chart)
@@ -617,53 +653,34 @@ func _process(_delta: float) -> void:
 		_cursor_layer.queue_redraw()
 	if use_3d_ring:
 		var animate_3d := playing or playtest_mode or _tilt.distance_to(_tilt_target) > 0.01
-		if playtest_mode and animate_3d:
-			# 3D 环只在形变/视角真的变化时重画，并限制到 ring_3d_hz。
-			# 之前每 16ms 无条件重画一帧：120fps 下每隔一帧就多一次 3D 渲染，
-			# 那一帧超预算就掉到 16ms/22ms，2D 音符看起来像卡了一下。
-			var now3 := Time.get_ticks_usec()
-			var changed_3d := view_changed or _mesh_dirty or mesh_key != _last_mesh_key
-			var frame_gap := 16000 if ring_3d_hz >= 60 else 33000
-			if changed_3d and now3 - _last_3d_usec >= frame_gap:
-				_last_3d_usec = now3
-				_subviewport.render_target_update_mode = SubViewport.UPDATE_ONCE
-				_render_mode = SubViewport.UPDATE_ONCE
-		else:
-			_update_3d_mode(animate_3d, view_changed or _mesh_dirty)
+		# 形变时每帧都要重画：UPDATE_ONCE 渲染完会被引擎改回 DISABLED，
+		# 而缓存的 _render_mode 还停在 ONCE，后面的帧就再也不更新（正是卡顿/不动的来源）。
+		_update_3d_mode(animate_3d, view_changed or _mesh_dirty or mesh_key != _last_mesh_key)
 	_last_process_time = t
 	_last_mouse_screen = mouse_screen
 	_perf_proc_usec += Time.get_ticks_usec() - proc_start
 
 
 func _mesh_key(chart: Chart, beat: float) -> String:
-	var parts: Array[String] = []
-	for event in chart.events:
-		if beat < event.start_beat:
-			continue
-		if beat <= event.end_beat:
-			parts.append("%s:m:%.6f" % [event.id, beat])
-		elif event.end_behavior == "hold":
-			parts.append("%s:h" % event.id)
-		elif beat <= event.end_beat + event.restore_duration:
-			parts.append("%s:r:%.6f" % [event.id, beat])
-		else:
-			parts.append("%s:p" % event.id)
-	if parts.is_empty():
+	# 关键帧模型：缓存键取“当前在哪两个形状之间 + 插值进度”。
+	# 少了 p，形变期间键值不变，环网格就永远停在基础形状上。
+	var pair := BoundaryRuntime.pair_at(chart, beat)
+	if pair.is_empty():
 		return "base:" + chart.default_shape_id
-	return "|".join(parts)
+	var from_shape: BoundaryShape = pair.get("from")
+	var to_shape: BoundaryShape = pair.get("to")
+	var from_id := from_shape.id if from_shape != null else "?"
+	var to_id := to_shape.id if to_shape != null else "?"
+	return "%s>%s:%.4f" % [from_id, to_id, float(pair.get("p", 0.0))]
 
 
 func _update_3d_mode(animate: bool, changed: bool) -> void:
 	if _subviewport == null:
 		return
-	var desired := SubViewport.UPDATE_ONCE if changed else SubViewport.UPDATE_DISABLED
-	if _force_3d_frame:
-		desired = SubViewport.UPDATE_ONCE
-		_force_3d_frame = false
-	if animate:
-		desired = SubViewport.UPDATE_ALWAYS
-	elif not changed and _render_mode == SubViewport.UPDATE_ALWAYS:
-		desired = SubViewport.UPDATE_DISABLED
+	# 只在“需要连续帧”和“静止”之间切换；UPDATE_ONCE 会被引擎改回 DISABLED，
+	# 用它做逐帧更新会卡在第一帧。
+	var desired := SubViewport.UPDATE_ALWAYS if (animate or changed or _force_3d_frame) else SubViewport.UPDATE_DISABLED
+	_force_3d_frame = false
 	if desired != _render_mode:
 		_subviewport.render_target_update_mode = desired
 		_render_mode = desired
@@ -737,7 +754,7 @@ func _update_camera_fit(chart: Chart, zoom: float, ellipse: float) -> void:
 
 
 func _update_ring_mesh(chart: Chart, beat: float) -> void:
-	var points := _frame_for(chart, beat).sample_points(256)
+	var points := _frame_for(chart, beat).sample_points(96)
 	_ring_mesh.mesh = _build_ribbon(points, RING_WIDTH, _ring_material)
 	_glow_mesh.mesh = _build_ribbon(points, GLOW_WIDTH, _glow_material)
 	_shadow_mesh.mesh = _build_ribbon(points, 30.0, _shadow_material)
@@ -871,6 +888,21 @@ func _build_ribbon(points: Array[Dictionary], width: float, material: Material) 
 	mesh.surface_begin(Mesh.PRIMITIVE_TRIANGLES, material)
 	var half := width * 0.5
 	var count := points.size()
+	# 每个点取相邻两条边的平均法线（miter）：段与段之间共用顶点，
+	# 接缝不会裂开，折角也不会出现锯齿状缺口。
+	var normals: Array[Vector2] = []
+	normals.resize(count)
+	for i in count:
+		var prev: Vector2 = points[(i - 1 + count) % count].point
+		var next: Vector2 = points[(i + 1) % count].point
+		var tangent := next - prev
+		if tangent.length_squared() < 0.000001:
+			tangent = Vector2.RIGHT
+		var normal := Vector2(-tangent.y, tangent.x).normalized() * half
+		# 尖角限制：miter 最多 2 倍宽度，避免长刺。
+		if normal.length() > half * 2.0:
+			normal = normal.normalized() * half * 2.0
+		normals[i] = normal
 	for i in count:
 		var a := points[i]
 		var b := points[(i + 1) % count]
@@ -878,14 +910,14 @@ func _build_ribbon(points: Array[Dictionary], width: float, material: Material) 
 			continue
 		var pa: Vector2 = a.point
 		var pb: Vector2 = b.point
-		var delta := pb - pa
-		if delta.length_squared() < 0.000001:
+		if (pb - pa).length_squared() < 0.000001:
 			continue
-		var normal := Vector2(-delta.y, delta.x).normalized() * half
-		var v0 := pa + normal
-		var v1 := pa - normal
-		var v2 := pb + normal
-		var v3 := pb - normal
+		var na: Vector2 = normals[i]
+		var nb: Vector2 = normals[(i + 1) % count]
+		var v0 := pa + na
+		var v1 := pa - na
+		var v2 := pb + nb
+		var v3 := pb - nb
 		mesh.surface_add_vertex(Vector3(v0.x, v0.y, 0.0))
 		mesh.surface_add_vertex(Vector3(v1.x, v1.y, 0.0))
 		mesh.surface_add_vertex(Vector3(v2.x, v2.y, 0.0))
@@ -1176,14 +1208,28 @@ func _on_mouse_exited() -> void:
 
 
 func _gui_input(event: InputEvent) -> void:
+	if ring_edit_mode and event is InputEventMouseButton and event.pressed:
+		if event.button_index == MOUSE_BUTTON_WHEEL_UP:
+			ring_zoom.emit(0.02)
+			accept_event()
+			return
+		if event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
+			ring_zoom.emit(-0.02)
+			accept_event()
+			return
 	if event is InputEventMouseMotion:
 		mouse_screen = event.position
+		if _ring_rotating:
+			ring_rotate.emit((event.position.x - _ring_rot_last) * 0.4)
+			_ring_rot_last = event.position.x
+			accept_event()
+			return
 		if playtest_mode:
 			_cursor_layer.queue_redraw()
 			accept_event()
 			return
 		if interactive and not playtest_mode:
-			if _drag_segment >= 0:
+			if _drag_vertex >= 0:
 				_update_drag(event.position)
 			elif _drag_visual >= 0:
 				_update_visual_drag(event.position)
@@ -1194,7 +1240,7 @@ func _gui_input(event: InputEvent) -> void:
 				_append_path_point(event.position)
 		_update_cursor()
 		_cursor_layer.queue_redraw()
-		if _drag_segment >= 0 or _drag_visual >= 0 or _drawing_red or _drawing_path:
+		if _drag_vertex >= 0 or _drag_visual >= 0 or _drawing_red or _drawing_path:
 			_overlay.queue_redraw()
 		accept_event()
 		return
@@ -1213,16 +1259,27 @@ func _on_left_press(event: InputEventMouseButton) -> void:
 		return
 	if _app == null:
 		return
+	if ring_edit_mode:
+		var vertex_pick := _pick_vertex(event.position)
+		if vertex_pick >= 0:
+			_drag_vertex = vertex_pick
+			_app.select_segment(vertex_pick)
+			_app.begin_edit()
+			return
+		if _pick_note(event.position) < 0:
+			_ring_rotating = true
+			_ring_rot_last = event.position.x
+			_app.begin_edit()
+			accept_event()
+			return
 	if _app.boundary_mode:
 		if event.double_click:
 			_split_segment()
 			return
-		var control := _pick_control_point(event.position)
-		if not control.is_empty():
-			var active_shape := _active_shape()
-			_drag_segment = int(control["segment_index"])
-			_drag_endpoint = int(control["endpoint"])
-			_drag_shape_backup = active_shape.to_dict() if active_shape != null else {}
+		var vertex := _pick_vertex(event.position)
+		if vertex >= 0:
+			_drag_vertex = vertex
+			_app.select_segment(vertex)
 			_app.begin_edit()
 			return
 		var segment_index := _nearest_segment_index(event.position)
@@ -1287,25 +1344,20 @@ func _on_left_press(event: InputEventMouseButton) -> void:
 
 
 func _on_left_release(_event: InputEventMouseButton) -> void:
+	if _ring_rotating:
+		_ring_rotating = false
+		if _app != null:
+			_app.finish_edit()
 	if _drag_visual >= 0:
 		_drag_visual = -1
 		_drag_visual_note = null
 		if _app != null:
 			_app.finish_edit()
-	if _drag_segment >= 0:
-		_drag_segment = -1
-		_drag_endpoint = -1
-		var shape := _active_shape()
-		if shape != null and not _drag_shape_backup.is_empty():
-			if not shape.validate().is_empty():
-				var restored := BoundaryShape.from_dict(_drag_shape_backup)
-				shape.segments = restored.segments
-				shape.closed = restored.closed
-				_mesh_dirty = true
-				notice.emit("该轮廓会自交、非凸或变形过激，已回退。", "warning")
-		_drag_shape_backup = {}
+	if _drag_vertex >= 0:
+		_drag_vertex = -1
 		if _app != null:
 			_app.finish_edit()
+		_warn_if_invalid()
 	if _drawing_red:
 		_drawing_red = false
 		_red_region = null
@@ -1317,7 +1369,7 @@ func _on_left_release(_event: InputEventMouseButton) -> void:
 
 
 func _update_drag(screen_position: Vector2) -> void:
-	if _app == null or _drag_segment < 0:
+	if _drag_vertex < 0:
 		return
 	var shape := _active_shape()
 	if shape == null:
@@ -1325,22 +1377,7 @@ func _update_drag(screen_position: Vector2) -> void:
 	var design := _screen_to_ring_plane(screen_position)
 	if not design.is_finite():
 		return
-	var sorted := shape.sorted_segments()
-	if _drag_segment >= sorted.size():
-		return
-	var segment := sorted[_drag_segment]
-	if _drag_endpoint == 0:
-		segment.p0 = design
-		if _drag_segment > 0:
-			sorted[_drag_segment - 1].p1 = design
-		elif shape.closed:
-			sorted[-1].p1 = design
-	else:
-		segment.p1 = design
-		if _drag_segment < sorted.size() - 1:
-			sorted[_drag_segment + 1].p0 = design
-		elif shape.closed:
-			sorted[0].p0 = design
+	shape.set_vertex(_drag_vertex, design)
 	_app.touch_chart()
 	_mesh_dirty = true
 
@@ -1504,23 +1541,29 @@ func _create_note(type: String) -> void:
 	_app.select_note(added[0].id)
 
 
-func _pick_control_point(screen: Vector2) -> Dictionary:
+func _pick_vertex(screen: Vector2) -> int:
 	var shape := _active_shape()
 	if shape == null:
-		return {}
-	var sorted := shape.sorted_segments()
-	var best := {}
-	var best_distance := 14.0
-	for index in sorted.size():
-		var segment := sorted[index]
-		for endpoint in 2:
-			var point: Vector2 = segment.p0 if endpoint == 0 else segment.p1
-			var projected := project_design(point)
-			var distance := projected.distance_to(screen)
-			if distance < best_distance:
-				best_distance = distance
-				best = {"segment_index": index, "endpoint": endpoint}
+		return -1
+	var best := -1
+	var best_distance := 18.0
+	var points := shape.vertices()
+	for index in points.size():
+		var distance := project_design(points[index]).distance_to(screen)
+		if distance < best_distance:
+			best_distance = distance
+			best = index
 	return best
+
+
+## 松手后只提示，不回退：编辑中允许暂时不合法，保存/试玩时才拦。
+func _warn_if_invalid() -> void:
+	var shape := _active_shape()
+	if shape == null:
+		return
+	var issues := shape.validate()
+	if not issues.is_empty():
+		notice.emit("%s（保存前需要修正）" % issues[0], "warning")
 
 
 func _nearest_segment_index(screen: Vector2) -> int:
@@ -1586,34 +1629,18 @@ func _split_segment() -> void:
 	if _app == null:
 		return
 	var shape := _active_shape()
-	if shape == null or not cursor_valid:
+	if shape == null:
 		return
-	var u := cursor_u
-	var segment := shape.segment_at(u)
-	if segment == null:
+	if shape.vertex_count() >= BoundaryShape.MAX_VERTICES:
+		notice.emit("顶点数已达上限 %d" % BoundaryShape.MAX_VERTICES, "warning")
 		return
-	var t := segment.local_t(u)
-	if t <= 0.02 or t >= 0.98:
+	var index := _nearest_segment_index(mouse_screen)
+	if index < 0:
 		return
-	var point := segment.point_at(t)
-	var first := BoundarySegment.new(segment.u0, u, segment.p0, point, segment.ix, segment.iy, segment.gap)
-	var second := BoundarySegment.new(u, segment.u1, point, segment.p1, segment.ix, segment.iy, segment.gap)
 	_app.begin_edit()
-	var backup := shape.segments.duplicate()
-	var index := shape.segments.find(segment)
-	shape.segments.remove_at(index)
-	shape.segments.append(first)
-	shape.segments.append(second)
-	shape.segments.sort_custom(func(a: BoundarySegment, b: BoundarySegment) -> bool: return a.u0 < b.u0)
-	if not shape.validate().is_empty():
-		shape.segments = backup
-		_mesh_dirty = true
-		notice.emit("拆分会产生自交、非凸或变形过激，已取消。", "warning")
-		_app.finish_edit()
-		return
+	if shape.insert_vertex(index):
+		_app.select_segment(mini(index + 1, shape.vertex_count() - 1))
 	_app.finish_edit()
-	var sorted := shape.sorted_segments()
-	_app.select_segment(sorted.find(first))
 	_mesh_dirty = true
 
 
@@ -1840,6 +1867,7 @@ func draw_overlay(canvas: Control) -> void:
 	sec_usec = Time.get_ticks_usec()
 	_perf_sections[3] += sec_usec - sec2
 	var t_hud := Time.get_ticks_usec()
+	_draw_onion(canvas, chart, t)
 	_draw_boundary_controls(canvas, chart)
 	if show_hud:
 		_draw_hud(canvas, chart, t)
@@ -1951,18 +1979,18 @@ func _draw_flat_ring(canvas: Control, chart: Chart, t: float) -> void:
 	for item in points:
 		if bool(item.get("gap", false)):
 			if run.size() > 1:
-				canvas.draw_polyline(run, Color(0.37, 0.85, 0.81, 0.10), 18.0, false)
-				canvas.draw_polyline(run, Color(0.55, 0.60, 0.70, 0.95), 4.0, false)
-				canvas.draw_polyline(run, Color(1, 1, 1, 0.18), 1.0, false)
+				canvas.draw_polyline(run, Color(0.37, 0.85, 0.81, 0.10), 18.0, true)
+				canvas.draw_polyline(run, Color(0.55, 0.60, 0.70, 0.95), 4.0, true)
+				canvas.draw_polyline(run, Color(1, 1, 1, 0.18), 1.0, true)
 			run = PackedVector2Array()
 			continue
 		var p := project_design(item.point)
 		if _valid_point(p):
 			run.append(p)
 	if run.size() > 1:
-		canvas.draw_polyline(run, Color(0.37, 0.85, 0.81, 0.10), 18.0, false)
-		canvas.draw_polyline(run, Color(0.55, 0.60, 0.70, 0.95), 4.0, false)
-		canvas.draw_polyline(run, Color(1, 1, 1, 0.18), 1.0, false)
+		canvas.draw_polyline(run, Color(0.37, 0.85, 0.81, 0.10), 18.0, true)
+		canvas.draw_polyline(run, Color(0.55, 0.60, 0.70, 0.95), 4.0, true)
+		canvas.draw_polyline(run, Color(1, 1, 1, 0.18), 1.0, true)
 
 
 func _draw_bezel(canvas: Control, chart: Chart, t: float) -> void:
@@ -2666,7 +2694,7 @@ func _draw_path_judgement(canvas: Control, chart: Chart, beat: float, pre: float
 			canvas.draw_string(UITheme.FONT_REGULAR, position, label, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, Color.WHITE)
 		if not points.is_empty() and _valid_point(points[-1]) and float(data["tail_radius"]) > 0.0:
 			canvas.draw_arc(points[-1], float(data["tail_radius"]), 0.0, TAU, 48, Color(1, 1, 1, 0.35), 1.0, true)
-	var legend := "F10：绿=已消组 / 蓝=未消组 / 橙=下一组 / 白圈=尾区 · 容差=可跳组数"
+	var legend := "F10：绿=已消组 / 蓝=未消组 / 橙=下一组 / 白圈=尾区，容差=可跳组数"
 	canvas.draw_string_outline(UITheme.FONT_REGULAR, Vector2(24, 72), legend, HORIZONTAL_ALIGNMENT_LEFT, -1, 14, 4, Color.BLACK)
 	canvas.draw_string(UITheme.FONT_REGULAR, Vector2(24, 72), legend, HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color.WHITE)
 
@@ -3348,6 +3376,28 @@ func _draw_seeks(canvas: Control, chart: Chart, t: float) -> void:
 		_draw_label(canvas, label, center + Vector2(radius + 12.0, -radius - 8.0), color)
 
 
+func _draw_onion(canvas: Control, chart: Chart, beat: float) -> void:
+	if onion_shapes.is_empty():
+		return
+	for item in onion_shapes:
+		if not (item is BoundaryShape):
+			continue
+		var shape: BoundaryShape = item
+		var run := PackedVector2Array()
+		for i in 97:
+			var data := shape.point_at(float(i) / 96.0)
+			if bool(data.get("gap", false)):
+				if run.size() > 1:
+					canvas.draw_polyline(run, Color(1, 1, 1, 0.16), 1.0, true)
+				run = PackedVector2Array()
+				continue
+			var p := project_design(data.point)
+			if _valid_point(p):
+				run.append(p)
+		if run.size() > 1:
+			canvas.draw_polyline(run, Color(1, 1, 1, 0.16), 1.0, true)
+
+
 func _draw_boundary_controls(canvas: Control, chart: Chart) -> void:
 	if not show_debug and not (_app != null and _app.boundary_mode):
 		return
@@ -3355,20 +3405,17 @@ func _draw_boundary_controls(canvas: Control, chart: Chart) -> void:
 	if shape == null:
 		return
 	var sorted := shape.sorted_segments()
+	var points := shape.vertices()
 	var selected: int = -1 if _app == null else int(_app.selected_segment_index)
-	for index in sorted.size():
-		var segment := sorted[index]
+	for index in points.size():
 		var color := UITheme.CORAL if index == selected else UITheme.CYAN
-		for endpoint in 2:
-			var point: Vector2 = segment.p0 if endpoint == 0 else segment.p1
-			var p := project_design(point)
-			if not _valid_point(p):
-				continue
-			var rect := Rect2(p - Vector2(4, 4), Vector2(8, 8))
+		var p := project_design(points[index])
+		if _valid_point(p):
+			var rect := Rect2(p - Vector2(5, 5), Vector2(10, 10))
 			canvas.draw_rect(rect, Color(color.r, color.g, color.b, 0.95))
 			canvas.draw_rect(rect, UITheme.BG, false, 1.0)
-		if index == selected:
-			_draw_segment_highlight(canvas, segment, selected)
+		if index == selected and index < sorted.size():
+			_draw_segment_highlight(canvas, sorted[index], selected)
 
 
 func _draw_segment_highlight(canvas: Control, segment: BoundarySegment, _index: int) -> void:
@@ -4092,7 +4139,7 @@ func _draw_play_hud(canvas: Control, chart: Chart, t: float) -> void:
 	if combo_mode == "center" and hud_auto:
 		_draw_hud_text(canvas, "p_auto", mono, Vector2(center.x, center.y + 74.0 * s), "AUTO", _hud_small(s), _hud_tint(UITheme.AMBER, op), 2)
 	if bool(hud_options.get("show_watermark", false)):
-		_draw_hud_text(canvas, "p_watermark", mono, Vector2(margin, bounds.y - margin), "试玩 · 预览 / 非正式", _hud_small(s), _hud_tint(UITheme.MUTED, op))
+		_draw_hud_text(canvas, "p_watermark", mono, Vector2(margin, bounds.y - margin), "试玩预览 / 非正式", _hud_small(s), _hud_tint(UITheme.MUTED, op))
 
 
 ## 左列：垂直居中，宽度随窗口收窄；长曲名截断成省略号。
