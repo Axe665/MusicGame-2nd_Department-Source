@@ -8,6 +8,8 @@ signal warning(message: String)
 const PAGE_SIZE := 30
 const CACHE_ROOT := "user://chart_cache"
 const FAVORITES_PATH := "user://chart_favorites.json"
+## 2 = 难度索引统一成 maidata 的 1..7；旧文件整体作废一次。
+const FAVORITES_VERSION := 2
 const OSU_SEARCH_URL := "https://osu.direct/api/v2/search?query=%s&mode=0&amount=25"
 const OSU_DOWNLOAD_URLS := [
 	"https://dl.sayobot.cn/beatmaps/download/novideo/%d",
@@ -564,11 +566,13 @@ func _make_chip(text: String, index: int, wide: bool = false) -> PanelContainer:
 
 static func _diff_color(index: int) -> Color:
 	match index:
-		1: return UITheme.GREEN
-		2: return UITheme.GOLD
-		3: return UITheme.CORAL
-		4: return UITheme.VIOLET
-		5: return UITheme.PINK
+		1: return UITheme.SEEK_IN
+		2: return UITheme.GREEN
+		3: return UITheme.GOLD
+		4: return UITheme.CORAL
+		5: return UITheme.VIOLET
+		6: return UITheme.PINK
+		7: return UITheme.AMBER
 	return UITheme.FAINT
 
 
@@ -608,6 +612,16 @@ func _update_page_bar(total: int, pages: int) -> void:
 
 
 ## ── 收藏 ──────────────────────────────────────────────────────────────
+static func favorites_from_json(parsed: Variant) -> Dictionary:
+	if not parsed is Dictionary:
+		return {}
+	var data: Dictionary = parsed
+	if int(data.get("version", 1)) < FAVORITES_VERSION:
+		return {}
+	var items: Variant = data.get("items", {})
+	return items if items is Dictionary else {}
+
+
 func _load_favorites() -> void:
 	_favorites = {}
 	var file := FileAccess.open(FAVORITES_PATH, FileAccess.READ)
@@ -615,15 +629,18 @@ func _load_favorites() -> void:
 		return
 	var parsed: Variant = JSON.parse_string(file.get_as_text())
 	file.close()
-	if parsed is Dictionary:
-		_favorites = parsed
+	var old_format: bool = parsed is Dictionary and int((parsed as Dictionary).get("version", 1)) < FAVORITES_VERSION
+	_favorites = favorites_from_json(parsed)
+	if old_format:
+		# 旧收藏的难度索引不可靠，按约定整体清空一次。
+		_save_favorites()
 
 
 func _save_favorites() -> void:
 	var file := FileAccess.open(FAVORITES_PATH, FileAccess.WRITE)
 	if file == null:
 		return
-	file.store_string(JSON.stringify(_favorites, "  "))
+	file.store_string(JSON.stringify({"version": FAVORITES_VERSION, "items": _favorites}, "  "))
 	file.close()
 
 
@@ -815,8 +832,9 @@ func _open_detail(meta: Dictionary) -> void:
 	level_title.add_theme_font_size_override("font_size", 12)
 	level_title.add_theme_color_override("font_color", UITheme.MUTED)
 	_detail_box.add_child(level_title)
-	var levels_row := HBoxContainer.new()
-	levels_row.add_theme_constant_override("separation", 6)
+	var levels_row := HFlowContainer.new()
+	levels_row.add_theme_constant_override("h_separation", 6)
+	levels_row.add_theme_constant_override("v_separation", 6)
 	_detail_box.add_child(levels_row)
 	var bga := Label.new()
 	bga.add_theme_font_size_override("font_size", 12)
@@ -881,7 +899,7 @@ func _designer_text(label: Label, meta: Dictionary) -> void:
 	label.add_theme_color_override("font_color", UITheme.MUTED)
 
 
-func _fill_detail_levels(row: HBoxContainer, levels: Array) -> void:
+func _fill_detail_levels(row: Container, levels: Array) -> void:
 	for child in row.get_children():
 		row.remove_child(child)
 		child.queue_free()
@@ -1738,15 +1756,16 @@ static func maj_levels(levels: Variant) -> Array:
 	var result: Array = []
 	if not levels is Array:
 		return result
-	for index in range(1, 6):
-		if index >= levels.size():
+	# majdata 的 levels 是 0=EASY…6=宴；统一成 maidata 的 1..7。
+	for api_index in range(0, 7):
+		if api_index >= levels.size():
 			break
-		var raw: Variant = levels[index]
+		var raw: Variant = levels[api_index]
 		if raw == null:
 			continue
 		var level := String(raw).strip_edges()
 		if not level.is_empty():
-			result.append({"index": index, "level": level})
+			result.append({"index": api_index + 1, "level": level})
 	return result
 
 
@@ -1754,9 +1773,11 @@ static func levels_from_maidata(path: String) -> Array:
 	var result: Array = []
 	for diff in SimaiIO.list_maidata(path):
 		var index := int(diff.get("index", 0))
-		var level := String(diff.get("level", "")).strip_edges()
-		if index < 1 or index > 5 or level.is_empty() or level == "?":
+		if index < 1 or index > 7 or not bool(diff.get("has_notes", true)):
 			continue
+		var level := String(diff.get("level", "")).strip_edges()
+		if level.is_empty() or level == "?":
+			level = "?"
 		result.append({
 			"index": index,
 			"level": level,
@@ -1831,13 +1852,7 @@ static func _designer_from_levels(levels: Array) -> String:
 
 
 static func _difficulty_name(index: int) -> String:
-	match index:
-		1: return "BASIC"
-		2: return "ADV"
-		3: return "EXP"
-		4: return "MAS"
-		5: return "Re:MAS"
-	return "LV"
+	return SimaiIO.difficulty_name(index)
 
 
 ## 参考图里的漏斗图标：没有额外贴图，直接画三笔。

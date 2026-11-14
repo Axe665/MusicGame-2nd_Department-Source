@@ -9,6 +9,26 @@ static var last_error: String = ""
 static var last_report: String = ""
 
 
+## maidata / simai 的难度索引：1=EASY，2=BASIC，3=ADV，4=EXP，5=MAS，6=Re:MAS，7=宴。
+static func difficulty_name(index: int) -> String:
+	match index:
+		1: return "EASY"
+		2: return "BASIC"
+		3: return "ADV"
+		4: return "EXP"
+		5: return "MAS"
+		6: return "Re:MAS"
+		7: return "宴"
+	return "LV"
+
+
+static func difficulty_label(index: int, level: String) -> String:
+	var text := level.strip_edges()
+	if text.is_empty() or text == "?":
+		text = "?"
+	return "%s %s" % [difficulty_name(index), text]
+
+
 static func list_maidata(path: String) -> Array[Dictionary]:
 	var result: Array[Dictionary] = []
 	var text := _read_text(path)
@@ -29,6 +49,7 @@ static func list_maidata(path: String) -> Array[Dictionary]:
 			"version": "Lv.%s" % String(meta.get("lv_%d" % index, "?")),
 			"creator": String(meta.get("des_%d" % index, meta.get("des", ""))),
 			"level": String(meta.get("lv_%d" % index, "?")),
+			"has_notes": not String(meta.get("inote_%d" % index, "")).strip_edges().is_empty(),
 		})
 	return result
 
@@ -56,8 +77,10 @@ static func import_maidata(path: String, difficulty_index: int = 0) -> Chart:
 	chart.metadata["title"] = String(meta.get("title", "未命名"))
 	chart.metadata["artist"] = String(meta.get("artist", ""))
 	chart.metadata["creator"] = String(meta.get("des_%d" % difficulty_index, meta.get("des", "")))
-	chart.metadata["version"] = "Lv.%s" % String(meta.get("lv_%d" % difficulty_index, "?"))
-	chart.difficulty = String(chart.metadata["version"])
+	var level := String(meta.get("lv_%d" % difficulty_index, "?"))
+	var difficulty := difficulty_label(difficulty_index, level)
+	chart.metadata["version"] = difficulty
+	chart.difficulty = difficulty
 	chart.offset_ms = -float(meta.get("first", "0")) * 1000.0
 	var base_bpm := maxf(1.0, float(meta.get("wholebpm", "120")))
 	chart.timing.points = [TimingPoint.new(0.0, base_bpm, 4)]
@@ -72,8 +95,8 @@ static func import_maidata(path: String, difficulty_index: int = 0) -> Chart:
 	for note in chart.notes:
 		final[note.type] = int(final.get(note.type, 0)) + 1
 	var audio_note := "音频：未找到 track.*" if chart.audio_path.is_empty() else "音频：%s" % chart.audio_path.get_file()
-	last_report = "Simai 导入 Lv.%s：Tap %d，Hold %d，Slide→Path %d，Touch→Bell %d，跳过 %d（解析 %d + 优化 %d）。\nBPM %.1f，offset %.0fms，%s。\n优化：同刻去重 %d，尾判吸附 %d，缩短星星 %d，降级 %d，轨外删除 %d，交互段锁定 %d，交互段叠键 %d，逐颗压角 %d，Bell 吸附 %d，扫键段转 Bell %d，同角度降密度 %d。" % [
-		String(meta.get("lv_%d" % difficulty_index, "?")),
+	last_report = "Simai 导入 %s：Tap %d，Hold %d，Slide→Path %d，Touch→Bell %d，跳过 %d（解析 %d + 优化 %d）。\nBPM %.1f，offset %.0fms，%s。\n优化：同刻去重 %d，尾判吸附 %d，缩短星星 %d，降级 %d，轨外删除 %d，交互段锁定 %d，交互段叠键 %d，逐颗压角 %d，Bell 吸附 %d，扫键段转 Bell %d，同角度降密度 %d。" % [
+		difficulty,
 		final["tap"], final["hold"], final["path"], final["bell"], counts["dropped"],
 		base_dropped, stats.get("dropped", 0),
 		base_bpm, chart.offset_ms, audio_note,
@@ -343,12 +366,12 @@ static func _parse_touch(body: String, beat: float) -> Note:
 		"D":
 			if digit < 1 or digit > 8:
 				return null
-			angle = fposmod(SimaiSlide.button_angle(digit) - 22.5, 360.0)
+			angle = fposmod(SimaiSlide.button_angle(digit) + 22.5, 360.0)
 			radius = 1.0
 		"E":
 			if digit < 1 or digit > 8:
 				return null
-			angle = fposmod(SimaiSlide.button_angle(digit) - 22.5, 360.0)
+			angle = fposmod(SimaiSlide.button_angle(digit) + 22.5, 360.0)
 			radius = 1.0
 		_:
 			return null
