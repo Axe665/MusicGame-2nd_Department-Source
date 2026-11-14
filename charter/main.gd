@@ -2300,8 +2300,16 @@ func _import_into_current_window(path: String) -> void:
 		_difficulty_list.clear()
 		for i in simai.size():
 			var item: Dictionary = simai[i]
-			_difficulty_list.add_item("%s — %s  %s" % [String(item.get("title", "")), String(item.get("version", "")), String(item.get("creator", ""))])
-			_difficulty_list.set_item_metadata(i, int(item.get("index", 0)))
+			if not bool(item.get("has_notes", true)):
+				continue
+			var index := int(item.get("index", 0))
+			var label := SimaiIO.difficulty_label(index, String(item.get("level", "")))
+			var item_index := _difficulty_list.item_count
+			_difficulty_list.add_item("%s — %s  %s" % [String(item.get("title", "")), label, String(item.get("creator", ""))])
+			_difficulty_list.set_item_metadata(item_index, index)
+		if _difficulty_list.item_count == 0:
+			_show_toast("导入失败：maidata 里没有可用难度", "error")
+			return
 		_difficulty_list.select(0)
 		_difficulty_dialog.popup_centered_ratio(0.58)
 		return

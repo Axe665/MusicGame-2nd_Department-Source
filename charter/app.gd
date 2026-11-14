@@ -238,11 +238,14 @@ func open_import_source(source: String) -> bool:
 		import_kind = "simai"
 		for i in simai.size():
 			var item: Dictionary = simai[i]
-			var version := String(item.get("version", ""))
+			if not bool(item.get("has_notes", true)):
+				continue
+			var index := int(item.get("index", i))
+			var label := SimaiIO.difficulty_label(index, String(item.get("level", "")))
 			import_difficulties.append({
-				"index": int(item.get("index", i)),
-				"name": version if not version.is_empty() else "未命名难度",
-				"label": import_label(version, String(item.get("title", "")), String(item.get("creator", "")), ""),
+				"index": index,
+				"name": label,
+				"label": import_label(label, String(item.get("title", "")), String(item.get("creator", "")), ""),
 			})
 	else:
 		var diffs := OsuIO.list_osz_difficulties(source)
