@@ -1381,7 +1381,16 @@ func _start_capture_export(path: String) -> void:
 		return
 	_export_ffmpeg = _ffmpeg_path()
 	_export_mp4 = path
-	_capture_mp4 = path
+	# 先写成 .part，成功才改名：中途取消/崩溃不会留下一个能点开的坏视频。
+	_capture_mp4 = path.get_basename() + ".part.mp4"
+	# 截帧分辨率 = 窗口实际像素大小；比 720p 还小的话放大必然糊，先拦一下。
+	# 用 DisplayServer 而不是 viewport 尺寸：stretch 模式下 viewport 报的是逻辑尺寸，
+	# 窗口被拖小它也不会变，拦不住。
+	var view := DisplayServer.window_get_size()
+	if view.x < EXPORT_VIDEO_SIZE.x or view.y < EXPORT_VIDEO_SIZE.y:
+		_notify_result("窗口只有 %d×%d，导出的视频会被放大变糊；先把窗口调到至少 %d×%d。"
+			% [view.x, view.y, EXPORT_VIDEO_SIZE.x, EXPORT_VIDEO_SIZE.y])
+		return
 	_capture_frames = 0
 	_capture_dir = ProjectSettings.globalize_path(CAPTURE_DIR)
 	_clear_capture_frames()
@@ -1410,6 +1419,7 @@ func _start_capture_export(path: String) -> void:
 		_capture_grabber.name = "ExportFrameGrabber"
 		_capture_grabber.process_priority = 100
 		add_child(_capture_grabber)
+	_capture_grabber.owner_pt = self
 	_capture_grabber.folder = _capture_dir
 	_capture_grabber.grabbed = 0
 	_capture_grabber.active = true
@@ -1478,6 +1488,7 @@ class _FrameGrabber extends Node:
 	var active := false
 	var busy := false
 	var grabbed := 0
+	var owner_pt: Playtest
 
 	func _process(_delta: float) -> void:
 		if not active or busy:
@@ -1489,9 +1500,29 @@ class _FrameGrabber extends Node:
 			return
 		var image := get_viewport().get_texture().get_image()
 		if image != null:
+			# 前几帧全黑说明窗口没在正常渲染（最小化/被挡住）。以前这种情况会
+			# 安安静静导出一个 13KB 的黑视频，现在当场报错。
+			if grabbed < 3 and not _has_content(image):
+				active = false
+				busy = false
+				if owner_pt != null:
+					owner_pt._finish_export_error("截到的画面是黑的（窗口是不是最小化或被挡住了？）")
+				return
 			image.save_jpg("%s/%05d.jpg" % [folder, grabbed], 0.9)
 			grabbed += 1
 		busy = false
+
+	func _has_content(image: Image) -> bool:
+		# 缩到 16×9 再取像素：只要 RGB 平均值不是全黑就算有内容。
+		# 别直接算字节平均——RGBA 的 alpha 全是 255，会把纯黑画面算成"有内容"。
+		var thumb: Image = image.duplicate()
+		thumb.resize(16, 9, Image.INTERPOLATE_BILINEAR)
+		var total := 0.0
+		for y in 9:
+			for x in 16:
+				var c := thumb.get_pixel(x, y)
+				total += c.r + c.g + c.b
+		return total / 432.0 > 0.02
 
 
 ## 导出进度窗：和「在线谱面」的下载进度窗一个样式。
@@ -1564,14 +1595,20 @@ func _start_encode() -> void:
 			"-i", _capture_audio.replace("\\", "/"),
 		])
 	args.append_array([
-		# 截出来是 1600×900，缩到 720p 顺便当超采样。
-		"-vf", "scale=%d:%d:flags=lanczos" % [EXPORT_VIDEO_SIZE.x, EXPORT_VIDEO_SIZE.y],
-		"-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-crf", "23",
+		# 截帧是窗口分辨率（默认 1600×900），缩到 720p 顺便当超采样。
+		# setparams 把色彩标记打进码流：不然部分播放器会按 BT.601 解 BT.709 的画面，颜色偏。
+		"-vf", "scale=%d:%d:flags=lanczos,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv"
+			% [EXPORT_VIDEO_SIZE.x, EXPORT_VIDEO_SIZE.y],
+		# crf 23 + veryfast 在 720p 只有两三百 kbps，密集段会糊；19 + slow 体积翻倍但清晰。
+		"-c:v", "libx264", "-preset", "slow", "-crf", "19", "-pix_fmt", "yuv420p",
+		# faststart：moov 前置，网页/手机上不用下完整个文件就能播。
+		# write_colr：把色彩标记写进 mp4 的 colr atom。
+		"-movflags", "+faststart+write_colr",
 	])
 	if _capture_audio.is_empty():
 		args.append("-an")
 	else:
-		args.append_array(["-c:a", "aac", "-b:a", "192k", "-shortest"])
+		args.append_array(["-c:a", "aac", "-b:a", "160k", "-shortest"])
 	args.append(_capture_mp4)
 	_export_pid = OS.create_process(_export_ffmpeg, args)
 	if _export_pid <= 0:
@@ -1584,6 +1621,16 @@ func _poll_encode_stage() -> void:
 	if OS.is_process_running(_export_pid):
 		_set_export_progress(0.8 + _read_ffmpeg_progress() * 0.2, "正在转码")
 		return
+	# 退出码非 0 说明编码失败：删掉半成品并报错，别把坏文件改名成正式输出。
+	var code := OS.get_process_exit_code(_export_pid)
+	if code != 0:
+		_finish_export_error("ffmpeg 退出码 %d" % code)
+		return
+	# ffmpeg 正常退出才把 .part 改成正式文件名。
+	if not _capture_mp4.is_empty() and FileAccess.file_exists(_capture_mp4):
+		if FileAccess.file_exists(_export_mp4):
+			DirAccess.remove_absolute(_export_mp4)
+		DirAccess.rename_absolute(_capture_mp4, _export_mp4)
 	_cleanup_export_files(false)
 	_export_stage = 0
 	_restore_after_capture()
@@ -1646,6 +1693,8 @@ func _read_ffmpeg_progress() -> float:
 
 func _finish_export_error(message: String) -> void:
 	_export_stage = 0
+	# 截帧中途出错（黑屏/没帧）时还在 capture 模式里，得把界面恢复成结算页。
+	_restore_after_capture()
 	_cleanup_export_files(true)
 	if _export_bar != null:
 		_export_bar.value = 0.0
@@ -1665,8 +1714,8 @@ func _cleanup_export_files(remove_output: bool) -> void:
 		var path := ProjectSettings.globalize_path("user://" + name)
 		if FileAccess.file_exists(path):
 			DirAccess.remove_absolute(path)
-	if remove_output and not _export_mp4.is_empty() and FileAccess.file_exists(_export_mp4):
-		DirAccess.remove_absolute(_export_mp4)
+	if remove_output and not _capture_mp4.is_empty() and FileAccess.file_exists(_capture_mp4):
+		DirAccess.remove_absolute(_capture_mp4)
 
 
 func _cancel_export() -> void:
