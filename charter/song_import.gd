@@ -33,7 +33,7 @@ var _read_ok: bool = false
 
 func _ready() -> void:
 	_app = get_node_or_null("/root/App")
-	title = "导入歌曲 · 自动识别 BPM / offset"
+	title = "导入歌曲：自动识别 BPM / offset"
 	ok_button_text = "应用"
 	min_size = Vector2i(520, 300)
 	exclusive = true
@@ -254,13 +254,13 @@ func _refresh_checks() -> void:
 	var duration_ok := (decoded_ms > 0.0 and _stream_ms > 0.0
 		and absf(_stream_ms - decoded_ms) <= maxf(200.0, decoded_ms * 0.01))
 	_read_ok = bpm_ok and offset_ok and duration_ok
-	var checks := "BPM %s · offset %s · 时长 %s" % [
+	var checks := "BPM %s，offset %s，时长 %s" % [
 		"通过" if bpm_ok else "失败",
 		"通过" if offset_ok else "失败",
 		"通过" if duration_ok else "失败",
 	]
 	var confidence := int(round(float(_result.get("confidence", 0.0)) * 100.0))
-	var detail := "置信度 %d%% · 匹配 %d 拍 · 解码 %.2fs / 播放 %.2fs\n%s" % [
+	var detail := "置信度 %d%%，匹配 %d 拍，解码 %.2fs / 播放 %.2fs\n%s" % [
 		confidence, int(_result.get("beats", 0)),
 		decoded_ms / 1000.0, maxf(0.0, _stream_ms) / 1000.0, checks,
 	]

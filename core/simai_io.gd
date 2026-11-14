@@ -59,7 +59,6 @@ static func import_maidata(path: String, difficulty_index: int = 0) -> Chart:
 	chart.metadata["version"] = "Lv.%s" % String(meta.get("lv_%d" % difficulty_index, "?"))
 	chart.difficulty = String(chart.metadata["version"])
 	chart.offset_ms = -float(meta.get("first", "0")) * 1000.0
-	chart.metadata["slide_mode"] = "maimai"
 	var base_bpm := maxf(1.0, float(meta.get("wholebpm", "120")))
 	chart.timing.points = [TimingPoint.new(0.0, base_bpm, 4)]
 	var counts := {"tap": 0, "hold": 0, "path": 0, "bell": 0, "dropped": 0}

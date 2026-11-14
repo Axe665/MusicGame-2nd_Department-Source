@@ -320,7 +320,7 @@ func _render_adx() -> void:
 	if slice.is_empty():
 		_show_empty("没有匹配的谱面")
 	_update_page_bar(results.size(), pages)
-	_status.text = "adxdls · 共 %d 条" % results.size()
+	_status.text = "adxdls，共 %d 条" % results.size()
 
 
 func _add_adx_card(entry: Dictionary, snapshot: Dictionary = {}) -> void:
@@ -362,7 +362,7 @@ func _refresh_majdata_page() -> void:
 	if body.is_empty():
 		_clear_cards()
 		_show_empty("majdata 搜索失败（网络不通或接口超时）")
-		_status.text = "majdata · 搜索失败"
+		_status.text = "majdata，搜索失败"
 		_update_page_bar(0, 0)
 		return
 	var parsed: Variant = JSON.parse_string(body.get_string_from_utf8())
@@ -374,7 +374,7 @@ func _refresh_majdata_page() -> void:
 	if _maj_items.is_empty():
 		_show_empty("没有匹配的谱面")
 	_update_page_bar(_maj_items.size(), 0)
-	_status.text = "majdata · 第 %d 页 · 本页 %d 条" % [_page + 1, _maj_items.size()]
+	_status.text = "majdata，第 %d 页，本页 %d 条" % [_page + 1, _maj_items.size()]
 
 
 func _add_maj_card(item: Dictionary, snapshot: Dictionary = {}) -> void:
@@ -706,7 +706,7 @@ func _render_favorites() -> void:
 	if slice.is_empty():
 		_show_empty("当前源还没有收藏" if q.is_empty() else "收藏里没有匹配的谱面")
 	_update_page_bar(items.size(), pages)
-	_status.text = "只看收藏 · 共 %d 条" % items.size()
+	_status.text = "只看收藏，共 %d 条" % items.size()
 
 
 ## ── 详情 ──────────────────────────────────────────────────────────────
@@ -743,7 +743,7 @@ func _open_detail(meta: Dictionary) -> void:
 	var serial := _detail_serial
 	var dialog := _ensure_detail()
 	_clear_detail()
-	dialog.title = "谱面详情 · %s" % ("adxdls" if meta.get("kind") == "adx" else "majdata")
+	dialog.title = "谱面详情：%s" % ("adxdls" if meta.get("kind") == "adx" else "majdata")
 
 	var top := HBoxContainer.new()
 	top.add_theme_constant_override("separation", 14)
@@ -876,7 +876,7 @@ func _designer_text(label: Label, meta: Dictionary) -> void:
 	if uploader.is_empty():
 		label.text = "谱师：%s" % designer
 	else:
-		label.text = "谱师：%s · 上传者：%s" % [designer, uploader]
+		label.text = "谱师：%s，上传者：%s" % [designer, uploader]
 	label.add_theme_font_size_override("font_size", 12)
 	label.add_theme_color_override("font_color", UITheme.MUTED)
 
@@ -911,7 +911,7 @@ func _apply_detail_bga(info: Dictionary) -> void:
 	var size := int(info.get("size", 0))
 	match state:
 		"yes":
-			label.text = "BGA：有%s" % ("" if size <= 0 else " · %.1f MB" % (float(size) / 1048576.0))
+			label.text = "BGA：有%s" % ("" if size <= 0 else "（%.1f MB）" % (float(size) / 1048576.0))
 		"unknown":
 			label.text = "BGA：状态未知（仍可尝试下载）"
 		_:
@@ -1019,7 +1019,7 @@ func _ask_bga(meta: Dictionary) -> void:
 	var size_text := ""
 	var size := int(info.get("size", 0))
 	if size > 0:
-		size_text = " · %.1f MB" % (float(size) / 1048576.0)
+		size_text = "（%.1f MB）" % (float(size) / 1048576.0)
 	var with_bga := Button.new()
 	with_bga.text = "带 BGA%s" % size_text
 	with_bga.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -1035,7 +1035,7 @@ func _ask_bga(meta: Dictionary) -> void:
 		no_size = download_size(download_files(meta.get("spec", {}), false))
 	var no_size_text := ""
 	if no_size > 0:
-		no_size_text = " · %.1f MB" % (float(no_size) / 1048576.0)
+		no_size_text = "（%.1f MB）" % (float(no_size) / 1048576.0)
 	var no_bga := Button.new()
 	no_bga.text = "不带 BGA%s" % no_size_text
 	no_bga.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -1065,7 +1065,7 @@ func _start_mai_download(meta: Dictionary, include_bga: bool) -> void:
 		return
 	_progress.visible = true
 	_progress.value = 100.0
-	_status.text = "下载完成 100% · 开始转谱…"
+	_status.text = "下载完成 100%，开始转谱…"
 	if bool(result.get("bga_failed", false)):
 		warning.emit("BGA 下载失败，已导入无 BGA 版本")
 	# 先关浏览器再交棒：导入过程会弹进度/报告对话框，两个独占子窗口会打架。

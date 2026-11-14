@@ -67,6 +67,16 @@ static func export_chart(chart: Chart) -> String:
 				segment.ix, segment.iy, suffix,
 			])
 	lines.append("")
+	if not chart.shape_keys.is_empty():
+		lines.append("[BoundaryKeys]")
+		var keys := chart.sorted_shape_keys()
+		for key in keys:
+			lines.append("key,%s,%s,%s" % [
+				_beat(chart, float(key.get("beat", 0.0))),
+				String(key.get("shape_id", "")),
+				String(key.get("easing", "in-out")),
+			])
+		lines.append("")
 	if not chart.events.is_empty():
 		lines.append("[BoundaryEvents]")
 		var events := chart.events.duplicate()

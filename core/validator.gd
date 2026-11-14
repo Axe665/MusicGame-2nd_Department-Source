@@ -8,6 +8,7 @@ static func validate(chart: Chart) -> Array[Dictionary]:
 	var issues: Array[Dictionary] = []
 	_check_timing(chart, issues)
 	_check_shapes(chart, issues)
+	_check_shape_keys(chart, issues)
 	_check_events(chart, issues)
 	_check_view_states(chart, issues)
 	_check_regions(chart, issues)
@@ -54,6 +55,19 @@ static func _check_shapes(chart: Chart, issues: Array[Dictionary]) -> void:
 			_add(issues, "error", message, "shape:" + shape.id)
 
 
+static func _check_shape_keys(chart: Chart, issues: Array[Dictionary]) -> void:
+	var previous := -INF
+	for key in chart.sorted_shape_keys():
+		var beat := float(key.get("beat", 0.0))
+		if beat < 0.0:
+			_add(issues, "error", "形状关键帧不能在第 0 拍之前", "key")
+		if beat <= previous + 0.0001:
+			_add(issues, "error", "形状关键帧的拍必须递增", "key")
+		previous = beat
+		if chart.get_shape(String(key.get("shape_id", ""))) == null:
+			_add(issues, "error", "形状关键帧引用了不存在的形状", "key")
+
+
 static func _check_events(chart: Chart, issues: Array[Dictionary]) -> void:
 	for event in chart.events:
 		if event.id.is_empty():
@@ -89,12 +103,7 @@ static func _check_event_morph(chart: Chart, event: BoundaryEvent, issues: Array
 		if BoundaryShape.runs_self_intersects(points, chart.get_default_shape().closed):
 			_add(issues, "error", "事件 %s 在 %s 拍附近造成环线自交" % [event.id, chart.timing.format_beat(t)], "event:" + event.id)
 			return
-		if BoundaryShape.runs_out_of_range(points):
-			_add(issues, "error", "事件 %s 在 %s 拍附近变形过激" % [event.id, chart.timing.format_beat(t)], "event:" + event.id)
-			return
-		if not BoundaryShape.runs_convex(points, chart.get_default_shape().closed):
-			_add(issues, "error", "事件 %s 在 %s 拍附近产生凹口/星形轮廓" % [event.id, chart.timing.format_beat(t)], "event:" + event.id)
-			return
+		# 凹形与局部收放都允许；只拦自交。
 
 
 static func _event_times_overlap(a: BoundaryEvent, b: BoundaryEvent) -> bool:

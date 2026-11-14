@@ -131,7 +131,7 @@ func _audit_validation() -> void:
 
 	var shape := BoundaryShape.star("S", 380.0, 190.0, 5)
 	var shape_issues := shape.validate()
-	_check("非凸形状被标记", not shape_issues.is_empty(), str(shape_issues))
+	_check("凹形允许保存", shape_issues.is_empty(), str(shape_issues))
 	var bow := BoundaryShape.new()
 	bow.id = "BOW"
 	bow.closed = true
@@ -231,7 +231,7 @@ func _audit_ui(app: Node) -> void:
 	add_child(inspector)
 	await get_tree().process_frame
 	await get_tree().process_frame
-	inspector.current_tab = 4
+	inspector.current_tab = 2
 	await get_tree().process_frame
 	await get_tree().process_frame
 	var page: VBoxContainer = inspector._pages["视图"]

@@ -544,8 +544,8 @@ func _refresh_pause_status() -> void:
 		_mouse_keys_toggle.set_pressed_no_signal(bool(_app.mouse_keys))
 	var skin_label := String(Preview3D.skin_presets().get(_preview.note_skin, {}).get("label", _preview.note_skin))
 	var fx_label := String(Preview3D.hit_fx_presets().get(_preview.hit_fx_style, _preview.hit_fx_style))
-	_pause_style.text = "皮肤 %s · 特效 %s%s" % [skin_label, fx_label, " · AUTO" if auto_play else ""]
-	_pause_tiers.text = "PERFECT %d · GREAT %d · GOOD %d · BAD %d · MISS %d" % [
+	_pause_style.text = "皮肤 %s，特效 %s%s" % [skin_label, fx_label, "，AUTO" if auto_play else ""]
+	_pause_tiers.text = "PERFECT %d   GREAT %d   GOOD %d   BAD %d   MISS %d" % [
 		int(_tier_counts.get("PERFECT", 0)), int(_tier_counts.get("GREAT", 0)),
 		int(_tier_counts.get("GOOD", 0)), int(_tier_counts.get("BAD", 0)),
 		int(_tier_counts.get("MISS", 0))]
@@ -1066,7 +1066,9 @@ func _auto_cursor_target(ms: float, beat: float) -> Vector2:
 			continue
 		var target := float(state["target_ms"])
 		var end_ms := float(state["end_ms"])
-		if ms > end_ms + 200.0:
+		# 单点音符（Bell 等）的 end_ms 可能是 0；用目标时间兜底，
+		# 否则它们会在这里被当成“早就过去了”，AUTO 光标永远不去接。
+		if ms > maxf(end_ms, target) + 200.0:
 			continue
 		match note.type:
 			"bell":
@@ -1654,6 +1656,12 @@ func _judge_bell(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 		if not missed.is_empty():
 			_pulse_at(note.center_u * 360.0, beat, UITheme.RED, "MISS", note.bell_width(), "tap", "", missed["center"])
 		_add_log("MISS Bell #%d @%.0fms" % [note.id, target])
+		var dbg: Dictionary = _preview.bell_screen(note, beat)
+		print("[bell-debug] id=%d beat=%.2f mouse=%s center=%s d=%.1f armed=%s sweep_tol=%.0f red=%s" % [
+			note.id, beat, mouse, dbg.get("center", Vector2.INF),
+			mouse.distance_to(dbg.get("center", mouse)) if not dbg.is_empty() else -1.0,
+			state.get("armed", false), Preview3D.BELL_RADIAL_TOLERANCE,
+			_inside_red(mouse, beat)])
 
 
 ## 双押 Anchor：一对算一个判定单元。窗口与 Tap 相同；
@@ -2486,7 +2494,7 @@ func _finish() -> void:
 			span = chart.timing.beat_to_chart_ms(chart.duration_beats()) + float(_app.playtest_offset_ms if _app != null else 0.0)
 		_scatter_chart.set_hits(_scatter, span)
 	if _bias_label != null:
-		_bias_label.text = "平均判定偏差 %+.2f 毫秒   ·   不稳定率 (UR) %.2f   ·   样本 %d   ·   当前 offset %+.0fms" % [
+		_bias_label.text = "平均判定偏差 %+.2f 毫秒    不稳定率 (UR) %.2f    样本 %d    当前 offset %+.0fms" % [
 			average_error,
 			_unstable_rate(),
 			_errors.size(),

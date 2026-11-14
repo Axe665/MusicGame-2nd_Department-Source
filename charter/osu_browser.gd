@@ -429,8 +429,8 @@ func _update_status() -> void:
 			_status.text = "没有结果"
 		return
 	var suffix := "，筛选掉 %d 个" % _filtered_count if _filtered_count > 0 else ""
-	var prefix := "最新上架 · " if _query.is_empty() and not _favorites_only else ""
-	_status.text = "%s%d 个谱面包%s · 第 %d 页（点卡片看详情）" % [prefix, _shown_count, suffix, _page + 1]
+	var prefix := "最新上架， " if _query.is_empty() and not _favorites_only else ""
+	_status.text = "%s%d 个谱面包%s，第 %d 页（点卡片看详情）" % [prefix, _shown_count, suffix, _page + 1]
 
 
 func _cards_box_clear() -> void:
@@ -804,7 +804,7 @@ func _update_download_progress(got: int, total: int, speed_samples: Array) -> vo
 		var speed := 0.0
 		for sample in speed_samples:
 			speed += float(sample)
-		text += " · %.1f MB/s" % (speed / float(speed_samples.size()))
+		text += "（%.1f MB/s）" % (speed / float(speed_samples.size()))
 	_progress_label.text = text
 
 
@@ -821,7 +821,7 @@ func _ensure_detail() -> AcceptDialog:
 	if _detail != null:
 		return _detail
 	_detail = AcceptDialog.new()
-	_detail.title = "谱面详情 · osu!"
+	_detail.title = "谱面详情：osu!"
 	_detail.ok_button_text = "关闭"
 	_detail.min_size = Vector2i(700, 560)
 	var scroll := ScrollContainer.new()
@@ -902,7 +902,7 @@ func _open_detail(entry: Dictionary) -> void:
 		bits.append("谱师 %s" % creator)
 	if not source_text.is_empty():
 		bits.append("来源 %s" % source_text)
-	meta.text = " · ".join(bits)
+	meta.text = "  ".join(bits)
 	meta.add_theme_font_size_override("font_size", 11)
 	meta.add_theme_color_override("font_color", UITheme.MUTED)
 	info.add_child(meta)
@@ -1038,7 +1038,7 @@ func _stats_text(entry: Dictionary) -> String:
 	var status := String(entry.get("status", "")).strip_edges()
 	if not status.is_empty():
 		bits.append(status)
-	return " · ".join(bits)
+	return "  ".join(bits)
 
 
 static func _thousands(value: int) -> String:
@@ -1278,7 +1278,7 @@ class BeatmapCard extends Control:
 		var text_x := 116.0
 		var text_width := maxf(40.0, size.x - text_x - 120.0)
 		draw_string(UITheme.bold_font(), Vector2(text_x, 34), _elide(title, text_width, 17), HORIZONTAL_ALIGNMENT_LEFT, text_width, 17, UITheme.INK)
-		draw_string(UITheme.mono_font(), Vector2(text_x, 56), _elide("%s · %d 个难度" % [artist, difficulties.size()], text_width, 12), HORIZONTAL_ALIGNMENT_LEFT, text_width, 12, UITheme.MUTED)
+		draw_string(UITheme.mono_font(), Vector2(text_x, 56), _elide("%s，%d 个难度" % [artist, difficulties.size()], text_width, 12), HORIZONTAL_ALIGNMENT_LEFT, text_width, 12, UITheme.MUTED)
 		# 难度药丸：两行（星数 + 难度名）
 		var pill_x := text_x
 		var pill_y := 68.0

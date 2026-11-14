@@ -8,6 +8,9 @@ func _initialize() -> void:
 	var tests := [
 		"test_timing",
 		"test_boundary_circle",
+		"test_boundary_vertices",
+		"test_boundary_keys_io",
+		"test_ring_compat_rules",
 		"test_boundary_batch",
 		"test_boundary_frame",
 		"test_live_edit_notifications",
@@ -225,6 +228,131 @@ func test_boundary_circle() -> bool:
 	return true
 
 
+func test_boundary_vertices() -> bool:
+	var shape := BoundaryShape.circle("S0", 330.0, 8)
+	eq(shape.vertex_count(), 8, "circle preset exposes 8 vertices")
+	# 拖顶点：相邻两段一起动，环不断接。
+	shape.set_vertex(0, Vector2(400, 0))
+	near(shape.vertices()[0].distance_to(Vector2(400, 0)), 0.0, 0.0001, "vertex drag moves the vertex")
+	near(shape.point_at(0.0).point.distance_to(Vector2(400, 0)), 0.0, 0.0001, "seam follows the dragged vertex")
+	eq(shape.validate().size(), 0, "dragged vertex ring still validates")
+	# 加点不改轮廓：新顶点落在原来的边上。
+	var before: Vector2 = shape.point_at(0.37).point
+	ok(shape.insert_vertex(2), "vertex insert succeeds")
+	eq(shape.vertex_count(), 9, "vertex insert adds one vertex")
+	near(shape.point_at(0.37).point.distance_to(before), 0.0, 0.01, "vertex insert keeps the outline")
+	eq(shape.validate().size(), 0, "inserted ring still validates")
+	# 删点只合并那个角。
+	var vertices_before := shape.vertices()
+	ok(shape.remove_vertex(4), "vertex remove succeeds")
+	eq(shape.vertex_count(), 8, "vertex remove drops one vertex")
+	near(shape.vertices()[0].distance_to(vertices_before[0]), 0.0, 0.0001, "other vertices stay put")
+	# 凹形允许保存。
+	shape.set_vertex(3, Vector2(60, 60))
+	eq(shape.validate().size(), 0, "concave outline is allowed")
+	# 超过 48 段的老谱面降到 48；32 段保持原样。
+	var legacy := BoundaryShape.circle("L", 330.0, 64)
+	legacy.normalize()
+	eq(legacy.vertex_count(), 48, "over-dense shape downsamples to 48")
+	var mid := BoundaryShape.circle("M", 330.0, 32)
+	mid.normalize()
+	eq(mid.vertex_count(), 32, "32-segment shape keeps its detail")
+	eq(legacy.validate().size(), 0, "downsampled shape validates")
+	# 缺口在插入顶点后仍然存在。
+	var gapped := BoundaryShape.circle("G", 330.0, 8)
+	gapped.set_gap(0, true)
+	gapped.insert_vertex(0)
+	var gaps := 0
+	for i in gapped.vertex_count():
+		if gapped.segment_has_gap(i):
+			gaps += 1
+	eq(gaps, 2, "gap splits into two gaps when inserting")
+	return true
+
+
+func test_boundary_keys_io() -> bool:
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	chart.shapes["S1"] = BoundaryShape.circle("S1", 200.0, 12)
+	chart.shape_keys = [
+		{"beat": 2.0, "shape_id": "S1", "easing": "linear"},
+		{"beat": 4.0, "shape_id": "S0", "easing": "linear"},
+	]
+	# 首帧之前从默认形状渐变过去：S0 330 → S1 200。
+	near(BoundaryRuntime.eval_point(chart, 0.0, 1.0).point.x, 265.0, 0.5, "intro morphs default → first key")
+	near(BoundaryRuntime.eval_point(chart, 0.0, 3.0).point.x, 265.0, 0.5, "keyframe morph midpoint")
+	near(BoundaryRuntime.eval_point(chart, 0.0, 5.0).point.x, 330.0, 0.5, "last key holds after the end")
+	var data := ChartIO.chart_to_dict(chart)
+	ok(data.has("boundary_keys"), "keys are written to json")
+	ok(data.has("events") and (data["events"] as Array).size() >= 2, "legacy events are dual-written")
+	var back := ChartIO.from_json(ChartIO.to_json(chart))
+	eq(back.shape_keys.size(), 2, "keys survive the roundtrip")
+	near(BoundaryRuntime.eval_point(back, 0.0, 3.0).point.x, 265.0, 0.5, "roundtrip keeps the morph")
+	# 旧谱只有事件：载入时迁移成关键帧。
+	var legacy := {
+		"format": "tamaki3-chart",
+		"version": 1,
+		"timing": {"points": [{"beat": 0.0, "bpm": 120.0, "beats_per_bar": 4}]},
+		"shapes": [{"id": "S0", "closed": true, "segments": []}],
+		"events": [
+			{"id": "E0", "start_beat": 4.0, "end_beat": 8.0, "target_u0": 0.0, "target_u1": 1.0,
+				"from_shape": "S0", "to_shape": "S0", "easing": "linear", "end_behavior": "hold",
+				"restore_duration": 0.0, "restore_easing": "in-out"},
+		],
+	}
+	var migrated := ChartIO.chart_from_dict(legacy)
+	ok(migrated != null, "legacy event chart loads")
+	if migrated != null:
+		eq(migrated.shape_keys.size(), 2, "legacy events become keys")
+		eq(migrated.events.size(), 0, "legacy events are cleared after migration")
+	return true
+
+
+func test_ring_compat_rules() -> bool:
+	# 旧谱的局部 u 事件：拒绝打开，而不是悄悄改成整环。
+	var partial := {
+		"format": "tamaki3-chart",
+		"version": 1,
+		"timing": {"points": [{"beat": 0.0, "bpm": 120.0, "beats_per_bar": 4}]},
+		"shapes": [{"id": "S0", "closed": true, "segments": []}],
+		"events": [
+			{"id": "E0", "start_beat": 4.0, "end_beat": 8.0, "target_u0": 0.25, "target_u1": 0.75,
+				"from_shape": "S0", "to_shape": "S0", "easing": "linear", "end_behavior": "hold",
+				"restore_duration": 0.0, "restore_easing": "in-out"},
+		],
+	}
+	var rejected := ChartIO.chart_from_dict(partial)
+	ok(rejected == null, "partial-u legacy event chart is rejected")
+	ok(ChartIO.last_error.contains("局部形变"), "rejection explains the partial event")
+	# 旧段曲线：载入时降级为直线，并留下提示。
+	var curved := {
+		"format": "tamaki3-chart",
+		"version": 1,
+		"timing": {"points": [{"beat": 0.0, "bpm": 120.0, "beats_per_bar": 4}]},
+		"shapes": [{"id": "S0", "closed": true, "segments": [
+			{"u0": 0.0, "u1": 0.5, "x0": 0.0, "y0": 0.0, "x1": 100.0, "y1": 0.0, "ix": "si", "iy": "l"},
+			{"u0": 0.5, "u1": 1.0, "x0": 100.0, "y0": 0.0, "x1": 0.0, "y1": 0.0, "ix": "l", "iy": "l"},
+		]}],
+	}
+	var loaded := ChartIO.chart_from_dict(curved)
+	ok(loaded != null, "curved legacy chart loads")
+	if loaded != null:
+		ok(not loaded.load_warnings.is_empty(), "curve downgrade is reported")
+		eq(loaded.get_shape("S0").segments[0].ix, "l", "legacy curve becomes a straight segment")
+	# RingState：zoom/rotation 插值，tilt/ellipse 到关键帧瞬切。
+	var chart := Chart.new()
+	chart.view_states = [
+		ViewState.new(0.0, 1.0, 0.0, 0.0, 1.0, 0.0),
+		ViewState.new(4.0, 1.2, 20.0, 10.0, 1.2, 40.0),
+	]
+	var mid := ViewState.evaluate(chart.view_states, 2.0)
+	near(float(mid["zoom"]), 1.1, 0.001, "zoom interpolates")
+	near(float(mid["rotation"]), 20.0, 0.001, "rotation interpolates")
+	near(float(mid["tilt_x"]), 0.0, 0.001, "tilt steps on the left keyframe")
+	eq(float(mid["ellipse"]), 1.0, "ellipse steps on the left keyframe")
+	return true
+
+
 func test_boundary_batch() -> bool:
 	var chart := DemoChart.make_demo()
 	# Cover unordered segments, gaps, both morph directions and exact seams.
@@ -239,17 +367,14 @@ func test_boundary_batch() -> bool:
 			if (points[i].point as Vector2).distance_to(expected.point) > 0.00001 or points[i].gap != expected.gap:
 				matches = false
 	ok(matches, "batch boundary samples match point evaluation through morph and restore")
-	chart.events[0].target_u0 = 0.25
-	chart.events[0].target_u1 = 0.75
-	chart.events[0].end_behavior = "hold"
 	matches = true
-	for beat in [8.0, 9.0, 12.0, 12.5]:
+	for beat in [0.0, 4.0, 9.0, 12.2, 12.5, 20.0, 24.4]:
 		var points := BoundaryRuntime.eval_shape(chart, beat, 128)
 		for i in points.size():
 			var expected := BoundaryRuntime.eval_point(chart, float(i) / 128.0, beat)
 			if (points[i].point as Vector2).distance_to(expected.point) > 0.00001 or points[i].gap != expected.gap:
 				matches = false
-	ok(matches, "batch boundary samples preserve partial event and hold behavior")
+	ok(matches, "batch boundary samples match point evaluation across keyframes")
 	var shape := chart.get_default_shape()
 	var segment := shape.segment_at(0.125)
 	segment.p1 += Vector2(10, 0)
@@ -312,7 +437,8 @@ func test_live_edit_notifications() -> bool:
 	app.touch_chart()
 	app.finish_edit()
 	eq(counts.live, 2, "release flushes the final mouse position")
-	eq(counts.validation, 1, "release validates the committed chart")
+	app._process(0.2)
+	eq(counts.validation, 1, "release validates the committed chart once the debounce fires")
 	app.undo_chart()
 	near(app.chart.notes[0].angle, 0.0, 0.001, "drag remains one undo step")
 	app.redo_chart()
@@ -329,17 +455,9 @@ func test_live_edit_notifications() -> bool:
 func test_self_intersection() -> bool:
 	var circle := BoundaryShape.circle("C", 330.0, 32)
 	eq(circle.validate().size(), 0, "circle is simple and convex")
+	# 凹形（星形）现在允许保存，只拦自交。
 	var star := BoundaryShape.star("STAR", 380.0, 190.0, 5)
-	var star_issues := star.validate()
-	var non_convex := false
-	for message in star_issues:
-		if String(message).contains("非凸"):
-			non_convex = true
-	if non_convex:
-		passed += 1
-	else:
-		failed += 1
-		push_error("non-convex star was not rejected")
+	eq(star.validate().size(), 0, "concave star is allowed")
 	var bow := BoundaryShape.new()
 	bow.id = "BOW"
 	bow.closed = true
@@ -1116,10 +1234,11 @@ func test_bar_lines() -> bool:
 
 func test_pre_read() -> bool:
 	var chart := Chart.new()
-	chart.shapes["S1"] = BoundaryShape.ellipse("S1", 410.0, 245.0, 32)
-	var event := BoundaryEvent.new("E0", 8.0, 12.0, 0.0, 1.0, "S0", "S1")
-	event.end_behavior = "hold"
-	chart.events.append(event)
+	chart.shapes["S1"] = BoundaryShape.ellipse("S1", 410.0, 245.0, 24)
+	chart.shape_keys = [
+		{"beat": 8.0, "shape_id": "S0", "easing": "linear"},
+		{"beat": 12.0, "shape_id": "S1", "easing": "linear"},
+	]
 	for u in [0.0, 0.2, 0.5, 0.85]:
 		for target in [4.0, 10.0, 14.0]:
 			var p := _preview_point(chart, u, target, target)
@@ -1133,10 +1252,10 @@ func test_shrink_example() -> bool:
 	chart.timing.points = [TimingPoint.new(0.0, 60.0, 4)]
 	chart.shapes["S0"] = BoundaryShape.circle("S0", 330.0, 64)
 	chart.shapes["S1"] = BoundaryShape.circle("S1", 180.0, 64)
-	var event := BoundaryEvent.new("E0", 0.0, 1.0, 0.0, 1.0, "S0", "S1")
-	event.easing = "linear"
-	event.end_behavior = "hold"
-	chart.events.append(event)
+	chart.shape_keys = [
+		{"beat": 0.0, "shape_id": "S0", "easing": "linear"},
+		{"beat": 1.0, "shape_id": "S1", "easing": "linear"},
+	]
 	chart.pre_read_ms = 1000.0
 	var u := 0.0
 	var p_mid := _preview_point(chart, u, 1.0, 0.5)
@@ -1151,12 +1270,11 @@ func test_event_restore() -> bool:
 	chart.timing.points = [TimingPoint.new(0.0, 60.0, 4)]
 	chart.shapes["S0"] = BoundaryShape.circle("S0", 330.0, 64)
 	chart.shapes["S1"] = BoundaryShape.circle("S1", 180.0, 64)
-	var event := BoundaryEvent.new("E0", 0.0, 1.0, 0.0, 1.0, "S0", "S1")
-	event.easing = "linear"
-	event.end_behavior = "restore"
-	event.restore_duration = 1.0
-	event.restore_easing = "linear"
-	chart.events.append(event)
+	chart.shape_keys = [
+		{"beat": 0.0, "shape_id": "S0", "easing": "linear"},
+		{"beat": 1.0, "shape_id": "S1", "easing": "linear"},
+		{"beat": 2.0, "shape_id": "S0", "easing": "linear"},
+	]
 	var mid: Vector2 = BoundaryRuntime.eval_point(chart, 0.0, 0.5).point
 	near(mid.x, 255.0, 0.5, "event mid 255px")
 	var restoring: Vector2 = BoundaryRuntime.eval_point(chart, 0.0, 1.5).point
@@ -3079,7 +3197,7 @@ func test_import_window_set() -> bool:
 	ok(reopened.switch_difficulty(1), "reopened set can switch difficulty")
 	ok(reopened.chart.notes.size() > 0, "switched difficulty has notes")
 	# 静态小工具：命令行参数解析与标签拼装。
-	eq(app.import_label("Lv.9", "Song", "me", "std"), "Lv.9  [std]  ·  Song  (me)", "import label format")
+	eq(app.import_label("Lv.9", "Song", "me", "std"), "Lv.9  [std]  Song  (me)", "import label format")
 	eq(app.import_label("", "", "", ""), "未命名难度", "empty label falls back")
 	reopened.free()
 	app.free()
