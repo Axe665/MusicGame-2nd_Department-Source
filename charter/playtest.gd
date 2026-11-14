@@ -222,11 +222,10 @@ var _bias_label: Label
 var _apply_bias_button: Button
 ## 结算页：重放本局录制。
 var _replay_button: Button
-## 结算页：把本局回放另存到本地。
-## 导出视频：先让子进程用 Movie Maker 渲染 AVI，再用 ffmpeg 转 mp4。
+## 结算页：导出本局为 720p 视频（进程内逐帧截图 → ffmpeg 编码）。
 ## export_mode 在截帧导出期间为 true：锁输入、锁步进、不录 HUD/结算界面。
 var export_mode: bool = false
-## 渲染永远是 1600×900（Movie Maker 跟着窗口走，改不了），
+## 截帧按当前窗口分辨率来，
 ## 成品统一缩到 720p：缩小等于超采样，比直接低分辨率渲染更清楚。
 const EXPORT_VIDEO_SIZE := Vector2i(1280, 720)
 ## 逐帧截取的帧率；视频时间轴 = 帧号 / 帧率。
@@ -1344,8 +1343,8 @@ func _active_offset() -> float:
 	return float(_app.playtest_offset_ms if _app != null else 0.0)
 
 
-## 导出视频：弹保存框 → 子进程渲染 AVI → ffmpeg 转 mp4 → 删 AVI。
-## 渲染走 Godot 的 Movie Maker（--write-movie），逐帧输出，和回放的虚拟时钟天然同步。
+## 导出视频：弹保存框 → 回放里锁步进逐帧截图 → ffmpeg 编码成 mp4 → 删中间帧。
+## 截帧在游戏进程里做（不开第二个窗口），虚拟时钟和帧号一一对应。
 func _export_video() -> void:
 	var data := _current_replay()
 	if data == null or _export_stage != 0:
@@ -1539,7 +1538,7 @@ func _ensure_export_window() -> void:
 	_export_window.canceled.connect(_cancel_export)
 
 
-## 每 0.5 秒看一眼子进程：渲染完 → 转码，转码完 → 删 AVI。
+## 每 0.4 秒看一眼编码进度：ffmpeg 退出 → 收尾。
 func _tick_export(delta: float) -> void:
 	if _export_stage != 2:
 		return
@@ -1678,7 +1677,7 @@ func _finish_export_error(message: String) -> void:
 	_notify_result("导出失败：%s" % message)
 
 
-## 收尾：删掉中间的 AVI 和临时文件；取消时连半成品 mp4 一起删。
+## 收尾：删掉中间帧和临时文件；取消时连半成品 mp4 一起删。
 func _cleanup_export_files(remove_output: bool) -> void:
 	_clear_capture_frames()
 	for name in ["export_ffmpeg.txt", "export_error.txt"]:
@@ -3174,7 +3173,7 @@ static func mouse_button_key(button_index: int) -> int:
 ## point 为 INF 时用当前光标位置。
 func _register_press(key: int, point: Vector2 = Vector2.INF) -> void:
 	var at := _preview.mouse_screen if not point.is_finite() else point
-	var span := _input_interval(_chart_ms() + float(_app.playtest_offset_ms if _app != null else 0.0))
+	var span := _input_interval(_chart_ms() + _active_offset())
 	var stamp := (span.x + span.y) * 0.5
 	# 同一个键的手抖双击只算一次；和弦用不同键，不受影响。
 	var repeated := stamp - float(_last_press_ms.get(key, -INF)) < KEY_DEBOUNCE_MS
