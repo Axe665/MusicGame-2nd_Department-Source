@@ -1350,7 +1350,7 @@ func _export_video() -> void:
 	if data == null or _export_stage != 0:
 		return
 	if _ffmpeg_path().is_empty():
-		_notify_result("没找到 ffmpeg，先装一个：winget install Gyan.FFmpeg")
+		_notify_result("导出视频需要 ffmpeg；当前 PATH 中找不到 ffmpeg。")
 		return
 	if _export_dialog == null:
 		_export_dialog = FileDialog.new()
@@ -1366,28 +1366,9 @@ func _export_video() -> void:
 	_export_dialog.popup_centered()
 
 
-## 找 ffmpeg：先看 PATH；winget 装完要重开终端才进 PATH，所以再兜一下它的安装位置。
+## ffmpeg 走 MediaIO 那一套：它认设置里配的路径，找不到就回 PATH。
 func _ffmpeg_path() -> String:
-	var out: Array = []
-	var tool := "where" if OS.get_name() == "Windows" else "which"
-	if OS.execute(tool, ["ffmpeg"], out, true) == 0:
-		return "ffmpeg"
-	if OS.get_name() == "Windows":
-		var local := OS.get_environment("LOCALAPPDATA")
-		var links := local.path_join("Microsoft/WinGet/Links/ffmpeg.exe")
-		if FileAccess.file_exists(links):
-			return links
-		# winget 的包目录：.../WinGet/Packages/Gyan.FFmpeg_*/ffmpeg-*/bin/ffmpeg.exe
-		var pkgs := local.path_join("Microsoft/WinGet/Packages")
-		for dir in DirAccess.get_directories_at(pkgs):
-			if not dir.begins_with("Gyan.FFmpeg"):
-				continue
-			var root := pkgs.path_join(dir)
-			for sub in DirAccess.get_directories_at(root):
-				var candidate := root.path_join(sub).path_join("bin/ffmpeg.exe")
-				if FileAccess.file_exists(candidate):
-					return candidate
-	return ""
+	return MediaIO.ffmpeg_exe if MediaIO.has_ffmpeg() else ""
 
 
 func _start_capture_export(path: String) -> void:
