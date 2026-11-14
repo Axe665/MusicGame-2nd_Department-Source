@@ -959,7 +959,7 @@ func _init_states() -> void:
 				state["arm_from"] = float(previous.get("arm_from", float(previous["target_ms"]) - BELL_WINDOW_MS))
 		previous_bell = note
 	for region in chart.regions:
-		_red_states[region.id] = {"time": 0.0, "broken": false}
+		_red_states[region.id] = {"time": 0.0, "broken": false, "last_ms": -INF}
 
 
 ## Chains are drawn as one Path (one head, one guide ball, one tail), so they
@@ -1113,7 +1113,7 @@ func _process(delta: float) -> void:
 		_auto_step(judge_ms, beat, delta)
 		_preview.mouse_screen = _auto_cursor
 		_preview._update_cursor()
-	_judge_all(judge_ms, beat, delta)
+	_judge_all(judge_ms, beat)
 	_path_motion_samples.clear()
 	if bench_mode:
 		_bench_tick(judge_ms, beat)
@@ -1304,7 +1304,7 @@ func _seek_replay(fraction: float) -> void:
 		_replay_ms = minf(_replay_ms + SEEK_STEP_MS, target)
 		var judge_ms := _replay_ms + _active_offset()
 		_apply_replay_input(judge_ms)
-		_judge_all(judge_ms, chart.timing.chart_ms_to_beat(_replay_ms), 0.0)
+		_judge_all(judge_ms, chart.timing.chart_ms_to_beat(_replay_ms))
 		_path_motion_samples.clear()
 		_prune_input_queues(judge_ms)
 	_sim_silent = false
@@ -1997,7 +1997,7 @@ func _toggle_auto() -> void:
 		_update_hud_state()
 
 
-func _judge_all(ms: float, beat: float, delta: float) -> void:
+func _judge_all(ms: float, beat: float) -> void:
 	_judge_anchor_pairs(ms, beat)
 	_assign_presses(ms, beat)
 	var mouse: Vector2 = _preview.mouse_screen
@@ -2037,7 +2037,7 @@ func _judge_all(ms: float, beat: float, delta: float) -> void:
 				_judge_anchor(note, ms, beat)
 			"bell":
 				_judge_bell(note, ms, beat, mouse)
-	_judge_red(ms, beat, delta, mouse)
+	_judge_red(ms, beat, mouse)
 	_press_assignments.clear()
 
 
@@ -2626,18 +2626,28 @@ func _judge_anchor(note: Note, ms: float, beat: float) -> void:
 		_add_log("MISS Anchor #%d (unpaired)" % note.id)
 
 
-func _judge_red(ms: float, beat: float, delta: float, mouse: Vector2) -> void:
+func _judge_red(ms: float, beat: float, mouse: Vector2) -> void:
 	for region in chart.regions:
 		var state: Dictionary = _red_states[region.id]
+		var last := float(state.get("last_ms", ms))
+		var step_sec := 0.0 if not is_finite(last) else maxf(0.0, (ms - last) * 0.001)
+		state["last_ms"] = ms
 		if not region.active_at(beat):
 			state["time"] = 0.0
 			state["broken"] = false
+			state["was_inside"] = false
 			continue
 		# 红区按可见多边形判定：鼠标实际落在红区里才算。
 		var polygon := _preview.red_region_polygon(region, beat)
 		var inside := polygon.size() >= 3 and Geometry2D.is_point_in_polygon(mouse, polygon)
 		if inside:
-			state["time"] = float(state["time"]) + delta
+			# 停留时间按时间轴算，不累加帧长：拖动进度条时 delta 是 0，
+			# 累加帧长会让红区在回放里永远不断（回放和实时走同一套判定）。
+			# 刚进入的那一帧不算：否则会把进区之前的那段时间也记成停留。
+			if not bool(state.get("was_inside", false)):
+				step_sec = 0.0
+				state["was_inside"] = true
+			state["time"] = float(state["time"]) + step_sec
 			if float(state["time"]) >= RED_LIMIT_SEC and not bool(state["broken"]):
 				state["broken"] = true
 				_red_breaks += 1
@@ -2654,6 +2664,7 @@ func _judge_red(ms: float, beat: float, delta: float, mouse: Vector2) -> void:
 		else:
 			state["time"] = 0.0
 			state["broken"] = false
+			state["was_inside"] = false
 
 
 func _pulse_at(angle_degrees: float, beat: float, color: Color, label: String, width: float = 60.0, kind: String = "tap", detail: String = "", screen_point: Vector2 = Vector2.INF) -> void:
