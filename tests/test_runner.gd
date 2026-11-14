@@ -1905,8 +1905,8 @@ func test_osu_browser_alignment() -> bool:
 
 
 func test_background_layering() -> bool:
-	near(Preview3D.background_alpha(1.0), 0.32, 0.001, "default background keeps 32% alpha")
-	near(Preview3D.background_alpha(0.5), 0.16, 0.001, "brightness scales the still image")
+	near(Preview3D.background_alpha(1.0), 1.0, 0.001, "background is fully opaque at 100% brightness")
+	near(Preview3D.background_alpha(0.5), 0.5, 0.001, "brightness scales the still image")
 	near(Preview3D.background_alpha(0.0), 0.0, 0.001, "zero brightness hides the image")
 	ok(not Preview3D.background_image_visible(true, true), "BGA hides the chart background image")
 	ok(Preview3D.background_image_visible(true, false), "still image returns without BGA")

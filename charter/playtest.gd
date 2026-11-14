@@ -1045,7 +1045,8 @@ func _start_audio() -> void:
 	_clock = AudioClock.new()
 	_audio_delay_ms = 0.0
 	var bench_audio := bench_mode and "--bench-audio" in OS.get_cmdline_user_args()
-	_start_chart_ms = chart.timing.beat_to_chart_ms(_timeline_start_beat)
+	# 回放从录制起点开始，不加预读：否则音频会比判定早一大截。
+	_start_chart_ms = _replay_start_ms if replay_mode else chart.timing.beat_to_chart_ms(_timeline_start_beat)
 	# 重开/重进时先停掉旧播放器，避免音频叠加。
 	if _audio != null:
 		_audio.stop()
@@ -1062,6 +1063,9 @@ func _start_audio() -> void:
 		_add_log("音频不可用，使用系统时钟继续试玩。")
 		return
 	_audio_available = true
+	if replay_mode and _loaded_audio != null:
+		# 音频加载完之后把回放总长补到整首歌，导出才不会截掉尾巴。
+		_replay_total_ms = maxf(_replay_total_ms, _loaded_audio.get_length() * 1000.0)
 	_audio = AudioStreamPlayer.new()
 	_audio.name = "PlaytestAudio"
 	_audio.bus = "Music"
@@ -1092,11 +1096,9 @@ func _process(delta: float) -> void:
 		return
 	if not _running or chart == null or _paused:
 		return
-	if replay_mode:
-		# 虚拟时钟：倍速只改画面快慢；判定只认事件时间戳，所以结果不变。
-		# 截帧导出时锁成 1/60 秒一步，帧号就是视频时间轴。
-		var step: float = (1.0 / float(CAPTURE_FPS)) if _capture_mode else delta
-		_replay_ms += clampf(step, 0.0, 0.25) * 1000.0 * maxf(0.05, replay_rate)
+	if replay_mode and _capture_mode:
+		# 导出：锁成 1/60 秒一步，帧号就是视频时间轴（非导出时时钟由音频驱动）。
+		_replay_ms += (1.0 / float(CAPTURE_FPS)) * 1000.0 * maxf(0.05, replay_rate)
 	var chart_ms := _chart_ms()
 	if _audio_delay_ms > 0.0 and _audio != null and chart_ms >= chart.offset_ms:
 		_audio_delay_ms = 0.0
@@ -1204,7 +1206,9 @@ func _enter_replay(data: Replay) -> void:
 	_replay_start_ms = _replay_ms
 	_offset_override = float(data.settings.get("offset_ms", 0.0))
 	_replay_start_offset = _offset_override
+	# 回放总长取「谱面结束」和「音频长度」的较大值：只按最后一颗音符算会让视频比歌短。
 	_replay_total_ms = chart.timing.beat_to_chart_ms(chart.duration_beats())
+	_timeline_start_beat = start_beat
 	_replay_cursor = Vector2.INF
 	_preview.flow_scale = float(data.settings.get("flow", _preview.flow_scale))
 	_preview.star_speed = float(data.settings.get("star_speed", _preview.star_speed))
@@ -1322,6 +1326,11 @@ func _seek_replay(fraction: float) -> void:
 	_update_hud_state()
 	_update_replay_bar()
 	_seek_audio_to(_replay_ms)
+	# 时钟重新从目标位置起锚：AudioClock 会把大跨度回跳当坏数据丢掉，
+	# 不重置的话往回拖之后进度条会卡在原处。
+	_clock = AudioClock.new()
+	_clock.start(_replay_ms, Time.get_ticks_usec())
+	_last_chart_ms = _replay_ms
 	if target >= _replay_total_ms - 1.0:
 		_finish()
 
@@ -1829,8 +1838,8 @@ func _chart_ms() -> float:
 
 
 func _chart_ms_inner() -> float:
-	if replay_mode:
-		# 回放走虚拟时钟：判定只认事件自带的时间戳，音频漂移不影响结果。
+	if replay_mode and _capture_mode:
+		# 截帧导出：锁成虚拟时钟，帧号就是视频时间轴。
 		_last_chart_ms = _replay_ms
 		return _replay_ms
 	if _paused:
@@ -1853,6 +1862,10 @@ func _chart_ms_inner() -> float:
 	if _last_chart_ms > -INF:
 		ms = maxf(ms, _last_chart_ms)
 	_last_chart_ms = ms
+	if replay_mode:
+		# 回放（非导出）跟随音频时钟，和正常游玩同一套：
+		# 之前用「每帧累加 delta」的虚拟时钟，起播延迟和采样率差异会一路累积成音画错位。
+		_replay_ms = ms
 	return ms
 
 

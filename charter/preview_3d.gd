@@ -130,7 +130,9 @@ var _last_chart_ref: Chart = null
 var _last_video_path: String = ""
 var _video_load_failed: bool = false
 ## 静图默认 32% 不透明度；改成全局系数后由设置推动。
-const BACKGROUND_ALPHA := 0.32
+## 谱面背景（静图/BGA）的基准不透明度。osu 里背景是实心的，暗度只由「背景明暗」控制，
+## 所以这里不再乘一个 0.32 的基准值——那个值会让默认设置下背景几乎看不见。
+const BACKGROUND_ALPHA := 1.0
 ## 背景明暗系数（1.0 = 现在观感）；静图和 BGA 共用。
 var background_brightness: float = 1.0
 ## 暂停时把 BGA 一起停住，恢复后由 _update_video 重新对齐位置。
