@@ -3233,6 +3233,28 @@ func _input(event: InputEvent) -> void:
 		get_viewport().set_input_as_handled()
 		return
 	if event is InputEventMouseButton and (event.button_index == MOUSE_BUTTON_LEFT or event.button_index == MOUSE_BUTTON_RIGHT):
+		var click := mouse_button_key(event.button_index)
+		if click == 0:
+			return
+		# 「禁用鼠标按键」：左右键不算 Tap，但鼠标移动 / 滚轮照常。
+		if _app != null and not bool(_app.mouse_keys):
+			return
+		if not _running or _paused or _finished or auto_play or replay_mode:
+			# 暂停/结算/回放/自动演示时，点击交给 UI 或忽略。
+			return
+		if event.pressed and get_viewport().gui_get_hovered_control() is BaseButton:
+			# HUD 上的按钮（试玩设置、HUD 开关）自己处理这次点击。
+			return
+		var point: Vector2 = _preview.get_global_transform_with_canvas().affine_inverse() * event.position
+		if event.pressed:
+			_register_press(click, point)
+			# 点下去也算一次轨迹接触，和移动一样喂给 Path 判定。
+			_queue_path_motion(point, _chart_ms() + float(_app.playtest_offset_ms if _app != null else 0.0))
+		else:
+			_keys_held.erase(click)
+			if _recording and _record != null:
+				var mouse_span := _input_interval(_chart_ms() + _active_offset())
+				_record.add_release((mouse_span.x + mouse_span.y) * 0.5, click)
 		get_viewport().set_input_as_handled()
 		return
 	if not (event is InputEventKey):
