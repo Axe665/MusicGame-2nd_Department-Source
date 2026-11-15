@@ -2887,22 +2887,32 @@ func _open_replay_file(path: String) -> void:
 
 
 ## 从难度套组里按 hash 找对应的难度再回放；找不到就报错，不拿别的难度凑合。
+## 注意顺序：先只读取套组做匹配，匹配成功才切换编辑器，
+## 否则匹配失败时预览已经被换成那张谱了（用户看到的「报了错却打开了别的谱」）。
 func _open_replay_from_set(data: Replay, set_path: String) -> void:
-	if not _app.open_set_file(set_path):
-		_show_toast("回放对应的难度套组打不开：%s" % set_path.get_file(), "error")
+	var loaded := ChartIO.load_set(set_path)
+	if not bool(loaded.get("ok", false)):
+		_show_toast("回放对应的难度套组打不开：%s" % String(loaded.get("error", "")), "error")
 		return
+	var entries: Array = loaded.get("entries", [])
 	var matched := -1
-	for i in _app.difficulties.size():
-		var entry: Dictionary = _app.difficulties[i]
-		var chart: Chart = entry.get("chart", null)
+	var names: Array[String] = []
+	for i in entries.size():
+		var chart: Chart = (entries[i] as Dictionary).get("chart", null)
 		if chart == null:
 			continue
-		if data.chart_hash != Replay.hash_chart(chart):
-			continue
-		matched = i
-		break
+		names.append(String(chart.metadata.get("version", "?")))
+		if matched < 0 and data.chart_hash == Replay.hash_chart(chart):
+			matched = i
 	if matched < 0:
-		_show_toast("回放对应的难度在套组里找不到（谱面被改过？）", "error")
+		var want_title := String(data.settings.get("title", ""))
+		var want_diff := String(data.settings.get("version", ""))
+		var want := want_title if want_diff.is_empty() else ("%s [%s]" % [want_title, want_diff])
+		_show_toast("回放对应的难度在套组里找不到%s\n套组里的难度：%s" % [
+			("" if want.is_empty() else "（录制时是 %s）" % want), ", ".join(names)], "error")
+		return
+	if not _app.open_set_file(set_path):
+		_show_toast("回放对应的难度套组打不开：%s" % set_path.get_file(), "error")
 		return
 	if not _app.switch_difficulty(matched):
 		_show_toast("切换到难度 %d 失败" % matched, "error")

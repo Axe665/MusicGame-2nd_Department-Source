@@ -1198,6 +1198,9 @@ func _start_recording() -> void:
 		# 上游新加的「打击音色」：回放时沿用录制时的，声音才对得上。
 		"hit_sfx": String(_app.hit_sfx_style) if _app != null else "default",
 		"rate": 1.0,
+		# 报错/匹配时用：「这张回放是哪首曲子的哪个难度」。
+		"title": String(chart.metadata.get("title", "")) if chart != null else "",
+		"version": String(chart.metadata.get("version", "")) if chart != null else "",
 	}
 	_record_offset = _active_offset()
 	_recording = true

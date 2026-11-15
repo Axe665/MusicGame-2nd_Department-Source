@@ -109,10 +109,19 @@ static func from_dict(data: Dictionary) -> Replay:
 
 
 ## 谱面内容哈希：谱面被改过之后，旧回放不该悄悄按新谱面播。
+## 只算「影响判定」的部分（BPM/变速、音符、offset）：改曲名、改配色、
+## 编辑器换个存盘路径都不该让回放失效——之前整份 to_dict 一起哈希，
+## 连「保存难度套组」这种重写都会换掉 hash。
 static func hash_chart(chart: Chart) -> String:
 	if chart == null:
 		return ""
-	return JSON.stringify(ChartIO.chart_to_dict(chart)).sha256_text()
+	var full := ChartIO.chart_to_dict(chart)
+	var gameplay := {
+		"offset_ms": full.get("offset_ms", 0.0),
+		"timing": full.get("timing", {}),
+		"notes": full.get("notes", []),
+	}
+	return JSON.stringify(gameplay).sha256_text()
 
 
 ## gzip 压缩的 JSON。2 分钟的谱面大约 50–80 KB。
