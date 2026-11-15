@@ -148,6 +148,7 @@ var _playtest_cursor: SpinBox = null
 var _playtest_offset: SpinBox = null
 var _playtest_latency: SpinBox = null
 var _playtest_sfx: OptionButton = null
+var _playtest_mirror: OptionButton = null
 var _playtest_dynamic: CheckBox = null
 var _playtest_auto: CheckBox = null
 var _playtest_mouse: CheckBox = null
@@ -2519,6 +2520,8 @@ func _open_playtest_setup(from_start: bool) -> void:
 		_playtest_latency.value = float(_app.audio_latency_ms)
 	if _playtest_sfx != null:
 		_playtest_sfx.selected = maxi(0, ["default", "crisp", "deep"].find(_app.hit_sfx_style))
+	if _playtest_mirror != null:
+		_playtest_mirror.selected = maxi(0, ["off", "lr", "rot180"].find(_app.playtest_mirror))
 	if _playtest_bias != null:
 		_playtest_bias.text = "上次平均偏差 %+.1fms" % float(_app.last_bias_ms)
 	_sync_volume_sliders()
@@ -2709,6 +2712,20 @@ func _build_playtest_dialog() -> void:
 	_playtest_flow = _playtest_spin_row(box, "流速", 0.05, 3.0, 0.01, 1.0, "×")
 	_playtest_star = _playtest_spin_row(box, "星速", 0.5, 2.0, 0.05, 1.0, "×")
 	_playtest_cursor = _playtest_spin_row(box, "光标大小", 0.5, 2.0, 0.05, 1.0, "×")
+	var mirror_row := HBoxContainer.new()
+	mirror_row.add_theme_constant_override("separation", 6)
+	var mirror_label := Label.new()
+	mirror_label.text = "谱面镜像"
+	mirror_label.custom_minimum_size = Vector2(64, 0)
+	UITheme.style_mono(mirror_label, 12, UITheme.MUTED)
+	mirror_row.add_child(mirror_label)
+	_playtest_mirror = OptionButton.new()
+	for label in ["关闭", "左右翻转", "旋转 180°"]:
+		_playtest_mirror.add_item(label)
+	_playtest_mirror.tooltip_text = "只翻试玩用的副本：音符与 Limit 红区一起翻，原谱面不变；下一局生效"
+	_playtest_mirror.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	mirror_row.add_child(_playtest_mirror)
+	box.add_child(mirror_row)
 	_playtest_offset = _playtest_spin_row(box, "判定偏移", -200.0, 200.0, 1.0, 0.0, "ms")
 	_playtest_latency = _playtest_spin_row(box, "输出延迟", 0.0, 250.0, 1.0, 0.0, "ms")
 	_playtest_latency.tooltip_text = "0 = 用驱动报告值；>0 = 强制覆盖（可升可降）。驱动明显不准时才手动填"
@@ -2827,6 +2844,8 @@ func _commit_playtest_settings() -> void:
 		_app.playtest_auto = _playtest_auto.button_pressed
 	if _playtest_mouse != null:
 		_app.mouse_keys = _playtest_mouse.button_pressed
+	if _playtest_mirror != null:
+		_app.playtest_mirror = ["off", "lr", "rot180"][clampi(_playtest_mirror.selected, 0, 2)]
 	_app.save_settings()
 	_preview.flow_scale = _app.flow_scale
 	_preview.star_speed = _app.star_speed
@@ -2863,6 +2882,7 @@ func _start_playtest(from_start: bool) -> void:
 	_playtest.bench_mode = "--bench" in OS.get_cmdline_user_args()
 	_playtest.auto_play = bool(_app.playtest_auto) or "--auto" in OS.get_cmdline_user_args()
 	_playtest.next_playback_rate = _rate
+	_playtest.mirror_mode = String(_app.playtest_mirror)
 	add_child(_playtest)
 	_playtest.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_playtest.setup(_app.chart, 0.0 if from_start else _app.playhead_beat, _app.chart_path)

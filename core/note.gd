@@ -353,6 +353,21 @@ func _short_delta(from_angle: float, to_angle: float) -> float:
 	return delta
 
 
+## 左右镜像：角度 θ→180−θ，只翻横向。轨迹/局部端点翻 x，
+## 路径轴与 visual 的相对角反号；时间、宽度与判定半径不变。
+func mirror_lr() -> void:
+	angle = fposmod(180.0 - angle, 360.0)
+	tail_angle = fposmod(180.0 - tail_angle, 360.0)
+	center_u = fposmod(1.0 - center_u, 1.0)
+	path_axis = -path_axis
+	for point in trace_pts:
+		point["x"] = -float(point.get("x", 0.0))
+	for point in visual_pts:
+		point["da"] = -float(point.get("da", 0.0))
+	if path_part > 0 and path_head_local.is_finite():
+		path_head_local = Vector2(-path_head_local.x, path_head_local.y)
+
+
 func mirror_u() -> void:
 	## Mirror by rotating the note 180° around the ring centre: angle + 180,
 	## wrapped back into 0–360. Time, widths and judging radii are unchanged.

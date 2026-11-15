@@ -170,6 +170,51 @@ func sorted_notes() -> Array[Note]:
 	return result
 
 
+## 试玩镜像：音符与 Limit 红区各翻一份，形状/视图/时间共用。原谱不动。
+## mode: "off"（原样返回）/ "lr"（左右翻转）/ "rot180"（旋转 180°）。
+func mirrored_copy(mode: String) -> Chart:
+	if mode != "lr" and mode != "rot180":
+		return self
+	var result := Chart.new()
+	result.format_version = format_version
+	result.audio_path = audio_path
+	result.video_path = video_path
+	result.video_offset_ms = video_offset_ms
+	result.video_fps = video_fps
+	result.video_opacity = video_opacity
+	result.pre_read_ms = pre_read_ms
+	result.offset_ms = offset_ms
+	result.difficulty = difficulty
+	result.metadata = metadata.duplicate(true)
+	result.timing = timing
+	result.default_shape_id = default_shape_id
+	result.shapes = shapes
+	result.events = events
+	result.shape_keys = shape_keys
+	result.view_states = view_states
+	result.load_warnings = load_warnings
+	result.editor = editor
+	result.palette = palette
+	result._next_note_id = _next_note_id
+	result._next_region_id = _next_region_id
+	result._next_event_id = _next_event_id
+	result.notes = []
+	for note in notes:
+		var copy := Note.from_dict(note.to_dict())
+		if mode == "lr":
+			copy.mirror_lr()
+		else:
+			copy.mirror_u()
+		result.notes.append(copy)
+	result.regions = []
+	for region in regions:
+		var copy := Region.from_dict(region.to_dict())
+		var flipped := 180.0 - copy.angle if mode == "lr" else copy.angle + 180.0
+		copy.angle = fposmod(flipped, 360.0)
+		result.regions.append(copy)
+	return result
+
+
 func next_note_id() -> int:
 	var result := _next_note_id
 	_next_note_id += 1
