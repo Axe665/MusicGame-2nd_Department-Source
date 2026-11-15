@@ -230,6 +230,8 @@ var export_mode: bool = false
 const EXPORT_VIDEO_SIZE := Vector2i(1280, 720)
 ## 逐帧截取的帧率；视频时间轴 = 帧号 / 帧率。
 const CAPTURE_FPS := 60
+## 导出时多截一小段尾巴：谱面最后一颗之后还有音乐，长度交给音频（-shortest）裁剪。
+const CAPTURE_TAIL_PAD_MS := 8000.0
 const CAPTURE_DIR := "user://export_frames"
 var _export_button: Button
 var _export_dialog: FileDialog = null
@@ -1133,12 +1135,13 @@ func _process(delta: float) -> void:
 		_ui_accum = 0.0
 		_update_hud_state()
 		_update_replay_bar()
-	if beat > chart.duration_beats() + 2.0:
-		# 回放放到头 = 自动退回结算界面，不用手动点退出。
-		if replay_mode:
+	if replay_mode:
+		# 回放按「整首歌」收尾：谱面最后一颗之后通常还有几秒音乐，按 chart 结束会切成短尾。
+		# 导出由 _replay_ms >= _replay_total_ms 收尾；无音频时退回按总长收尾。
+		if not _capture_mode and not _audio_available and chart_ms >= _replay_total_ms:
 			_exit_replay()
-		else:
-			_finish()
+	elif beat > chart.duration_beats() + 2.0:
+		_finish()
 	_prune_input_queues(judge_ms)
 	if _recording and _record != null:
 		var offset_now := _active_offset()
@@ -1424,6 +1427,8 @@ func _start_capture_export(path: String) -> void:
 	_export_window.popup_centered(Vector2i(520, 170))
 	# 同一进程里把这一局当回放重放一遍，逐帧截图——不再开第二个进程。
 	_restart_for_capture(data)
+	# 谱面结束往往早于音乐结束：多截一段尾巴，最后交给 -shortest 按音频裁剪。
+	_replay_total_ms = maxf(_replay_total_ms, _replay_start_ms + 1000.0) + CAPTURE_TAIL_PAD_MS
 	_capture_total = maxi(1, int(ceil((_replay_total_ms - _replay_start_ms) / 1000.0 * float(CAPTURE_FPS))))
 	_capture_audio_offset = maxf(0.0, (_replay_start_ms - chart.offset_ms) / 1000.0)
 	_export_total_ms = maxf(1.0, (_replay_total_ms - _replay_start_ms))
@@ -1602,9 +1607,10 @@ func _start_encode() -> void:
 		"-framerate", str(CAPTURE_FPS), "-i", _capture_dir.replace("\\", "/") + "/%05d.jpg",
 	])
 	if not _capture_audio.is_empty():
+		# 不传 -t：视频比音频长时由 -shortest 按音频结尾裁掉多余帧，
+		# 这样导出的长度等于「歌」而不是「谱面最后一颗」。
 		args.append_array([
 			"-ss", "%.3f" % _capture_audio_offset,
-			"-t", "%.3f" % seconds,
 			"-i", _capture_audio.replace("\\", "/"),
 		])
 	args.append_array([
