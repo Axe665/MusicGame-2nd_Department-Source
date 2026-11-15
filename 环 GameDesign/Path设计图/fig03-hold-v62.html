@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>Hold</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:1200px;height:760px;overflow:hidden}
+body{background:#FAF7F2;color:#1F1B18;font-family:"Noto Sans CJK SC",sans-serif;
+ padding:52px 64px 0;display:flex;flex-direction:column}
+.k{font-family:"DejaVu Sans Mono",monospace;font-size:12px;letter-spacing:4px;color:#9A8C7A}
+h1{font-size:30px;margin-top:10px;font-weight:700}
+.sub{font-size:15px;color:#6B6259;margin-top:8px}
+.body{flex:1;position:relative}
+.foot{position:absolute;left:0;right:0;bottom:28px;font-size:12.5px;color:#8A7F72}
+</style></head><body>
+<div class="k">TAMAKI₃ / HOLD</div>
+<h1>Hold 只在头部占用鼠标</h1>
+<div class="sub">头部之后鼠标可以离开；键盘保持的松手时机决定评级，而不是判失败。</div>
+<div class="body">
+<svg viewBox="0 0 1070 420" width="1070" height="420">
+  <!-- 时间轴 -->
+  <line x1="60" y1="210" x2="1010" y2="210" stroke="#1F1B18" stroke-width="2.5"/>
+  <g fill="#1F1B18">
+    <circle cx="140" cy="210" r="9"/>
+    <circle cx="620" cy="210" r="7"/>
+    <circle cx="950" cy="210" r="7"/>
+  </g>
+  <!-- 区间标注 -->
+  <rect x="140" y="228" width="810" height="30" fill="#EFE6DA"/>
+  <text x="545" y="248" text-anchor="middle" font-size="14" fill="#1F1B18">键盘保持（可以换键续接）</text>
+  <!-- 顶部说明 -->
+  <text x="140" y="170" text-anchor="middle" font-size="15" fill="#C0392B" font-weight="700">定位 + 按键</text>
+  <text x="140" y="146" text-anchor="middle" font-family="DejaVu Sans Mono" font-size="12" fill="#8A7F72">HEAD</text>
+  <text x="620" y="150" text-anchor="middle" font-size="14" fill="#6B6259">持续段</text>
+  <text x="950" y="170" text-anchor="middle" font-size="15" fill="#1F1B18" font-weight="700">松手时机</text>
+  <text x="950" y="146" text-anchor="middle" font-family="DejaVu Sans Mono" font-size="12" fill="#8A7F72">TAIL</text>
+  <!-- 松手分档 -->
+  <g transform="translate(560,286)">
+    <text x="0" y="0" font-family="DejaVu Sans Mono" font-size="12" fill="#8A7F72">RELEASE</text>
+    <rect x="0" y="14" width="450" height="26" rx="4" fill="#1F1B18" opacity=".06"/>
+    <rect x="286" y="14" width="164" height="26" rx="4" fill="#C0392B" opacity=".85"/>
+    <text x="368" y="32" text-anchor="middle" fill="#FAF7F2" font-family="Noto Sans CJK SC" font-size="12">最后一拍 PERFECT</text>
+    <text x="0" y="70" fill="#6B6259" font-family="Noto Sans CJK SC" font-size="13">更早松手：按比例降为 GREAT / GOOD，不判失败</text>
+  </g>
+  <!-- 鼠标去处 -->
+  <g transform="translate(60,320)">
+    <text x="0" y="0" font-family="DejaVu Sans Mono" font-size="12" fill="#8A7F72">MOUSE FREE AFTER HEAD</text>
+    <text x="0" y="26" font-family="Noto Sans CJK SC" font-size="14" fill="#1F1B18">可以去处理 Path 头尾 / Bell / Seek 擦带 / Limit 规避</text>
+  </g>
+</svg>
+<div class="foot">头部定位与持续保持分开，才能写出“键盘打拍子、鼠标走路线”的双手错位配置。</div>
+</div>
+</body></html>

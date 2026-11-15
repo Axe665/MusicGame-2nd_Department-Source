@@ -15,6 +15,8 @@ const CORAL_DARK := Color("#A83828")
 const PINK := Color("#FF6FAE")
 const CYAN := Color("#5FD8CF")
 const GOLD := Color("#F0C36A")
+## 金键（Bell）：亮黄核心。刻意和 Hold 的琥珀 #F2A65A 拉开。
+const KEY_YELLOW := Color("#FFD84D")
 const ACCENT := Color("#FFDE00")
 const ACCENT_DARK := Color("#C9A800")
 const CARD := Color("#DCDAD2")

@@ -8,6 +8,7 @@ static func validate(chart: Chart) -> Array[Dictionary]:
 	var issues: Array[Dictionary] = []
 	_check_timing(chart, issues)
 	_check_shapes(chart, issues)
+	_check_shape_keys(chart, issues)
 	_check_events(chart, issues)
 	_check_view_states(chart, issues)
 	_check_regions(chart, issues)
@@ -54,6 +55,19 @@ static func _check_shapes(chart: Chart, issues: Array[Dictionary]) -> void:
 			_add(issues, "error", message, "shape:" + shape.id)
 
 
+static func _check_shape_keys(chart: Chart, issues: Array[Dictionary]) -> void:
+	var previous := -INF
+	for key in chart.sorted_shape_keys():
+		var beat := float(key.get("beat", 0.0))
+		if beat < 0.0:
+			_add(issues, "error", "形状关键帧不能在第 0 拍之前", "key")
+		if beat <= previous + 0.0001:
+			_add(issues, "error", "形状关键帧的拍必须递增", "key")
+		previous = beat
+		if chart.get_shape(String(key.get("shape_id", ""))) == null:
+			_add(issues, "error", "形状关键帧引用了不存在的形状", "key")
+
+
 static func _check_events(chart: Chart, issues: Array[Dictionary]) -> void:
 	for event in chart.events:
 		if event.id.is_empty():
@@ -89,12 +103,7 @@ static func _check_event_morph(chart: Chart, event: BoundaryEvent, issues: Array
 		if BoundaryShape.runs_self_intersects(points, chart.get_default_shape().closed):
 			_add(issues, "error", "事件 %s 在 %s 拍附近造成环线自交" % [event.id, chart.timing.format_beat(t)], "event:" + event.id)
 			return
-		if BoundaryShape.runs_out_of_range(points):
-			_add(issues, "error", "事件 %s 在 %s 拍附近变形过激" % [event.id, chart.timing.format_beat(t)], "event:" + event.id)
-			return
-		if not BoundaryShape.runs_convex(points, chart.get_default_shape().closed):
-			_add(issues, "error", "事件 %s 在 %s 拍附近产生凹口/星形轮廓" % [event.id, chart.timing.format_beat(t)], "event:" + event.id)
-			return
+		# 凹形与局部收放都允许；只拦自交。
 
 
 static func _event_times_overlap(a: BoundaryEvent, b: BoundaryEvent) -> bool:
@@ -139,11 +148,6 @@ static func _check_notes(chart: Chart, issues: Array[Dictionary]) -> void:
 			_add(issues, "error", "音符 %d 的类型 %s 未知" % [note.id, note.type], "note:%d" % note.id)
 		if note.width < 0.0 or note.width > 360.0:
 			_add(issues, "error", "音符 %d 的宽度越界" % note.id, "note:%d" % note.id)
-		if note.space == "plane" and note.type != "path":
-			if note.plane_x < 0.0 or note.plane_x > 1.0 or note.plane_y < 0.0 or note.plane_y > 1.0:
-				_add(issues, "error", "平面音符 %d 的位置越出舞台安全区" % note.id, "note:%d" % note.id)
-			if note.plane_radius <= 0.0 or note.plane_radius > 0.3:
-				_add(issues, "error", "平面音符 %d 的判定半径越界" % note.id, "note:%d" % note.id)
 		match note.type:
 			"hold":
 				if note.end_beat <= note.beat + EPS:
@@ -163,31 +167,15 @@ static func _check_notes(chart: Chart, issues: Array[Dictionary]) -> void:
 					if sqrt(x * x + y * y) > 1.05:
 						_add(issues, "error", "Path %d 的点越出环内平面" % note.id, "note:%d" % note.id)
 						break
-			"trace":
-				if note.end_beat <= note.beat + EPS:
-					_add(issues, "error", "Trace %d 的结束拍必须晚于开始拍" % note.id, "note:%d" % note.id)
-				if note.trace_pts.is_empty():
-					_add(issues, "error", "Trace %d 没有二维点" % note.id, "note:%d" % note.id)
-				for point in note.trace_pts:
-					var x := float(point.get("x", 0.0))
-					var y := float(point.get("y", 0.0))
-					# Trace 的 x/y 是“环半径 = 1.0”的设计坐标：环上与平面共用。
-					if sqrt(x * x + y * y) > 1.05:
-						var what := "Slide" if note.trace_style == "slider" else "Trace"
-						_add(issues, "error", "%s %d 的点越出环内平面" % [what, note.id], "note:%d" % note.id)
-						break
 			"bell":
 				if note.radius <= 0.0:
 					_add(issues, "error", "Bell %d 的半径必须为正" % note.id, "note:%d" % note.id)
 				if note.center_u < 0.0 or note.center_u >= 1.0:
 					_add(issues, "error", "Bell %d 的中心 u 越界" % note.id, "note:%d" % note.id)
 			"anchor":
-				if note.anchor_pair >= 0:
-					var partner := _anchor_partner(chart, note)
-					if partner == null:
-						_add(issues, "error", "Anchor %d 缺少同拍反向的配对" % note.id, "note:%d" % note.id)
-				if not note.pair_id.is_empty() and _anchor_partner(chart, note) == null:
-					_add(issues, "error", "Anchor %d 的 pairId 没有配对" % note.id, "note:%d" % note.id)
+				# 双押配置：单颗 Anchor 不再成立，必须同拍反向成对。
+				if _anchor_partner(chart, note) == null:
+					_add(issues, "error", "Anchor %d 必须与同拍反向的另一颗配对" % note.id, "note:%d" % note.id)
 		if note.space != "plane" or note.type == "path":
 			var u := note.center_u if note.type == "bell" else fposmod(note.angle, 360.0) / 360.0
 			var shape := chart.get_default_shape()
@@ -195,21 +183,20 @@ static func _check_notes(chart: Chart, issues: Array[Dictionary]) -> void:
 				var sampled := shape.point_at(u)
 				if sampled.get("gap", false):
 					_add(issues, "error", "音符 %d 落在缺口段上" % note.id, "note:%d" % note.id)
+	# 同拍最多一对（双押）；第三颗 Anchor 直接拒绝。
+	var anchor_counts := {}
+	for note in chart.notes:
+		if note.type != "anchor":
+			continue
+		var key := "%.4f" % note.beat
+		anchor_counts[key] = int(anchor_counts.get(key, 0)) + 1
+	for key in anchor_counts:
+		if int(anchor_counts[key]) > 2:
+			_add(issues, "error", "同拍 Anchor 超过双押上限（%s 拍有 %d 颗，最多 2 颗）" % [key, int(anchor_counts[key])], "notes")
 
 
 static func _anchor_partner(chart: Chart, note: Note) -> Note:
-	if note.pair_id.is_empty():
-		return null
-	for other in chart.notes:
-		if other.id == note.id or other.type != "anchor":
-			continue
-		if other.pair_id != note.pair_id:
-			continue
-		if absf(other.beat - note.beat) > EPS:
-			continue
-		if absf(JudgeMath.angle_distance(other.angle, note.angle) - 180.0) <= 1.0:
-			return other
-	return null
+	return chart.anchor_partner(note)
 
 
 static func _check_playability(chart: Chart, issues: Array[Dictionary]) -> void:

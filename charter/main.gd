@@ -8,6 +8,53 @@ const TOOL_ORDER := [
 
 var _app: Node = null
 var _preview: Preview3D
+var _preview_box: VBoxContainer
+var _main_row: Control
+var _ring_workspace: Control
+var _view_menu: MenuButton
+var _preview_panel: PanelContainer
+var _preview_grip: Control
+var _preview_reopen: Button
+var _preview_gear: MenuButton
+var _preview_dragging: bool = false
+var _preview_drag_start_x: float = 0.0
+var _preview_drag_width: float = 340.0
+var _preview_manual_open: bool = false
+var _audio_popup: PopupPanel = null
+var _settings_dialog: AcceptDialog = null
+var _quality_widgets: Dictionary = {}
+var _hud_widgets: Dictionary = {}
+
+## 画质菜单：每项一行子菜单，行标题带当前值，子项打勾。只影响渲染，不碰判定。
+const QUALITY_OPTIONS := [
+	{"key": "preset", "label": "预设", "choices": [["极高（4× 抗锯齿）", 80], ["高（2× 抗锯齿）", 81], ["中", 82], ["低", 83]]},
+	{"key": "frame_cap", "label": "帧率上限", "choices": [["60", 90], ["120", 91], ["144", 92], ["240", 93], ["垂直同步", 94], ["不限", 95]]},
+	{"key": "aa_2d_level", "label": "2D 抗锯齿", "choices": [["关", 60], ["MSAA 2×", 61], ["MSAA 4×", 62], ["MSAA 8×", 84]]},
+	{"key": "msaa_3d_level", "label": "3D 抗锯齿", "choices": [["关", 150], ["MSAA 2×", 151], ["MSAA 4×", 152], ["MSAA 8×", 153], ["FXAA（便宜）", 154], ["TAA（平滑，可能拖影）", 155], ["MSAA 2× + FXAA", 156], ["MSAA 4× + FXAA", 157]]},
+	{"key": "use_3d_ring", "label": "3D 环", "choices": [["开", 158], ["关", 159]]},
+	{"key": "note_detail_fine", "label": "音符精细度", "choices": [["全画质", 63], ["省电", 64]]},
+	{"key": "note_glow", "label": "音符光晕", "choices": [["开", 65], ["关", 66]]},
+	{"key": "cursor_trail", "label": "光标拖尾", "choices": [["长", 67], ["短", 68], ["关", 69]]},
+	{"key": "fx_budget", "label": "命中特效", "choices": [["完整", 70], ["精简", 71], ["关", 72]]},
+	{"key": "ring_3d_scale", "label": "3D 环分辨率", "choices": [["原生", 160], ["超采样 1.25×", 161], ["超采样 1.5×", 162], ["高 0.85", 163], ["中 0.65", 164], ["低 0.5", 165]]},
+	{"key": "ring_3d_hz", "label": "3D 环刷新", "choices": [["60Hz", 76], ["30Hz", 77]]},
+	{"key": "bar_lines", "label": "小节线", "choices": [["开", 78], ["关", 79]]},
+	{"key": "background_brightness", "label": "背景明暗", "choices": [["关", 96], ["25%", 97], ["50%", 98], ["75%", 99], ["100%（默认）", 100]]},
+]
+
+## 界面（HUD）选项：和 视图 → 画质 同样的菜单结构，只影响显示。
+const HUD_OPTIONS := [
+	{"key": "hud_scale", "label": "HUD 缩放", "choices": [["80%", 120], ["100%", 121], ["120%", 122]]},
+	{"key": "hud_combo_mode", "label": "连击", "choices": [["屏幕中心", 123], ["右侧", 124], ["关", 125]]},
+	{"key": "hud_progress_style", "label": "进度仪表", "choices": [["环外弧", 126], ["关", 127]]},
+	{"key": "hud_judge_position", "label": "判定字位置", "choices": [["跟音符", 128], ["环内", 129], ["环外", 130], ["屏幕中心", 146], ["关", 147]]},
+	{"key": "hud_opacity", "label": "HUD 透明度", "choices": [["100%", 133], ["85%", 134], ["70%", 135]]},
+	{"key": "hud_show_title", "label": "左上：曲名", "choices": [["显示", 136], ["隐藏", 137]]},
+	{"key": "hud_show_difficulty", "label": "左上：难度", "choices": [["显示", 138], ["隐藏", 139]]},
+	{"key": "hud_show_percent", "label": "左上：进度%", "choices": [["显示", 140], ["隐藏", 141]]},
+	{"key": "hud_show_time", "label": "左上：用时", "choices": [["显示", 142], ["隐藏", 143]]},
+	{"key": "hud_show_watermark", "label": "左上：试玩水印", "choices": [["显示", 144], ["隐藏", 145]]},
+]
 var _canvas: ChartCanvas
 var _event_track: EventTrack
 var _inspector: Inspector
@@ -41,7 +88,20 @@ var _stretch_error: Label
 var _stretch_syncing: bool = false
 var _audio: AudioStreamPlayer
 var _audio_path: String = ""
+var _audio_token: int = 0
+## 当前 _audio.stream 的时间伸缩倍率（1 = 原始；>1 = 已经 atempo 过）。
+var _audio_stream_rate: float = 1.0
+## 当前流是按哪个倍速准备的；倍速变了要重新加载。
+var _audio_rate_key: float = 1.0
+var _audio_loading := false
 var _playing: bool = false
+## 正在拖底部进度条。
+var _seeking: bool = false
+## 上一次重建音频的时刻：拖动时按这个节流，避免每个鼠标事件都重启播放器。
+var _last_audio_rebase_msec: int = 0
+var _loop_enabled: bool = false
+var _loop_start: float = 0.0
+var _loop_end: float = 0.0
 var _rate: float = 1.0
 var _loop: bool = false
 var _metronome: bool = true
@@ -74,6 +134,13 @@ var _import_dir_dialog: FileDialog
 var _audio_dialog: FileDialog
 var _song_dialog: SongImportDialog
 var _chart_browser: ChartBrowser
+## 独立的“在线 osu! 谱面”窗口（卡片式，只列 osu!std）。
+var _osu_browser: OsuBrowser
+## 设置里「转码缓存」体积显示。
+var _cache_label: Label = null
+var _import_progress: AcceptDialog = null
+var _import_progress_label: Label = null
+var _import_progress_bar: ProgressBar = null
 var _new_dialog: NewChartDialog
 var _playtest: Playtest
 ## 试玩前的设置窗口：倍速 / 流速 / 星速 / 星显。
@@ -81,18 +148,28 @@ var _playtest_dialog: AcceptDialog = null
 var _playtest_rate: SpinBox = null
 var _playtest_flow: SpinBox = null
 var _playtest_star: SpinBox = null
-var _playtest_star_color: ColorPickerButton = null
-var _playtest_trace_color: ColorPickerButton = null
+var _playtest_cursor: SpinBox = null
 var _playtest_offset: SpinBox = null
+var _playtest_latency: SpinBox = null
+var _playtest_sfx: OptionButton = null
+var _playtest_mirror: OptionButton = null
 var _playtest_dynamic: CheckBox = null
 var _playtest_auto: CheckBox = null
+var _playtest_mouse: CheckBox = null
 var _playtest_bias: Label = null
+## 试玩设置底部的「从头开始玩」按钮（试玩中隐藏）。
+var _playtest_start_button: Button = null
+var _calibration_dialog: CalibrationDialog = null
+## 校准窗口关掉后要回到哪里："" / "settings" / "playtest"。
+var _calibration_return := ""
 var _playtest_from_start: bool = false
 ## 制谱界面保留的流速输入框（试玩设置改流速后要同步回来）。
 var _editor_flow_spin: SpinBox = null
 ## 制谱界面保留的「星显」输入框，和试玩设置共用同一个值。
 var _cursor_u: float = 0.0
 var _issues: Array = []
+## 所有音量滑条（编辑器音频弹窗 + 设置 + 试玩设置），打开面板时统一同步。
+var _volume_sliders: Array = []
 
 
 func _ready() -> void:
@@ -101,12 +178,16 @@ func _ready() -> void:
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_setup_audio_buses()
 	_build_ui()
+	resized.connect(_on_editor_resized)
+	get_window().size_changed.connect(_on_editor_resized)
+	call_deferred("_on_editor_resized")
 	_build_audio()
 	_sfx = HitSfx.new()
 	_sfx.name = "EditorHitSfx"
 	add_child(_sfx)
 	_sfx.set_style(String(_app.hit_sfx_style) if _app != null else "default")
 	_build_dialogs()
+	_build_audio_popup()
 	if _app != null:
 		_app.chart_changed.connect(_on_chart_changed)
 		_app.chart_live_changed.connect(_on_chart_live_changed)
@@ -123,6 +204,8 @@ func _ready() -> void:
 				_sfx.play("don")
 		)
 		_app.validation_changed.connect(_update_validation)
+		# App 在 main 之后才连上信号，启动时那次校验已经错过，这里补一次。
+		_update_validation(_app.validation_issues())
 		_app.snap_changed.connect(_on_snap_changed)
 		_app.stretch_changed.connect(_on_stretch_value_changed)
 		_app.audio_import_requested.connect(_on_audio_import_requested)
@@ -148,12 +231,22 @@ func _ready() -> void:
 func _run_bench() -> void:
 	var start_beat := 0.0 if "--bench-start0" in OS.get_cmdline_user_args() else 312.0
 	var osz := ""
+	var plain := ""
 	for arg in OS.get_cmdline_user_args():
 		if arg.begins_with("--bench-osz="):
 			osz = arg.get_slice("=", 1)
+		elif arg.begins_with("--bench-chart="):
+			plain = arg.get_slice("=", 1)
 		elif arg.begins_with("--bench-from="):
 			start_beat = float(arg.get_slice("=", 1))
-	if osz.is_empty():
+	if not plain.is_empty():
+		var plain_chart: Chart = ChartIO.load_chart(plain)
+		if plain_chart == null:
+			print("[bench] chart load failed: ", plain)
+			get_tree().quit()
+			return
+		_app.set_chart(plain_chart, plain, false)
+	elif osz.is_empty():
 		var chart: Chart = ChartIO.load_chart("user://autosave.json")
 		if chart != null:
 			_app.set_chart(chart, "user://autosave.json", false)
@@ -201,6 +294,70 @@ func _run_bench() -> void:
 		await get_tree().create_timer(95.0 if "--bench-start0" in OS.get_cmdline_user_args() else 20.0).timeout
 	print("[bench] stop")
 	get_tree().quit()
+
+
+## 预览齿轮：HUD / 调试 / 收起。
+func _on_preview_menu(id: int) -> void:
+	if _app == null or _preview == null:
+		return
+	match id:
+		0:
+			_app.hud_visible = not _app.hud_visible
+			_preview.show_hud = _app.hud_visible
+		1:
+			_app.debug_overlay = not _app.debug_overlay
+			_preview.show_debug = _app.debug_overlay
+		2:
+			_set_preview_collapsed(true, true)
+			return
+	_update_status()
+
+
+func _set_preview_collapsed(value: bool, manual: bool) -> void:
+	if _app == null or _preview_panel == null:
+		return
+	if manual:
+		_preview_manual_open = not value
+	var changed: bool = value != _app.preview_collapsed
+	_app.preview_collapsed = value
+	_preview_panel.visible = not value
+	_preview_grip.visible = not value
+	_preview_reopen.visible = value
+	if _preview != null:
+		_preview.set_suspended(value)
+	if changed:
+		_app.save_settings()
+
+
+func _on_preview_grip_input(event: InputEvent) -> void:
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
+		if event.pressed:
+			_preview_dragging = true
+			_preview_drag_start_x = event.global_position.x
+			_preview_drag_width = _preview_panel.custom_minimum_size.x
+		else:
+			_preview_dragging = false
+			if _app != null:
+				_app.preview_width = _preview_panel.custom_minimum_size.x
+				_app.save_settings()
+	elif event is InputEventMouseMotion and _preview_dragging:
+		var dx: float = event.global_position.x - _preview_drag_start_x
+		var width := clampf(_preview_drag_width - dx, 280.0, 720.0)
+		_preview_panel.custom_minimum_size.x = width
+		if _app != null:
+			_app.preview_width = width
+
+
+## 窄窗口自动收起预览；用户手动开/关过之后不再抢。
+func _on_editor_resized() -> void:
+	if _app == null or _preview_panel == null or _preview_manual_open:
+		return
+	# 拉伸模式下 Control 的虚拟宽度固定 1600，得看真实窗口宽度。
+	var width := float(DisplayServer.window_get_size().x)
+	if width < 1180.0 and not _app.preview_collapsed:
+		_set_preview_collapsed(true, false)
+	elif width >= 1180.0 and _app.preview_collapsed:
+		_set_preview_collapsed(false, false)
 
 
 func _build_ui() -> void:
@@ -256,29 +413,31 @@ func _build_ui() -> void:
 	_import_diff.visible = false
 	_import_diff.item_selected.connect(_on_import_difficulty_selected)
 	brand_row.add_child(_import_diff)
+	# 菜单和试玩按钮统一排到右上角：这里先放一个弹性占位，把它们顶过去。
 	var brand_spacer := Control.new()
 	brand_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	brand_row.add_child(brand_spacer)
+	# 菜单 id 全局唯一（_on_menu 的 match 先匹配先得，重复 id 会让后面的分支永远收不到）：
+	# 文件 0–9 / 15–19、编辑 10–14、视图 20–25、插入 30–38、事件 40–41、试玩 50–51。
 	brand_row.add_child(_menu("文件", [
 		["新建", 0], ["打开", 1], ["保存", 2], ["另存为", 3], ["-", 0],
-		["新增难度（复制当前）", 13], ["保存全部难度", 14], ["-", 0],
-		["在线舞萌谱面…", 12], ["导入歌曲 / 识别 BPM…", 9], ["导入谱面 (.osz/.zip/.txt)", 6], ["导入舞萌文件夹", 8], ["导出 .lbp", 7], ["-", 0], ["恢复自动保存", 4], ["-", 0], ["退出", 5],
+		["导入", [["歌曲 / 识别 BPM…", 9], ["导入视频…", 19], ["谱面 (.osz/.zip/.txt)", 6], ["舞萌文件夹", 8], ["在线舞萌谱面…", 15], ["在线 osu! 谱面…", 18]]],
+		["导出", [["导出 .lbp", 7]]],
+		["-", 0], ["恢复自动保存", 4], ["-", 0], ["退出", 5],
 	]))
 	brand_row.add_child(_menu("编辑", [
 		["撤销", 10], ["重做", 11], ["-", 0], ["删除", 12], ["取消选择", 13], ["全选可见", 14],
+		["-", 0], ["设置…", 26],
 	]))
-	brand_row.add_child(_menu("视图", [
-		["显示/隐藏 HUD", 20], ["调试叠层", 21], ["波形", 22], ["从上往下写入", 25], ["-", 0], ["边界状态轨", 23], ["时间 / BPM (F6)", 24],
-	]))
+	_view_menu = _menu("视图", [
+		["显示/隐藏 HUD", 20], ["调试叠层", 21], ["波形", 22], ["从上往下写入", 25], ["-", 0],
+		["环编辑…", 39], ["时间 / BPM (F6)", 24],
+	])
+	brand_row.add_child(_view_menu)
 	brand_row.add_child(_menu("插入", [
-		["Tap", 30], ["Hold", 31], ["Path", 32], ["Seek", 33], ["Anchor", 34], ["Bell", 35], ["Limit", 36], ["-", 0], ["BoundaryEvent", 37], ["RingState 关键帧", 38],
+		["Tap", 30], ["Hold", 31], ["Path", 32], ["Seek", 33], ["Anchor", 34], ["Bell", 35], ["Limit", 36],
 	]))
-	brand_row.add_child(_menu("事件", [
-		["新建 BoundaryEvent", 40], ["新建 Limit", 41],
-	]))
-	brand_row.add_child(_menu("试玩", [
-		["从播放头试玩（F5）", 50], ["从头试玩（Shift+F5）", 51],
-	]))
+	# 试玩只保留一个黄色按钮；F5 / Shift+F5 快捷键照旧生效。
 	var playtest_button := Button.new()
 	playtest_button.text = "试玩 F5"
 	playtest_button.add_theme_color_override("font_color", UITheme.BG)
@@ -287,12 +446,19 @@ func _build_ui() -> void:
 	playtest_button.add_theme_stylebox_override("normal", UITheme._box(UITheme.ACCENT, UITheme.ACCENT, 3, 12, 5))
 	playtest_button.add_theme_stylebox_override("hover", UITheme._box(UITheme.ACCENT, Color.WHITE, 3, 12, 5))
 	playtest_button.add_theme_stylebox_override("pressed", UITheme._box(UITheme.ACCENT_DARK, UITheme.ACCENT_DARK, 3, 12, 5))
+	playtest_button.tooltip_text = "打开试玩设置：可选「继续游玩」（从播放头）或「从头开始玩」；F5 从播放头，Shift+F5 从头"
 	playtest_button.pressed.connect(func() -> void: _open_playtest_setup(false))
 	brand_row.add_child(playtest_button)
 
 	var tool_row := HBoxContainer.new()
 	tool_row.add_theme_constant_override("separation", 4)
-	top_box.add_child(tool_row)
+	# 1024 窗口下工具行会超出；给一条横向滚动，而不是把字段挤没。
+	var tool_scroll := ScrollContainer.new()
+	tool_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
+	tool_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	tool_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	top_box.add_child(tool_scroll)
+	tool_scroll.add_child(tool_row)
 	_tool_group = ButtonGroup.new()
 	for spec in TOOL_ORDER:
 		var button := Button.new()
@@ -306,6 +472,12 @@ func _build_ui() -> void:
 
 	var beat_divider := VSeparator.new()
 	tool_row.add_child(beat_divider)
+	var grid_label := Label.new()
+	grid_label.text = "网格"
+	grid_label.add_theme_font_size_override("font_size", 10)
+	grid_label.add_theme_color_override("font_color", UITheme.MUTED)
+	grid_label.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	tool_row.add_child(grid_label)
 	var beat_div_label := Label.new()
 	beat_div_label.text = "小节线："
 	beat_div_label.add_theme_font_size_override("font_size", 11)
@@ -362,6 +534,12 @@ func _build_ui() -> void:
 
 	var stretch_divider := VSeparator.new()
 	tool_row.add_child(stretch_divider)
+	var layout_label := Label.new()
+	layout_label.text = "布局"
+	layout_label.add_theme_font_size_override("font_size", 10)
+	layout_label.add_theme_color_override("font_color", UITheme.MUTED)
+	layout_label.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	tool_row.add_child(layout_label)
 	var stretch_label := Label.new()
 	stretch_label.text = "纵向拉伸"
 	stretch_label.add_theme_font_size_override("font_size", 11)
@@ -428,15 +606,15 @@ func _build_ui() -> void:
 	main_row.add_theme_constant_override("separation", 0)
 	root.add_child(main_row)
 
-	var preview_panel := PanelContainer.new()
-	preview_panel.custom_minimum_size = Vector2(340, 0)
-	preview_panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	preview_panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	preview_panel.size_flags_stretch_ratio = 29.0
-	main_row.add_child(preview_panel)
+	_preview_panel = PanelContainer.new()
+	_preview_panel.custom_minimum_size = Vector2(clampf(float(_app.preview_width) if _app != null else 340.0, 280.0, 720.0), 0)
+	_preview_panel.size_flags_horizontal = Control.SIZE_FILL
+	_preview_panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	main_row.add_child(_preview_panel)
 	var preview_box := VBoxContainer.new()
+	_preview_box = preview_box
 	preview_box.add_theme_constant_override("separation", 6)
-	preview_panel.add_child(preview_box)
+	_preview_panel.add_child(preview_box)
 	var preview_header := HBoxContainer.new()
 	preview_box.add_child(preview_header)
 	var preview_title := Label.new()
@@ -452,27 +630,23 @@ func _build_ui() -> void:
 	var preview_spacer := Control.new()
 	preview_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	preview_header.add_child(preview_spacer)
-	var hud_toggle := Button.new()
-	hud_toggle.text = "HUD"
-	hud_toggle.toggle_mode = true
-	hud_toggle.button_pressed = true
-	hud_toggle.add_theme_font_size_override("font_size", 11)
-	hud_toggle.toggled.connect(func(pressed: bool) -> void:
-		_app.hud_visible = pressed
-		_preview.show_hud = pressed
-		_update_status()
+	# HUD / 调试 / 收起都收进齿轮，避免预览标题栏被按钮占满。
+	_preview_gear = MenuButton.new()
+	_preview_gear.text = "⋯"
+	_preview_gear.flat = true
+	_preview_gear.add_theme_font_size_override("font_size", 13)
+	_preview_gear.tooltip_text = "预览选项"
+	var gear_popup := _preview_gear.get_popup()
+	gear_popup.add_check_item("HUD", 0)
+	gear_popup.add_check_item("调试叠层", 1)
+	gear_popup.add_separator()
+	gear_popup.add_item("收起预览", 2)
+	gear_popup.about_to_popup.connect(func() -> void:
+		gear_popup.set_item_checked(0, bool(_app.hud_visible) if _app != null else true)
+		gear_popup.set_item_checked(1, bool(_app.debug_overlay) if _app != null else false)
 	)
-	preview_header.add_child(hud_toggle)
-	var debug_toggle := Button.new()
-	debug_toggle.text = "调试"
-	debug_toggle.toggle_mode = true
-	debug_toggle.add_theme_font_size_override("font_size", 11)
-	debug_toggle.toggled.connect(func(pressed: bool) -> void:
-		_app.debug_overlay = pressed
-		_preview.show_debug = pressed
-		_update_status()
-	)
-	preview_header.add_child(debug_toggle)
+	gear_popup.id_pressed.connect(_on_preview_menu)
+	preview_header.add_child(_preview_gear)
 	_preview = Preview3D.new()
 	_preview.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_preview.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -505,6 +679,21 @@ func _build_ui() -> void:
 	inspector_wrap.size_flags_stretch_ratio = 24.0
 	inspector_wrap.add_theme_constant_override("separation", 4)
 	main_row.add_child(inspector_wrap)
+	_preview_grip = Control.new()
+	_preview_grip.name = "PreviewGrip"
+	_preview_grip.custom_minimum_size = Vector2(6, 0)
+	_preview_grip.mouse_default_cursor_shape = Control.CURSOR_HSIZE
+	_preview_grip.tooltip_text = "拖动调整预览宽度"
+	_preview_grip.gui_input.connect(_on_preview_grip_input)
+	main_row.add_child(_preview_grip)
+	_preview_reopen = Button.new()
+	_preview_reopen.name = "PreviewReopen"
+	_preview_reopen.text = "预览"
+	_preview_reopen.add_theme_font_size_override("font_size", 10)
+	_preview_reopen.custom_minimum_size = Vector2(44, 0)
+	_preview_reopen.visible = false
+	_preview_reopen.pressed.connect(func() -> void: _set_preview_collapsed(false, true))
+	main_row.add_child(_preview_reopen)
 	_palette = NotePalette.new()
 	_palette.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	inspector_wrap.add_child(_palette)
@@ -519,7 +708,20 @@ func _build_ui() -> void:
 	inspector_wrap.add_child(_inspector)
 	main_row.move_child(center, 0)
 	main_row.move_child(inspector_wrap, 1)
-	main_row.move_child(preview_panel, 2)
+	main_row.move_child(_preview_grip, 2)
+	main_row.move_child(_preview_panel, 3)
+	main_row.move_child(_preview_reopen, 4)
+	_main_row = main_row
+	_ring_workspace = preload("res://charter/ring_workspace.gd").new()
+	add_child(_ring_workspace)
+	_ring_workspace.closed.connect(func() -> void:
+		_preview.set_process(true)
+		_preview.queue_redraw()
+	)
+	_ring_workspace.play_toggled.connect(_toggle_play)
+	_ring_workspace.loop_requested.connect(_set_loop)
+	if _app != null and _app.preview_collapsed:
+		_set_preview_collapsed(true, false)
 
 	var transport := PanelContainer.new()
 	transport.name = "Transport"
@@ -546,6 +748,14 @@ func _build_ui() -> void:
 	transport_row.add_child(_time_label)
 	_progress = SeekBar.new()
 	_progress.seek_to.connect(_on_seek_fraction)
+	_progress.drag_started.connect(func() -> void:
+		_seeking = true
+		_sync_playback_view()
+	)
+	_progress.drag_ended.connect(func() -> void:
+		_seeking = false
+		_sync_playback_view()
+	)
 	transport_row.add_child(_progress)
 	_beat_label = Label.new()
 	UITheme.style_mono(_beat_label, 12, UITheme.GOLD)
@@ -580,18 +790,14 @@ func _build_ui() -> void:
 	loop_check.text = "循环"
 	loop_check.toggled.connect(func(pressed: bool) -> void: _loop = pressed)
 	transport_row.add_child(loop_check)
-	var metro_check := CheckBox.new()
-	metro_check.text = "节拍器"
-	metro_check.button_pressed = true
-	metro_check.toggled.connect(func(pressed: bool) -> void: _metronome = pressed)
-	transport_row.add_child(metro_check)
-	var sfx_check := CheckBox.new()
-	sfx_check.text = "打击音"
-	sfx_check.button_pressed = true
-	sfx_check.toggled.connect(func(pressed: bool) -> void: _sfx_enabled = pressed)
-	transport_row.add_child(sfx_check)
-	transport_row.add_child(_volume_slider("音乐", "Music"))
-	transport_row.add_child(_volume_slider("音效", "SFX"))
+	transport_row.add_child(VSeparator.new())
+	# 节拍器 / 打击音 / 音量收进一个音频弹出，底部只留一个入口。
+	var audio_button := Button.new()
+	audio_button.text = "音频"
+	audio_button.add_theme_font_size_override("font_size", 11)
+	audio_button.tooltip_text = "节拍器、打击音、音乐/音效音量"
+	audio_button.pressed.connect(func() -> void: _show_audio_popup(audio_button))
+	transport_row.add_child(audio_button)
 	var transport_spacer := Control.new()
 	transport_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	transport_row.add_child(transport_spacer)
@@ -846,6 +1052,249 @@ func _set_stretch_error(has_error: bool) -> void:
 		_stretch_edit.remove_theme_color_override("font_color")
 
 
+func _hud_index(key: String) -> int:
+	match key:
+		"hud_scale":
+			return [80, 100, 120].find(_app.hud_scale)
+		"hud_combo_mode":
+			return ["center", "corner", "off"].find(_app.hud_combo_mode)
+		"hud_progress_style":
+			return ["ring", "off"].find(_app.hud_progress_style)
+		"hud_judge_position":
+			return ["note", "ring_in", "ring_out", "center", "off"].find(_app.hud_judge_position)
+		"hud_opacity":
+			return [100, 85, 70].find(_app.hud_opacity)
+		"hud_show_title":
+			return 0 if _app.hud_show_title else 1
+		"hud_show_difficulty":
+			return 0 if _app.hud_show_difficulty else 1
+		"hud_show_percent":
+			return 0 if _app.hud_show_percent else 1
+		"hud_show_time":
+			return 0 if _app.hud_show_time else 1
+		"hud_show_watermark":
+			return 0 if _app.hud_show_watermark else 1
+	return -1
+
+
+func _set_hud_index(key: String, index: int) -> void:
+	match key:
+		"hud_scale":
+			_app.hud_scale = [80, 100, 120][clampi(index, 0, 2)]
+		"hud_combo_mode":
+			_app.hud_combo_mode = ["center", "corner", "off"][clampi(index, 0, 2)]
+		"hud_progress_style":
+			_app.hud_progress_style = ["ring", "off"][clampi(index, 0, 1)]
+		"hud_judge_position":
+			_app.hud_judge_position = ["note", "ring_in", "ring_out", "center", "off"][clampi(index, 0, 4)]
+		"hud_opacity":
+			_app.hud_opacity = [100, 85, 70][clampi(index, 0, 2)]
+		"hud_show_title":
+			_app.hud_show_title = index == 0
+		"hud_show_difficulty":
+			_app.hud_show_difficulty = index == 0
+		"hud_show_percent":
+			_app.hud_show_percent = index == 0
+		"hud_show_time":
+			_app.hud_show_time = index == 0
+		"hud_show_watermark":
+			_app.hud_show_watermark = index == 0
+
+
+## 当前选项落在第几个子项（-1 = 自定义，不勾任何一项）。
+func _quality_index(key: String) -> int:
+	match key:
+		"preset":
+			return ["ultra", "high", "mid", "low"].find(_app.quality_preset)
+		"frame_cap":
+			return ["60", "120", "144", "240", "vsync", "unlimited"].find(_app.frame_cap)
+		"aa_2d_level":
+			return clampi(_app.aa_2d_level, 0, 3)
+		"msaa_3d_level":
+			return clampi(_app.msaa_3d_level, 0, 7)
+		"use_3d_ring":
+			return 0 if _app.use_3d_ring else 1
+		"note_detail_fine":
+			return 0 if _app.note_detail_fine else 1
+		"note_glow":
+			return 0 if _app.note_glow else 1
+		"cursor_trail":
+			return ["long", "short", "off"].find(_app.cursor_trail)
+		"fx_budget":
+			return ["full", "light", "off"].find(_app.fx_budget)
+		"ring_3d_scale":
+			return ["native", "ssaa12", "ssaa15", "high", "mid", "low"].find(_app.ring_3d_scale)
+		"ring_3d_hz":
+			return 0 if _app.ring_3d_hz >= 60 else 1
+		"bar_lines":
+			return 0 if _app.bar_lines else 1
+		"background_brightness":
+			return [0, 25, 50, 75, 100].find(_app.background_brightness)
+	return -1
+
+
+func _set_quality_index(key: String, index: int) -> void:
+	if key == "preset":
+		_app.apply_quality_preset(["ultra", "high", "mid", "low"][clampi(index, 0, 3)])
+		return
+	match key:
+		"frame_cap":
+			_app.frame_cap = ["60", "120", "144", "240", "vsync", "unlimited"][clampi(index, 0, 5)]
+			_app.apply_frame_cap()
+			return
+		"aa_2d_level":
+			_app.aa_2d_level = clampi(index, 0, 3)
+		"msaa_3d_level":
+			_app.msaa_3d_level = clampi(index, 0, 7)
+		"use_3d_ring":
+			_app.use_3d_ring = index == 0
+		"note_detail_fine":
+			_app.note_detail_fine = index == 0
+		"note_glow":
+			_app.note_glow = index == 0
+		"cursor_trail":
+			_app.cursor_trail = ["long", "short", "off"][clampi(index, 0, 2)]
+		"fx_budget":
+			_app.fx_budget = ["full", "light", "off"][clampi(index, 0, 2)]
+		"ring_3d_scale":
+			_app.ring_3d_scale = ["native", "ssaa12", "ssaa15", "high", "mid", "low"][clampi(index, 0, 5)]
+		"ring_3d_hz":
+			_app.ring_3d_hz = 60 if index == 0 else 30
+		"bar_lines":
+			_app.bar_lines = index == 0
+		"background_brightness":
+			_app.background_brightness = [0, 25, 50, 75, 100][clampi(index, 0, 4)]
+			# 背景明暗不是画质参数，别把预设打成「自定义」。
+			return
+	_app.quality_preset = "custom"
+
+
+## 把画质设置推给预览与视口。
+func _apply_visual_options() -> void:
+	if _app == null:
+		return
+	_app.apply_visual_quality()
+	if _preview == null:
+		return
+	_preview.use_3d_ring = _app.use_3d_ring
+	_preview.note_detail_fine = _app.note_detail_fine
+	_preview.note_glow = _app.note_glow
+	_preview.cursor_trail_mode = _app.cursor_trail
+	_preview.fx_budget = _app.fx_budget
+	_preview.ring_3d_scale = _app.ring_3d_scale
+	_preview.msaa_3d_level = _app.msaa_3d_level
+	_preview.ring_3d_hz = _app.ring_3d_hz
+	_preview.bar_lines_visible = _app.bar_lines
+	_preview.set_background_brightness(float(_app.background_brightness) / 100.0)
+	_preview.hud_options = _app.hud_options()
+	_preview.apply_ring_quality()
+	_preview.request_redraw()
+	# 试玩里有自己的 Preview3D：局内改画质要同时推给它。
+	if _playtest != null and _playtest._preview != null:
+		var inner: Preview3D = _playtest._preview
+		inner.note_detail_fine = _app.note_detail_fine
+		inner.note_glow = _app.note_glow
+		inner.cursor_trail_mode = _app.cursor_trail
+		inner.fx_budget = _app.fx_budget
+		inner.ring_3d_scale = _app.ring_3d_scale
+		inner.ring_3d_hz = _app.ring_3d_hz
+		inner.bar_lines_visible = _app.bar_lines
+		inner.set_background_brightness(float(_app.background_brightness) / 100.0)
+		inner.hud_options = _app.hud_options()
+		inner.apply_ring_quality()
+		inner.request_redraw()
+
+
+## 把当前画质填回菜单（行标题带数值，子项打勾）。
+func _refresh_view_menu() -> void:
+	if _app == null:
+		return
+	for key in _quality_widgets.keys():
+		var index := _quality_index(String(key))
+		for pick in (_quality_widgets[key] as Array):
+			if pick is OptionButton:
+				var option: OptionButton = pick
+				if index < 0:
+					option.select(maxi(0, option.item_count - 1))
+				elif index < option.item_count:
+					option.select(index)
+	for key in _hud_widgets.keys():
+		var hud_index := _hud_index(String(key))
+		for pick in (_hud_widgets[key] as Array):
+			if pick is OptionButton and hud_index >= 0:
+				(pick as OptionButton).select(hud_index)
+
+
+## 试玩设置里的画质行（和 视图 → 画质 同一份数据）。
+func _build_quality_rows(parent: Control) -> void:
+	var title := Label.new()
+	title.text = "画质（只影响画面，不影响判定）"
+	title.add_theme_font_size_override("font_size", 12)
+	parent.add_child(title)
+	var grid := GridContainer.new()
+	grid.columns = 2
+	grid.add_theme_constant_override("h_separation", 10)
+	grid.add_theme_constant_override("v_separation", 3)
+	parent.add_child(grid)
+	for option in QUALITY_OPTIONS:
+		var key := String(option["key"])
+		var label := Label.new()
+		label.text = String(option["label"])
+		label.add_theme_font_size_override("font_size", 11)
+		grid.add_child(label)
+		var pick := OptionButton.new()
+		pick.add_theme_font_size_override("font_size", 11)
+		for choice in option["choices"]:
+			pick.add_item(String(choice[0]))
+		if key == "preset":
+			pick.add_item("自定义")
+		pick.item_selected.connect(func(index: int) -> void:
+			if key == "preset" and index > 3:
+				return
+			_set_quality_index(key, index)
+			_app.save_settings()
+			_apply_visual_options()
+			_refresh_view_menu()
+		)
+		grid.add_child(pick)
+		var picks: Array = _quality_widgets.get(key, [])
+		picks.append(pick)
+		_quality_widgets[key] = picks
+
+
+## 试玩设置里的界面行（和 视图 → 界面 同一份数据）。
+func _build_hud_rows(parent: Control) -> void:
+	var title := Label.new()
+	title.text = "界面（只影响显示）"
+	title.add_theme_font_size_override("font_size", 12)
+	parent.add_child(title)
+	var grid := GridContainer.new()
+	grid.columns = 2
+	grid.add_theme_constant_override("h_separation", 10)
+	grid.add_theme_constant_override("v_separation", 3)
+	parent.add_child(grid)
+	for option in HUD_OPTIONS:
+		var key := String(option["key"])
+		var label := Label.new()
+		label.text = String(option["label"])
+		label.add_theme_font_size_override("font_size", 11)
+		grid.add_child(label)
+		var pick := OptionButton.new()
+		pick.add_theme_font_size_override("font_size", 11)
+		for choice in option["choices"]:
+			pick.add_item(String(choice[0]))
+		pick.item_selected.connect(func(index: int) -> void:
+			_set_hud_index(key, index)
+			_app.save_settings()
+			_apply_visual_options()
+			_refresh_view_menu()
+		)
+		grid.add_child(pick)
+		var picks: Array = _hud_widgets.get(key, [])
+		picks.append(pick)
+		_hud_widgets[key] = picks
+
+
 func _menu(title: String, items: Array) -> MenuButton:
 	var menu := MenuButton.new()
 	menu.text = title
@@ -854,10 +1303,25 @@ func _menu(title: String, items: Array) -> MenuButton:
 	for item in items:
 		if item[0] == "-":
 			popup.add_separator()
+		elif item[1] is Array:
+			_add_submenu(popup, String(item[0]), item[1])
 		else:
 			popup.add_item(item[0], int(item[1]))
 	popup.id_pressed.connect(_on_menu)
 	return menu
+
+
+func _add_submenu(parent: PopupMenu, title: String, items: Array) -> void:
+	var child := PopupMenu.new()
+	child.name = "Sub_" + title
+	parent.add_child(child)
+	for item in items:
+		if item[0] == "-":
+			child.add_separator()
+		else:
+			child.add_item(item[0], int(item[1]))
+	child.id_pressed.connect(_on_menu)
+	parent.add_submenu_node_item(title, child)
 
 
 func _setup_audio_buses() -> void:
@@ -868,6 +1332,10 @@ func _setup_audio_buses() -> void:
 		var index := AudioServer.bus_count - 1
 		AudioServer.set_bus_name(index, bus_name)
 		AudioServer.set_bus_send(index, "Master")
+	# 总线由这里创建，所以保存的音量也在这里恢复（App 先于主场景初始化）。
+	if _app != null:
+		_set_bus_volume("Music", _app.music_volume)
+		_set_bus_volume("SFX", _app.sfx_volume)
 
 
 func _set_bus_volume(bus_name: String, value: float) -> void:
@@ -879,6 +1347,76 @@ func _set_bus_volume(bus_name: String, value: float) -> void:
 	AudioServer.set_bus_mute(index, linear <= 0.001)
 
 
+## 把总线当前音量反算回 0–100，滑条重新打开时不会跳回 100。
+func _bus_volume_percent(bus_name: String) -> float:
+	var index := AudioServer.get_bus_index(bus_name)
+	if index < 0 or AudioServer.is_bus_mute(index):
+		return 0.0
+	return clampf(db_to_linear(AudioServer.get_bus_volume_db(index)) * 100.0, 0.0, 100.0)
+
+
+func _store_volume(bus_name: String, value: float) -> void:
+	if _app == null:
+		return
+	if bus_name == "Music":
+		_app.music_volume = clampf(value, 0.0, 100.0)
+	elif bus_name == "SFX":
+		_app.sfx_volume = clampf(value, 0.0, 100.0)
+	else:
+		return
+	_app.save_settings()
+
+
+func _sync_volume_sliders() -> void:
+	for entry in _volume_sliders:
+		var slider: HSlider = entry.get("slider")
+		if is_instance_valid(slider):
+			slider.set_value_no_signal(_bus_volume_percent(String(entry.get("bus", ""))))
+
+
+func _build_audio_popup() -> void:
+	_audio_popup = PopupPanel.new()
+	_audio_popup.name = "AudioPopup"
+	add_child(_audio_popup)
+	var margin := MarginContainer.new()
+	for side in ["left", "right", "top", "bottom"]:
+		margin.add_theme_constant_override("margin_" + side, 10)
+	_audio_popup.add_child(margin)
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 6)
+	box.custom_minimum_size = Vector2(230, 0)
+	margin.add_child(box)
+	var metro := CheckBox.new()
+	metro.text = "节拍器"
+	metro.button_pressed = true
+	metro.toggled.connect(func(pressed: bool) -> void: _metronome = pressed)
+	box.add_child(metro)
+	var sfx := CheckBox.new()
+	sfx.text = "打击音"
+	sfx.button_pressed = true
+	sfx.toggled.connect(func(pressed: bool) -> void: _sfx_enabled = pressed)
+	box.add_child(sfx)
+	box.add_child(_volume_slider("音乐", "Music"))
+	box.add_child(_volume_slider("音效", "SFX"))
+	var more := Button.new()
+	more.text = "更多音频设置…"
+	more.add_theme_font_size_override("font_size", 11)
+	more.pressed.connect(func() -> void:
+		_audio_popup.hide()
+		_open_settings()
+	)
+	box.add_child(more)
+
+
+func _show_audio_popup(button: Button) -> void:
+	if _audio_popup == null:
+		return
+	_sync_volume_sliders()
+	var size := Vector2i(250, 190)
+	var at := Vector2i(button.global_position.x, button.global_position.y - size.y - 6)
+	_audio_popup.popup(Rect2i(at, size))
+
+
 func _volume_slider(label_text: String, bus_name: String) -> HBoxContainer:
 	var box := HBoxContainer.new()
 	box.add_theme_constant_override("separation", 4)
@@ -886,16 +1424,23 @@ func _volume_slider(label_text: String, bus_name: String) -> HBoxContainer:
 	label.text = label_text
 	label.add_theme_font_size_override("font_size", 10)
 	label.add_theme_color_override("font_color", UITheme.MUTED)
+	label.custom_minimum_size = Vector2(28, 0)
+	label.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	box.add_child(label)
 	var slider := HSlider.new()
 	slider.min_value = 0.0
 	slider.max_value = 100.0
 	slider.step = 1.0
-	slider.value = 100.0
-	slider.custom_minimum_size = Vector2(72, 16)
+	slider.value = _bus_volume_percent(bus_name)
+	slider.custom_minimum_size = Vector2(0, 16)
+	slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	slider.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	slider.value_changed.connect(func(value: float) -> void: _set_bus_volume(bus_name, value))
+	slider.value_changed.connect(func(value: float) -> void:
+		_set_bus_volume(bus_name, value)
+		_store_volume(bus_name, value)
+	)
 	box.add_child(slider)
+	_volume_sliders.append({"slider": slider, "bus": bus_name})
 	return box
 
 
@@ -911,8 +1456,8 @@ func _build_dialogs() -> void:
 	_open_dialog = FileDialog.new()
 	_open_dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
 	_open_dialog.access = FileDialog.ACCESS_FILESYSTEM
-	_open_dialog.filters = PackedStringArray(["*.json ; Tamaki 谱面"])
-	_open_dialog.title = "打开谱面"
+	_open_dialog.filters = PackedStringArray(["main.json ; Tamaki 谱面工程", "*.json ; 旧版谱面"])
+	_open_dialog.title = "打开谱面工程（选择 main.json）"
 	_open_dialog.file_selected.connect(func(path: String) -> void:
 		_app.ensure_tab()
 		if _app.load_chart(path):
@@ -926,9 +1471,9 @@ func _build_dialogs() -> void:
 	_save_dialog = FileDialog.new()
 	_save_dialog.file_mode = FileDialog.FILE_MODE_SAVE_FILE
 	_save_dialog.access = FileDialog.ACCESS_FILESYSTEM
-	_save_dialog.filters = PackedStringArray(["*.json ; Tamaki 谱面"])
-	_save_dialog.title = "另存为"
-	_save_dialog.current_file = "chart.json"
+	_save_dialog.filters = PackedStringArray(["main.json ; Tamaki 谱面工程", "*.json ; 旧版谱面（保存时转为工程）"])
+	_save_dialog.title = "另存为谱面工程（选择 main.json 所在文件夹）"
+	_save_dialog.current_file = "main.json"
 	_save_dialog.file_selected.connect(func(path: String) -> void:
 		if not path.to_lower().ends_with(".json"):
 			path += ".json"
@@ -970,15 +1515,15 @@ func _build_dialogs() -> void:
 	_chart_browser.source_ready.connect(func(source_path: String) -> void:
 		_on_import_osz_selected(source_path)
 	)
-	_chart_browser.chart_imported.connect(func(chart: Chart) -> void:
-		_app.ensure_tab()
-		_app.set_chart(chart, "", true)
-		_app.add_tab_from_current(String(chart.metadata.get("title", "在线导入")))
-		_sync_from_app()
-		_refresh_tabs()
-		_show_report("已从在线谱面导入：%d 个 note，%d 个 BPM 点。\n%s" % [chart.notes.size(), chart.timing.points.size(), SimaiIO.last_report])
+	_chart_browser.warning.connect(func(message: String) -> void:
+		_show_toast(message, "warning")
 	)
 	add_child(_chart_browser)
+	_osu_browser = OsuBrowser.new()
+	_osu_browser.source_ready.connect(func(source_path: String, star_hints: Dictionary) -> void:
+		_on_import_osz_selected(source_path, _osu_browser.take_include_video(), star_hints)
+	)
+	add_child(_osu_browser)
 	_lbp_dialog = FileDialog.new()
 	_lbp_dialog.file_mode = FileDialog.FILE_MODE_SAVE_FILE
 	_lbp_dialog.access = FileDialog.ACCESS_FILESYSTEM
@@ -1030,7 +1575,10 @@ func _sync_appearance() -> void:
 	if _app == null:
 		return
 	_preview.note_skin = _app.note_skin
+	_apply_visual_options()
+	_refresh_view_menu()
 	_preview.hit_fx_style = _app.hit_fx_style
+	_preview.cursor_scale = _app.cursor_scale
 	_preview.refresh_style()
 	if _sfx != null:
 		_sfx.set_style(_app.hit_sfx_style)
@@ -1046,12 +1594,13 @@ func _sync_from_app() -> void:
 	_preview.show_debug = _app.debug_overlay
 	_preview.flow_scale = _app.flow_scale
 	_preview.star_speed = _app.star_speed
-	_preview.star_color = _app.star_color
-	_preview.trace_color = _app.trace_color
 	_preview.note_skin = _app.note_skin
 	_preview.hit_fx_style = _app.hit_fx_style
+	_preview.cursor_scale = _app.cursor_scale
 	_sfx.set_style(_app.hit_sfx_style)
 	_canvas.px_per_beat = _app.zoom_px_per_beat
+	_canvas.clamp_scroll()
+	_sync_playback_view()
 	if _beat_subdiv_edit != null:
 		_beat_subdiv_edit.text = str(_app.beat_subdivisions)
 		_set_beat_subdivision_error(false)
@@ -1076,22 +1625,76 @@ func _ensure_audio() -> void:
 	if _app == null or _app.chart == null:
 		return
 	var path: String = _app.chart.audio_path
-	if path == _audio_path:
+	if path == _audio_path and is_equal_approx(_rate, _audio_rate_key):
+		if _audio_loading:
+			# 同一份音频正在准备：等它完成，避免 _start_play 用空流开跑。
+			while _audio_loading:
+				await get_tree().process_frame
 		return
 	_audio_path = path
+	_audio_rate_key = _rate
+	_audio_token += 1
+	var token := _audio_token
+	_audio_loading = true
 	_audio.stop()
 	_playing = false
 	var resolved := path
 	if not path.begins_with("res://") and not path.begins_with("user://") and not path.is_absolute_path() and not _app.chart_path.is_empty():
 		resolved = ChartIO.resolve_path(_app.chart_path, path)
-	var prepared := MediaIO.prepare_audio(resolved)
+	var prepared := resolved
+	if MediaIO.is_native_audio(resolved) or FileAccess.file_exists(MediaIO.audio_cache_path(resolved)):
+		# 原生格式 / 已有缓存：立刻返回，不阻塞。
+		prepared = MediaIO.prepare_audio(resolved)
+	else:
+		# FLAC / M4A 等要跑 ffmpeg：带进度异步转，编辑界面不冻结。
+		_show_import_progress()
+		prepared = await MediaIO.prepare_audio_async(resolved, get_tree(), func(ratio: float, seconds: float) -> void:
+			_import_progress_text("转码音频：%s" % resolved.get_file(), ratio, seconds))
+		_hide_import_progress()
+		if token != _audio_token:
+			return
 	if prepared.is_empty():
 		_audio.stream = null
+		_audio_loading = false
 		_show_toast("音频不可用：%s" % MediaIO.last_error, "warning")
 		return
-	var stream := ChartIO.audio_stream_from_path(prepared)
+	var base := ChartIO.audio_stream_from_path(prepared)
+	var stream := base
+	var stream_rate := 1.0
+	if absf(_rate - 1.0) >= 0.001:
+		if not MediaIO.has_ffmpeg():
+			_show_toast("变速不变调需要 ffmpeg（当前 PATH 找不到）；已回退变调", "warning")
+		else:
+			var cached := MediaIO.rate_audio_cache_path(prepared, _rate)
+			var total_sec := base.get_length() / maxf(0.1, _rate) if base != null else 0.0
+			var stretched := cached if FileAccess.file_exists(cached) else ""
+			if stretched.is_empty():
+				_show_import_progress()
+				stretched = await MediaIO.prepare_audio_at_rate_async(prepared, _rate, get_tree(), func(_ratio: float, seconds: float) -> void:
+					var ratio := clampf(seconds / total_sec, 0.0, 0.99) if total_sec > 0.0 else -1.0
+					_import_progress_text("变速音频：%s（%.2f×）" % [resolved.get_file(), _rate], ratio, seconds))
+				_hide_import_progress()
+				if token != _audio_token:
+					return
+			if not stretched.is_empty():
+				var fast := ChartIO.audio_stream_from_path(stretched)
+				if fast != null:
+					stream = fast
+					stream_rate = _rate
+			if stream_rate == 1.0:
+				_show_toast("变速音频生成失败，已回退变调：%s" % MediaIO.last_error, "warning")
 	_audio.stream = stream if stream is AudioStream else null
-	print("[audio] editor ", prepared, " -> ", _audio.stream, " bus=", _audio.bus)
+	_audio_stream_rate = stream_rate
+	_audio.pitch_scale = _rate / maxf(0.01, _audio_stream_rate)
+	_audio_loading = false
+	# 音频长度是「谱面终点」的唯一可信来源：加载到就写进谱面，
+	# 老谱面不用重新导入也能得到正确的尾部上限。
+	if _app != null and _app.chart != null and base != null:
+		var length_ms := base.get_length() * 1000.0
+		if length_ms > 0.0 and absf(_app.chart.audio_length_ms() - length_ms) > 1.0:
+			_app.chart.editor["audio_length_ms"] = length_ms
+			_app.status_changed.emit()
+	print("[audio] editor ", prepared, " -> ", _audio.stream, " stream_rate=", _audio_stream_rate, " bus=", _audio.bus)
 	if _audio.stream == null:
 		_show_toast("音频不可用：预览使用系统时钟。", "warning")
 
@@ -1134,6 +1737,31 @@ func _on_hover_changed(_u: float, _beat: float) -> void:
 	pass
 
 
+func _open_ring_workspace() -> void:
+	if _ring_workspace == null or _app == null or _app.chart == null:
+		return
+	_app.ring_editor_open = true
+	# 工作区是全屏覆盖层；底下那套编辑界面先藏起来，否则每帧还要再画一遍。
+	if _main_row != null:
+		_main_row.visible = false
+	_ring_workspace.open_workspace(_preview, func(preview: Preview3D) -> void:
+		var parent := _preview_box
+		if parent != null and preview.get_parent() != parent:
+			if preview.get_parent() != null:
+				preview.get_parent().remove_child(preview)
+			parent.add_child(preview)
+			preview.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+			preview.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			preview.size_flags_vertical = Control.SIZE_EXPAND_FILL
+			parent.move_child(preview, parent.get_child_count() - 1)
+		preview.ring_edit_mode = false
+		_app.ring_editor_open = false
+		if _main_row != null:
+			_main_row.visible = true
+		_app.chart_changed.emit()
+	)
+
+
 func _set_tool(tool: String) -> void:
 	_app.set_tool(tool)
 	_sync_tools()
@@ -1155,12 +1783,16 @@ func _toggle_play() -> void:
 func _start_play(beat: float) -> void:
 	if _app == null or _app.chart == null:
 		return
-	_ensure_audio()
+	# 倍速音频第一次要等 ffmpeg 生成；加载完再起播，别用旧流或空流开跑。
+	await _ensure_audio()
+	if _app == null or _app.chart == null:
+		return
 	_last_beat_int = -1
 	_build_sfx_events()
 	_playing = true
 	_preview.playing = true
 	_play_button.text = "❚❚"
+	_sync_playback_view()
 	_rebase_playback(beat)
 
 
@@ -1174,14 +1806,19 @@ func _rebase_playback(beat: float) -> void:
 	_sfx_event_index = _first_sfx_event(beat)
 	_sfx_last_beat = beat - 0.001
 	if _audio.stream != null:
-		_audio.pitch_scale = _rate
-		var from_sec := maxf(0.0, (_play_start_chart_ms - _app.chart.offset_ms) / 1000.0)
-		# 音频比谱面短（或跳到了音频末尾之后）就别播了，交给墙钟继续推，
-		# 否则 play() 立刻 finished，播放会被误停。
-		if from_sec < _audio.stream.get_length():
-			_audio.play(from_sec)
-		else:
-			_audio.stop()
+		_audio.pitch_scale = _rate / maxf(0.01, _audio_stream_rate)
+		var from_sec := maxf(0.0, (_play_start_chart_ms - _app.chart.offset_ms) / 1000.0) / maxf(0.01, _audio_stream_rate)
+		# 拖进度条时每个鼠标事件都重建音频太贵：节流到约 120ms 一次，
+		# 画面和墙钟照旧每次 seek 都对齐。
+		var now := Time.get_ticks_msec()
+		if not _seeking or now - _last_audio_rebase_msec >= 120:
+			_last_audio_rebase_msec = now
+			# 音频比谱面短（或跳到了音频末尾之后）就别播了，交给墙钟继续推，
+			# 否则 play() 立刻 finished，播放会被误停。
+			if from_sec < _audio.stream.get_length():
+				_audio.play(from_sec)
+			else:
+				_audio.stop()
 	_app.set_playhead(beat)
 
 
@@ -1198,11 +1835,18 @@ func _on_seek_requested(beat: float) -> void:
 func _on_seek_fraction(fraction: float) -> void:
 	if _app == null or _app.chart == null:
 		return
+	# seek() 会发 seek_requested，那边已经刷新过运输条，这里不重复。
 	_app.seek(clampf(fraction, 0.0, 1.0) * _timeline_total_beats())
-	_update_transport(true)
+
+
+func _set_loop(start: float, end: float, enabled: bool) -> void:
+	_loop_enabled = enabled and end > start
+	_loop_start = start
+	_loop_end = end
 
 
 func _stop_play() -> void:
+	_loop_enabled = false
 	if _audio != null:
 		_audio.stop()
 	_playing = false
@@ -1210,6 +1854,15 @@ func _stop_play() -> void:
 		_preview.playing = false
 	if _play_button != null:
 		_play_button.text = "▶"
+	_sync_playback_view()
+
+
+## 播放滚动模式：翻页 or 钉住播放头。只在播放/拖进度条时钉住，
+## 暂停浏览回到“从上往下写入”的方向。
+func _sync_playback_view() -> void:
+	if _canvas == null:
+		return
+	_canvas.set_playback_view(String(_app.playback_scroll) if _app != null else "page", _playing or _seeking)
 
 
 ## 停止并重置播放进度：黄线回到 0:00。
@@ -1231,7 +1884,7 @@ func _on_audio_finished() -> void:
 	if _app == null or _app.chart == null:
 		_stop_play()
 		return
-	if _app.playhead_beat >= _app.chart.duration_beats():
+	if _app.playhead_beat >= _app.chart_content_end_beats():
 		_stop_play()
 
 
@@ -1245,9 +1898,8 @@ func _build_sfx_events() -> void:
 				_add_sfx_event(note.beat, HitSfx.kind_for_note(note))
 			"hold":
 				_add_sfx_event(note.beat, "don")
-				_add_sfx_event(note.end_beat, "hold_end")
 			"path":
-				_add_sfx_event(note.beat, "path", 1.0)
+				_add_sfx_event(note.beat, HitSfx.kind_for_note(note))
 				_add_sfx_event(note.end_beat, "tail")
 			"anchor":
 				_add_sfx_event(note.beat, "anchor", 1.0)
@@ -1292,10 +1944,16 @@ func _process(_delta: float) -> void:
 	if _playing:
 		var chart_ms := 0.0
 		if _audio.stream != null and _audio.playing:
-			chart_ms = (_audio.get_playback_position() + AudioServer.get_time_since_last_mix() - AudioServer.get_output_latency()) * 1000.0 + _app.chart.offset_ms
+			# 变速音频流里 1 秒 = 谱面 _audio_stream_rate 秒；驱动延迟/混音间隔
+			# 是真实秒，换算成谱面时间要乘倍速。
+			chart_ms = (_audio.get_playback_position() * _audio_stream_rate
+				+ (AudioServer.get_time_since_last_mix() - AudioServer.get_output_latency()) * _rate) * 1000.0 + _app.chart.offset_ms
 		else:
 			chart_ms = _play_start_chart_ms + float(Time.get_ticks_usec() - _play_start_usec) / 1000.0 * _rate
 		var beat: float = _app.chart.timing.chart_ms_to_beat(chart_ms)
+		if _loop_enabled and _loop_end > _loop_start and beat >= _loop_end:
+			_rebase_playback(_loop_start)
+			beat = _loop_start
 		_app.set_playhead(beat)
 		_fire_editor_sfx(beat)
 		var beat_int := floori(beat)
@@ -1307,7 +1965,7 @@ func _process(_delta: float) -> void:
 					_beat_label.add_theme_color_override("font_color", UITheme.GOLD)
 			)
 		var audio_playing := _audio.stream != null and _audio.playing
-		if beat >= _app.chart.duration_beats() + 2.0 and not audio_playing:
+		if beat >= _app.chart_content_end_beats() + 2.0 and not audio_playing:
 			_stop_play()
 
 
@@ -1316,7 +1974,7 @@ func _playback_total_ms() -> float:
 		return 0.0
 	var total_ms: float = _app.chart.timing.beat_to_chart_ms(_app.chart.duration_beats())
 	if _audio != null and _audio.stream != null:
-		total_ms = maxf(total_ms, _audio.stream.get_length() * 1000.0 + _app.chart.offset_ms)
+		total_ms = maxf(total_ms, _audio.stream.get_length() * 1000.0 * _audio_stream_rate + _app.chart.offset_ms)
 	return total_ms
 
 
@@ -1324,7 +1982,7 @@ func _playback_total_ms() -> float:
 func _timeline_total_beats() -> float:
 	if _app == null or _app.chart == null:
 		return 1.0
-	return maxf(1.0, _app.chart.duration_beats())
+	return maxf(1.0, _app.chart_limit_beats())
 
 
 func _update_transport(force: bool = false) -> void:
@@ -1345,6 +2003,7 @@ func _update_transport(force: bool = false) -> void:
 
 
 func _update_status() -> void:
+	_sync_playback_view()
 	if _app == null or _app.chart == null:
 		return
 	_preview.use_3d_ring = _app.use_3d_ring
@@ -1352,7 +2011,7 @@ func _update_status() -> void:
 	if _status_u != null:
 		_status_u.text = "u %.1f°" % (_cursor_u * 360.0)
 		_status_beat.text = "bar " + _app.chart.timing.format_beat(_app.playhead_beat)
-		_status_snap.text = "吸附 " + GridDivisions.label(_app.snap_division) + ("" if _app.time_flows_down else " · 反向")
+		_status_snap.text = "吸附 " + GridDivisions.label(_app.snap_division) + ("" if _app.time_flows_down else "（反向）")
 		_status_sel.text = "选中 %d" % _app.selected_notes.size()
 		_status_shape.text = "边界 " + _app.chart.default_shape_id
 		var errors: Array = Validator.errors(_issues)
@@ -1484,15 +2143,25 @@ func _close_tab_now(index: int) -> void:
 	_refresh_tabs()
 
 
-func _on_import_osz_selected(path: String) -> void:
+func _on_import_osz_selected(path: String, include_video: bool = true, star_hints: Dictionary = {}) -> void:
 	# 转谱：把来源里的所有难度转好，作为一个新标签页打开，不覆盖当前谱面。
 	if _app == null:
 		return
 	_app.ensure_tab()
-	if not _app.open_import_source(path):
+	if star_hints.is_empty():
+		# 本地 .osz 没有星数：用 BeatmapSetID 去镜像站查一次（离线/失败就按文件顺序）
+		var set_id := OsuIO.read_beatmap_set_id(path)
+		if set_id > 0:
+			_show_toast("读取难度星数…", "info")
+			star_hints = await OsuIO.fetch_star_hints(set_id)
+	if not _app.open_import_source(path, star_hints):
 		_app.restore_active_tab()
 		_show_toast("导入失败：%s" % _import_error_text(), "error")
 		return
+	if not include_video:
+		# osu 详情页选了「不带视频」：先清掉再转码，别为不要的视频干活。
+		_drop_import_video()
+	await _prepare_import_media()
 	var count: int = _app.difficulties.size()
 	var title: String = _app.set_path.get_file().get_basename()
 	if title.is_empty():
@@ -1501,6 +2170,111 @@ func _on_import_osz_selected(path: String) -> void:
 	_sync_from_app()
 	_refresh_tabs()
 	_show_report("转谱完成：%d 个难度已放进新标签页「%s」，顶部可以切换难度。" % [count, title])
+
+
+## 「不带视频」：解绑所有难度的 BGA，并删掉导入目录里的视频副本（源 .osz 不动）。
+func _drop_import_video() -> void:
+	if _app == null:
+		return
+	var removed := 0
+	for entry in _app.difficulties:
+		var chart: Chart = entry.get("chart", null)
+		if chart == null or chart.video_path.is_empty():
+			continue
+		var path := chart.video_path
+		chart.video_path = ""
+		removed += 1
+		if path.begins_with("user://imports/"):
+			DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	if removed > 0:
+		_app.save_set_file()
+
+
+## 导入时先把 BGA / 需要转码的音频转好：带百分比进度，UI 不冻结。
+## 预览也会自己异步转码，但那里没有进度条；这里先转完，打开就是成品。
+func _prepare_import_media() -> void:
+	if _app == null or _app.difficulties.is_empty():
+		return
+	var videos: Array[String] = []
+	var audios: Array[String] = []
+	for entry in _app.difficulties:
+		var chart: Chart = entry.get("chart", null)
+		if chart == null:
+			continue
+		var video := chart.video_path
+		if not video.is_empty() and not ChartIO.can_decode_video_directly(video) and not FileAccess.file_exists(MediaIO.video_cache_path(video)) and not videos.has(video):
+			videos.append(video)
+		var audio := chart.audio_path
+		if audio.begins_with("user://imports/simai_zip_") and audio.get_extension().to_lower() != "ogg" and not audios.has(audio):
+			audios.append(audio)
+	if videos.is_empty() and audios.is_empty():
+		return
+	var total := videos.size() + audios.size()
+	var done := 0
+	_show_import_progress()
+	var tree := get_tree()
+	for video in videos:
+		var label := "转码 BGA %d/%d：%s" % [done + 1, total, video.get_file()]
+		_import_progress_text(label, 0.0, 0.0)
+		await MediaIO.prepare_video_async(video, tree, func(ratio: float, seconds: float) -> void:
+			_import_progress_text(label, ratio, seconds))
+		done += 1
+	for audio in audios:
+		var label := "转码音频 %d/%d：%s" % [done + 1, total, audio.get_file()]
+		_import_progress_text(label, 0.0, 0.0)
+		var prepared := await MediaIO.prepare_audio_async(audio, tree, func(ratio: float, seconds: float) -> void:
+			_import_progress_text(label, ratio, seconds))
+		done += 1
+		if prepared.is_empty():
+			continue
+		for entry in _app.difficulties:
+			var chart: Chart = entry.get("chart", null)
+			if chart != null and chart.audio_path == audio:
+				chart.audio_path = prepared
+	_hide_import_progress()
+	_app.save_set_file()
+
+
+func _show_import_progress() -> void:
+	if _import_progress == null:
+		_import_progress = AcceptDialog.new()
+		_import_progress.title = "媒体处理"
+		_import_progress.min_size = Vector2i(460, 150)
+		# 进度条只是告知，不抢独占焦点：否则试玩/设置对话框开着时会报
+		# "already has another exclusive child"。
+		_import_progress.exclusive = false
+		var box := VBoxContainer.new()
+		box.add_theme_constant_override("separation", 12)
+		_import_progress.add_child(box)
+		_import_progress_label = Label.new()
+		_import_progress_label.text = "准备转码…"
+		box.add_child(_import_progress_label)
+		_import_progress_bar = ProgressBar.new()
+		_import_progress_bar.max_value = 100.0
+		_import_progress_bar.show_percentage = true
+		_import_progress_bar.custom_minimum_size = Vector2(420, 24)
+		box.add_child(_import_progress_bar)
+		_import_progress.get_ok_button().visible = false
+		add_child(_import_progress)
+	_import_progress.popup_centered(Vector2i(460, 150))
+	_import_progress_bar.visible = true
+	_import_progress_bar.value = 0.0
+
+
+func _import_progress_text(label: String, ratio: float, seconds: float) -> void:
+	if _import_progress_label == null:
+		return
+	_import_progress_label.text = "%s，已转 %d 秒" % [label, int(maxf(0.0, seconds))]
+	if _import_progress_bar != null:
+		# 音频拿不到时长时只显示已转秒数，别把进度条钉在 0%。
+		_import_progress_bar.visible = ratio >= 0.0
+		if ratio >= 0.0:
+			_import_progress_bar.value = clampf(ratio, 0.0, 1.0) * 100.0
+
+
+func _hide_import_progress() -> void:
+	if _import_progress != null:
+		_import_progress.hide()
 
 
 func _import_error_text() -> String:
@@ -1559,6 +2333,7 @@ func _save_all_difficulties() -> void:
 func _import_into_current_window(path: String) -> void:
 	# 直接走难度组：多难度来源会一次性转好，顶部会出现难度下拉。
 	if _app != null and _app.open_import_source(path):
+		await _prepare_import_media()
 		_sync_from_app()
 		_show_report(_app.last_import_report)
 		return
@@ -1569,8 +2344,16 @@ func _import_into_current_window(path: String) -> void:
 		_difficulty_list.clear()
 		for i in simai.size():
 			var item: Dictionary = simai[i]
-			_difficulty_list.add_item("%s — %s  %s" % [String(item.get("title", "")), String(item.get("version", "")), String(item.get("creator", ""))])
-			_difficulty_list.set_item_metadata(i, int(item.get("index", 0)))
+			if not bool(item.get("has_notes", true)):
+				continue
+			var index := int(item.get("index", 0))
+			var label := SimaiIO.difficulty_label(index, String(item.get("level", "")))
+			var item_index := _difficulty_list.item_count
+			_difficulty_list.add_item("%s — %s  %s" % [String(item.get("title", "")), label, String(item.get("creator", ""))])
+			_difficulty_list.set_item_metadata(item_index, index)
+		if _difficulty_list.item_count == 0:
+			_show_toast("导入失败：maidata 里没有可用难度", "error")
+			return
 		_difficulty_list.select(0)
 		_difficulty_dialog.popup_centered_ratio(0.58)
 		return
@@ -1609,6 +2392,11 @@ func _import_maimai(path: String, difficulty_index: int) -> void:
 func _show_report(text: String) -> void:
 	if _report_dialog == null or text.is_empty():
 		return
+	# 在线浏览器还开着时再弹报告，两个 AcceptDialog 会抢独占焦点（日志报错）。
+	if _chart_browser != null:
+		_chart_browser.hide()
+	if _osu_browser != null:
+		_osu_browser.hide()
 	_report_dialog.dialog_text = text
 	_report_dialog.popup_centered_ratio(0.62)
 
@@ -1632,6 +2420,10 @@ func _format_ms(ms: float) -> String:
 
 func _on_menu(id: int) -> void:
 	match id:
+		26:
+			_open_settings()
+		52:
+			_open_calibration()
 		0:
 			_new_dialog.popup_centered_ratio(0.62)
 		1:
@@ -1640,9 +2432,9 @@ func _on_menu(id: int) -> void:
 			_save()
 		3:
 			_save_dialog.popup_centered_ratio(0.75)
-		13:
+		16:
 			_add_difficulty_copy()
-		14:
+		17:
 			_save_all_difficulties()
 		4:
 			_app.load_autosave()
@@ -1653,12 +2445,15 @@ func _on_menu(id: int) -> void:
 			_import_dir_dialog.popup_centered_ratio(0.75)
 		9:
 			_audio_dialog.popup_centered_ratio(0.75)
-		12:
+		19:
+			if _inspector != null:
+				_inspector.open_video_picker()
+		15:
 			_chart_browser.popup_centered_ratio(0.8)
+		18:
+			_osu_browser.popup_centered_ratio(0.8)
 		7:
 			_lbp_dialog.popup_centered_ratio(0.75)
-		8:
-			_audio_dialog.popup_centered_ratio(0.8)
 		5:
 			get_tree().quit()
 		10:
@@ -1683,18 +2478,14 @@ func _on_menu(id: int) -> void:
 			_app.waveform_visible = not _app.waveform_visible
 		25:
 			_app.set_time_flows_down(not _app.time_flows_down)
-		23:
-			_show_toast("边界状态轨：RingState 关键帧在视图页编辑。", "info")
+		23, 37, 38, 39:
+			_open_ring_workspace()
 		24:
-			_inspector.current_tab = 5
+			_inspector.current_tab = 3
 		30, 31, 32, 33, 34, 35, 36:
 			_set_tool(["tap", "hold", "path", "seek", "anchor", "bell", "limit"][id - 30])
-		37:
-			_inspector._add_event()
-		38:
-			_inspector._add_view_state()
 		40:
-			_inspector._add_event()
+			_show_toast("形变事件在「视图 → 环编辑」里做：复制成 B 再拖时间轴。", "info")
 		41:
 			_set_tool("limit")
 		50:
@@ -1712,6 +2503,33 @@ func _save() -> void:
 		_sync_from_app()
 
 
+func _open_calibration(return_to: String = "") -> void:
+	_calibration_return = return_to
+	if _app == null:
+		return
+	if _calibration_dialog == null:
+		_calibration_dialog = CalibrationDialog.new()
+		_calibration_dialog.setup(_app)
+		_calibration_dialog.closed.connect(func() -> void:
+			if _playtest_offset != null:
+				_playtest_offset.value = float(_app.playtest_offset_ms)
+			if _playtest_latency != null:
+				_playtest_latency.value = float(_app.audio_latency_ms)
+			var target := _calibration_return
+			_calibration_return = ""
+			if target == "settings":
+				_open_settings()
+			elif target == "playtest":
+				_open_playtest_setup(_playtest_from_start)
+		)
+		add_child(_calibration_dialog)
+	if _playtest_dialog != null:
+		_playtest_dialog.hide()
+	if _settings_dialog != null:
+		_settings_dialog.hide()
+	_calibration_dialog.open()
+
+
 func _open_playtest_setup(from_start: bool) -> void:
 	if _app == null or _app.chart == null:
 		return
@@ -1719,23 +2537,203 @@ func _open_playtest_setup(from_start: bool) -> void:
 	if _playtest_dialog == null:
 		_build_playtest_dialog()
 	# 试玩中从暂停菜单打开时，确认键是"完成"而不是"开始"。
-	_playtest_dialog.ok_button_text = "完成" if _playtest != null else "开始"
+	if _playtest != null:
+		# 试玩中打开：只能应用设置并返回。
+		_playtest_dialog.ok_button_text = "完成"
+		if _playtest_start_button != null:
+			_playtest_start_button.visible = false
+	else:
+		_playtest_dialog.ok_button_text = "继续游玩"
+		if _playtest_start_button != null:
+			_playtest_start_button.visible = true
 	_playtest_rate.value = _rate
 	_playtest_flow.value = _app.flow_scale
 	_playtest_star.value = _app.star_speed
-	if _playtest_star_color != null:
-		_playtest_star_color.color = _app.star_color
-	if _playtest_trace_color != null:
-		_playtest_trace_color.color = _app.trace_color
+	if _playtest_cursor != null:
+		_playtest_cursor.value = _app.cursor_scale
 	if _playtest_offset != null:
 		_playtest_offset.value = float(_app.playtest_offset_ms)
 	if _playtest_dynamic != null:
 		_playtest_dynamic.button_pressed = bool(_app.dynamic_offset)
 	if _playtest_auto != null:
 		_playtest_auto.button_pressed = bool(_app.playtest_auto)
+	if _playtest_mouse != null:
+		_playtest_mouse.button_pressed = bool(_app.mouse_keys)
+	if _playtest_latency != null:
+		_playtest_latency.value = float(_app.audio_latency_ms)
+	if _playtest_sfx != null:
+		_playtest_sfx.selected = maxi(0, ["default", "crisp", "deep"].find(_app.hit_sfx_style))
+	if _playtest_mirror != null:
+		_playtest_mirror.selected = maxi(0, ["off", "lr", "rot180"].find(_app.playtest_mirror))
 	if _playtest_bias != null:
 		_playtest_bias.text = "上次平均偏差 %+.1fms" % float(_app.last_bias_ms)
-	_playtest_dialog.popup_centered(Vector2i(400, 320))
+	_sync_volume_sliders()
+	_playtest_dialog.popup_centered(Vector2i(470, 520))
+
+
+## 统一设置窗口：画质 / 界面 / 音频 / 校准。视图菜单只留显示开关。
+func _open_settings() -> void:
+	if _app == null:
+		return
+	if _settings_dialog == null:
+		_settings_dialog = AcceptDialog.new()
+		_settings_dialog.title = "设置"
+		_settings_dialog.ok_button_text = "关闭"
+		_settings_dialog.min_size = Vector2i(560, 680)
+		var scroll := ScrollContainer.new()
+		scroll.custom_minimum_size = Vector2(520, 600)
+		scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+		_settings_dialog.add_child(scroll)
+		var box := VBoxContainer.new()
+		box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		box.add_theme_constant_override("separation", 10)
+		scroll.add_child(box)
+		_build_quality_rows(box)
+		box.add_child(HSeparator.new())
+		_build_hud_rows(box)
+		box.add_child(HSeparator.new())
+		_build_audio_rows(box)
+		box.add_child(HSeparator.new())
+		_build_cache_rows(box)
+		box.add_child(HSeparator.new())
+		_build_calibration_rows(box)
+		add_child(_settings_dialog)
+	_refresh_view_menu()
+	_sync_volume_sliders()
+	_settings_dialog.popup_centered_ratio(0.72)
+
+
+func _build_audio_rows(parent: Control) -> void:
+	var title := Label.new()
+	title.text = "音频"
+	title.add_theme_font_size_override("font_size", 12)
+	parent.add_child(title)
+	var grid := GridContainer.new()
+	grid.columns = 2
+	grid.add_theme_constant_override("h_separation", 10)
+	grid.add_theme_constant_override("v_separation", 4)
+	parent.add_child(grid)
+	# 输出延迟：0 = 用驱动值；>0 = 强制覆盖。
+	var lat_label := Label.new()
+	lat_label.text = "输出延迟"
+	lat_label.add_theme_font_size_override("font_size", 11)
+	grid.add_child(lat_label)
+	var lat := SpinBox.new()
+	lat.min_value = 0.0
+	lat.max_value = 250.0
+	lat.step = 1.0
+	lat.suffix = "ms"
+	lat.value = float(_app.audio_latency_ms)
+	lat.tooltip_text = "0 = 用驱动报告值；>0 = 强制覆盖。驱动明显不准时才手动填"
+	lat.value_changed.connect(func(value: float) -> void:
+		_app.audio_latency_ms = clampf(value, 0.0, 250.0)
+		_app.save_settings()
+	)
+	grid.add_child(lat)
+	# 音频缓冲是启动期设置，写 override.cfg 后重启生效。
+	var buf_label := Label.new()
+	buf_label.text = "音频缓冲"
+	buf_label.add_theme_font_size_override("font_size", 11)
+	grid.add_child(buf_label)
+	var buf_row := HBoxContainer.new()
+	buf_row.add_theme_constant_override("separation", 6)
+	var buf := SpinBox.new()
+	buf.min_value = 3
+	buf.max_value = 40
+	buf.step = 1
+	buf.suffix = "ms"
+	buf.value = float(_app.audio_buffer_ms)
+	buf.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	buf_row.add_child(buf)
+	var apply_buf := Button.new()
+	apply_buf.text = "应用（重启）"
+	apply_buf.pressed.connect(func() -> void: _app.set_audio_buffer(int(buf.value)))
+	buf_row.add_child(apply_buf)
+	grid.add_child(buf_row)
+	# 打击音色。
+	var sfx_label := Label.new()
+	sfx_label.text = "打击音色"
+	sfx_label.add_theme_font_size_override("font_size", 11)
+	grid.add_child(sfx_label)
+	var sfx_pick := OptionButton.new()
+	for label in ["默认", "清脆", "低沉"]:
+		sfx_pick.add_item(label)
+	sfx_pick.selected = maxi(0, ["default", "crisp", "deep"].find(_app.hit_sfx_style))
+	sfx_pick.item_selected.connect(func(index: int) -> void:
+		var styles := ["default", "crisp", "deep"]
+		_app.hit_sfx_style = styles[clampi(index, 0, 2)]
+		_app.save_settings()
+		_sfx.set_style(_app.hit_sfx_style)
+		if _playtest != null:
+			_playtest._sync_sfx_style()
+	)
+	grid.add_child(sfx_pick)
+
+
+func _build_cache_rows(parent: Control) -> void:
+	var title := Label.new()
+	title.text = "转码 / 变速缓存"
+	title.add_theme_font_size_override("font_size", 12)
+	parent.add_child(title)
+	_cache_label = Label.new()
+	_cache_label.add_theme_font_size_override("font_size", 11)
+	_cache_label.add_theme_color_override("font_color", UITheme.MUTED)
+	parent.add_child(_cache_label)
+	_refresh_cache_label()
+	var clear := Button.new()
+	clear.text = "清理转码 / 变速缓存…"
+	clear.pressed.connect(func() -> void:
+		var dialog := ConfirmationDialog.new()
+		dialog.title = "清理转码 / 变速缓存"
+		dialog.dialog_text = "删除 %s 的 BGA / 音频转码 / 变速音频文件；源文件不动，下次需要时重新生成。要继续吗？" % _format_bytes(MediaIO.cache_size())
+		dialog.confirmed.connect(func() -> void:
+			var freed := MediaIO.clear_cache()
+			_refresh_cache_label()
+			_show_toast("已清理缓存 %s" % _format_bytes(freed), "info")
+		)
+		add_child(dialog)
+		dialog.popup_centered()
+		dialog.confirmed.connect(dialog.queue_free)
+		dialog.canceled.connect(dialog.queue_free)
+	)
+	parent.add_child(clear)
+
+
+func _refresh_cache_label() -> void:
+	if _cache_label == null:
+		return
+	_cache_label.text = "user://media 当前占用 %s；音频转码、变速音频和无解码库时的视频兜底会写这里。" % _format_bytes(MediaIO.cache_size())
+
+
+func _format_bytes(value: int) -> String:
+	if value >= 1024 * 1024 * 1024:
+		return "%.1f GB" % (float(value) / (1024.0 * 1024.0 * 1024.0))
+	if value >= 1024 * 1024:
+		return "%.0f MB" % (float(value) / (1024.0 * 1024.0))
+	if value >= 1024:
+		return "%.0f KB" % (float(value) / 1024.0)
+	return "%d B" % value
+
+
+func _build_calibration_rows(parent: Control) -> void:
+	var title := Label.new()
+	title.text = "校准"
+	title.add_theme_font_size_override("font_size", 12)
+	parent.add_child(title)
+	var hint := Label.new()
+	hint.text = "跟声音或脉冲点 8 次，写回判定偏移；也可以直接改试玩设置里的偏移。"
+	hint.add_theme_font_size_override("font_size", 11)
+	hint.add_theme_color_override("font_color", UITheme.MUTED)
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	parent.add_child(hint)
+	var open_cal := Button.new()
+	open_cal.text = "打开校准…"
+	open_cal.pressed.connect(func() -> void:
+		if _settings_dialog != null:
+			_settings_dialog.hide()
+		_open_calibration("settings")
+	)
+	parent.add_child(open_cal)
 
 
 func _build_playtest_dialog() -> void:
@@ -1743,13 +2741,43 @@ func _build_playtest_dialog() -> void:
 	_playtest_dialog.title = "试玩设置"
 	_playtest_dialog.ok_button_text = "开始"
 	_playtest_dialog.min_size = Vector2i(360, 220)
+	# 选项越加越多，内容放进滚动区，小窗口也不会把按钮挤出屏幕。
+	var scroll := ScrollContainer.new()
+	scroll.custom_minimum_size = Vector2(400, 350)
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	_playtest_dialog.add_child(scroll)
 	var box := VBoxContainer.new()
+	box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	box.add_theme_constant_override("separation", 10)
-	_playtest_dialog.add_child(box)
+	scroll.add_child(box)
 	_playtest_rate = _playtest_spin_row(box, "倍速", 0.5, 2.0, 0.05, 1.0, "×")
+	_playtest_rate.tooltip_text = "试玩和编辑器试听都按这个速度走；声音不变调（每个新倍速首次生成缓存）；局中修改在重开本局后生效；只对本次运行有效"
 	_playtest_flow = _playtest_spin_row(box, "流速", 0.05, 3.0, 0.01, 1.0, "×")
 	_playtest_star = _playtest_spin_row(box, "星速", 0.5, 2.0, 0.05, 1.0, "×")
+	_playtest_cursor = _playtest_spin_row(box, "光标大小", 0.5, 2.0, 0.05, 1.0, "×")
+	var mirror_row := HBoxContainer.new()
+	mirror_row.add_theme_constant_override("separation", 6)
+	var mirror_label := Label.new()
+	mirror_label.text = "谱面镜像"
+	mirror_label.custom_minimum_size = Vector2(64, 0)
+	UITheme.style_mono(mirror_label, 12, UITheme.MUTED)
+	mirror_row.add_child(mirror_label)
+	_playtest_mirror = OptionButton.new()
+	for label in ["关闭", "左右翻转", "旋转 180°"]:
+		_playtest_mirror.add_item(label)
+	_playtest_mirror.tooltip_text = "只翻试玩用的副本：音符与 Limit 红区一起翻，原谱面不变；下一局生效"
+	_playtest_mirror.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	mirror_row.add_child(_playtest_mirror)
+	box.add_child(mirror_row)
 	_playtest_offset = _playtest_spin_row(box, "判定偏移", -200.0, 200.0, 1.0, 0.0, "ms")
+	_playtest_latency = _playtest_spin_row(box, "输出延迟", 0.0, 250.0, 1.0, 0.0, "ms")
+	_playtest_latency.tooltip_text = "0 = 用驱动报告值；>0 = 强制覆盖（可升可降）。驱动明显不准时才手动填"
+	var calib_hint := Label.new()
+	calib_hint.text = "判定偏移校准在「设置 → 校准」里（8 次点击后自动写回）"
+	calib_hint.add_theme_font_size_override("font_size", 11)
+	calib_hint.add_theme_color_override("font_color", UITheme.MUTED)
+	calib_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	box.add_child(calib_hint)
 	_playtest_dynamic = CheckBox.new()
 	_playtest_dynamic.text = "动态 offset（局内自动校准，≤±50ms）"
 	_playtest_dynamic.tooltip_text = "至少 8 次命中后，每次命中按偏差的 5% 自动微调判定偏移"
@@ -1758,40 +2786,61 @@ func _build_playtest_dialog() -> void:
 	_playtest_auto.text = "AUTO 自动演示（游戏内 F8 切换）"
 	_playtest_auto.tooltip_text = "自动完美演奏所有音符，用来快速看谱面；结算会标注 AUTO"
 	box.add_child(_playtest_auto)
+	_playtest_mouse = CheckBox.new()
+	_playtest_mouse.text = "鼠标左右键算 Tap"
+	_playtest_mouse.tooltip_text = "关掉后左右键不参与判定；鼠标移动、滚轮 Seek 照常（暂停菜单也能改）"
+	box.add_child(_playtest_mouse)
 	_playtest_bias = Label.new()
 	_playtest_bias.text = "上次平均偏差 +0.0ms"
 	_playtest_bias.add_theme_font_size_override("font_size", 11)
 	_playtest_bias.add_theme_color_override("font_color", UITheme.MUTED)
 	box.add_child(_playtest_bias)
-	# 星星主色（全局单色系）。
-	var color_row := HBoxContainer.new()
-	box.add_child(color_row)
-	var color_label := Label.new()
-	color_label.text = "星星颜色"
-	color_label.custom_minimum_size = Vector2(64, 0)
-	UITheme.style_mono(color_label, 12, UITheme.MUTED)
-	color_row.add_child(color_label)
-	_playtest_trace_color = ColorPickerButton.new()
-	_playtest_star_color = ColorPickerButton.new()
-	_playtest_star_color.edit_alpha = false
-	_playtest_star_color.custom_minimum_size = Vector2(0, 26)
-	_playtest_star_color.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	color_row.add_child(_playtest_star_color)
-	var trace_row := HBoxContainer.new()
-	box.add_child(trace_row)
-	var trace_label := Label.new()
-	trace_label.text = "轨迹颜色"
-	trace_label.custom_minimum_size = Vector2(64, 0)
-	UITheme.style_mono(trace_label, 12, UITheme.MUTED)
-	trace_row.add_child(trace_label)
-	_playtest_trace_color = ColorPickerButton.new()
-	_playtest_trace_color.edit_alpha = false
-	_playtest_trace_color.custom_minimum_size = Vector2(0, 26)
-	_playtest_trace_color.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	trace_row.add_child(_playtest_trace_color)
-	trace_row.visible = false
+	# 音频：和编辑器「音频」弹窗、设置窗口共用 Music / SFX 总线与持久化字段。
+	var audio_title := Label.new()
+	audio_title.text = "音频"
+	audio_title.add_theme_font_size_override("font_size", 12)
+	box.add_child(audio_title)
+	box.add_child(_volume_slider("音乐", "Music"))
+	box.add_child(_volume_slider("音效", "SFX"))
+	var sfx_row := HBoxContainer.new()
+	sfx_row.add_theme_constant_override("separation", 6)
+	var sfx_label := Label.new()
+	sfx_label.text = "打击音色"
+	sfx_label.custom_minimum_size = Vector2(56, 0)
+	UITheme.style_mono(sfx_label, 12, UITheme.MUTED)
+	sfx_row.add_child(sfx_label)
+	_playtest_sfx = OptionButton.new()
+	for label in ["默认", "清脆", "低沉"]:
+		_playtest_sfx.add_item(label)
+	_playtest_sfx.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_playtest_sfx.item_selected.connect(func(index: int) -> void:
+		_app.hit_sfx_style = ["default", "crisp", "deep"][clampi(index, 0, 2)]
+		_app.save_settings()
+		_sfx.set_style(_app.hit_sfx_style)
+		if _playtest != null:
+			_playtest._sync_sfx_style()
+	)
+	sfx_row.add_child(_playtest_sfx)
+	box.add_child(sfx_row)
+	box.add_child(HSeparator.new())
+	var open_settings := Button.new()
+	open_settings.text = "画质 / 界面 / 音频 / 校准设置…"
+	open_settings.tooltip_text = "统一设置窗口：画质、界面、音频与校准"
+	open_settings.pressed.connect(_open_settings)
+	box.add_child(open_settings)
+	# 底部只留两种开始方式：继续游玩（播放头）、从头开始玩；
+	# 试玩中从暂停菜单打开时只剩「完成」。
+	_playtest_start_button = _playtest_dialog.add_button("从头开始玩", true, "start_from_beginning")
 	add_child(_playtest_dialog)
 	_playtest_dialog.confirmed.connect(_begin_playtest_with_settings)
+	_playtest_dialog.custom_action.connect(func(action: StringName) -> void:
+		if String(action) == "start_from_beginning":
+			_playtest_from_start = true
+			_playtest_dialog.hide()
+			_begin_playtest_with_settings()
+	)
+	# × 或 Esc 关闭时同样保留设置（只保存，不开始试玩）。
+	_playtest_dialog.canceled.connect(_commit_playtest_settings)
 
 
 func _playtest_spin_row(parent: VBoxContainer, label_text: String, lo: float, hi: float, step: float, value: float, suffix: String) -> SpinBox:
@@ -1814,37 +2863,48 @@ func _playtest_spin_row(parent: VBoxContainer, label_text: String, lo: float, hi
 
 
 func _begin_playtest_with_settings() -> void:
+	_commit_playtest_settings()
+	_start_playtest(_playtest_from_start)
+
+
+## 把试玩设置写回 _app 并落盘。确认按钮和右上角 × 都走这里，
+## 否则用 × / Esc 关掉对话框时设置会退回默认值。
+func _commit_playtest_settings() -> void:
+	if _app == null:
+		return
 	_rate = _playtest_rate.value
+	if _playtest_latency != null:
+		_app.audio_latency_ms = clampf(_playtest_latency.value, 0.0, 250.0)
 	_app.flow_scale = _playtest_flow.value
 	_app.star_speed = _playtest_star.value
+	if _playtest_cursor != null:
+		_app.cursor_scale = clampf(_playtest_cursor.value, 0.5, 2.0)
 	if _playtest_offset != null:
 		_app.playtest_offset_ms = _playtest_offset.value
 	if _playtest_dynamic != null:
 		_app.dynamic_offset = _playtest_dynamic.button_pressed
 	if _playtest_auto != null:
 		_app.playtest_auto = _playtest_auto.button_pressed
+	if _playtest_mouse != null:
+		_app.mouse_keys = _playtest_mouse.button_pressed
+	if _playtest_mirror != null:
+		_app.playtest_mirror = ["off", "lr", "rot180"][clampi(_playtest_mirror.selected, 0, 2)]
 	_app.save_settings()
-	if _playtest_star_color != null:
-		_app.star_color = _playtest_star_color.color
-	if _playtest_trace_color != null:
-		_app.trace_color = _playtest_trace_color.color
 	_preview.flow_scale = _app.flow_scale
 	_preview.star_speed = _app.star_speed
-	_preview.star_color = _app.star_color
-	_preview.trace_color = _app.trace_color
-	_preview.star_color = _app.star_color
-	_preview.trace_color = _app.trace_color
+	_preview.playback_rate = _rate
+	_preview.cursor_scale = _app.cursor_scale
 	_preview.request_redraw()
 	# 试玩中从暂停菜单改设置：直接应用到正在跑的预览。
 	if _playtest != null:
+		# 倍速不即时改：写进下一局，重开本局才换速度。
+		_playtest.next_playback_rate = _rate
 		_playtest._preview.flow_scale = _app.flow_scale
 		_playtest._preview.star_speed = _app.star_speed
-		_playtest._preview.star_color = _app.star_color
-		_playtest._preview.trace_color = _app.trace_color
+		_playtest._preview.cursor_scale = _app.cursor_scale
 		_playtest._preview.request_redraw()
 	if _editor_flow_spin != null:
 		_editor_flow_spin.value = _app.flow_scale
-	_start_playtest(_playtest_from_start)
 
 
 func _start_playtest(from_start: bool) -> void:
@@ -1864,11 +2924,14 @@ func _start_playtest(from_start: bool) -> void:
 	_playtest = Playtest.new()
 	_playtest.bench_mode = "--bench" in OS.get_cmdline_user_args()
 	_playtest.auto_play = bool(_app.playtest_auto) or "--auto" in OS.get_cmdline_user_args()
+	_playtest.next_playback_rate = _rate
+	_playtest.mirror_mode = String(_app.playtest_mirror)
 	add_child(_playtest)
 	_playtest.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_playtest.setup(_app.chart, 0.0 if from_start else _app.playhead_beat, _app.chart_path)
 	_playtest.exit_requested.connect(_end_playtest)
-	_playtest.settings_requested.connect(func() -> void: _open_playtest_setup(false))
+	_playtest.settings_requested.connect(_open_settings)
+	_playtest.playtest_settings_requested.connect(func() -> void: _open_playtest_setup(false))
 
 
 func _end_playtest() -> void:
@@ -1886,6 +2949,8 @@ func _end_playtest() -> void:
 func _input(event: InputEvent) -> void:
 	if _playtest != null:
 		return
+	if _calibration_dialog != null and _calibration_dialog.visible:
+		return
 	if event is InputEventKey and event.pressed and not event.echo:
 		var focus := get_viewport().gui_get_focus_owner()
 		# 数值框（SpinBox）内部的 LineEdit 不当作"正在打字"，否则它会吃掉空格等全局快捷键。
@@ -1895,7 +2960,7 @@ func _input(event: InputEvent) -> void:
 		if typing and event.keycode != KEY_F5 and event.keycode != KEY_F6:
 			return
 		if _canvas != null and _canvas.has_pending_seek() and event.keycode in [KEY_W, KEY_S]:
-			_canvas.set_pending_seek_orientation(0 if event.keycode == KEY_W else 1)
+			_canvas.set_pending_seek_orientation(1 if event.keycode == KEY_W else 0)
 			accept_event()
 			return
 		# While a numeric editor (SpinBox or its inner LineEdit) has focus, let
@@ -1943,7 +3008,7 @@ func _input(event: InputEvent) -> void:
 				_open_playtest_setup(event.shift_pressed)
 				accept_event()
 			KEY_F6:
-				_inspector.current_tab = 5
+				_inspector.current_tab = 3
 				accept_event()
 			KEY_H:
 				_app.hud_visible = not _app.hud_visible
@@ -1971,7 +3036,7 @@ func _input(event: InputEvent) -> void:
 				accept_event()
 			KEY_V:
 				if event.ctrl_pressed and event.shift_pressed:
-					_inspector.current_tab = 4
+					_inspector.current_tab = 2
 					_show_toast("视频属性在「视图/设置」页；offset / FPS / 透明度 / 隐藏都在那里。", "info")
 					accept_event()
 				elif event.ctrl_pressed:
@@ -1993,8 +3058,7 @@ func _input(event: InputEvent) -> void:
 				_app.rotate_selected_notes(90.0)
 				accept_event()
 			KEY_K:
-				_inspector.add_view_state_at_playhead()
-				_inspector.current_tab = 4
+				_open_ring_workspace()
 				accept_event()
 			KEY_DELETE:
 				_canvas._delete_selection()

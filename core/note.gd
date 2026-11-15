@@ -10,12 +10,18 @@ const TYPES := ["tap", "hold", "path", "seek", "anchor", "bell"]
 ## 数值同时用于绘制与判定，看到的长度就是能打到的长度。
 const TAP_LENGTH_SCALE := 0.5
 const HOLD_HEAD_LENGTH_SCALE := 0.5
+## 金键的可见/判定弧宽标准：和 Tap 到环时的可见长度同级（62° 的 Tap 可见 31°）。
+## 旧谱和导出的 Bell 都是 45°，载入时统一收敛，避免一条金键比 Tap 长 45%。
+const BELL_MIN_WIDTH := 24.0
+const BELL_MAX_WIDTH := 30.0
 ## 舞萌星星的默认深蓝色。
 const DEFAULT_PATH_COLOR := Color(0.55, 0.75, 1.0)
 const SIZED_TAP_MIN := 0.0
 const SIZED_TAP_MAX := 1.5
 ## 出现时（环心）的长度 = 1/6 l，飞向判定环的过程中长到 1 l。
 const SPAWN_LENGTH_RATIO := 1.0 / 6.0
+## 自定义颜色与背景的 WCAG 对比度低于这个值就提示“看不清”，但不阻止保存。
+const MIN_CONTRAST := 2.5
 
 var id: int = 1
 var type: String = "tap"
@@ -31,7 +37,6 @@ var tail_angle: float = 0.0
 var tail_width: float = 45.0
 var hold: bool = true
 var hold_style: String = "straight"
-var move_px: float = 120.0
 var radius: float = 44.0
 var tolerance: float = 0.24
 var samples_per_beat: float = 4.0
@@ -52,11 +57,7 @@ var path_next_id: int = -1
 var path_chain: bool = false
 ## Transient: true when loaded from legacy Path JSON; ChartIO normalizes it.
 var path_legacy: bool = false
-var trace_style: String = "wipe"
 var space: String = "ring"
-var plane_x: float = 0.5
-var plane_y: float = 0.5
-var plane_radius: float = 0.10
 var trace_pts: Array[Dictionary] = []
 var anchor_pair: int = -1
 var pair_id: String = ""
@@ -66,10 +67,12 @@ var has_custom_color: bool = false
 var custom_color: Color = DEFAULT_PATH_COLOR
 var lock: bool = false
 var center_u: float = 0.25
-## Seek: 0 = inward (wheel up), 1 = outward (wheel down).
+## Seek: 0 = outward (wheel up), 1 = inward (wheel down).
 var seek_orien: int = 0
 ## Transient editor state: freshly placed Seek waiting for W/S orientation.
 var seek_pending: bool = false
+## 兼容字段：所有 Bell 都在判定环上（舞萌 C 触也并入外环），读取旧谱时统一归 1.0。
+var bell_radius: float = 1.0
 
 
 func _init(p_type: String = "tap", p_beat: float = 0.0, p_angle: float = 0.0, p_width: float = 60.0) -> void:
@@ -81,7 +84,11 @@ func _init(p_type: String = "tap", p_beat: float = 0.0, p_angle: float = 0.0, p_
 	# 判定里按“结束时间”做过期检查时会把它们当成 0ms：谱面播到 6 秒后，
 	# 所有 tap 都被判定为“早就过期”而跳过（表现就是突然整段没有判定）。
 	end_beat = p_beat
-	if type == "path" or type == "trace":
+	# 金键以前是金币（宽度 0）。没有弧宽就画不出键，旧数据统一补成标准宽度；
+	# 45°/180° 的历史值也在这里收敛，绘制、判定、编辑器看到的是同一个长度。
+	if type == "bell":
+		width = clampf(width if width > 0.0 else BELL_MAX_WIDTH, BELL_MIN_WIDTH, BELL_MAX_WIDTH)
+	if type == "path":
 		space = "plane"
 
 
@@ -101,6 +108,11 @@ func length_ratio() -> float:
 ## 到判定环时的实际角度宽度。绘制与判定都走这里，保证"看到多长 = 能打多长"。
 func arc_width() -> float:
 	return maxf(0.0, width * length_ratio())
+
+
+## 金键的有效弧宽。数据已收敛，这里再兜底一次，编辑器直接改 width 也不会越界。
+func bell_width() -> float:
+	return clampf(width, BELL_MIN_WIDTH, BELL_MAX_WIDTH)
 
 
 ## 大小 Tap 只允许 Tap 使用；给编辑器一个统一的入口。
@@ -152,6 +164,20 @@ func trace_local_at(relative_beat: float) -> Vector2:
 
 func path_tail_local() -> Vector2:
 	return path_local_at(duration())
+
+
+## Imported traces encode the wait as coincident opening points. Animation
+## already applies wait_beat, so traverse only the moving part of that geometry.
+func path_motion_beat(progress: float) -> float:
+	var start := 0.0
+	if trace_pts.size() >= 2:
+		var head := Vector2(float(trace_pts[0].get("x", 0.0)), float(trace_pts[0].get("y", 0.0)))
+		for point in trace_pts:
+			var local := Vector2(float(point.get("x", 0.0)), float(point.get("y", 0.0)))
+			if local.distance_squared_to(head) > 0.00000001:
+				break
+			start = clampf(float(point.get("db", 0.0)), 0.0, duration())
+	return lerpf(start, duration(), clampf(progress, 0.0, 1.0))
 
 
 func path_head_point() -> Vector2:
@@ -327,14 +353,27 @@ func _short_delta(from_angle: float, to_angle: float) -> float:
 	return delta
 
 
+## 左右镜像：角度 θ→180−θ，只翻横向。轨迹/局部端点翻 x，
+## 路径轴与 visual 的相对角反号；时间、宽度与判定半径不变。
+func mirror_lr() -> void:
+	angle = fposmod(180.0 - angle, 360.0)
+	tail_angle = fposmod(180.0 - tail_angle, 360.0)
+	center_u = fposmod(1.0 - center_u, 1.0)
+	path_axis = -path_axis
+	for point in trace_pts:
+		point["x"] = -float(point.get("x", 0.0))
+	for point in visual_pts:
+		point["da"] = -float(point.get("da", 0.0))
+	if path_part > 0 and path_head_local.is_finite():
+		path_head_local = Vector2(-path_head_local.x, path_head_local.y)
+
+
 func mirror_u() -> void:
 	## Mirror by rotating the note 180° around the ring centre: angle + 180,
 	## wrapped back into 0–360. Time, widths and judging radii are unchanged.
 	angle = fposmod(angle + 180.0, 360.0)
 	tail_angle = fposmod(tail_angle + 180.0, 360.0)
 	center_u = fposmod(center_u + 0.5, 1.0)
-	plane_x = 1.0 - plane_x
-	plane_y = 1.0 - plane_y
 	for point in trace_pts:
 		# Plane/trace coordinates are centred on the ring: a 180° rotation
 		# negates both axes.
@@ -354,11 +393,6 @@ func to_dict() -> Dictionary:
 		"color": color,
 		"lock": lock,
 	}
-	if space != "ring" and type != "path" and type != "trace":
-		data["space"] = space
-		data["plane_x"] = snappedf(plane_x, 0.0001)
-		data["plane_y"] = snappedf(plane_y, 0.0001)
-		data["plane_radius"] = snappedf(plane_radius, 0.0001)
 	match type:
 		"tap":
 			if sized:
@@ -405,16 +439,6 @@ func to_dict() -> Dictionary:
 				data["head_y"] = snappedf(path_head_local.y, 0.0001)
 		"seek":
 			data["orien"] = 1 if seek_orien == 1 else 0
-		"trace":
-			data["end_beat"] = snappedf(end_beat, 0.001)
-			if wait_beat > 0.0:
-				data["wait"] = snappedf(wait_beat, 0.001)
-			data["move"] = snappedf(move_px, 0.001)
-			data["trace"] = _points_to_dict(trace_pts)
-			# 默认平面；贴环的 trace 必须显式写出来，老谱面才会被当成平面迁移。
-			data["space"] = space if space in ["ring", "plane"] else "plane"
-			if trace_style != "wipe":
-				data["trace_style"] = trace_style
 		"anchor":
 			if anchor_pair >= 0:
 				data["pair"] = anchor_pair
@@ -423,6 +447,8 @@ func to_dict() -> Dictionary:
 		"bell":
 			data["center_u"] = snappedf(center_u, 0.0001)
 			data["radius"] = snappedf(radius, 0.001)
+			if absf(bell_radius - 1.0) > 0.0001:
+				data["bell_radius"] = snappedf(bell_radius, 0.001)
 	return data
 
 
@@ -442,20 +468,16 @@ static func from_dict(raw: Dictionary) -> Note:
 	note.tail_width = float(raw.get("tail_width", note.width))
 	note.hold = bool(raw.get("hold", true))
 	note.hold_style = String(raw.get("hold_style", "straight"))
-	note.move_px = float(raw.get("move", 120.0))
 	note.radius = float(raw.get("radius", 24.0))
 	note.tolerance = float(raw.get("tolerance", 0.24))
 	note.samples_per_beat = float(raw.get("samples", 4.0))
 	note.path_speed = float(raw.get("speed", 1.0))
 	note.path_style = String(raw.get("path_style", "arc"))
-	note.trace_style = String(raw.get("trace_style", "wipe"))
-	note.space = String(raw.get("space", "plane" if note.type in ["path", "trace"] else "ring"))
-	note.plane_x = float(raw.get("plane_x", 0.5))
-	note.plane_y = float(raw.get("plane_y", 0.5))
-	note.plane_radius = float(raw.get("plane_radius", 0.10))
+	note.space = "plane" if note.type == "path" else "ring"
 	note.anchor_pair = int(raw.get("pair", -1))
 	note.pair_id = String(raw.get("pair_id", ""))
 	note.center_u = float(raw.get("center_u", 0.25))
+	note.bell_radius = float(raw.get("bell_radius", 1.0))
 	note.sized = bool(raw.get("sized", false)) and note.type == "tap"
 	note.size_ratio = clampf(float(raw.get("size", 1.0)), SIZED_TAP_MIN, SIZED_TAP_MAX)
 	if raw.has("rgb"):
@@ -469,8 +491,6 @@ static func from_dict(raw: Dictionary) -> Note:
 		note.path_gaps = _ranges_from_array(raw.get("path_gaps", []))
 	if raw.has("trace"):
 		note.trace_pts = _points_from_array(raw.get("trace", []))
-		if note.type == "trace" and not raw.has("space") and note.trace_style != "slider":
-			note._migrate_legacy_trace_points()
 	if note.type == "seek":
 		note.seek_orien = 1 if int(raw.get("orien", 0)) == 1 else 0
 		note.angle = 0.0
@@ -506,12 +526,6 @@ static func from_dict(raw: Dictionary) -> Note:
 
 ## 旧版 Trace 的 x/y 是 0..1 的屏幕比例（老预览窗直接按像素铺开）。
 ## 这里换算成“环半径 = 1.0”的设计坐标，并按 16:9 的舞台铺满环内。
-func _migrate_legacy_trace_points() -> void:
-	for point in trace_pts:
-		point["x"] = (float(point.get("x", 0.5)) - 0.5) * 3.2
-		point["y"] = (float(point.get("y", 0.5)) - 0.5) * 1.8
-
-
 static func _ranges_to_array(ranges: Array[Dictionary]) -> Array[Dictionary]:
 	var result: Array[Dictionary] = []
 	for item in ranges:
@@ -545,21 +559,49 @@ func to_code() -> String:
 	var a := _code_num(angle)
 	match type:
 		"tap":
+			# 旧格式 [id]tap(beat,angle)；宽度/大小 Tap 只在非默认时追加。
+			if sized:
+				return "[%d]tap(%s,%s,%s,1,%s)" % [id, b, a, _code_num(width), _code_num(size_ratio)]
+			if not is_equal_approx(width, 60.0):
+				return "[%d]tap(%s,%s,%s)" % [id, b, a, _code_num(width)]
 			return "[%d]tap(%s,%s)" % [id, b, a]
 		"hold":
+			# 旧格式 [id]hold(beat,end,angle)；非默认宽度追加第 4 段。
+			if not is_equal_approx(width, 60.0):
+				return "[%d]hold(%s,%s,%s,%s)" % [id, b, _code_num(end_beat), a, _code_num(width)]
 			return "[%d]hold(%s,%s,%s)" % [id, b, _code_num(end_beat), a]
 		"seek":
 			return "[%d]seek(%s,%d)" % [id, b, 1 if seek_orien == 1 else 0]
 		"anchor":
+			if anchor_pair >= 0:
+				return "[%d]anchor(%s,%s,%s,%d)" % [id, b, a, pair_id, anchor_pair]
 			return "[%d]anchor(%s,%s,%s)" % [id, b, a, pair_id]
 		"bell":
+			# 旧格式 [id]bell(beat,angle)；弧宽/半径非默认时追加，半径需要宽度占位。
+			var bell_width_value := bell_width()
+			var bell_radius_value := snappedf(radius, 0.001)
+			var has_width := not is_equal_approx(bell_width_value, BELL_MAX_WIDTH)
+			var has_radius := not is_equal_approx(bell_radius_value, 26.0)
+			if has_width and has_radius:
+				return "[%d]bell(%s,%s,%s,%s)" % [id, b, a, _code_num(bell_width_value), _code_num(bell_radius_value)]
+			if has_width:
+				return "[%d]bell(%s,%s,%s)" % [id, b, a, _code_num(bell_width_value)]
+			if has_radius:
+				return "[%d]bell(%s,%s,%s,%s)" % [id, b, a, _code_num(BELL_MAX_WIDTH), _code_num(bell_radius_value)]
 			return "[%d]bell(%s,%s)" % [id, b, a]
 		"path":
-			return "[%d]path{(part%d,%s,%s,%s,%s,%s,%s)}" % [
-				id, path_part, b, a, _code_num(end_beat), _code_num(tail_angle),
-				_code_num(path_centrifuge), _code_num(path_axis)
-			]
+			return "[%d]path{%s}" % [id, path_part_code()]
 	return ""
+
+
+## Optional final field preserves waiting time while keeping old Path codes valid.
+func path_part_code() -> String:
+	var fields := "part%d,%s,%s,%s,%s,%s,%s" % [path_part, _code_num(beat),
+		_code_num(angle), _code_num(end_beat), _code_num(tail_angle),
+		_code_num(path_centrifuge), _code_num(path_axis)]
+	if wait_beat > 0.0:
+		fields += "," + _code_num(clampf(wait_beat, 0.0, maxf(0.0, duration() - 0.001)))
+	return "(" + fields + ")"
 
 
 static func from_code(code: String) -> Note:
@@ -585,10 +627,18 @@ static func from_code(code: String) -> Note:
 		"tap":
 			note.beat = float(parts[0]) if parts.size() > 0 else 0.0
 			note.angle = float(parts[1]) if parts.size() > 1 else 0.0
+			if parts.size() > 2:
+				note.width = float(parts[2])
+			if parts.size() > 3:
+				note.sized = int(parts[3]) == 1
+			if parts.size() > 4:
+				note.size_ratio = clampf(float(parts[4]), SIZED_TAP_MIN, SIZED_TAP_MAX)
 		"hold":
 			note.beat = float(parts[0]) if parts.size() > 0 else 0.0
 			note.end_beat = float(parts[1]) if parts.size() > 1 else note.beat
 			note.angle = float(parts[2]) if parts.size() > 2 else 0.0
+			if parts.size() > 3:
+				note.width = float(parts[3])
 		"seek":
 			note.beat = float(parts[0]) if parts.size() > 0 else 0.0
 			note.end_beat = note.beat
@@ -597,15 +647,22 @@ static func from_code(code: String) -> Note:
 			note.width = 360.0
 		"anchor":
 			note.beat = float(parts[0]) if parts.size() > 0 else 0.0
+			note.end_beat = note.beat
 			note.angle = float(parts[1]) if parts.size() > 1 else 0.0
 			note.pair_id = parts[2].strip_edges() if parts.size() > 2 else ""
 			note.width = 0.0
+			if parts.size() > 3:
+				note.anchor_pair = int(parts[3])
 		"bell":
 			note.beat = float(parts[0]) if parts.size() > 0 else 0.0
+			note.end_beat = note.beat
 			note.angle = float(parts[1]) if parts.size() > 1 else 0.0
+			if parts.size() > 2:
+				note.width = float(parts[2])
 			note.center_u = fposmod(note.angle / 360.0, 1.0)
 			note.radius = 26.0
-			note.width = 0.0
+			if parts.size() > 3:
+				note.radius = float(parts[3])
 		_:
 			return null
 	return note
@@ -636,12 +693,13 @@ static func path_parts_from_code(code: String) -> Array[Note]:
 		var fields := segment.split(",", true)
 		if fields.size() < 7:
 			continue
-		# fields[0] is `partN`; the remaining seven are the actual values.
+		# fields[0] is partN; fields[7] is optional waiting time in beats.
 		var number := int(fields[0].replace("part", ""))
 		var note := Note.new("path", float(fields[1]), float(fields[2]), 60.0)
 		note.id = root_id if index == 0 else root_id + 1000 * index
 		note.path_part = number
 		note.end_beat = float(fields[3])
+		note.wait_beat = clampf(float(fields[7]), 0.0, maxf(0.0, note.duration() - 0.001)) if fields.size() > 7 else 0.0
 		note.tail_angle = float(fields[4])
 		note.path_centrifuge = clampf(float(fields[5]), 0.0, 1.0)
 		note.path_axis = clampf(float(fields[6]), -2.0, 2.0)
@@ -672,3 +730,37 @@ static func _points_from_array(raw: Array) -> Array[Dictionary]:
 				point[String(key)] = float(item[key])
 			result.append(point)
 	return result
+
+
+# ---------------------------------------------------------------- 自定义颜色
+
+
+func supports_custom_color() -> bool:
+	return type in ["tap", "hold", "path"]
+
+
+## 最终显示色：单音符覆盖 > 配色组 > 类型默认色。
+func resolved_color(chart: Chart, fallback: Color) -> Color:
+	if has_custom_color:
+		return custom_color
+	if color > 0 and chart != null:
+		var picked := chart.palette_color(color, type)
+		if picked.a > 0.0:
+			return picked
+	return fallback
+
+
+static func relative_luminance(color: Color) -> float:
+	return 0.2126 * _channel_luminance(color.r) + 0.7152 * _channel_luminance(color.g) + 0.0722 * _channel_luminance(color.b)
+
+
+static func _channel_luminance(value: float) -> float:
+	var channel := clampf(value, 0.0, 1.0)
+	return channel / 12.92 if channel <= 0.04045 else pow((channel + 0.055) / 1.055, 2.4)
+
+
+## WCAG 对比度（1–21）。低于 MIN_CONTRAST 时只提示，不阻止保存。
+static func contrast_ratio(a: Color, b: Color) -> float:
+	var la := relative_luminance(a)
+	var lb := relative_luminance(b)
+	return (maxf(la, lb) + 0.05) / (minf(la, lb) + 0.05)

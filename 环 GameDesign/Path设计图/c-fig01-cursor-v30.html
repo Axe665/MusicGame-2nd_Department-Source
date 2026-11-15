@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>光标与最近点</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:1200px;height:760px;overflow:hidden}
+body{background:#FAF7F2;color:#1F1B18;font-family:"Noto Sans CJK SC",sans-serif;
+ padding:52px 64px 0;display:flex;flex-direction:column}
+.k{font-family:"DejaVu Sans Mono",monospace;font-size:12px;letter-spacing:4px;color:#9A8C7A}
+.cols{flex:1;display:flex;gap:40px;margin-top:26px}
+.left{flex:1}
+h2{font-size:26px;font-weight:700;margin-bottom:18px}
+.big{font-family:"DejaVu Sans Mono",monospace;font-size:22px;color:#C0392B;margin-bottom:14px}
+li{list-style:none;font-size:15px;color:#4A423A;margin-bottom:11px;padding-left:18px;position:relative;line-height:1.55}
+li:before{content:"";position:absolute;left:0;top:9px;width:6px;height:6px;border-radius:50%;background:#C0392B}
+.right{width:560px;position:relative}
+.foot{font-size:13px;color:#8A7F72;margin:6px 0 26px}
+</style></head><body>
+<div class="k">TAMAKI₃ / CHARTER · CURSOR</div>
+<div class="cols">
+  <div class="left">
+    <h2>光标与最近点</h2>
+    <div class="big">u = argmin |mouse − C(u,t)|</div>
+    <li>u 不由鼠标方向给出，而是由光标到当前边界的最近点反解</li>
+    <li>有效定位：光标在环内 1.15R 以内，或到环距离 ≤ max(64, 0.75×平均半径)</li>
+    <li>停在环心 0.05R 以内、最近点不唯一 → 无有效位置</li>
+    <li>轮廓不允许自交与非凸，所以同一时刻不会有两个等距的 u</li>
+    <li>边界上的 12 个 30° 刻度只供自检，不吸附、不改判定</li>
+  </div>
+  <div class="right">
+    <svg viewBox="0 0 560 520" width="560" height="520">
+      <!-- 不规则边界 -->
+      <path d="M 170 120 C 260 60 380 80 440 150 C 500 220 470 340 390 400 C 300 460 190 440 140 360 C 95 285 100 180 170 120 Z"
+            fill="#FFFDFA" stroke="#1F1B18" stroke-width="2.5"/>
+      <!-- 目标 -->
+      <circle cx="300" cy="180" r="7" fill="#C0392B"/>
+      <text x="310" y="170" font-family="DejaVu Sans Mono" font-size="13" fill="#1F1B18">P(u,q,t)</text>
+      <!-- 光标 -->
+      <circle cx="250" cy="300" r="7" fill="#1F1B18"/>
+      <text x="215" y="330" font-family="DejaVu Sans Mono" font-size="13" fill="#1F1B18">mouse</text>
+      <!-- 最近点 -->
+      <circle cx="180" cy="345" r="6" fill="#C0392B"/>
+      <line x1="250" y1="300" x2="180" y2="345" stroke="#C0392B" stroke-width="2"/>
+      <text x="150" y="378" font-family="DejaVu Sans Mono" font-size="13" fill="#C0392B">最近点 → u</text>
+      <!-- d -->
+      <text x="228" y="318" font-family="DejaVu Sans Mono" font-size="12" fill="#8A7F72">d</text>
+      <!-- 环心 -->
+      <circle cx="300" cy="280" r="3" fill="#8A7F72"/>
+      <text x="308" y="300" font-family="DejaVu Sans Mono" font-size="11" fill="#8A7F72">0.05R 内无效</text>
+    </svg>
+  </div>
+</div>
+<div class="foot">逻辑位置 u 是音符的身份；光标给出屏幕位置，边界把它反解成 u。换形状只换映射，不改音符记录的角度。</div>
+</body></html>

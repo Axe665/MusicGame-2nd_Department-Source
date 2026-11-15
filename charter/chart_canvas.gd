@@ -23,6 +23,15 @@ var scroll_beat: float = 0.0
 var follow_playhead: bool = true
 var flow_down: bool = true
 var snap_division: int = GridDivisions.DEFAULT_DIVISION
+## 播放滚动：page（翻页）/ pin（播放头固定，方向看 flow_down）。
+var playback_view: String = "page"
+## 只在播放或拖进度条时钉住；暂停时回到自由浏览。
+var playback_pinned: bool = false
+## 钉住的播放头离视图边缘的比例。
+const PIN_MARGIN := 0.08
+## 滚轮临时脱离钉住后，这么久自动拉回。
+const PIN_RESUME_MS := 1200
+var _pin_resume_msec: int = 0
 
 var _mouse_pos: Vector2 = Vector2.ZERO
 var _hover_u: float = 0.0
@@ -46,7 +55,6 @@ var _right_hit: Dictionary = {}
 var _pending_path: Note = null
 var _pending_path_parent: Note = null
 var _pending_hold: Note = null
-var _trace_hint_shown: bool = false
 
 var _waveform_peaks: PackedFloat32Array = PackedFloat32Array()
 var _waveform_duration: float = 0.0
@@ -160,8 +168,57 @@ func _y_to_beat(y: float) -> float:
 	return scroll_beat + (plot.end.y - y) / maxf(0.1, _effective_px_per_beat())
 
 
+## 钉住时让播放头停在流动方向边缘 PIN_MARGIN 的位置。
+## 两个方向共用同一个公式：向下流动时 scroll 是顶边拍，向上流动时是底边拍，
+## 而底边拍 + 8% 可见高度正好等于「播放头往回流 8%」。
+static func pinned_scroll_beat(playhead: float, visible_beats: float, margin: float = PIN_MARGIN) -> float:
+	return maxf(0.0, playhead - visible_beats * margin)
+
+
+## 翻转绘制方向时保持播放头屏幕位置不变：ratio → 1 - ratio。
+## 纯函数，返回新的 scroll_beat（未钳位）。
+static func flipped_scroll_beat(playhead: float, scroll_before: float, visible_beats: float) -> float:
+	var ratio := (playhead - scroll_before) / maxf(0.001, visible_beats)
+	if ratio < 0.0 or ratio > 1.0:
+		return scroll_before
+	return playhead - (1.0 - ratio) * visible_beats
+
+
+## 可滚动的最后一屏：内容末端 + 4 小节，至少留一屏。
+func _scroll_limit() -> float:
+	var limit: float = _app.chart_limit_beats() if _app != null else 0.0
+	return maxf(0.0, limit - _plot_visible_beats())
+
+
+func clamp_scroll() -> void:
+	var clamped := clampf(scroll_beat, 0.0, _scroll_limit())
+	if is_equal_approx(clamped, scroll_beat):
+		return
+	scroll_beat = clamped
+	queue_redraw()
+	if _overlay != null:
+		_overlay.queue_redraw()
+
+
+## 拍线区实际可见的拍数（不含上下留白）。
+func _plot_visible_beats() -> float:
+	var plot := _plot_rect()
+	return plot.size.y / maxf(10.0, _effective_px_per_beat())
+
+
+## 由 main 在播放/拖动状态切换时调用；方向由 flow_down 单独决定。
+func set_playback_view(mode: String, pinned: bool) -> void:
+	if mode == playback_view and pinned == playback_pinned:
+		return
+	playback_view = mode
+	playback_pinned = pinned
+	queue_redraw()
+	if _overlay != null:
+		_overlay.queue_redraw()
+
+
 func _visible_beats() -> float:
-	return size.y / maxf(10.0, _effective_px_per_beat())
+	return _plot_visible_beats()
 
 
 func _clear_clipboard_on_chart_replace() -> void:
@@ -176,7 +233,7 @@ func has_clipboard() -> bool:
 func copy_selection(cut: bool = false) -> void:
 	if _app == null or _app.chart == null:
 		return
-	var selected: Array[Note] = _app.get_selected_notes()
+	var selected: Array[Note] = _app.selection_with_partners()
 	if selected.is_empty():
 		notice.emit("先选中音符，再复制或剪切。", "warning")
 		return
@@ -244,15 +301,17 @@ func mirror_selected_note() -> bool:
 	var selected: Array[Note] = _app.get_selected_notes()
 	if selected.size() != 1:
 		return false
-	var note: Note = selected[0]
-	if note.lock:
-		notice.emit("音符已锁定，无法镜像。", "warning")
-		return false
+	var group: Array[Note] = _app.with_anchor_partners(selected)
+	for item in group:
+		if item.lock:
+			notice.emit("音符已锁定，无法镜像。", "warning")
+			return false
 	_app.begin_edit()
-	note.mirror_u()
+	for item in group:
+		item.mirror_u()
 	_app.finish_edit()
 	queue_redraw()
-	notice.emit("已镜像音符 %d。" % note.id, "info")
+	notice.emit("已镜像 %d 个音符。" % group.size(), "info")
 	return true
 
 
@@ -326,12 +385,19 @@ func _on_chart_live_changed() -> void:
 
 func _on_playhead_changed(beat: float) -> void:
 	var scrolled := false
-	if follow_playhead:
-		var visible := _visible_beats()
+	if playback_pinned and playback_view == "pin" and Time.get_ticks_msec() >= _pin_resume_msec:
+		# 钉住：播放头固定，谱面连续滚动，不再等它走出视图才翻页。
+		var target := pinned_scroll_beat(beat, _plot_visible_beats())
+		if not is_equal_approx(target, scroll_beat):
+			scroll_beat = target
+			scrolled = true
+	elif follow_playhead:
+		var visible := _plot_visible_beats()
 		if beat < scroll_beat - 0.1 or beat > scroll_beat + visible:
 			scroll_beat = maxf(0.0, beat - visible * 0.25)
 			scrolled = true
 	if scrolled:
+		scroll_beat = clampf(scroll_beat, 0.0, _scroll_limit())
 		queue_redraw()
 	var now := Time.get_ticks_msec()
 	if now - _last_playhead_redraw >= 16:
@@ -366,7 +432,12 @@ func _on_snap_changed(division: int) -> void:
 
 
 func _on_flow_changed(down: bool) -> void:
+	if down != flow_down and _app != null:
+		# 方向只翻最后一步映射；这里把播放头所在的屏幕位置留住，
+		# 否则一按方向键整页内容会跳到另一侧。
+		scroll_beat = flipped_scroll_beat(_app.playhead_beat, scroll_beat, _plot_visible_beats())
 	flow_down = down
+	clamp_scroll()
 	if _flow_button != null and _flow_button.button_pressed != down:
 		_flow_button.set_pressed_no_signal(down)
 	if _ghost_layer != null:
@@ -468,6 +539,11 @@ func _refresh_waveform() -> void:
 				peak = maxf(peak, value)
 			_waveform_peaks.append(clampf(peak / 32768.0, 0.0, 1.0))
 		_waveform_duration = wav.get_length()
+	# 没有存过音频长度时顺手补上：老谱面打开就能滚到正确的终点。
+	if stream != null and stream.get_length() > 0.0:
+		var length_ms := stream.get_length() * 1000.0
+		if absf(chart.audio_length_ms() - length_ms) > 1.0:
+			chart.editor["audio_length_ms"] = length_ms
 
 
 func _draw() -> void:
@@ -507,9 +583,11 @@ func _draw_waveform(plot: Rect2) -> void:
 		_wave_left = PackedVector2Array()
 		var center_x := strip.position.x + strip.size.x * 0.5
 		var half := strip.size.x * 0.5 - 2.0
+		# 每行都要查一次拍→毫秒；先排一次序，循环里不再重复排序。
+		chart.timing.sort_points()
 		for y in range(int(plot.position.y), int(plot.end.y), 2):
 			var beat := _y_to_beat(float(y))
-			var chart_ms := chart.timing.beat_to_chart_ms(beat)
+			var chart_ms := chart.timing.beat_to_ms_sorted(beat)
 			var audio_ms := chart_ms - chart.offset_ms
 			var fraction := audio_ms / 1000.0 / _waveform_duration
 			if fraction < 0.0 or fraction > 1.0:
@@ -522,6 +600,30 @@ func _draw_waveform(plot: Rect2) -> void:
 		draw_polyline(_wave_right, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.42), 1.0, true)
 	if _wave_left.size() > 1:
 		draw_polyline(_wave_left, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.26), 1.0, true)
+
+
+## 全谱 4/4 时的拍线粗细：小节线 2.5、四分线 2.0；其余谱面维持 1.5 / 1.0。
+static func beat_line_width(is_bar: bool, emphasize: bool) -> float:
+	if not emphasize:
+		return 1.5 if is_bar else 1.0
+	return 2.5 if is_bar else 2.0
+
+
+## 4/4 谱的半拍线（小节八分位）单独画红；N 为偶数时细分里才有这一条。
+static func is_eighth_offset(offset: float) -> bool:
+	return absf(offset - 0.5) < 0.001
+
+
+## 每条拍号都是 4/4 才算；中途换拍号就整体退回普通拍线。
+static func is_uniform_four_four(timing: TimingMap) -> bool:
+	for point in timing.points:
+		if point.beats_per_bar != 4:
+			return false
+	return true
+
+
+## 每几小节强调一次（小节底色与加粗线）。
+const BAR_ACCENT_EVERY := 4
 
 
 func _draw_grid(plot: Rect2) -> void:
@@ -543,28 +645,78 @@ func _draw_grid(plot: Rect2) -> void:
 		if major:
 			var label := "%d°" % (i * 30)
 			draw_string(font, Vector2(x - 12, plot.position.y - 7), label, HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(1, 1, 1, 0.52))
-	# Beat / bar lines with continuous beat numbers. Bar lines stay thicker but
-	# are no longer labelled "bar N": the left column counts beats, like the
-	# Malody editor, so a note's row can be read as 1, 2, 3, 4, 5 ...
-	var first_beat := maxi(0, floori(scroll_beat) - 1)
-	var last_beat := ceili(scroll_beat + _visible_beats()) + 1
+	# 全谱 4/4 时：四条四分线一起加粗，每拍中点（小节八分位）画红线。
+	var emphasize := is_uniform_four_four(chart.timing)
+	var uniform_bpb := chart.timing.uniform_beats_per_bar()
+	var top_beat := scroll_beat
+	var bottom_beat := scroll_beat + _plot_visible_beats()
+	var limit_beat := chart.end_limit_beat()
+	var audio_end := chart.audio_end_beat()
+	# 每 4 小节交替一块极淡底色：段落起止不用数拍就能看出来。
+	if uniform_bpb > 0 and absf(_effective_px_per_beat() * uniform_bpb) >= 6.0:
+		var first_bar := floori(top_beat / uniform_bpb)
+		var last_bar := ceili(bottom_beat / uniform_bpb)
+		for bar in range(first_bar, last_bar + 1):
+			if posmod(int(bar / BAR_ACCENT_EVERY), 2) == 0:
+				continue
+			var y0 := _beat_to_y(float(bar * uniform_bpb))
+			var y1 := _beat_to_y(float((bar + 1) * uniform_bpb))
+			draw_rect(Rect2(plot.position.x, minf(y0, y1), plot.size.x, absf(y1 - y0)), Color(1, 1, 1, 0.028))
+	# 音频结束后的 4 小节余量压暗：告诉作者再往后没有声音。
+	if audio_end > 0.0 and audio_end < limit_beat:
+		var y0 := _beat_to_y(maxf(audio_end, top_beat))
+		var y1 := _beat_to_y(minf(limit_beat, bottom_beat))
+		if absf(y1 - y0) > 0.5:
+			draw_rect(Rect2(plot.position.x, minf(y0, y1), plot.size.x, absf(y1 - y0)), Color(0, 0, 0, 0.22))
+	var beat_px := _effective_px_per_beat()
+	var label_step := 1
+	if uniform_bpb > 0:
+		var bar_px := beat_px * float(uniform_bpb)
+		if bar_px > 0.0:
+			while float(label_step) * bar_px < 26.0 and label_step < 64:
+				label_step *= 2
+	var first_beat := maxi(0, floori(top_beat) - 1)
+	var last_beat := ceili(bottom_beat) + 1
 	for beat in range(first_beat, last_beat + 1):
 		var y := _beat_to_y(float(beat))
 		if y < plot.position.y - 2.0 or y > plot.end.y + 2.0:
 			continue
 		var bpb := chart.timing.beats_per_bar_at(float(beat))
 		var is_bar := beat % bpb == 0
-		var beat_color := Color(1, 1, 1, 0.17 if is_bar else 0.075)
-		draw_line(Vector2(plot.position.x, y), Vector2(plot.end.x, y), beat_color, 1.5 if is_bar else 1.0)
-		draw_string(font, Vector2(1, y + 3.5), str(beat + 1), HORIZONTAL_ALIGNMENT_RIGHT, 22, 10, Color(1, 1, 1, 0.62 if is_bar else 0.38))
-	_draw_beat_subdivisions(plot)
+		var bar_index := int(beat / bpb) if bpb > 0 else 0
+		var accent := is_bar and uniform_bpb > 0 and bar_index % BAR_ACCENT_EVERY == 0
+		var width := 3.2 if accent else beat_line_width(is_bar, emphasize)
+		# 4/4 谱把拍线提到和红线同一观感，普通谱面维持原来的淡线。
+		var beat_alpha := (0.55 if accent else (0.38 if is_bar else 0.30)) if emphasize else (0.17 if is_bar else 0.075)
+		var label_alpha := (0.92 if accent else (0.78 if is_bar else 0.52)) if emphasize else (0.62 if is_bar else 0.38)
+		draw_line(Vector2(plot.position.x, y), Vector2(plot.end.x, y), Color(1, 1, 1, beat_alpha), width)
+		# 左侧标尺：小节线写小节号，其余拍写「小节内第几拍」，标签太密就只留小节号。
+		if is_bar:
+			if bar_index % label_step == 0:
+				draw_string(font, Vector2(1, y + 4), str(bar_index + 1), HORIZONTAL_ALIGNMENT_RIGHT, 24, 11, Color(1, 1, 1, label_alpha))
+		elif beat_px >= 11.0:
+			var within := beat % bpb + 1
+			draw_string(font, Vector2(6, y + 3), str(within), HORIZONTAL_ALIGNMENT_RIGHT, 19, 9, Color(1, 1, 1, label_alpha * 0.8))
+	draw_string(font, Vector2(2, plot.position.y - 8), "小节", HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(1, 1, 1, 0.45))
+	if audio_end > 0.0:
+		var ay := _beat_to_y(audio_end)
+		if ay > plot.position.y - 1.0 and ay < plot.end.y + 1.0:
+			draw_dashed_line(Vector2(plot.position.x, ay), Vector2(plot.end.x, ay), Color(UITheme.CORAL.r, UITheme.CORAL.g, UITheme.CORAL.b, 0.65), 1.0, 5.0)
+			draw_string(font, Vector2(plot.end.x - 52, ay - 6), "音频结束", HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(UITheme.CORAL.r, UITheme.CORAL.g, UITheme.CORAL.b, 0.85))
+	var limit_y := _beat_to_y(limit_beat)
+	if limit_y > plot.position.y - 1.0 and limit_y < plot.end.y + 1.0:
+		draw_line(Vector2(plot.position.x, limit_y), Vector2(plot.end.x, limit_y), Color(1, 1, 1, 0.22), 1.5)
+	_draw_beat_subdivisions(plot, emphasize)
 	_draw_vertical_lines(plot)
 	for point in chart.timing.points:
-		if point.beat < scroll_beat or point.beat > scroll_beat + _visible_beats():
+		if point.beat < top_beat or point.beat > bottom_beat:
 			continue
 		var y := _beat_to_y(point.beat)
 		draw_line(Vector2(plot.position.x, y), Vector2(plot.end.x, y), Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, 0.55), 1.5)
-		draw_string(font, Vector2(plot.position.x + 6, y + 12), "BPM %.1f" % point.bpm, HORIZONTAL_ALIGNMENT_LEFT, -1, 10, UITheme.GOLD)
+		var text := "BPM %.1f" % point.bpm
+		var text_width := font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, 10).x
+		draw_rect(Rect2(Vector2(plot.position.x + 4, y + 1), Vector2(text_width + 6, 14)), Color(0.05, 0.06, 0.08, 0.85))
+		draw_string(font, Vector2(plot.position.x + 7, y + 12), text, HORIZONTAL_ALIGNMENT_LEFT, -1, 10, UITheme.GOLD)
 
 
 func _draw_divisions(plot: Rect2) -> void:
@@ -589,7 +741,7 @@ func _draw_divisions(plot: Rect2) -> void:
 		draw_string(font, Vector2(rect.position.x, rect.position.y + 15.0), GridDivisions.LABELS[i], HORIZONTAL_ALIGNMENT_CENTER, DIVISION_WIDTH, 10, UITheme.BG if active else Color(1, 1, 1, 0.55))
 
 
-func _draw_beat_subdivisions(plot: Rect2) -> void:
+func _draw_beat_subdivisions(plot: Rect2, emphasize: bool) -> void:
 	if _app == null:
 		return
 	var offsets := TimingMap.beat_subdivision_offsets(int(_app.beat_subdivisions))
@@ -598,15 +750,23 @@ func _draw_beat_subdivisions(plot: Rect2) -> void:
 	var first_beat := floori(scroll_beat)
 	var last_beat := ceili(scroll_beat + _visible_beats() + 1.0)
 	var points := PackedVector2Array()
+	var eighths := PackedVector2Array()
 	for beat in range(first_beat, last_beat + 1):
 		for offset in offsets:
 			var y := _beat_to_y(float(beat) + offset)
 			if y < plot.position.y - 0.5 or y > plot.end.y + 0.5:
 				continue
+			# 4/4 谱的半拍线单独抽出来画红：其余细分线保持极淡。
+			if emphasize and is_eighth_offset(offset):
+				eighths.append(Vector2(plot.position.x, y))
+				eighths.append(Vector2(plot.end.x, y))
+				continue
 			points.append(Vector2(plot.position.x, y))
 			points.append(Vector2(plot.end.x, y))
 	if points.size() >= 2:
 		draw_multiline(points, Color(1, 1, 1, 0.035), 1.0)
+	if eighths.size() >= 2:
+		draw_multiline(eighths, Color(0.769, 0.333, 0.29, 0.6), 1.5)
 
 
 func _draw_vertical_lines(plot: Rect2) -> void:
@@ -742,15 +902,6 @@ func _draw_note(note: Note, plot: Rect2) -> void:
 func _draw_tap(note: Note) -> void:
 	var y := _beat_to_y(note.beat)
 	var selected := _is_note_selected(note.id)
-	if note.space == "plane":
-		var px := _u_to_x(clampf(note.plane_x, 0.0, 1.0))
-		var point := Vector2(px, y)
-		draw_circle(point, 7.0 if selected else 6.0, Color(UITheme.CORAL.r, UITheme.CORAL.g, UITheme.CORAL.b, 0.20))
-		draw_arc(point, 6.0, 0.0, TAU, 24, UITheme.CORAL, 2.0, true)
-		draw_circle(point, 2.0, UITheme.INK)
-		if _show_type_label(note):
-			_draw_type_label("PLANE TAP", point + Vector2(9, 12), UITheme.CORAL)
-		return
 	for interval in _u_intervals(note.angle, note.arc_width()):
 		var x0 := _u_to_x(interval.x)
 		var x1 := _u_to_x(interval.y)
@@ -783,19 +934,17 @@ func _draw_hold(note: Note) -> void:
 	var straight := note.visual_pts.is_empty()
 	if straight:
 		# 制谱器里直长条画成实心矩形：宽 = 判定弧宽，长 = 拍长。
-		var plot := _plot_rect()
-		var half := note.arc_width() * 0.5
-		var x0 := _u_to_x(fposmod(note.angle - half, 360.0) / 360.0)
-		var x1 := _u_to_x(fposmod(note.angle + half, 360.0) / 360.0)
-		if x1 < x0:
-			x1 = plot.end.x
-			x0 = plot.position.x
-		var rect := Rect2(
-			Vector2(x0, minf(y0, y1)),
-			Vector2(maxf(2.0, x1 - x0), maxf(2.0, absf(y1 - y0)))
-		)
-		draw_rect(rect, Color(color.r, color.g, color.b, 0.32))
-		draw_rect(rect, Color(color.r, color.g, color.b, 0.95), false, 1.5)
+		# 弧宽跨过 0°/360° 接缝时拆成两段画（以前“x1<x0 就铺满整行”会让压接缝的 Hold 变成满屏长条）。
+		var top := minf(y0, y1)
+		var height := maxf(2.0, absf(y1 - y0))
+		for span in _u_intervals(note.angle, note.arc_width()):
+			var x0 := _u_to_x(span.x)
+			var x1 := _u_to_x(span.y)
+			if x1 - x0 < 1.0:
+				continue
+			var rect := Rect2(Vector2(x0, top), Vector2(x1 - x0, height))
+			draw_rect(rect, Color(color.r, color.g, color.b, 0.32))
+			draw_rect(rect, Color(color.r, color.g, color.b, 0.95), false, 1.5)
 	else:
 		var body := PackedVector2Array([Vector2(x, y0)])
 		for point in note.visual_pts:
@@ -847,8 +996,10 @@ func _draw_path(note: Note) -> void:
 	var head_color := PATH_CHAIN_BLUE if note.path_part > 0 else UITheme.CORAL
 	var runs: Array[PackedVector2Array] = []
 	var run := PackedVector2Array()
-	for i in 41:
-		var local := total * float(i) / 40.0
+	# 采样点数按屏幕长度走：缩小看时 41 点已经是每像素一个点，白算。
+	var steps := clampi(int(absf(y1 - y0) / 5.0) + 2, 8, 41)
+	for i in steps:
+		var local := total * float(i) / float(steps - 1)
 		if note.erased_at(local):
 			if run.size() > 1:
 				runs.append(run)
@@ -905,16 +1056,15 @@ func _draw_seek(note: Note) -> void:
 	var x1 := _u_to_x(1.0)
 	var color := UITheme.INK
 	if not note.seek_pending:
-		color = UITheme.SEEK_IN if note.seek_orien == 0 else UITheme.SEEK_OUT
+		color = UITheme.SEEK_OUT if note.seek_orien == 0 else UITheme.SEEK_IN
 	var width := 3.0 if selected else 1.6
 	draw_line(Vector2(x0, y), Vector2(x1, y), Color(color.r, color.g, color.b, 0.95), width, true)
 	if selected:
 		draw_line(Vector2(x0, y), Vector2(x1, y), Color(1, 1, 1, 0.25), width + 2.0, true)
 	if note.seek_pending:
 		return
-	# Inward arrows sit below the line; outward arrows sit above it and are
-	# deliberately small so they do not compete with the line itself.
-	var direction := 1.0 if note.seek_orien == 0 else -1.0
+	# 外在上、里在下；尖端指向滚轮方向（外 = 上滑）。
+	var direction := -1.0 if note.seek_orien == 0 else 1.0
 	var count := 12
 	for i in range(1, count):
 		var x := lerpf(x0, x1, float(i) / float(count))
@@ -925,41 +1075,18 @@ func _draw_seek(note: Note) -> void:
 			Vector2(x + 2.5, y + 1.2 * direction),
 		]), color)
 	if _show_type_label(note):
-		_draw_type_label("SEEK IN" if note.seek_orien == 0 else "SEEK OUT", Vector2(x0 + 6.0, y - 6.0), color)
-
-
-func _draw_trace(note: Note, _plot: Rect2) -> void:
-	var y0 := _beat_to_y(note.beat)
-	var y1 := _beat_to_y(note.end_beat)
-	var top := minf(y0, y1)
-	var height := maxf(12.0, absf(y1 - y0))
-	var selected := _is_note_selected(note.id)
-	var cx := _u_to_x(0.5)
-	var rect := Rect2(Vector2(cx - 24, top), Vector2(48, height))
-	draw_rect(rect, Color(UITheme.MINT.r, UITheme.MINT.g, UITheme.MINT.b, 0.12))
-	draw_rect(rect, Color(UITheme.MINT.r, UITheme.MINT.g, UITheme.MINT.b, 0.60), false, 1.0)
-	if selected:
-		draw_rect(rect, UITheme.INK, false, 1.0)
-	var mini := PackedVector2Array()
-	for point in note.trace_pts:
-		var px := float(point.get("x", 0.0))
-		var py := float(point.get("y", 0.0))
-		if note.trace_style == "slider":
-			px = px * 0.5 + 0.5
-			py = py * 0.5 + 0.5
-		var local_y := py if flow_down else 1.0 - py
-		mini.append(Vector2(cx - 20 + px * 40.0, top + 4 + local_y * maxf(4, height - 8)))
-	if mini.size() > 1:
-		draw_polyline(mini, UITheme.MINT, 2.0, true)
-	var marker_dir := 1.0 if flow_down else -1.0
-	draw_line(Vector2(cx - 19, y0 + 3.0 * marker_dir), Vector2(cx - 11, y0 + 11.0 * marker_dir), UITheme.MINT, 1.5, true)
-	draw_line(Vector2(cx - 11, y0 + 3.0 * marker_dir), Vector2(cx - 19, y0 + 11.0 * marker_dir), UITheme.MINT, 1.5, true)
-	if _show_type_label(note):
-		_draw_type_label("SLIDE" if note.trace_style == "slider" else "TRACE", Vector2(cx + 27.0, top + 10.0), UITheme.MINT)
+		_draw_type_label("SEEK OUT" if note.seek_orien == 0 else "SEEK IN", Vector2(x0 + 6.0, y - 6.0), color)
 
 
 func _draw_anchor(note: Note) -> void:
 	var p := Vector2(_u_to_x(fposmod(note.angle, 360.0) / 360.0), _beat_to_y(note.beat))
+	# 双押线：只由 id 较小的一颗画一次，连到同拍反向的伙伴。
+	var chart: Chart = _app.chart if _app != null else null
+	if chart != null:
+		var partner := chart.anchor_partner(note)
+		if partner != null and note.id < partner.id:
+			var q := Vector2(_u_to_x(fposmod(partner.angle, 360.0) / 360.0), _beat_to_y(partner.beat))
+			draw_line(p, q, Color(UITheme.VIOLET.r, UITheme.VIOLET.g, UITheme.VIOLET.b, 0.55), 1.2, true)
 	var selected := _is_note_selected(note.id)
 	_draw_diamond(p, 8.0 if selected else 6.5, UITheme.VIOLET)
 	draw_line(p + Vector2(0, -2), p + Vector2(0, 4), UITheme.VIOLET, 1.2, true)
@@ -973,12 +1100,23 @@ func _draw_anchor(note: Note) -> void:
 func _draw_bell(note: Note) -> void:
 	var p := Vector2(_u_to_x(note.center_u), _beat_to_y(note.beat))
 	var selected := _is_note_selected(note.id)
-	draw_circle(p, 8.0 if selected else 7.0, Color(UITheme.GOLD.r, UITheme.GOLD.g, UITheme.GOLD.b, 0.20))
-	draw_arc(p, 8.0 if selected else 7.0, 0.0, TAU, 28, UITheme.GOLD, 2.0, true)
-	draw_circle(p, 3.0, UITheme.GOLD)
-	draw_circle(p, 1.2, UITheme.INK)
+	# 时间轴里的金键 = 游戏内那段弧带的俯视图：白壳 + 金色核心 + 圆头。
+	var span := clampf(12.0 + note.width * 0.35, 14.0, 64.0)
+	var half := 7.0 if selected else 6.0
+	var tip := 4.5
+	if selected:
+		draw_circle(p, span * 0.5 + 9.0, Color(UITheme.KEY_YELLOW.r, UITheme.KEY_YELLOW.g, UITheme.KEY_YELLOW.b, 0.16))
+	_bell_bar(p, span + 4.0, half + 2.0, Color(0, 0, 0, 0.5))
+	_bell_bar(p, span, half, Color(1, 1, 1, 0.94))
+	_bell_bar(p, span, half * 0.62, UITheme.KEY_YELLOW)
 	if _show_type_label(note):
-		_draw_type_label("BELL", p + Vector2(10, 12), UITheme.GOLD)
+		_draw_type_label("BELL", p + Vector2(span * 0.5 + 10.0, 4.0), UITheme.KEY_YELLOW)
+
+
+func _bell_bar(p: Vector2, span: float, half: float, color: Color) -> void:
+	draw_rect(Rect2(p + Vector2(-span * 0.5, -half), Vector2(span, half * 2.0)), color)
+	draw_circle(p + Vector2(-span * 0.5, 0.0), half, color)
+	draw_circle(p + Vector2(span * 0.5, 0.0), half, color)
 
 
 func _show_type_label(note: Note) -> bool:
@@ -990,24 +1128,53 @@ func _draw_type_label(text: String, pos: Vector2, color: Color) -> void:
 
 
 func _draw_star(p: Vector2, r: float, color: Color) -> void:
-	var points := PackedVector2Array()
-	for i in 10:
-		var angle := -PI * 0.5 + TAU * float(i) / 10.0
-		var radius := r if i % 2 == 0 else r * 0.45
-		points.append(p + Vector2(cos(angle), sin(angle)) * radius)
-	points.append(points[0])
+	var points := _scaled_polygon(_unit_star(), p, r)
 	draw_polyline(points, color, 2.0, true)
 	draw_circle(p, 1.8, color)
 
 
-func _draw_hexagon(p: Vector2, r: float, color: Color) -> void:
+## 单位多边形只算一次：每帧几十个 Star/Hold 图标，重复算三角函数不值。
+static var _star_unit := PackedVector2Array()
+static var _hex_fill_unit := PackedVector2Array()
+static var _hex_outline_unit := PackedVector2Array()
+
+
+static func _unit_star() -> PackedVector2Array:
+	if _star_unit.is_empty():
+		for i in 11:
+			var angle := -PI * 0.5 + TAU * float(i % 10) / 10.0
+			var radius := 1.0 if i % 2 == 0 else 0.45
+			_star_unit.append(Vector2(cos(angle), sin(angle)) * radius)
+	return _star_unit
+
+
+static func _unit_hex_fill() -> PackedVector2Array:
+	if _hex_fill_unit.is_empty():
+		for i in 6:
+			var angle := -PI * 0.5 + TAU * float(i) / 6.0
+			_hex_fill_unit.append(Vector2(cos(angle), sin(angle)))
+	return _hex_fill_unit
+
+
+static func _unit_hex_outline() -> PackedVector2Array:
+	if _hex_outline_unit.is_empty():
+		var fill := _unit_hex_fill()
+		_hex_outline_unit = fill.duplicate()
+		_hex_outline_unit.append(fill[0])
+	return _hex_outline_unit
+
+
+static func _scaled_polygon(unit: PackedVector2Array, p: Vector2, r: float) -> PackedVector2Array:
 	var points := PackedVector2Array()
-	for i in 6:
-		var angle := -PI * 0.5 + TAU * float(i) / 6.0
-		points.append(p + Vector2(cos(angle), sin(angle)) * r)
-	draw_colored_polygon(points, color)
-	points.append(points[0])
-	draw_polyline(points, UITheme.BG, 1.5, true)
+	points.resize(unit.size())
+	for i in unit.size():
+		points[i] = p + unit[i] * r
+	return points
+
+
+func _draw_hexagon(p: Vector2, r: float, color: Color) -> void:
+	draw_colored_polygon(_scaled_polygon(_unit_hex_fill(), p, r), color)
+	draw_polyline(_scaled_polygon(_unit_hex_outline(), p, r), UITheme.BG, 1.5, true)
 	draw_circle(p, r * 0.35, UITheme.BG)
 
 
@@ -1247,7 +1414,10 @@ func _handle_wheel(event: InputEventMouseButton) -> void:
 			_app.set_vertical_stretch(_app.vertical_stretch + step)
 	else:
 		var direction := -1.0 if event.button_index == MOUSE_BUTTON_WHEEL_UP else 1.0
-		scroll_beat = maxf(0.0, scroll_beat + direction * 3.0)
+		scroll_beat = clampf(scroll_beat + direction * 3.0, 0.0, _scroll_limit())
+		if playback_pinned and playback_view == "pin":
+			# 滚轮临时脱离钉住：过一会儿自动拉回播放头。
+			_pin_resume_msec = Time.get_ticks_msec() + PIN_RESUME_MS
 	if _drag_mode == "marquee":
 		# Re-anchor the marquee's start screen point after scrolling/stretching;
 		# its stored start beat is unchanged.
@@ -1303,7 +1473,7 @@ func _snap_dragged_notes(bypass: bool) -> void:
 		if note.type == "bell":
 			note.angle = fposmod(snapped.y * 360.0, 360.0)
 			note.center_u = snapped.y
-		elif note.type not in ["trace", "seek"]:
+		elif note.type != "seek":
 			note.angle = fposmod(note.angle + angle_delta, 360.0)
 			if note.type == "path":
 				note.tail_angle = fposmod(note.tail_angle + angle_delta, 360.0)
@@ -1476,11 +1646,11 @@ func _hit_test(pos: Vector2) -> Dictionary:
 		if note.type == "seek":
 			if absf(pos.y - _beat_to_y(note.beat)) <= 8.0:
 				return {"kind": "note", "id": note.id, "part": "body"}
-		if note.type == "hold" or note.type == "trace":
+		if note.type == "hold":
 			var y0 := _beat_to_y(note.beat)
 			var y1 := _beat_to_y(note.end_beat)
 			if pos.y >= minf(y0, y1) - 4 and pos.y <= maxf(y0, y1) + 4:
-				var body_x := _u_to_x(fposmod(note.angle, 360.0) / 360.0) if note.type != "trace" else _u_to_x(0.5)
+				var body_x := _u_to_x(fposmod(note.angle, 360.0) / 360.0)
 				if absf(pos.x - body_x) < 8.0:
 					return {"kind": "note", "id": note.id, "part": "body"}
 	for region in chart.regions:
@@ -1544,13 +1714,10 @@ func _note_positions(note: Note) -> Array[Dictionary]:
 			if tail_local.length() > 0.0001:
 				tail_angle = rad_to_deg(atan2(tail_local.y, tail_local.x))
 			result.append({"point": Vector2(_u_to_x(fposmod(tail_angle, 360.0) / 360.0), _beat_to_y(note.end_beat)), "part": "tail"})
-		"trace":
-			result.append({"point": Vector2(_u_to_x(0.5), _beat_to_y(note.beat)), "part": "head"})
 		"bell":
 			result.append({"point": Vector2(_u_to_x(note.center_u), _beat_to_y(note.beat)), "part": "head"})
 		"tap":
-			var tap_x := _u_to_x(clampf(note.plane_x, 0.0, 1.0)) if note.space == "plane" else _u_to_x(fposmod(note.angle, 360.0) / 360.0)
-			result.append({"point": Vector2(tap_x, _beat_to_y(note.beat)), "part": "head"})
+			result.append({"point": Vector2(_u_to_x(fposmod(note.angle, 360.0) / 360.0), _beat_to_y(note.beat)), "part": "head"})
 		_:
 			result.append({"point": Vector2(_u_to_x(fposmod(note.angle, 360.0) / 360.0), _beat_to_y(note.beat)), "part": "head"})
 	return result
@@ -1586,15 +1753,6 @@ func _drag_notes_update(screen: Vector2, event: InputEventMouseMotion) -> void:
 	for item in _drag_notes:
 		var note: Note = item["note"]
 		if note.lock:
-			continue
-		if note.type == "anchor":
-			note.beat = maxf(0.0, _snap_beat_to_subdivision(float(item["beat"]) + delta_beat, event.alt_pressed))
-			continue
-		if note.type == "trace":
-			var new_beat := maxf(0.0, _snap_beat_to_subdivision(float(item["beat"]) + delta_beat, event.alt_pressed))
-			var offset := new_beat - note.beat
-			note.beat = new_beat
-			note.end_beat = maxf(note.beat + 0.25, float(item["end"]) + offset)
 			continue
 		var new_beat := maxf(0.0, _snap_beat_to_subdivision(float(item["beat"]) + delta_beat, event.alt_pressed))
 		var new_angle := fposmod(float(item["angle"]) + delta_u * 360.0, 360.0)
@@ -1648,19 +1806,23 @@ func _create_simple(type: String, beat: float, u: float) -> void:
 	var chart: Chart = _app.chart
 	if chart == null:
 		return
-	var note := Note.new(type, beat, u * 360.0, 60.0)
-	note.id = chart.next_note_id()
+	var added: Array[Note] = []
 	if type == "anchor":
-		note.width = 0.0
-		note.anchor_pair = -1
-	elif type == "bell":
-		note.width = 0.0
-		note.center_u = u
-		note.radius = 26.0
+		# Anchor 是双押配置：一次放两颗同拍反向的锚点。
+		added = chart.make_anchor_pair(beat, u * 360.0)
+	else:
+		var note := Note.new(type, beat, u * 360.0, 60.0)
+		note.id = chart.next_note_id()
+		if type == "bell":
+			note.width = 0.0
+			note.center_u = u
+			note.radius = 26.0
+		added = [note]
 	_app.begin_edit()
-	chart.notes.append(note)
+	for item in added:
+		chart.notes.append(item)
 	_app.finish_edit()
-	_app.select_note(note.id)
+	_app.select_note(added[0].id)
 
 
 func _create_sized_tap(beat: float, u: float) -> void:
@@ -1890,7 +2052,7 @@ func _note_in_marquee(note: Note) -> bool:
 	for item in _note_positions(note):
 		if _circle_hits_marquee(item["point"], _note_point_radius(note, String(item.get("part", "head")))):
 			return true
-	if note.type in ["tap", "hold", "path"] and (note.type != "tap" or note.space != "plane"):
+	if note.type in ["tap", "hold", "path"]:
 		var head_width := note.width if note.type == "path" else note.arc_width()
 		if _arc_hits_marquee(note.angle, head_width, _beat_to_y(note.beat)):
 			return true
@@ -1916,11 +2078,11 @@ func _note_in_marquee(note: Note) -> bool:
 		var seek_y := _beat_to_y(note.beat)
 		if _marquee.intersects(Rect2(Vector2(_u_to_x(0.0), seek_y - 4.0), Vector2(_u_to_x(1.0) - _u_to_x(0.0), 8.0))):
 			return true
-	if note.type == "hold" or note.type == "trace":
+	if note.type == "hold":
 		var y0 := _beat_to_y(note.beat)
 		var y1 := _beat_to_y(note.end_beat)
-		var body_x := _u_to_x(0.5) if note.type == "trace" else _u_to_x(fposmod(note.angle, 360.0) / 360.0)
-		var half_width := 24.0 if note.type == "trace" else 8.0
+		var body_x := _u_to_x(fposmod(note.angle, 360.0) / 360.0)
+		var half_width := 8.0
 		var body := Rect2(Vector2(body_x - half_width, minf(y0, y1)), Vector2(half_width * 2.0, maxf(2.0, absf(y1 - y0))))
 		if _marquee.intersects(body):
 			return true
@@ -1932,8 +2094,6 @@ func _note_point_radius(note: Note, part: String) -> float:
 		return 7.0 if part == "tail" else 9.0
 	if note.type == "hold" or note.type == "tap":
 		return 9.0
-	if note.type == "trace":
-		return 7.0
 	return 8.0
 
 
@@ -2020,7 +2180,9 @@ func _delete_selection() -> void:
 		return
 	var chart: Chart = _app.chart
 	_app.begin_edit()
-	var note_ids: Array = _app.selected_notes.duplicate()
+	var note_ids: Array = []
+	for note in _app.selection_with_partners():
+		note_ids.append(note.id)
 	for note in chart.notes.duplicate():
 		if note_ids.has(note.id):
 			chart.notes.erase(note)

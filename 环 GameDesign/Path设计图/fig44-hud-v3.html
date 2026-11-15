@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><style>
+/* Tamaki₃ 示意图共用样式：与 Path设计图 fig01–08 同一套配色 */
+:root{
+  --bg:#0A0B10; --panel:#12141C; --panel2:#191C25; --line:#2A2E38;
+  --ink:#F4EFE9; --paper:#E4D9CB; --red:#FF6242; --amber:#FFC08A;
+  --cyan:#5FD3D0; --muted:#9A948C; --faint:#5F5A55;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:1200px;height:760px;overflow:hidden}
+body{
+  background:radial-gradient(120% 90% at 50% 0%,#141722 0%,#0A0B10 62%);
+  color:var(--ink);
+  font-family:"Noto Sans CJK SC","Microsoft YaHei",sans-serif;
+  padding:44px 48px 0;
+  display:flex;flex-direction:column;
+}
+.kicker{font-family:"DejaVu Sans Mono",monospace;font-size:12px;letter-spacing:3px;color:var(--cyan)}
+h1{font-size:27px;font-weight:700;letter-spacing:.5px;margin-top:8px}
+.sub{font-size:14px;color:var(--muted);margin-top:6px}
+.body{flex:1;margin-top:24px;position:relative}
+.legend{
+  position:absolute;left:0;right:0;bottom:34px;height:52px;
+  background:var(--panel);border-radius:8px;
+  display:flex;align-items:center;gap:26px;padding:0 18px;
+}
+.legend span{font-size:13px;color:var(--ink);display:flex;align-items:center;gap:8px}
+.dot{width:11px;height:11px;border-radius:3px;display:inline-block}
+.note{position:absolute;left:0;bottom:0;font-size:12px;color:var(--faint)}
+table{width:100%;border-collapse:collapse;font-size:13.5px}
+th{
+  text-align:left;font-weight:600;color:var(--muted);font-size:12px;
+  letter-spacing:1px;padding:8px 10px;border-bottom:1px solid var(--line);
+  font-family:"DejaVu Sans Mono",monospace;text-transform:uppercase;
+}
+td{padding:9px 10px;border-bottom:1px solid #1D2029;color:var(--paper);vertical-align:top}
+td.k{color:var(--ink);font-weight:600;white-space:nowrap}
+td .mono{font-family:"DejaVu Sans Mono",monospace;font-size:12px;color:var(--amber)}
+td .dim{color:var(--muted)}
+.pill{display:inline-block;padding:1px 7px;border-radius:9px;font-size:11.5px;line-height:18px}
+.yes{background:rgba(255,98,66,.16);color:#FF9A80}
+.no{background:rgba(95,211,208,.13);color:var(--cyan)}
+.half{background:rgba(255,192,138,.14);color:var(--amber)}
+
+</style>
+<title>HUD v3 三区布局</title></head>
+<body>
+<div class="kicker">TAMAKI₃ / HUD</div>
+<h1>HUD v3：数据退到两侧，中间只留 Combo</h1>
+<div class="sub">环外一圈进度弧负责“还剩多少”，判定字仍出在命中角，不用抬头找数字。</div>
+<div class="body">
+<svg viewBox="0 0 1100 430" width="1100" height="430">
+  <g transform="translate(550,225)">
+    <!-- 外圈进度 -->
+    <circle r="204" fill="none" stroke="#FFFFFF" stroke-opacity="0.10" stroke-width="8"/>
+    <path d="M 0,-204 A 204,204 0 0 1 176,-103" fill="none" stroke="#F4EFE9" stroke-opacity="0.78"
+      stroke-width="8" stroke-linecap="round"/>
+    <!-- 判定边界 -->
+    <circle r="170" fill="none" stroke="#5FD3D0" stroke-opacity="0.55" stroke-width="3"/>
+    <circle r="150" fill="none" stroke="#5F5A55" stroke-opacity="0.45" stroke-width="1" stroke-dasharray="4 6"/>
+    <!-- 命中角 -->
+    <g transform="rotate(-38)">
+      <rect x="-26" y="-176" width="52" height="10" rx="5" fill="#FF6242"/>
+      <text x="0" y="-192" text-anchor="middle" fill="#FF6242" font-family="DejaVu Sans Mono" font-size="12">PERFECT</text>
+      <text x="0" y="-206" text-anchor="middle" fill="#9A948C" font-family="DejaVu Sans Mono" font-size="10">FULL</text>
+    </g>
+    <!-- 中心 Combo -->
+    <text x="0" y="6" text-anchor="middle" fill="#F4EFE9" font-family="DejaVu Sans Mono" font-size="76" font-weight="700">128</text>
+    <text x="0" y="34" text-anchor="middle" fill="#9A948C" font-family="DejaVu Sans Mono" font-size="12" letter-spacing="4">COMBO</text>
+    <text x="0" y="70" text-anchor="middle" fill="#FFC08A" font-family="DejaVu Sans Mono" font-size="12" letter-spacing="3">AUTO</text>
+  </g>
+  <!-- 左侧曲目列 -->
+  <g font-family="Noto Sans CJK SC" font-size="13">
+    <text x="70" y="150" fill="#9A948C" font-family="DejaVu Sans Mono" font-size="11" letter-spacing="2">TRACK</text>
+    <text x="70" y="182" fill="#F4EFE9" font-size="21" font-weight="700">夜に駆ける</text>
+    <rect x="70" y="196" width="54" height="22" rx="11" fill="none" stroke="#5FD3D0"/>
+    <text x="97" y="212" fill="#5FD3D0" font-size="12" text-anchor="middle">MASTER</text>
+    <text x="70" y="248" fill="#9A948C" font-family="DejaVu Sans Mono" font-size="11">进度 42%</text>
+    <text x="70" y="268" fill="#9A948C" font-family="DejaVu Sans Mono" font-size="11">01:12 / 02:51</text>
+  </g>
+  <!-- 右侧成绩列 -->
+  <g>
+    <text x="790" y="150" fill="#9A948C" font-family="DejaVu Sans Mono" font-size="11" letter-spacing="2">ACCURACY</text>
+    <text x="790" y="196" fill="#F4EFE9" font-family="DejaVu Sans Mono" font-size="40" font-weight="700">98.72%</text>
+    <rect x="948" y="166" width="34" height="26" rx="6" fill="none" stroke="#FFC08A"/>
+    <text x="965" y="185" fill="#FFC08A" font-family="DejaVu Sans Mono" font-size="15" text-anchor="middle" font-weight="700">S</text>
+    <text x="790" y="238" fill="#9A948C" font-family="Noto Sans CJK SC" font-size="12">评级与准确率分离显示</text>
+  </g>
+  <!-- 标注 -->
+  <g stroke="#5F5A55" stroke-width="1" fill="none">
+    <line x1="520" y1="20" x2="520" y2="52"/>
+    <line x1="346" y1="225" x2="300" y2="225"/>
+  </g>
+  <text x="520" y="14" fill="#9A948C" font-family="DejaVu Sans Mono" font-size="11" text-anchor="middle">1.20R 环外进度弧</text>
+  <text x="294" y="229" fill="#9A948C" font-family="DejaVu Sans Mono" font-size="11" text-anchor="end">判定边界</text>
+</svg>
+<div class="legend">
+  <span><i class="dot" style="background:#FF6242"></i>命中角：时间档 + Path 状态</span>
+  <span><i class="dot" style="background:#F4EFE9"></i>中心 Combo</span>
+  <span><i class="dot" style="background:#5FD3D0"></i>曲目列</span>
+  <span><i class="dot" style="background:#FFC08A"></i>成绩列</span>
+</div>
+<div class="note">缩放、连击位置、仪表、判定字位置、透明度、左上内容都可在试玩设置里单独开关。</div>
+</div>
+</body></html>

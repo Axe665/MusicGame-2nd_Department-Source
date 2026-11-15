@@ -230,7 +230,7 @@ func _apply_analysis(result: Dictionary) -> void:
 	_offset.value = clampf(offset, _offset.min_value, _offset.max_value)
 	var confidence := int(round(float(result.get("confidence", 0.0)) * 100.0))
 	var duration := float(result.get("duration_ms", 0.0)) / 1000.0
-	_analysis_label.text = "自动测量：BPM %.3f · offset %.3f ms · 置信度 %d%% · 时长 %.2fs" % [
+	_analysis_label.text = "自动测量：BPM %.3f，offset %.3f ms，置信度 %d%%，时长 %.2fs" % [
 		_bpm.value, _offset.value, confidence, duration,
 	]
 	_analysis_label.add_theme_color_override("font_color", UITheme.CYAN)
@@ -249,7 +249,15 @@ func _on_confirmed() -> void:
 	if _audio.text.strip_edges().is_empty():
 		_error.text = "音频为必填项。"
 		return
-	var prepared := MediaIO.prepare_audio(_audio.text.strip_edges())
+	var audio_path := _audio.text.strip_edges()
+	var prepared := audio_path
+	if not MediaIO.is_native_audio(audio_path) and not FileAccess.file_exists(MediaIO.audio_cache_path(audio_path)):
+		_error.text = "正在转码音频…"
+		prepared = await MediaIO.prepare_audio_async(audio_path, get_tree())
+	else:
+		prepared = MediaIO.prepare_audio(audio_path)
+	if not is_inside_tree():
+		return
 	if prepared.is_empty():
 		_error.text = "无法读取音频：%s（%s）" % [_audio.text, MediaIO.last_error]
 		return

@@ -1,12 +1,30 @@
 class_name Inspector
 extends TabContainer
 
+const BellPreviewScript = preload("res://charter/bell_preview.gd")
+const HoldPreviewScript = preload("res://charter/hold_preview.gd")
+
+
+## 通用「宽度」行：Tap/Hold 的环上弧宽由它 × 长度比例决定。
+## 通用「宽度」行：Tap/Hold 的环上弧宽由它 × 长度比例决定。
+## Bell 用专属「弧宽」；Limit 在区域页。
+static func shows_width_row(note_type: String) -> bool:
+	return note_type in ["tap", "hold"]
+
+
+## 通用「长度 ×l」行只给 Tap；改了就变成大小 Tap。
+static func shows_length_row(note_type: String) -> bool:
+	return note_type == "tap"
+
 var _app: Node = null
 var _pages: Dictionary = {}
 var _page_list: Array[VBoxContainer] = []
 var _applying: bool = false
 var _rebuilding: bool = false
 var _video_dialog: FileDialog
+var _video_progress: AcceptDialog
+var _video_progress_bar: ProgressBar
+var _video_progress_label: Label
 var _selected_timing: int = 0
 var _selected_visual: int = 0
 var _note_page_ready: bool = false
@@ -39,7 +57,7 @@ func _ready() -> void:
 
 
 func _build_tabs() -> void:
-	for title in ["音符", "区域", "边界", "事件", "视图", "时间", "谱面"]:
+	for title in ["音符", "区域", "视图", "时间", "谱面"]:
 		var scroll := ScrollContainer.new()
 		scroll.name = title
 		scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -62,22 +80,18 @@ func _on_selection_changed() -> void:
 		current_tab = 0
 	elif _app.selected_region_id >= 0:
 		current_tab = 1
-	elif not _app.selected_event_id.is_empty():
-		current_tab = 3
 	_rebuild()
 
 
 func _on_chart_changed() -> void:
+	if _app != null and _app.ring_editor_open:
+		return
 	if not _applying:
 		_rebuild()
 
 
 func _on_tool_changed(tool: String) -> void:
-	if tool == "boundary":
-		current_tab = 2
-	elif tool == "event":
-		current_tab = 3
-	elif tool == "limit":
+	if tool == "limit":
 		current_tab = 1
 	_rebuild()
 
@@ -112,14 +126,10 @@ func _rebuild() -> void:
 		1:
 			_build_region_page(_pages["区域"])
 		2:
-			_build_boundary_page(_pages["边界"])
-		3:
-			_build_event_page(_pages["事件"])
-		4:
 			_build_view_page(_pages["视图"])
-		5:
+		3:
 			_build_timing_page(_pages["时间"])
-		6:
+		4:
 			_build_chart_page(_pages["谱面"])
 	refresh_tab_titles()
 	_rebuilding = false
@@ -129,13 +139,14 @@ func refresh_tab_titles() -> void:
 	if _app == null:
 		return
 	var note_count: int = _app.selected_notes.size()
-	set_tab_title(0, "音符" if note_count == 0 else "音符 · %d" % note_count)
-	set_tab_title(1, "区域" if _app.selected_region_id < 0 else "区域 · %d" % _app.selected_region_id)
-	set_tab_title(2, "边界")
-	set_tab_title(3, "事件" if _app.selected_event_id.is_empty() else "事件 · %s" % _app.selected_event_id)
-	set_tab_title(4, "视图/设置")
-	set_tab_title(5, "时间")
-	set_tab_title(6, "谱面")
+	# 环相关编辑都在「环编辑」工作区；这里保留音符/区域/视图/时间/谱面。
+	set_tab_title(0, "音符")
+	set_tab_title(1, "区域" if _app.selected_region_id < 0 else "区域 %d" % _app.selected_region_id)
+	set_tab_title(2, "视图")
+	set_tab_title(3, "时间")
+	set_tab_title(4, "谱面")
+	if note_count > 0:
+		set_tab_title(0, "音符 %d" % note_count)
 
 
 func _empty(title: String, hint: String) -> void:
@@ -316,6 +327,14 @@ func _buttons(page: VBoxContainer, specs: Array[Dictionary]) -> HBoxContainer:
 	return row
 
 
+func _quality_changed() -> void:
+	_app.quality_preset = "custom"
+	_app.save_settings()
+	_app.apply_visual_quality()
+	_app.appearance_changed.emit()
+	call_deferred("_rebuild")
+
+
 func _apply(callback: Callable) -> void:
 	if _app == null:
 		return
@@ -400,6 +419,8 @@ func _build_note_page_for(page: VBoxContainer, note: Note) -> void:
 		var n := _active_note
 		if n != null:
 			n.end_beat = maxf(n.beat + 0.25, value)
+			if n.type == "path":
+				n.wait_beat = clampf(n.wait_beat, 0.0, maxf(0.0, n.duration() - 0.001))
 	)
 	_note_widgets["end"] = end_edit
 	_remember_row("end", end_edit)
@@ -416,23 +437,31 @@ func _build_note_page_for(page: VBoxContainer, note: Note) -> void:
 	)
 	_note_widgets["angle"] = angle_spin
 	_remember_row("angle", angle_spin)
-	var width_spin := _spin(common, "宽度", note.width, 0.0, 360.0, 1.0, func(value: float) -> void:
+	var width_spin := _spin(common, "基础宽度 °", note.width, 0.0, 360.0, 1.0, func(value: float) -> void:
 		if _active_note != null:
 			_active_note.width = value
+			if _active_note.type == "hold" and _note_widgets.has("hold_preview"):
+				_note_widgets["hold_preview"].set_state(_active_note.arc_width(), _active_note.duration())
+			_update_tap_formula()
 	)
+	width_spin.tooltip_text = "基础宽度：实际弧宽 = 基础宽度 × 长度倍率；普通 Tap/Hold 60° × 0.50 = 30°"
 	_note_widgets["width"] = width_spin
 	_remember_row("width", width_spin)
 	# 大小 Tap：到判定环的长度，单位是 l（旧版 tap 的长度）。0.00–1.50，两位小数。
-	var length_spin := _spin(common, "长度 ×l", note.length_ratio(), Note.SIZED_TAP_MIN, Note.SIZED_TAP_MAX, 0.01, func(value: float) -> void:
+	var length_spin := _spin(common, "长度倍率 ×l", note.length_ratio(), Note.SIZED_TAP_MIN, Note.SIZED_TAP_MAX, 0.01, func(value: float) -> void:
 		if _active_note != null and _active_note.type == "tap":
 			_active_note.set_size_ratio(value)
+			_update_tap_formula()
 	)
+	length_spin.tooltip_text = "0.50 = 普通 Tap；1.00 = 与基础宽度相同；1.50 = 1.5 倍。改离 0.50 会变成大小 Tap"
 	_note_widgets["length"] = length_spin
 	_remember_row("length", length_spin)
-	var tap_group := _note_group(page, "tapsize", "长度")
-	_label(tap_group, "Tap 与 Hold 头默认 0.50 l；把“长度 ×l”改掉就变成可调长度的 Tap（0.00–1.50 l，两位小数）；环心出现时是 1/6 l。", 11, UITheme.MUTED)
+	var tap_group := _note_group(page, "tapsize", "Tap 长度（大小 Tap）")
+	_label(tap_group, "实际弧宽 = 基础宽度 × 长度倍率。普通 Tap 固定 0.50 l；改长度倍率会变成「大小 Tap」，谱面会记住自定义长度。环心出现时是 1/6 l。", 11, UITheme.MUTED)
+	var tap_formula := _label(tap_group, "", 11, UITheme.CYAN)
+	_note_widgets["tap_formula"] = tap_formula
 	_buttons(tap_group, [
-		{"text": "恢复 0.5 l", "callback": func() -> void:
+		{"text": "恢复普通 Tap（0.50 l）", "callback": func() -> void:
 			if _active_note != null and _active_note.type == "tap":
 				_apply(func() -> void:
 					_active_note.sized = false
@@ -441,35 +470,30 @@ func _build_note_page_for(page: VBoxContainer, note: Note) -> void:
 				_refresh_note_page()},
 	])
 
-	var plane := _note_group(page, "plane", "平面音符")
-	var px := _spin(plane, "平面 x", note.plane_x, 0.0, 1.0, 0.001, func(value: float) -> void:
-		if _active_note != null:
-			_active_note.plane_x = value
-	)
-	_note_widgets["plane_x"] = px
-	var py := _spin(plane, "平面 y", note.plane_y, 0.0, 1.0, 0.001, func(value: float) -> void:
-		if _active_note != null:
-			_active_note.plane_y = value
-	)
-	_note_widgets["plane_y"] = py
-	var pr := _spin(plane, "判定半径", note.plane_radius, 0.02, 0.3, 0.005, func(value: float) -> void:
-		if _active_note != null:
-			_active_note.plane_radius = value
-	)
-	_note_widgets["plane_r"] = pr
-	_label(plane, "平面 Tap：按 osu 原 2D 坐标；鼠标进入半径 + 按键判定，不占用环上角度。", 11, UITheme.MUTED)
-
-	var bell := _note_group(page, "bell", "Bell")
+	var bell := _note_group(page, "bell", "金键 Bell")
 	var bu := _spin(bell, "中心 u", note.center_u, 0.0, 0.9999, 0.001, func(value: float) -> void:
 		if _active_note != null:
 			_active_note.center_u = value
 	)
 	_note_widgets["bell_u"] = bu
+	var bw := _spin(bell, "弧宽 °", note.bell_width(), Note.BELL_MIN_WIDTH, Note.BELL_MAX_WIDTH, 1.0, func(value: float) -> void:
+		if _active_note != null:
+			_active_note.width = value
+		if _note_widgets.has("bell_preview"):
+			_note_widgets["bell_preview"].set_arc_width(value)
+	)
+	_note_widgets["bell_w"] = bw
 	var br := _spin(bell, "半径 px", note.radius, 4.0, 200.0, 1.0, func(value: float) -> void:
 		if _active_note != null:
 			_active_note.radius = value
 	)
 	_note_widgets["bell_r"] = br
+	_label(bell, "金键：白描边 + 金色核心 + 圆头；光标贴住即算在场（±100ms，触碰会立刻锁定），不用点。「弧宽」和 Tap 到环时的 31° 同级（24–30°），决定可见与判定长度。", 11, UITheme.MUTED)
+	var bell_preview := BellPreviewScript.new()
+	bell_preview.name = "BellShapePreview"
+	bell_preview.set_arc_width(note.bell_width())
+	bell.add_child(bell_preview)
+	_note_widgets["bell_preview"] = bell_preview
 
 	if note.type == "path":
 		note.derive_path_controls()
@@ -588,6 +612,14 @@ func _build_note_page_for(page: VBoxContainer, note: Note) -> void:
 	# New, minimal Path editor. The legacy controls above stay built for data
 	# compatibility but are hidden; authors now edit centrifuge + axis + parts.
 	var path_edit := _note_group(page, "path_edit", "Path")
+	var wait_edit := _spin(path_edit, "等待拍数", note.wait_beat, 0.0, maxf(0.0, note.duration() - 0.001), 0.125, func(value: float) -> void:
+		if _active_note != null:
+			_active_note.wait_beat = clampf(value, 0.0, maxf(0.0, _active_note.duration() - 0.001))
+	)
+	wait_edit.allow_greater = false
+	wait_edit.tooltip_text = "从头部落点到星星起划的拍数；包含在总时长内。0 表示立即起划。"
+	_note_widgets["path_wait"] = wait_edit
+	_label(path_edit, "等待包含在总时长内；增加等待会缩短滑动时间。链式 Path 的启动提示使用 part0 的等待。", 10, UITheme.MUTED)
 	var centrifuge := _spin_slider(path_edit, "尾部离心 centrifuge", note.path_centrifuge, 0.0, 1.0, 0.01, func(value: float) -> void:
 		var n := _active_note
 		if n != null:
@@ -650,91 +682,67 @@ func _build_note_page_for(page: VBoxContainer, note: Note) -> void:
 	_label(path_edit, "右键单击 Path 尾部可在该处新建 part；各 part 可分别编辑，预览中整条链共用 part0 的星星。", 10, UITheme.MUTED)
 
 	var hold_body := _note_group(page, "hold", "Hold")
-	var hold_style_label := _label(hold_body, "", 11, UITheme.MUTED)
-	_note_widgets["hold_style_label"] = hold_style_label
-	# 弯长条先删掉：它的功能和星星（Path）重合，目前只保留直 Hold。
-	_label(hold_body, "直 Hold：从圆心张开成扇形，尾部收到判定线时变窄消失。", 11, UITheme.MUTED)
-	var hold_list := ItemList.new()
-	hold_list.custom_minimum_size = Vector2(0, 88)
-	hold_list.item_selected.connect(func(index: int) -> void:
-		_selected_visual = index
-		_refresh_note_page()
-	)
-	hold_body.add_child(hold_list)
-	_note_widgets["hold_list"] = hold_list
-	_buttons(hold_body, [
-		{"text": "加体节点", "callback": func() -> void: _add_visual_point(_active_note)},
-		{"text": "删体节点", "callback": func() -> void: _delete_visual_point(_active_note)},
-	])
-	var hdb := _spin(hold_body, "Δbeat", 0.0, 0.0, 1.0, 0.01, func(value: float) -> void:
-		var n := _active_note
-		if n != null and _selected_visual >= 0 and _selected_visual < n.visual_pts.size():
-			n.visual_pts[_selected_visual]["db"] = value
-	)
-	_note_widgets["hold_db"] = hdb
-	_remember_row("hold_db", hdb)
-	var hda := _spin(hold_body, "Δangle", 0.0, -720.0, 720.0, 0.5, func(value: float) -> void:
-		var n := _active_note
-		if n != null and _selected_visual >= 0 and _selected_visual < n.visual_pts.size():
-			n.visual_pts[_selected_visual]["da"] = value
-	)
-	_note_widgets["hold_da"] = hda
-	_remember_row("hold_da", hda)
-	_label(hold_body, "节点只改画面，不改 Hold 头部判定；在预览里拖动金色菱形。", 11, UITheme.MUTED)
-
-	var trace_body := _note_group(page, "trace", "Trace")
-	var move := _spin(trace_body, "移动距离 px", note.move_px, 0.0, 1000.0, 1.0, func(value: float) -> void:
-		if _active_note != null:
-			_active_note.move_px = value
-	)
-	_note_widgets["trace_move"] = move
-	var trace_label := _label(trace_body, "", 11, UITheme.MUTED)
-	_note_widgets["trace_label"] = trace_label
-	_buttons(trace_body, [
-		{"text": "重画 Trace", "callback": func() -> void: _app.set_tool("trace")},
-		{"text": "贴到环上", "callback": func() -> void: _set_trace_space("ring")},
-		{"text": "改成平面", "callback": func() -> void: _set_trace_space("plane")},
-	])
-	_label(trace_body, "贴环 = 轨迹压到外缘半径 1.0；平面 = 保留点自己的半径。两者共用同一套绘制。", 11, UITheme.MUTED)
+	_label(hold_body, "实际弧宽 = 基础宽度 × 0.50（Hold 头固定）；预览按 1 拍身体展示，改上面的「基础宽度」会实时变。", 11, UITheme.MUTED)
+	var hold_preview := HoldPreviewScript.new()
+	hold_preview.name = "HoldShapePreview"
+	hold_preview.set_state(note.arc_width(), note.duration())
+	hold_body.add_child(hold_preview)
+	_note_widgets["hold_preview"] = hold_preview
 
 	var anchor_body := _note_group(page, "anchor", "Anchor")
-	var pair := _spin(anchor_body, "配对角度", note.anchor_pair, -1.0, 90.0, 90.0, func(value: float) -> void:
-		if _active_note != null:
-			_active_note.anchor_pair = int(value)
-	)
-	_note_widgets["anchor_pair"] = pair
 	var pair_id := _text(anchor_body, "pairId", note.pair_id, func(value: String) -> void:
 		if _active_note != null:
+			var partner: Note = _app.chart.anchor_partner(_active_note) if _app != null and _app.chart != null else null
 			_active_note.pair_id = value
+			if partner != null:
+				partner.pair_id = value
 	)
 	_note_widgets["anchor_pair_id"] = pair_id
 	_buttons(anchor_body, [{"text": "创建反向配对", "callback": func() -> void:
 		if _active_note != null:
 			_add_anchor_pair(_active_note)
 	}])
-	_label(anchor_body, "Anchor 只判时间；配对需同拍反向。", 11, UITheme.MUTED)
+	_label(anchor_body, "双押配置：同拍两颗、180° 反向；试玩时瞄准任一锚点、同时按两个键。", 11, UITheme.MUTED)
 
 	var seek_body := _note_group(page, "seek", "Seek")
-	var seek_orien := _option(seek_body, "朝向", ["里", "外"], note.seek_orien, func(index: int) -> void:
+	var seek_orien := _option(seek_body, "朝向", ["外", "里"], note.seek_orien, func(index: int) -> void:
 		if _active_note != null:
 			_active_note.seek_orien = 1 if index == 1 else 0
 			_active_note.seek_pending = false
 	)
 	_note_widgets["seek_orien"] = seek_orien
-	_label(seek_body, "里 = 滚轮上滑；外 = 滚轮下滑。", 11, UITheme.MUTED)
+	_label(seek_body, "外 = 滚轮上滑；里 = 滚轮下滑。", 11, UITheme.MUTED)
 
 	var misc := _note_group(page, "misc", "通用")
-	var color := _spin(misc, "颜色槽", note.color, 0.0, 15.0, 1.0, func(value: float) -> void:
+	var color_group := _option(misc, "配色组", ["默认"], 0, func(index: int) -> void:
 		if _active_note != null:
-			_active_note.color = int(value)
+			_active_note.color = index
 	)
-	_note_widgets["color"] = color
+	_note_widgets["color_group"] = color_group
+	var custom := ColorPickerButton.new()
+	custom.edit_alpha = false
+	custom.custom_minimum_size = Vector2(64, 24)
+	custom.color_changed.connect(func(value: Color) -> void:
+		if _applying or _active_note == null:
+			return
+		_apply(func() -> void:
+			_active_note.custom_color = value
+			_active_note.has_custom_color = true
+		)
+	)
+	_note_widgets["custom_color"] = custom
+	_note_rows["custom_color"] = _row(misc, "自定义色", custom)
 	var lock := _check(misc, "锁定（不可拖动）", note.lock, func(value: bool) -> void:
 		if _active_note != null:
 			_active_note.lock = value
 	)
 	_note_widgets["lock"] = lock
 	_buttons(misc, [
+		{"text": "清除自定义色", "callback": func() -> void:
+			if _active_note != null:
+				_apply(func() -> void: _active_note.has_custom_color = false)},
+		{"text": "管理配色…", "callback": func() -> void:
+			current_tab = 4},
 		{"text": "定位播放头", "callback": func() -> void:
 			if _active_note != null:
 				_app.set_playhead(_active_note.beat)},
@@ -795,29 +803,37 @@ func _refresh_note_page() -> void:
 	_note_widgets["angle"].value = note.angle
 	_note_widgets["width"].value = note.width
 	_note_widgets["length"].value = note.length_ratio()
+	_update_tap_formula()
 	var is_bell := note.type == "bell"
 	_note_rows["end"].visible = note.type in ["hold", "path"]
 	_note_rows["angle"].visible = note.type in ["tap", "hold", "path", "anchor", "bell"]
-	_note_rows["width"].visible = false
-	_note_rows["length"].visible = false
+	_note_rows["width"].visible = shows_width_row(note.type)
+	_note_rows["length"].visible = shows_length_row(note.type)
 	_note_groups["common"].visible = true
 	_note_groups["misc"].visible = true
-	_note_widgets["color"].get_parent().visible = false
-	_note_widgets["lock"].get_parent().visible = false
-	_note_groups["tapsize"].visible = false
-	_note_groups["plane"].visible = false
-	_note_groups["bell"].visible = false
+	var can_color := note.supports_custom_color()
+	var group_option: OptionButton = _note_widgets["color_group"]
+	group_option.clear()
+	group_option.add_item("默认")
+	for index in range(_app.chart.palette.size()):
+		group_option.add_item(_app.chart.palette_name(index + 1))
+	group_option.selected = clampi(note.color, 0, maxi(0, group_option.item_count - 1))
+	_note_widgets["color_group"].get_parent().visible = can_color
+	_note_rows["custom_color"].visible = can_color
+	var fallback := UITheme.PINK if note.type == "tap" else (UITheme.GOLD if note.type == "hold" else Note.DEFAULT_PATH_COLOR)
+	_note_widgets["custom_color"].color = note.resolved_color(_app.chart, fallback)
+	# 锁定是 _check 直接挂在组体上的；恢复显示，不改组体。
+	_note_widgets["lock"].visible = true
+	_note_groups["tapsize"].visible = shows_length_row(note.type)
+	_note_groups["bell"].visible = is_bell
 	_note_groups["path"].visible = false
 	_note_groups["path_edit"].visible = note.type == "path"
-	_note_groups["hold"].visible = false
-	_note_groups["trace"].visible = false
+	_note_groups["hold"].visible = note.type == "hold"
 	_note_groups["seek"].visible = note.type == "seek"
 	_note_groups["anchor"].visible = note.type == "anchor"
-	_note_widgets["anchor_pair"].get_parent().visible = false
-	_note_widgets["plane_x"].value = note.plane_x
-	_note_widgets["plane_y"].value = note.plane_y
-	_note_widgets["plane_r"].value = note.plane_radius
 	_note_widgets["bell_u"].value = note.center_u
+	_note_widgets["bell_w"].value = note.bell_width()
+	_note_widgets["bell_preview"].set_arc_width(note.bell_width())
 	_note_widgets["bell_r"].value = note.radius
 	if note.type == "path":
 		note.derive_path_controls()
@@ -831,6 +847,8 @@ func _refresh_note_page() -> void:
 		_note_widgets["path_counts"].text = "中间判定点：%d 个；平面点：%d 个" % [note.path_sample_beats().size(), note.trace_pts.size()]
 		_fill_visual_list(_note_widgets["path_list"], note)
 		_note_widgets["path_erase"].value = _path_erase_width(note) * 100.0
+		_note_widgets["path_wait"].max_value = maxf(0.0, note.duration() - 0.001)
+		_note_widgets["path_wait"].value = note.wait_beat
 		_note_widgets["path_centrifuge"].value = note.path_centrifuge
 		_note_widgets["path_centrifuge_slider"].value = note.path_centrifuge
 		_note_widgets["path_axis"].value = note.path_axis
@@ -846,18 +864,24 @@ func _refresh_note_page() -> void:
 	if note.type == "seek":
 		_note_widgets["seek_orien"].selected = 1 if note.seek_orien == 1 else 0
 	if note.type == "hold":
-		_note_widgets["hold_style_label"].text = "直 Hold：扇形张开，尾部收到判定线时消失。"
-		_fill_visual_list(_note_widgets["hold_list"], note)
-	if note.type == "trace":
-		_note_widgets["trace_move"].value = note.move_px
-		var where := "贴环（外缘）" if note.space != "plane" else "平面"
-		_note_widgets["trace_label"].text = "%s；二维点：%d 个。在预览窗用 Trace 工具拖拽可重画。" % [where, note.trace_pts.size()]
+		_note_widgets["hold_preview"].set_state(note.arc_width(), note.duration())
 	if note.type == "anchor":
-		_note_widgets["anchor_pair"].value = note.anchor_pair
 		_note_widgets["anchor_pair_id"].text = note.pair_id
-	_note_widgets["color"].value = note.color
 	_note_widgets["lock"].button_pressed = note.lock
 	_applying = false
+
+
+func _update_tap_formula() -> void:
+	if _active_note == null or _active_note.type != "tap":
+		return
+	var label: Label = _note_widgets.get("tap_formula")
+	if not is_instance_valid(label):
+		return
+	label.text = "实际弧宽 %.1f° = 基础 %.1f° × %.2f l" % [
+		_active_note.arc_width(),
+		_active_note.width,
+		_active_note.length_ratio(),
+	]
 
 
 func _fill_visual_list(list: ItemList, note: Note) -> void:
@@ -872,17 +896,11 @@ func _fill_visual_list(list: ItemList, note: Note) -> void:
 	if _note_rows.has("path_db"):
 		_note_rows["path_db"].visible = has_point and note.type == "path"
 		_note_rows["path_da"].visible = has_point and note.type == "path"
-	if _note_rows.has("hold_db"):
-		_note_rows["hold_db"].visible = has_point and note.type == "hold"
-		_note_rows["hold_da"].visible = has_point and note.type == "hold"
 	if has_point:
 		var point: Dictionary = note.visual_pts[_selected_visual]
 		if note.type == "path":
 			_note_widgets["path_db"].value = float(point.get("db", 0.0))
 			_note_widgets["path_da"].value = float(point.get("da", 0.0))
-		elif note.type == "hold":
-			_note_widgets["hold_db"].value = float(point.get("db", 0.0))
-			_note_widgets["hold_da"].value = float(point.get("da", 0.0))
 
 
 func _path_erase_width(note: Note) -> float:
@@ -904,27 +922,6 @@ func _set_path_erase_width(note: Note, width: float) -> void:
 func _set_hold_style(note: Note, style: String) -> void:
 	_apply(func() -> void:
 		note.hold_style = style
-	)
-	_rebuild()
-
-
-## Trace 的空间切换：贴环就把每个点压到外缘半径 1.0（方向不变），
-## 平面则保留点自己的半径。两种空间共用同一套绘制，只是映射不同。
-func _set_trace_space(space: String) -> void:
-	var note := _active_note
-	if note == null or note.type != "trace":
-		return
-	_apply(func() -> void:
-		note.space = space
-		if space == "plane":
-			return
-		for point in note.trace_pts:
-			var local := Vector2(float(point.get("x", 0.0)), float(point.get("y", 0.0)))
-			if local.length() <= 0.0001:
-				continue
-			local = local.normalized()
-			point["x"] = local.x
-			point["y"] = local.y
 	)
 	_rebuild()
 
@@ -1005,7 +1002,7 @@ func _build_region_page(page: VBoxContainer) -> void:
 		_empty("区域", "用 Limit 工具（7）在画布拖拽创建限制区；长度上限 4 拍。")
 		_buttons(page, [{"text": "Limit 工具", "callback": func() -> void: _app.set_tool("limit")}])
 		return
-	_section(page, "Limit · #%d" % region.id)
+	_section(page, "Limit #%d" % region.id)
 	_row(page, "类型", _readonly(region.kind))
 	_beat(page, "开始拍", region.start_beat, func(value: float) -> void: region.start_beat = value)
 	_beat(page, "结束拍", region.end_beat, func(value: float) -> void: region.end_beat = value)
@@ -1024,95 +1021,6 @@ func _build_region_page(page: VBoxContainer) -> void:
 	_buttons(page, [
 		{"text": "定位播放头", "callback": func() -> void: _app.set_playhead(region.start_beat)},
 		{"text": "删除", "callback": func() -> void: _delete_region(region)},
-	])
-
-
-func _build_boundary_page(page: VBoxContainer) -> void:
-	var shape: BoundaryShape = _app.get_selected_shape()
-	if shape == null:
-		_empty("边界", "选择或新建一个 BoundaryShape。")
-		_buttons(page, [{"text": "新建圆形", "callback": func() -> void: _add_shape()}])
-		return
-	var shape_ids: Array[String] = []
-	for item in _app.chart.sorted_shapes():
-		shape_ids.append(item.id)
-	_option(page, "形状", shape_ids, maxi(0, shape_ids.find(shape.id)), func(index: int) -> void:
-		_app.select_shape(shape_ids[index])
-	)
-	_check(page, "闭合 closed", shape.closed, func(value: bool) -> void: shape.closed = value)
-	_row(page, "默认形状", _readonly(_app.chart.default_shape_id))
-	_buttons(page, [
-		{"text": "设为默认", "callback": func() -> void: _app.chart.default_shape_id = shape.id},
-		{"text": "新建", "callback": func() -> void: _add_shape()},
-		{"text": "删除", "callback": func() -> void: _delete_shape(shape)},
-	])
-	_section(page, "分段")
-	var list := ItemList.new()
-	list.custom_minimum_size = Vector2(0, 126)
-	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	var sorted := shape.sorted_segments()
-	for i in sorted.size():
-		var segment: BoundarySegment = sorted[i]
-		list.add_item("%02d  %.3f–%.3f%s" % [i, segment.u0, segment.u1, "  GAP" if segment.gap else ""])
-	if _app.selected_segment_index >= 0 and _app.selected_segment_index < list.item_count:
-		list.select(_app.selected_segment_index)
-	list.item_selected.connect(func(index: int) -> void: _app.select_segment(index))
-	page.add_child(list)
-	_buttons(page, [
-		{"text": "加段", "callback": func() -> void: _add_segment(shape)},
-		{"text": "删段", "callback": func() -> void: _delete_segment(shape)},
-		{"text": "在 u 中点分割", "callback": func() -> void: _split_segment_mid(shape)},
-	])
-	_section(page, "预设")
-	_buttons(page, [
-		{"text": "圆", "callback": func() -> void: _preset(shape, "circle")},
-		{"text": "椭圆", "callback": func() -> void: _preset(shape, "ellipse")},
-		{"text": "竖椭圆", "callback": func() -> void: _preset(shape, "tall")},
-		{"text": "切一刀", "callback": func() -> void: _preset(shape, "gap")},
-	])
-	var segment: BoundarySegment = _app.get_selected_segment()
-	if segment != null:
-		_section(page, "段 %d" % _app.selected_segment_index)
-		_spin(page, "u0", segment.u0, 0.0, 1.0, 0.001, func(value: float) -> void: segment.u0 = value)
-		_spin(page, "u1", segment.u1, 0.0, 1.0, 0.001, func(value: float) -> void: segment.u1 = value)
-		_spin(page, "x0", segment.p0.x, -2000.0, 2000.0, 1.0, func(value: float) -> void: segment.p0 = Vector2(value, segment.p0.y))
-		_spin(page, "y0", segment.p0.y, -2000.0, 2000.0, 1.0, func(value: float) -> void: segment.p0 = Vector2(segment.p0.x, value))
-		_spin(page, "x1", segment.p1.x, -2000.0, 2000.0, 1.0, func(value: float) -> void: segment.p1 = Vector2(value, segment.p1.y))
-		_spin(page, "y1", segment.p1.y, -2000.0, 2000.0, 1.0, func(value: float) -> void: segment.p1 = Vector2(segment.p1.x, value))
-		var curves: Array[String] = ["l", "s", "si", "so", "b"]
-		_option(page, "X 插值", curves, maxi(0, curves.find(segment.ix)), func(index: int) -> void: segment.ix = curves[index])
-		_option(page, "Y 插值", curves, maxi(0, curves.find(segment.iy)), func(index: int) -> void: segment.iy = curves[index])
-		_check(page, "缺口 gap（不渲染/不判定）", segment.gap, func(value: bool) -> void: segment.gap = value)
-		_label(page, "提示：在预览窗直接拖拽控制点；双击分段可在点击处拆分。", 11, UITheme.MUTED)
-
-
-func _build_event_page(page: VBoxContainer) -> void:
-	var event: BoundaryEvent = _app.get_selected_event()
-	if event == null:
-		_empty("事件", "E 或下方按钮新建 BoundaryEvent；同一时刻 target 不得相交。")
-		_buttons(page, [{"text": "新建事件", "callback": func() -> void: _add_event()}])
-		return
-	_section(page, "BoundaryEvent · %s" % event.id)
-	_beat(page, "开始拍", event.start_beat, func(value: float) -> void: event.start_beat = value)
-	_beat(page, "结束拍", event.end_beat, func(value: float) -> void: event.end_beat = value)
-	_spin(page, "target u0", event.target_u0, 0.0, 1.0, 0.001, func(value: float) -> void: event.target_u0 = value)
-	_spin(page, "target u1", event.target_u1, 0.0, 1.0, 0.001, func(value: float) -> void: event.target_u1 = value)
-	var shape_ids: Array[String] = []
-	for shape in _app.chart.sorted_shapes():
-		shape_ids.append(shape.id)
-	_option(page, "fromShape", shape_ids, maxi(0, shape_ids.find(event.from_shape)), func(index: int) -> void: event.from_shape = shape_ids[index])
-	_option(page, "toShape", shape_ids, maxi(0, shape_ids.find(event.to_shape)), func(index: int) -> void: event.to_shape = shape_ids[index])
-	var easings: Array[String] = ["linear", "in-out", "cubic-bezier"]
-	_option(page, "缓动", easings, maxi(0, easings.find(event.easing)), func(index: int) -> void: event.easing = easings[index])
-	var behaviors: Array[String] = ["restore", "hold"]
-	_option(page, "结束行为", behaviors, maxi(0, behaviors.find(event.end_behavior)), func(index: int) -> void: event.end_behavior = behaviors[index])
-	_spin(page, "恢复拍数", event.restore_duration, 0.0, 8.0, 0.25, func(value: float) -> void: event.restore_duration = value)
-	_option(page, "恢复缓动", easings, maxi(0, easings.find(event.restore_easing)), func(index: int) -> void: event.restore_easing = easings[index])
-	_label(page, "事件只改 C(u,t)，不改音符的 u/角度/宽度/时间。", 11, UITheme.MUTED)
-	_buttons(page, [
-		{"text": "定位播放头", "callback": func() -> void: _app.set_playhead(event.start_beat)},
-		{"text": "复制", "callback": func() -> void: _duplicate_event(event)},
-		{"text": "删除", "callback": func() -> void: _delete_event(event)},
 	])
 
 
@@ -1151,6 +1059,12 @@ func _build_view_page(page: VBoxContainer) -> void:
 	)
 	_label(page, "试玩中 F6 换皮肤、F7 换特效；音效只改打击音色，不改判定。", 11, UITheme.MUTED)
 	_section(page, "显示")
+	_setting_option(page, "Path 启动指示", App.PATH_WAIT_LABELS, maxi(0, App.PATH_WAIT_MODES.find(_app.path_wait_indicator)), func(index: int) -> void:
+		_app.path_wait_indicator = App.PATH_WAIT_MODES[index]
+		_app.save_settings()
+		_app.appearance_changed.emit()
+	)
+	_label(page, "从星星落点到等待结束计时；预览和试玩共用，试玩暂停菜单也可切换。", 11, UITheme.MUTED)
 	var cap_keys: Array[String] = ["60", "120", "vsync", "unlimited"]
 	var cap_labels: Array[String] = ["60 FPS", "120 FPS", "跟随显示器（vsync）", "无限制"]
 	_setting_option(page, "帧率上限", cap_labels, maxi(0, cap_keys.find(_app.frame_cap)), func(index: int) -> void:
@@ -1159,6 +1073,12 @@ func _build_view_page(page: VBoxContainer) -> void:
 		_app.save_settings()
 		_app.notice.emit("帧率上限：%s" % cap_labels[index], "info")
 	)
+	# Godot 只在启动时读音频缓冲；这里写 override.cfg，重启后生效。
+	var buffer_values: Array[int] = [3, 10, 20]
+	var buffer_labels: Array[String] = ["低延迟 3ms", "标准 10ms", "安全 20ms"]
+	_setting_option(page, "音频缓冲", buffer_labels, maxi(0, buffer_values.find(int(_app.audio_buffer_ms))),
+		func(index: int) -> void: _app.set_audio_buffer(buffer_values[index]))
+	_label(page, "音频缓冲改动写进 override.cfg，重启游戏后生效（3ms ≈ 12ms 总延迟，爆音就换标准）。", 11, UITheme.MUTED)
 	_check(page, "正对镜头（忽略倾斜）", bool(_app.chart.metadata.get("face_camera", true)), func(value: bool) -> void:
 		_app.mutate(func() -> void: _app.chart.metadata["face_camera"] = value)
 	)
@@ -1175,9 +1095,19 @@ func _build_view_page(page: VBoxContainer) -> void:
 		_app.status_changed.emit()
 	)
 	_section(page, "编辑")
-	_check(page, "从上往下写入", _app.time_flows_down, func(value: bool) -> void:
+	_check(page, "谱面从上往下", _app.time_flows_down, func(value: bool) -> void:
 		_app.set_time_flows_down(value)
 	)
+	_label(page, "只影响显示方向：关闭后时间从下往上走（播放头在下方时音符从上方落下）。切换时播放头所在的屏幕位置保持不变。", 11, UITheme.MUTED)
+	var scroll_keys: Array[String] = ["page", "pin"]
+	var scroll_labels: Array[String] = ["翻页", "固定播放头"]
+	_setting_option(page, "播放滚动", scroll_labels, maxi(0, scroll_keys.find(String(_app.playback_scroll))), func(index: int) -> void:
+		_app.playback_scroll = scroll_keys[index]
+		_app.save_settings()
+		_app.status_changed.emit()
+		_app.notice.emit("播放滚动：%s" % scroll_labels[index], "info")
+	)
+	_label(page, "固定播放头只在播放和拖进度条时生效：播放头停在流动方向的边缘 8%，谱面连续滚动；滚轮可临时脱离，1.2 秒后自动拉回。", 11, UITheme.MUTED)
 	_section(page, "视频")
 	var video_path := LineEdit.new()
 	video_path.text = _app.chart.video_path
@@ -1185,37 +1115,14 @@ func _build_view_page(page: VBoxContainer) -> void:
 	video_path.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_row(page, "路径", video_path)
 	_buttons(page, [
-		{"text": "选择 .ogv", "callback": func() -> void: _pick_video()},
+		{"text": "选择视频…", "callback": func() -> void: _pick_video()},
 		{"text": "移除", "callback": func() -> void: _app.mutate(func() -> void: _app.chart.video_path = "")},
 	])
+	_label(page, "支持 OGV / MP4 / M4V / WebM / MOV / MKV / AVI；mp4 等默认直接解码（不转码），只有缺少解码库时才转码到 user://media 缓存。", 11, UITheme.MUTED)
 	_spin(page, "videoOffset ms", _app.chart.video_offset_ms, -10000.0, 10000.0, 1.0, func(value: float) -> void: _app.chart.video_offset_ms = value)
 	_spin(page, "FPS 提示", _app.chart.video_fps, 1.0, 240.0, 1.0, func(value: float) -> void: _app.chart.video_fps = value)
 	_spin(page, "不透明度", _app.chart.video_opacity, 0.0, 1.0, 0.01, func(value: float) -> void: _app.chart.video_opacity = value)
-	_section(page, "RingState 关键帧")
-	var list := ItemList.new()
-	list.custom_minimum_size = Vector2(0, 100)
-	for i in _app.chart.view_states.size():
-		var state: ViewState = _app.chart.view_states[i]
-		list.add_item("%02d  beat %.2f  zoom %.2f" % [i, state.beat, state.zoom])
-	if _app.selected_view_index >= 0 and _app.selected_view_index < list.item_count:
-		list.select(_app.selected_view_index)
-	list.item_selected.connect(func(index: int) -> void: _app.select_view(index))
-	page.add_child(list)
-	var state: ViewState = _app.get_selected_view()
-	if state != null:
-		_beat(page, "关键帧拍", state.beat, func(value: float) -> void: state.beat = value)
-		_spin(page, "zoom", state.zoom, 0.75, 1.4, 0.01, func(value: float) -> void: state.zoom = value)
-		_spin(page, "tiltX", state.tilt_x, -60.0, 60.0, 1.0, func(value: float) -> void: state.tilt_x = value)
-		_spin(page, "tiltY", state.tilt_y, -60.0, 60.0, 1.0, func(value: float) -> void: state.tilt_y = value)
-		_spin(page, "ellipse", state.ellipse, 0.5, 1.5, 0.01, func(value: float) -> void: state.ellipse = value)
-		_spin(page, "rotation", state.rotation, -180.0, 180.0, 1.0, func(value: float) -> void: state.rotation = value)
-		var easings: Array[String] = ["linear", "in-out", "cubic-bezier"]
-		_option(page, "缓动", easings, maxi(0, easings.find(state.easing)), func(index: int) -> void: state.easing = easings[index])
-		_buttons(page, [{"text": "删除关键帧", "callback": func() -> void: _delete_view_state(state)}])
-	_buttons(page, [
-		{"text": "添加关键帧", "callback": func() -> void: _add_view_state()},
-		{"text": "定位播放头", "callback": func() -> void: _app.set_playhead(_app.playhead_beat)},
-	])
+	_label(page, "RingState 关键帧在「视图 → 环编辑」里用滚轮/菱形调。", 11, UITheme.MUTED)
 
 
 func _build_chart_page(page: VBoxContainer) -> void:
@@ -1225,9 +1132,6 @@ func _build_chart_page(page: VBoxContainer) -> void:
 	_text(page, "曲师", String(chart.metadata.get("artist", "")), func(value: String) -> void: chart.metadata["artist"] = value)
 	_text(page, "谱师", String(chart.metadata.get("creator", "")), func(value: String) -> void: chart.metadata["creator"] = value)
 	_text(page, "难度", chart.difficulty, func(value: String) -> void: chart.difficulty = value)
-	_option(page, "滑条判定", ["连续跟随", "舞萌扫圈"], 1 if String(chart.metadata.get("slide_mode", "follow")) == "maimai" else 0, func(index: int) -> void:
-		_app.mutate(func() -> void: chart.metadata["slide_mode"] = "maimai" if index == 1 else "follow")
-	)
 	_text(page, "音频路径", chart.audio_path, func(value: String) -> void: chart.audio_path = value)
 	_text(page, "视频路径", chart.video_path, func(value: String) -> void: chart.video_path = value)
 	_label(page, "时间/BPM/offset 已统一移到“时间”页。", 11, UITheme.MUTED)
@@ -1239,25 +1143,98 @@ func _build_chart_page(page: VBoxContainer) -> void:
 		{"text": "保存谱面", "callback": func() -> void: _app.save_chart()},
 	])
 
+	_section(page, "配色分组")
+	_label(page, "Tap / Hold / Path 共用一组配色；单音符还能在“音符”页覆盖成任意颜色。选“默认”即回到皮肤色。", 11, UITheme.MUTED)
+	if chart.palette.is_empty():
+		_label(page, "还没有配色组，点下面的按钮新建一组。", 11, UITheme.MUTED)
+	for index in range(chart.palette.size()):
+		var group_index := index + 1
+		var group := chart.palette_group(group_index)
+		_text(page, "配色 %d 名称" % group_index, String(group.get("name", "")), func(value: String) -> void:
+			var target := chart.palette_group(group_index)
+			if not target.is_empty():
+				target["name"] = value.strip_edges()
+		)
+		for key in Chart.PALETTE_TYPES:
+			var picker := ColorPickerButton.new()
+			picker.edit_alpha = false
+			picker.custom_minimum_size = Vector2(56, 24)
+			picker.color = Color(String(group.get(key, String(Chart.PALETTE_DEFAULTS[key]))))
+			var type_key := key
+			picker.color_changed.connect(func(value: Color) -> void:
+				_app.mutate(func() -> void:
+					var target := chart.palette_group(group_index)
+					if not target.is_empty():
+						target[type_key] = "#" + value.to_html(false)
+				)
+			)
+			_row(page, type_key.capitalize(), picker)
+		_label(page, "使用该组的音符：%d 个" % chart.palette_usage(group_index), 11, UITheme.MUTED)
+		_buttons(page, [{"text": "删除这组", "callback": func() -> void:
+			_app.mutate(func() -> void: chart.remove_palette_group(group_index))
+			_rebuild()
+		}])
+	_buttons(page, [{"text": "新增配色组", "callback": func() -> void:
+		_app.mutate(func() -> void: chart.add_palette_group())
+		_rebuild()
+	}])
+
+
+## 列表里的位置写成「小节:拍:分音」；format_beat 已经是 1 起的小节号。
+func _timing_pos_text(chart: Chart, beat: float) -> String:
+	return chart.timing.format_beat(beat)
+
+
+func _timing_row_text(chart: Chart, index: int, point: TimingPoint) -> String:
+	var prefix := "● " if index == 0 else "  "
+	return "%s%-9s %7.1f  %d/4" % [prefix, _timing_pos_text(chart, point.beat), point.bpm, point.beats_per_bar]
+
 
 func _build_timing_page(page: VBoxContainer) -> void:
 	var chart: Chart = _app.chart
-	_section(page, "Timing Setup")
-	_label(page, "参考 osu! editor：基准 BPM、offset、BPM 列表在同一页；改动只影响拍↔毫秒换算。", 11, UITheme.MUTED)
+	_section(page, "速度与偏移")
+	_label(page, "BPM 点按“拍”定位；offset 是音频偏移（正数=音频整体延后）。两者只改拍↔毫秒换算，不改音符的拍位。", 11, UITheme.MUTED)
 	var points := chart.timing.points
 	if points.is_empty():
 		_label(page, "没有 BPM 点，先添加一个。", 12, UITheme.RED)
-		_buttons(page, [{"text": "播放头加 BPM", "callback": func() -> void: _add_timing_point()}])
+		_buttons(page, [{"text": "在播放头添加 BPM", "callback": func() -> void: _add_timing_point()}])
 		return
-	var base: TimingPoint = points[0]
 	_timing_chart = chart
+	var base: TimingPoint = points[0]
+	_timing_base_spin = _spin(page, "基准 BPM", base.bpm, 20.0, 600.0, 0.1, func(value: float) -> void:
+		var first: TimingPoint = chart.timing.points[0]
+		first.bpm = value
+		chart.timing.sort_points()
+		_refresh_timing_list_text()
+	)
+	var offset_spin := _spin(page, "音频 offset (ms)", chart.offset_ms, -10000.0, 10000.0, 1.0, func(value: float) -> void:
+		chart.offset_ms = value
+		chart.timing.offset_ms = value
+	)
+	offset_spin.tooltip_text = "正数：音频整体延后。改动只移动音频与拍线的对齐，不移动音符。"
+	_spin(page, "固定预读 ms", chart.pre_read_ms, 100.0, 3000.0, 10.0, func(value: float) -> void: chart.pre_read_ms = value)
+	_buttons(page, [
+		{"text": "Tap Tempo", "callback": _tap_tempo},
+		{"text": "重置 Tap", "callback": _reset_taps},
+	])
+	_tap_label = _label(page, "Tap Tempo：连点至少 2 次；结果写入第 1 个 BPM 点（基准）。", 11, UITheme.MUTED)
+	if base.beat > 0.0001:
+		_label(page, "第 1 个 BPM 点在第 1 小节之后：它之前的拍会用默认 120 BPM，请把第 1 个点放到 1:0:4 或更前。", 11, UITheme.RED)
+
+	_section(page, "BPM 点")
+	var header := Label.new()
+	header.text = "  位置        BPM    拍号"
+	header.add_theme_font_override("font", UITheme.mono_font())
+	header.add_theme_font_size_override("font_size", 11)
+	header.add_theme_color_override("font_color", UITheme.MUTED)
+	page.add_child(header)
 	var list := ItemList.new()
 	_timing_list = list
-	list.custom_minimum_size = Vector2(0, 152)
+	list.custom_minimum_size = Vector2(0, 132)
+	list.add_theme_font_override("font", UITheme.mono_font())
+	list.add_theme_font_size_override("font_size", 11)
 	for i in points.size():
-		var point: TimingPoint = points[i]
-		var prefix := "基准  " if i == 0 else "      "
-		list.add_item("%s%02d  %s  %.1f BPM  %d/4" % [prefix, i, chart.timing.format_beat(point.beat), point.bpm, point.beats_per_bar])
+		list.add_item(_timing_row_text(chart, i, points[i]))
 	_selected_timing = clampi(_selected_timing, 0, maxi(0, points.size() - 1))
 	if _selected_timing < list.item_count:
 		list.select(_selected_timing)
@@ -1265,9 +1242,7 @@ func _build_timing_page(page: VBoxContainer) -> void:
 		for i in chart.timing.points.size():
 			if i >= list.item_count:
 				break
-			var item: TimingPoint = chart.timing.points[i]
-			var prefix := "基准  " if i == 0 else "      "
-			list.set_item_text(i, "%s%02d  %s  %.1f BPM  %d/4" % [prefix, i, chart.timing.format_beat(item.beat), item.bpm, item.beats_per_bar])
+			list.set_item_text(i, _timing_row_text(chart, i, chart.timing.points[i]))
 	list.item_selected.connect(func(index: int) -> void:
 		_selected_timing = index
 		_rebuild()
@@ -1276,30 +1251,16 @@ func _build_timing_page(page: VBoxContainer) -> void:
 		if index >= 0 and index < chart.timing.points.size():
 			_app.set_playhead(chart.timing.points[index].beat)
 	)
-	_timing_base_spin = _spin(page, "基准 BPM", base.bpm, 20.0, 600.0, 0.1, func(value: float) -> void:
-		base.bpm = value
-		chart.timing.sort_points()
-		refresh_list.call()
-	)
-	_buttons(page, [{"text": "Tap Tempo", "callback": _tap_tempo}])
-	_tap_label = _label(page, "Tap Tempo：连点至少 2 次，按平均间隔设置基准 BPM。", 11, UITheme.MUTED)
-	_spin(page, "offset ms", chart.offset_ms, -10000.0, 10000.0, 1.0, func(value: float) -> void:
-		chart.offset_ms = value
-		chart.timing.offset_ms = value
-	)
-	_spin(page, "固定预读 ms", chart.pre_read_ms, 100.0, 3000.0, 10.0, func(value: float) -> void: chart.pre_read_ms = value)
-	_label(page, "基准 BPM = 第 1 个 BPM 点；offset 同时写入 timing.offset。", 11, UITheme.MUTED)
 	page.add_child(list)
-	_section(page, "BPM 点")
 	_buttons(page, [
-		{"text": "播放头加 BPM", "callback": func() -> void: _add_timing_point()},
+		{"text": "在播放头添加", "callback": func() -> void: _add_timing_point()},
 		{"text": "删除选中", "callback": func() -> void: _delete_timing_point()},
 	])
 	if _selected_timing >= 0 and _selected_timing < points.size():
 		var point: TimingPoint = points[_selected_timing]
 		var refresh_item := func() -> void:
 			refresh_list.call()
-		_beat(page, "起始拍", point.beat, func(value: float) -> void:
+		_beat(page, "生效位置（拍）", point.beat, func(value: float) -> void:
 			point.beat = value
 			chart.timing.sort_points()
 			refresh_item.call()
@@ -1309,16 +1270,36 @@ func _build_timing_page(page: VBoxContainer) -> void:
 			chart.timing.sort_points()
 			refresh_item.call()
 		)
-		_spin(page, "拍号分子", point.beats_per_bar, 1.0, 16.0, 1.0, func(value: float) -> void:
+		_buttons(page, [
+			{"text": "BPM ×2", "callback": func() -> void: _scale_timing_bpm(point, 2.0)},
+			{"text": "BPM ÷2", "callback": func() -> void: _scale_timing_bpm(point, 0.5)},
+		])
+		_spin(page, "每小节拍数 (x/4)", point.beats_per_bar, 1.0, 16.0, 1.0, func(value: float) -> void:
 			point.beats_per_bar = int(value)
 			chart.timing.sort_points()
 			refresh_item.call()
 		)
 		_buttons(page, [
-			{"text": "播放头设为起始拍", "callback": func() -> void: _set_timing_beat(point)},
+			{"text": "生效位置 = 播放头", "callback": func() -> void: _set_timing_beat(point)},
 			{"text": "定位到该点", "callback": func() -> void: _app.set_playhead(point.beat)},
 		])
-	_label(page, "第一个 BPM 点必须不晚于第 0 小节；列表双击可跳转。", 11, UITheme.MUTED)
+	else:
+		_label(page, "点一行 BPM 点来编辑位置、BPM、拍号。", 11, UITheme.MUTED)
+	_label(page, "列表按拍排序；双击一行跳到该点。逐点改 BPM 不会移动已放置的音符（音符存的是拍位）。", 11, UITheme.MUTED)
+
+
+func _scale_timing_bpm(point: TimingPoint, factor: float) -> void:
+	_apply(func() -> void:
+		point.bpm = clampf(point.bpm * factor, 20.0, 600.0)
+		_app.chart.timing.sort_points()
+	)
+	_refresh_timing_list_text()
+
+
+func _reset_taps() -> void:
+	_tap_times.clear()
+	if _tap_label != null:
+		_tap_label.text = "Tap Tempo：连点至少 2 次；结果写入第 1 个 BPM 点（基准）。"
 
 
 func _tap_tempo() -> void:
@@ -1330,7 +1311,7 @@ func _tap_tempo() -> void:
 		_tap_times.remove_at(0)
 	if _tap_times.size() < 2:
 		if _tap_label != null:
-			_tap_label.text = "Tap Tempo：再点 1 次。"
+			_tap_label.text = "Tap Tempo：再点 %d 次（已计 %d 次）。" % [2 - _tap_times.size(), _tap_times.size()]
 		return
 	var total := 0.0
 	for i in range(1, _tap_times.size()):
@@ -1344,10 +1325,9 @@ func _tap_tempo() -> void:
 		if _timing_base_spin != null:
 			_timing_base_spin.set_value_no_signal(bpm)
 		if _timing_list != null and _timing_list.item_count > 0:
-			var point: TimingPoint = _timing_chart.timing.points[0]
-			_timing_list.set_item_text(0, "基准  %02d  %s  %.1f BPM  %d/4" % [0, _timing_chart.timing.format_beat(point.beat), point.bpm, point.beats_per_bar])
+			_timing_list.set_item_text(0, _timing_row_text(_timing_chart, 0, _timing_chart.timing.points[0]))
 	if _tap_label != null:
-		_tap_label.text = "Tap Tempo：%.1f BPM（%d 次）" % [bpm, _tap_times.size()]
+		_tap_label.text = "Tap Tempo：%.1f BPM（%d 次，已写入第 1 个点）。" % [bpm, _tap_times.size()]
 
 
 func _set_timing_beat(point: TimingPoint) -> void:
@@ -1379,9 +1359,18 @@ func _add_timing_point() -> void:
 	_rebuild()
 
 
+func _refresh_timing_list_text() -> void:
+	if _timing_list == null or _timing_chart == null:
+		return
+	var count := mini(_timing_list.item_count, _timing_chart.timing.points.size())
+	for i in count:
+		_timing_list.set_item_text(i, _timing_row_text(_timing_chart, i, _timing_chart.timing.points[i]))
+
+
 func _delete_timing_point() -> void:
 	var chart: Chart = _app.chart
 	if chart.timing.points.size() <= 1:
+		_app.notice.emit("至少要保留 1 个 BPM 点（它定义开头速度）。", "warning")
 		return
 	if _selected_timing < 0 or _selected_timing >= chart.timing.points.size():
 		return
@@ -1402,9 +1391,12 @@ func _readonly(text: String) -> LineEdit:
 
 
 func _delete_selected() -> void:
+	var ids: Array = []
+	for note in _app.selection_with_partners():
+		ids.append(note.id)
 	_app.begin_edit()
 	for note in _app.chart.notes.duplicate():
-		if _app.selected_notes.has(note.id):
+		if ids.has(note.id):
 			_app.chart.notes.erase(note)
 	_app.finish_edit()
 	_app.clear_selection()
@@ -1419,13 +1411,16 @@ func _unlock_selected() -> void:
 
 func _delete_note(note: Note) -> void:
 	_app.begin_edit()
-	_app.chart.notes.erase(note)
+	for item in _app.with_anchor_partners([note]):
+		_app.chart.notes.erase(item)
 	_app.finish_edit()
 	_app.clear_selection()
 
 
 func _add_anchor_pair(note: Note) -> void:
 	if note.type != "anchor":
+		return
+	if _app != null and _app.chart != null and _app.chart.anchor_partner(note) != null:
 		return
 	_apply(func() -> void:
 		var pair_id := note.pair_id if not note.pair_id.is_empty() else "P%d" % note.id
@@ -1441,15 +1436,23 @@ func _add_anchor_pair(note: Note) -> void:
 
 
 func _duplicate_note(note: Note) -> void:
-	var copy := Note.from_dict(note.to_dict())
-	copy.id = _app.chart.next_note_id()
-	copy.beat = note.beat + 1.0
-	if copy.type in ["hold", "path", "trace"]:
-		copy.end_beat = note.end_beat + 1.0
+	var copies: Array[Note] = []
+	for item in _app.with_anchor_partners([note]):
+		var copy := Note.from_dict(item.to_dict())
+		copy.id = _app.chart.next_note_id()
+		copy.beat = item.beat + 1.0
+		if copy.type in ["hold", "path"]:
+			copy.end_beat = item.end_beat + 1.0
+		copies.append(copy)
+	if note.type == "anchor" and copies.size() > 1:
+		var pair_id := "P%d" % copies[0].id
+		for copy in copies:
+			copy.pair_id = pair_id
 	_app.begin_edit()
-	_app.chart.notes.append(copy)
+	for copy in copies:
+		_app.chart.notes.append(copy)
 	_app.finish_edit()
-	_app.select_note(copy.id)
+	_app.select_note(copies[0].id)
 
 
 func _delete_region(region: Region) -> void:
@@ -1459,157 +1462,27 @@ func _delete_region(region: Region) -> void:
 	_app.clear_selection()
 
 
-func _add_shape() -> void:
-	var index := 1
-	var id := "S%d" % index
-	while _app.chart.shapes.has(id):
-		index += 1
-		id = "S%d" % index
-	_app.begin_edit()
-	_app.chart.shapes[id] = BoundaryShape.circle(id, 330.0, 32)
-	_app.finish_edit()
-	_app.select_shape(id)
-
-
-func _delete_shape(shape: BoundaryShape) -> void:
-	if _app.chart.shapes.size() <= 1:
-		return
-	_app.begin_edit()
-	_app.chart.shapes.erase(shape.id)
-	if _app.chart.default_shape_id == shape.id:
-		_app.chart.default_shape_id = _app.chart.shapes.keys()[0]
-	_app.finish_edit()
-	_app.select_shape(_app.chart.default_shape_id)
-
-
-func _add_segment(shape: BoundaryShape) -> void:
-	var sorted := shape.sorted_segments()
-	var last: BoundarySegment = sorted[-1]
-	var mid := (last.u0 + last.u1) * 0.5
-	var point: Vector2 = last.point_at(0.5)
-	_app.begin_edit()
-	shape.segments.append(BoundarySegment.new(mid, last.u1, point, last.p1, last.ix, last.iy, last.gap))
-	last.u1 = mid
-	last.p1 = point
-	_app.finish_edit()
-	_app.select_segment(shape.sorted_segments().find(last))
-
-
-func _delete_segment(shape: BoundaryShape) -> void:
-	var sorted := shape.sorted_segments()
-	if sorted.size() <= 1 or _app.selected_segment_index < 0:
-		return
-	var index: int = _app.selected_segment_index
-	var segment: BoundarySegment = sorted[index]
-	_app.begin_edit()
-	if index > 0:
-		var previous := sorted[index - 1]
-		previous.u1 = segment.u1
-		previous.p1 = segment.p1
-	else:
-		var next := sorted[1]
-		next.u0 = segment.u0
-		next.p0 = segment.p0
-	shape.segments.erase(segment)
-	_app.finish_edit()
-	_app.select_segment(0)
-
-
-func _split_segment_mid(shape: BoundaryShape) -> void:
-	var segment: BoundarySegment = _app.get_selected_segment()
-	if segment == null:
-		return
-	var u: float = (segment.u0 + segment.u1) * 0.5
-	var point: Vector2 = segment.point_at(0.5)
-	var first := BoundarySegment.new(segment.u0, u, segment.p0, point, segment.ix, segment.iy, segment.gap)
-	var second := BoundarySegment.new(u, segment.u1, point, segment.p1, segment.ix, segment.iy, segment.gap)
-	_app.begin_edit()
-	shape.segments.erase(segment)
-	shape.segments.append(first)
-	shape.segments.append(second)
-	shape.segments.sort_custom(func(a: BoundarySegment, b: BoundarySegment) -> bool: return a.u0 < b.u0)
-	_app.finish_edit()
-	_app.select_segment(shape.sorted_segments().find(first))
-
-
-func _preset(shape: BoundaryShape, kind: String) -> void:
-	var replacement: BoundaryShape
-	match kind:
-		"circle":
-			replacement = BoundaryShape.circle(shape.id, 330.0, 32)
-		"ellipse":
-			replacement = BoundaryShape.ellipse(shape.id, 410.0, 245.0, 32)
-		"tall":
-			replacement = BoundaryShape.ellipse(shape.id, 300.0, 400.0, 32)
-		"gap":
-			replacement = BoundaryShape.circle(shape.id, 330.0, 32)
-			if not replacement.segments.is_empty():
-				replacement.segments[0].gap = true
-		_:
-			return
-	_app.begin_edit()
-	shape.segments = replacement.segments
-	shape.closed = replacement.closed
-	_app.finish_edit()
-
-
-func _add_event() -> void:
-	var event := BoundaryEvent.new(_app.chart.next_event_id(), _app.playhead_beat, _app.playhead_beat + 4.0, 0.0, 1.0, _app.chart.default_shape_id, _app.chart.default_shape_id)
-	_app.begin_edit()
-	_app.chart.events.append(event)
-	_app.finish_edit()
-	_app.select_event(event.id)
-
-
-func _duplicate_event(event: BoundaryEvent) -> void:
-	var copy := BoundaryEvent.from_dict(event.to_dict())
-	copy.id = _app.chart.next_event_id()
-	copy.start_beat += 4.0
-	copy.end_beat += 4.0
-	_app.begin_edit()
-	_app.chart.events.append(copy)
-	_app.finish_edit()
-	_app.select_event(copy.id)
-
-
-func _delete_event(event: BoundaryEvent) -> void:
-	_app.begin_edit()
-	_app.chart.events.erase(event)
-	_app.finish_edit()
-	_app.clear_selection()
-
-
-func add_view_state_at_playhead() -> void:
-	_add_view_state()
-
-
-func _add_view_state() -> void:
-	var state := ViewState.new(_app.playhead_beat, 1.0, 0.0, 0.0, 1.0, 0.0, "in-out")
-	_app.begin_edit()
-	_app.chart.view_states.append(state)
-	_app.finish_edit()
-	_app.select_view(_app.chart.view_states.size() - 1)
-
-
-func _delete_view_state(state: ViewState) -> void:
-	_app.begin_edit()
-	_app.chart.view_states.erase(state)
-	_app.finish_edit()
-	_app.selected_view_index = -1
+func open_video_picker() -> void:
+	_pick_video()
 
 
 func _pick_video() -> void:
 	if _video_dialog != null:
 		return
+	if _app == null or _app.chart == null:
+		if _app != null:
+			_app.notice.emit("先打开或新建谱面再导入视频", "warning")
+		return
 	_video_dialog = FileDialog.new()
 	_video_dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
 	_video_dialog.access = FileDialog.ACCESS_FILESYSTEM
-	_video_dialog.filters = PackedStringArray(["*.ogv ; Ogg Theora", "*.mp4 ; MP4", "*.webm ; WebM", "*.mov ; MOV", "*.mkv ; MKV", "*.avi ; AVI"])
-	_video_dialog.title = "选择 Ogg Theora 视频"
+	var filters := PackedStringArray()
+	for extension in MediaIO.SUPPORTED_VIDEO:
+		filters.append("*.%s ; %s" % [extension, String(extension).to_upper()])
+	_video_dialog.filters = filters
+	_video_dialog.title = "选择视频（OGV / MP4 / WebM / MOV / MKV / AVI）"
 	_video_dialog.file_selected.connect(func(path: String) -> void:
-		_app.mutate(func() -> void:
-			_app.chart.video_path = path
-		)
+		_start_video_import(path)
 		_video_dialog.queue_free()
 		_video_dialog = null
 	)
@@ -1619,3 +1492,80 @@ func _pick_video() -> void:
 	)
 	add_child(_video_dialog)
 	_video_dialog.popup_centered_ratio(0.6)
+
+
+func _start_video_import(path: String) -> void:
+	if _app == null or _app.chart == null:
+		_app.notice.emit("先打开或新建谱面再导入视频", "warning")
+		return
+	if not MediaIO.is_supported_video(path):
+		_app.notice.emit("不支持的视频格式：.%s" % path.get_extension(), "error")
+		return
+	# 有 gdffmpeg 就直接解码，不转码、不弹进度；只有缺解码库/格式不支持才走兜底转码。
+	if ChartIO.can_decode_video_directly(path):
+		_apply_video_path(path)
+		_app.notice.emit("视频已导入（直接解码，不转码）", "info")
+		return
+	if FileAccess.file_exists(MediaIO.video_cache_path(path)):
+		_apply_video_path(path)
+		_app.notice.emit("视频已导入（使用已有转码缓存）", "info")
+		return
+	var target_chart: Chart = _app.chart
+	_show_video_progress()
+	var result := await MediaIO.prepare_video_async(path, get_tree(), _on_video_progress)
+	_hide_video_progress()
+	if result.is_empty():
+		_app.notice.emit("视频导入失败：%s" % MediaIO.last_error, "error")
+		return
+	if _app.chart != target_chart:
+		_app.notice.emit("视频已转码缓存；谱面已切换，请在目标谱面重新选择同一个视频（缓存已就绪）", "warning")
+		return
+	_apply_video_path(path)
+	_app.notice.emit("视频已导入（没有直解库，已转码缓存）", "info")
+
+
+func _apply_video_path(path: String) -> void:
+	_app.mutate(func() -> void:
+		_app.chart.video_path = path
+	)
+
+
+func _show_video_progress() -> void:
+	if _video_progress == null:
+		_video_progress = AcceptDialog.new()
+		_video_progress.title = "导入视频"
+		_video_progress.min_size = Vector2i(460, 150)
+		var box := VBoxContainer.new()
+		box.add_theme_constant_override("separation", 12)
+		_video_progress.add_child(box)
+		_video_progress_label = Label.new()
+		_video_progress_label.text = "没有直解库，正在转码视频…"
+		box.add_child(_video_progress_label)
+		_video_progress_bar = ProgressBar.new()
+		_video_progress_bar.max_value = 100.0
+		_video_progress_bar.show_percentage = true
+		_video_progress_bar.custom_minimum_size = Vector2(420, 24)
+		box.add_child(_video_progress_bar)
+		add_child(_video_progress)
+		var ok := _video_progress.get_ok_button()
+		if ok != null:
+			ok.visible = false
+	_video_progress_bar.value = 0.0
+	_video_progress_label.text = "没有直解库，正在转码视频…"
+	_video_progress.popup_centered(Vector2i(500, 170))
+
+
+func _hide_video_progress() -> void:
+	if _video_progress != null:
+		_video_progress.hide()
+
+
+func _on_video_progress(ratio: float, seconds: float) -> void:
+	if _video_progress_bar == null or _video_progress_label == null:
+		return
+	if ratio >= 0.0:
+		_video_progress_bar.value = clampf(ratio, 0.0, 1.0) * 100.0
+		_video_progress_label.text = "没有直解库，正在转码… %d%%（已转 %.0f 秒）" % [roundi(ratio * 100.0), seconds]
+	else:
+		_video_progress_bar.value = fmod(float(Time.get_ticks_msec()) * 0.05, 100.0)
+		_video_progress_label.text = "没有直解库，正在转码… 已转 %.0f 秒" % seconds
