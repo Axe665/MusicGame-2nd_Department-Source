@@ -1,0 +1,72 @@
+{
+	"format": "tamaki3-storyboard",
+	"version": 1,
+	"events": [
+		{
+			"id": "E1",
+			"start_beat": 8.0,
+			"end_beat": 12.0,
+			"target_u0": 0.0,
+			"target_u1": 1.0,
+			"from_shape": "S0",
+			"to_shape": "S1",
+			"easing": "in-out",
+			"end_behavior": "hold",
+			"restore_duration": 0.0,
+			"restore_easing": "in-out"
+		},
+		{
+			"id": "E2",
+			"start_beat": 12.0,
+			"end_beat": 12.5,
+			"target_u0": 0.0,
+			"target_u1": 1.0,
+			"from_shape": "S1",
+			"to_shape": "S0",
+			"easing": "in-out",
+			"end_behavior": "hold",
+			"restore_duration": 0.0,
+			"restore_easing": "in-out"
+		},
+		{
+			"id": "E3",
+			"start_beat": 12.5,
+			"end_beat": 20.0,
+			"target_u0": 0.0,
+			"target_u1": 1.0,
+			"from_shape": "S0",
+			"to_shape": "S0",
+			"easing": "in-out",
+			"end_behavior": "hold",
+			"restore_duration": 0.0,
+			"restore_easing": "in-out"
+		},
+		{
+			"id": "E4",
+			"start_beat": 20.0,
+			"end_beat": 24.0,
+			"target_u0": 0.0,
+			"target_u1": 1.0,
+			"from_shape": "S0",
+			"to_shape": "S2",
+			"easing": "in-out",
+			"end_behavior": "hold",
+			"restore_duration": 0.0,
+			"restore_easing": "in-out"
+		},
+		{
+			"id": "E5",
+			"start_beat": 24.0,
+			"end_beat": 24.5,
+			"target_u0": 0.0,
+			"target_u1": 1.0,
+			"from_shape": "S2",
+			"to_shape": "S0",
+			"easing": "in-out",
+			"end_behavior": "hold",
+			"restore_duration": 0.0,
+			"restore_easing": "in-out"
+		}
+	],
+	"shape_keys": []
+}

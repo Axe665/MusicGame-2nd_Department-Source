@@ -187,12 +187,12 @@ func _ready() -> void:
 		set_chart(Chart.new(), "", false)
 		call_deferred("_boot_import_window", import_arg)
 		return
-	var demo_path := "user://charts/demo.json"
+	var demo_path := "user://charts/夜に駆ける（示例）/main.json"
 	var start_chart: Chart = null
 	if FileAccess.file_exists(demo_path):
 		start_chart = ChartIO.load_chart(demo_path)
-	if start_chart == null and FileAccess.file_exists("res://charts/demo.json"):
-		start_chart = ChartIO.load_chart("res://charts/demo.json")
+	if start_chart == null and FileAccess.file_exists("res://charts/夜に駆ける（示例）/main.json"):
+		start_chart = ChartIO.load_chart("res://charts/夜に駆ける（示例）/main.json")
 	if start_chart == null:
 		start_chart = DemoChart.make_demo()
 	# 启动时载入的示例谱不算“改过”：否则自动保存会把用户上一次的
@@ -214,7 +214,7 @@ func _boot_import_window(source: String) -> void:
 		ensure_tab()
 		return
 	notice.emit("转谱窗口：读不出 %s 的难度列表" % source.get_file(), "error")
-	set_chart(DemoChart.make_demo(), "user://charts/demo.json", false)
+	set_chart(DemoChart.make_demo(), "user://charts/夜に駆ける（示例）/main.json", false)
 	ensure_tab()
 
 
@@ -224,7 +224,7 @@ func _boot_set_window(path: String) -> void:
 		ensure_tab()
 		return
 	notice.emit("转谱窗口：打不开 %s" % path.get_file(), "error")
-	set_chart(DemoChart.make_demo(), "user://charts/demo.json", false)
+	set_chart(DemoChart.make_demo(), "user://charts/夜に駆ける（示例）/main.json", false)
 	ensure_tab()
 
 
@@ -311,6 +311,22 @@ func import_set_target(source: String) -> String:
 	return dir.path_join(slug + ".set.json")
 
 
+## 打开一个谱面工程文件夹（包含 main.json / chartN.json）。
+func open_project(path: String) -> bool:
+	var loaded := ChartIO.load_project(path)
+	if not bool(loaded.get("ok", false)):
+		notice.emit("打开谱面工程失败：%s" % String(loaded.get("error", "")), "error")
+		return false
+	difficulties.clear()
+	for entry in loaded.get("entries", []):
+		difficulties.append(entry)
+	difficulty_index = 0
+	set_path = String(loaded.get("main_path", ChartIO.project_main_path(path)))
+	import_source = String(loaded.get("source", ""))
+	import_set_changed.emit()
+	return switch_difficulty(0)
+
+
 ## 打开一个难度套组文件（.set.json）。
 func open_set_file(path: String) -> bool:
 	var loaded := ChartIO.load_set(path)
@@ -338,11 +354,20 @@ func save_set_file(path: String = "") -> bool:
 	var first: Chart = difficulties[0].get("chart", null)
 	if first != null:
 		title = String(first.metadata.get("title", ""))
-	if ChartIO.save_set(target, difficulties, title, import_source) != OK:
-		notice.emit("保存难度套组失败：%s" % ChartIO.last_error, "error")
+	var is_project := ChartIO.is_project_path(target) or target.get_file().to_lower() == "main.json" or target.get_extension().is_empty()
+	var project_target := target
+	if not is_project:
+		var stem := target.get_file().get_basename().trim_suffix(".set")
+		var folder := _safe_file_name(title if not title.is_empty() else stem)
+		project_target = target.get_base_dir().path_join(folder if not folder.is_empty() else stem)
+	var err := ChartIO.save_project(difficulties, project_target, title, import_source)
+	if err != OK:
+		notice.emit("保存谱面工程失败：%s" % ChartIO.last_error, "error")
 		return false
-	set_path = target
-	chart_path = target
+	if not is_project and FileAccess.file_exists(target):
+		DirAccess.remove_absolute(target)
+	set_path = ChartIO.project_main_path(project_target)
+	chart_path = set_path
 	dirty = false
 	save_state_changed.emit()
 	status_changed.emit()
@@ -434,7 +459,7 @@ func clear_difficulties() -> void:
 	import_set_changed.emit()
 
 
-## 把难度组里每一份都存成单独文件，返回写成功的个数。
+## 把难度组里每一份都存成独立谱面工程，返回写成功的个数。
 func save_all_difficulties(dir: String) -> int:
 	if difficulties.is_empty():
 		return 0
@@ -447,8 +472,8 @@ func save_all_difficulties(dir: String) -> int:
 		if c == null:
 			continue
 		var name := _safe_file_name("%s [%s]" % [String(c.metadata.get("title", "chart")), String(entry.get("name", i))])
-		var path := target_dir.path_join(name + ".json")
-		if ChartIO.atomic_write(path, ChartIO.to_json(c)) == OK:
+		var path := target_dir.path_join(name).path_join("main.json")
+		if ChartIO.save_project([entry], path, String(c.metadata.get("title", ""))) == OK:
 			written += 1
 	return written
 
@@ -949,21 +974,25 @@ func save_chart() -> bool:
 	if err != OK:
 		notice.emit("保存失败：%s" % ChartIO.last_error, "error")
 		return false
+	if not chart.project_main_path.is_empty():
+		chart_path = chart.project_main_path
 	dirty = false
 	_commands_since_autosave = 0
 	save_state_changed.emit()
 	status_changed.emit()
 	if faint > 0:
-		notice.emit("已保存 %s；其中 %d 个音符的配色与背景对比度偏低，可能看不清（不影响保存）" % [chart_path.get_file(), faint], "warning")
+		notice.emit("已保存 %s；其中 %d 个音符的配色与背景对比度偏低，可能看不清（不影响保存）" % [_display_name_for_path(chart_path), faint], "warning")
 	else:
-		notice.emit("已保存 %s" % chart_path.get_file(), "info")
+		notice.emit("已保存 %s" % _display_name_for_path(chart_path), "info")
 	return true
 
 
 func save_chart_as(path: String) -> bool:
-	# 另存为单张谱面时，把当前难度从套组里摘出来，避免之后误写回套组。
+	# 另存为时一律建立谱面工程：选择 Song.json -> Song/main.json。
 	if not set_path.is_empty():
 		set_path = ""
+	if path.to_lower().ends_with(".json") and path.get_file().to_lower() != "main.json":
+		path = ChartIO.project_main_path(path)
 	chart_path = path
 	return save_chart()
 
@@ -972,6 +1001,8 @@ func load_chart(path: String) -> bool:
 	# .set.json 是难度套组：走套组流程，顶部会出现难度下拉。
 	if _is_set_file(path):
 		return open_set_file(path)
+	if ChartIO.is_project_path(path):
+		return open_project(path)
 	var loaded := ChartIO.load_chart(path)
 	if loaded == null:
 		notice.emit("打开失败：%s" % ChartIO.last_error, "error")
@@ -1086,11 +1117,17 @@ func tab_label(index: int) -> String:
 	return ("● " if tab.dirty else "") + tab.title
 
 
+func _display_name_for_path(path: String) -> String:
+	if path.get_file().to_lower() == "main.json":
+		return path.get_base_dir().get_file()
+	return path.get_file().get_basename()
+
+
 func _tab_title_for_current() -> String:
 	if not set_path.is_empty():
-		return set_path.get_file().get_basename()
+		return _display_name_for_path(set_path)
 	if not chart_path.is_empty():
-		return chart_path.get_file().get_basename()
+		return _display_name_for_path(chart_path)
 	var title := String(chart.metadata.get("title", "")) if chart != null else ""
 	return title if not title.is_empty() else "未命名"
 

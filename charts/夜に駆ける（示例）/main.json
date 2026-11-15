@@ -1,0 +1,67 @@
+{
+	"format": "tamaki3-project",
+	"version": 1,
+	"title": "夜に駆ける（示例）",
+	"artist": "YOASOBI",
+	"charter": "Tamaki₃",
+	"creator": "Tamaki₃",
+	"difficulty": "Insane",
+	"difficulty_list": [
+		"Insane"
+	],
+	"bpm": 120.0,
+	"beats_per_bar": 4,
+	"offset_ms": 0.0,
+	"pre_read_ms": 1000.0,
+	"music": "music.wav",
+	"jacket": "",
+	"view": {
+		"editor": {
+			"snap": 4,
+			"zoom": 1.0,
+			"waveform": true,
+			"hud": true,
+			"flow_down": true
+		},
+		"view_states": [
+			{
+				"beat": 0.0,
+				"zoom": 1.0,
+				"tilt_x": 0.0,
+				"tilt_y": 0.0,
+				"ellipse": 1.0,
+				"rotation": 0.0,
+				"easing": "linear"
+			},
+			{
+				"beat": 8.0,
+				"zoom": 1.06,
+				"tilt_x": 22.0,
+				"tilt_y": 0.0,
+				"ellipse": 1.0,
+				"rotation": 4.0,
+				"easing": "in-out"
+			},
+			{
+				"beat": 16.0,
+				"zoom": 1.12,
+				"tilt_x": 30.0,
+				"tilt_y": 12.0,
+				"ellipse": 1.04,
+				"rotation": 12.0,
+				"easing": "in-out"
+			},
+			{
+				"beat": 24.0,
+				"zoom": 1.0,
+				"tilt_x": 0.0,
+				"tilt_y": 0.0,
+				"ellipse": 1.0,
+				"rotation": 0.0,
+				"easing": "in-out"
+			}
+		],
+		"default_shape": "S0"
+	},
+	"source": ""
+}

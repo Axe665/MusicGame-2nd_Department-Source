@@ -31,6 +31,9 @@ var load_warnings: Array[String] = []
 var view_states: Array[ViewState] = []
 var regions: Array[Region] = []
 var notes: Array[Note] = []
+## When loaded from / saved to a chart project folder.
+var project_dir: String = ""
+var project_main_path: String = ""
 
 
 ## Anchor 的配对：同一 pairId、同一拍即可，角度自由。
