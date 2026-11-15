@@ -139,7 +139,6 @@ var _import_progress_label: Label = null
 var _import_progress_bar: ProgressBar = null
 var _new_dialog: NewChartDialog
 var _playtest: Playtest
-## 导出视频的子进程：放完自动退出。
 ## 试玩前的设置窗口：倍速 / 流速 / 星速 / 星显。
 var _playtest_dialog: AcceptDialog = null
 var _playtest_rate: SpinBox = null

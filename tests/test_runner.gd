@@ -3643,9 +3643,9 @@ func test_playtest_ui_builds() -> bool:
 	var run := Playtest.new()
 	run._build_ui()
 	eq(run._replay_button.text, "回放本局", "results screen has a replay button")
-	eq(run._export_button.text, "导出视频", "results screen has an export button")
-	eq(run._export_button.get_parent() == run._replay_button.get_parent(), true,
-		"export button sits in the same row as the replay button")
+	eq(run._export_replay_button.text, "导出回放", "results screen has a replay-file export button")
+	eq(run._export_replay_button.get_parent() == run._replay_button.get_parent(), true,
+		"replay export button sits in the same row as the replay button")
 	eq(run._replay_bar != null and not run._replay_bar.visible, true, "replay bar is built but hidden")
 	eq(run._replay_exit_button != null and run._replay_exit_button.get_parent() == run._replay_bar.get_child(0),
 		true, "replay bar ends with an exit button")
