@@ -236,11 +236,10 @@ const CAPTURE_FPS := 60
 const CAPTURE_TAIL_PAD_MS := 8000.0
 const CAPTURE_DIR := "user://export_frames"
 var _export_button: Button
-var _trail_button: Button
+var _export_replay_button: Button
 var _export_dialog: FileDialog = null
-## 仅轨迹导出：只留背景与鼠标轨迹（不画音符/判定环/HUD）。
-var _export_trail_dialog: FileDialog = null
-var capture_trail_only: bool = false
+## 导出回放文件（.replay，gzip JSON；仿 osu 的 .osr）。
+var _replay_export_dialog: FileDialog = null
 var _saved_vsync: int = -1
 var _saved_max_fps: int = 0
 var _saved_window_size := Vector2i.ZERO
@@ -835,13 +834,13 @@ func _build_ui() -> void:
 	_export_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_export_button.size_flags_stretch_ratio = 1.0
 	action_row.add_child(_export_button)
-	_trail_button = Button.new()
-	_trail_button.text = "导出轨迹"
-	_trail_button.tooltip_text = "只导鼠标轨迹：不画音符、判定环和 HUD，只留背景 + 轨迹（适合做集锦/核对走位）"
-	_trail_button.pressed.connect(_export_trail_video)
-	_trail_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_trail_button.size_flags_stretch_ratio = 1.0
-	action_row.add_child(_trail_button)
+	_export_replay_button = Button.new()
+	_export_replay_button.text = "导出回放"
+	_export_replay_button.tooltip_text = "把这一局存成 .replay 文件（输入流 + 判定偏移 + 设置），以后可以导入回来重放"
+	_export_replay_button.pressed.connect(_export_replay_file)
+	_export_replay_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_export_replay_button.size_flags_stretch_ratio = 1.0
+	action_row.add_child(_export_replay_button)
 	_results_text = RichTextLabel.new()
 	_results_text.bbcode_enabled = false
 	_results_text.fit_content = false
@@ -1204,8 +1203,8 @@ func _prepare_export_recording() -> void:
 	# HUD 现在由 Preview3D 自己画，用开关关掉，别让成绩/连击进视频。
 	if _preview != null:
 		_preview.show_hud = false
-		_preview.show_notes = not capture_trail_only
-		_preview.show_playfield = not capture_trail_only
+		_preview.show_notes = true
+		_preview.show_playfield = true
 	# 开局倒计时那层也不能进视频。
 	if _ready_layer != null:
 		_ready_layer.visible = false
@@ -1408,31 +1407,49 @@ func _ffmpeg_path() -> String:
 	return MediaIO.ffmpeg_exe if MediaIO.has_ffmpeg() else ""
 
 
-## 仅轨迹导出：同一个渲染管线，只是把音符/判定环/HUD 关掉。
-func _export_trail_video() -> void:
+## 导出 .replay（仿 osu 的 .osr）：存输入流 + 判定偏移 + 设置，导入后重放。
+func _export_replay_file() -> void:
 	var data := _current_replay()
-	if data == null or _export_stage != 0:
+	if data == null:
+		_notify_result("这一局没有可导出的回放（AUTO 演示不录制输入）")
 		return
-	if _ffmpeg_path().is_empty():
-		_notify_result("导出视频需要 ffmpeg；当前 PATH 中找不到 ffmpeg。")
-		return
-	if _export_trail_dialog == null:
-		_export_trail_dialog = FileDialog.new()
-		_export_trail_dialog.use_native_dialog = true
-		_export_trail_dialog.file_mode = FileDialog.FILE_MODE_SAVE_FILE
-		_export_trail_dialog.access = FileDialog.ACCESS_FILESYSTEM
-		_export_trail_dialog.title = "导出轨迹视频"
-		_export_trail_dialog.add_filter("*.mp4", "MP4 视频")
-		_export_trail_dialog.file_selected.connect(func(path: String) -> void:
-			_start_capture_export(path, true))
-		add_child(_export_trail_dialog)
-	_export_trail_dialog.current_dir = OS.get_system_dir(OS.SYSTEM_DIR_DOWNLOADS)
-	_export_trail_dialog.current_file = "trail.mp4"
-	_export_trail_dialog.popup_centered_ratio(0.7)
+	if _replay_export_dialog == null:
+		_replay_export_dialog = FileDialog.new()
+		_replay_export_dialog.use_native_dialog = true
+		_replay_export_dialog.file_mode = FileDialog.FILE_MODE_SAVE_FILE
+		_replay_export_dialog.access = FileDialog.ACCESS_FILESYSTEM
+		_replay_export_dialog.title = "导出回放"
+		_replay_export_dialog.add_filter("*.replay", "Tamaki 回放")
+		_replay_export_dialog.file_selected.connect(_export_replay_to)
+		add_child(_replay_export_dialog)
+	_replay_export_dialog.current_dir = OS.get_system_dir(OS.SYSTEM_DIR_DOWNLOADS)
+	var title := String(chart.metadata.get("title", "replay")) if chart != null else "replay"
+	var diff := String(chart.metadata.get("version", "")) if chart != null else ""
+	var suggest := title + ("" if diff.is_empty() else " [" + diff + "]")
+	_replay_export_dialog.current_file = suggest.validate_filename() + ".replay"
+	_replay_export_dialog.popup_centered_ratio(0.7)
 
 
-func _start_capture_export(path: String, trail_only: bool = false) -> void:
-	capture_trail_only = trail_only
+## 真正写盘（抽出来便于测试）。
+func _export_replay_to(path: String) -> void:
+	var data := _current_replay()
+	if data == null:
+		_notify_result("这一局没有可导出的回放")
+		return
+	if not path.to_lower().ends_with(".replay"):
+		path += ".replay"
+	var err := data.save_to(path)
+	if err != OK:
+		_notify_result("导出回放失败（错误码 %d）" % err)
+		return
+	var size := 0
+	if FileAccess.file_exists(path):
+		size = FileAccess.get_file_as_bytes(path).size()
+	_notify_result("已导出回放：%s（%d 个事件，%.1f KB）" % [
+		path.get_file(), data.event_count(), float(size) / 1024.0])
+
+
+func _start_capture_export(path: String) -> void:
 	var data := _current_replay()
 	if data == null or _export_stage != 0:
 		return
