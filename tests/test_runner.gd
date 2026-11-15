@@ -55,6 +55,7 @@ func _initialize() -> void:
 		"test_media_formats",
 		"test_lbp_export",
 		"test_lbp_package",
+		"test_video_export_cursor",
 		"test_note_color_palette",
 		"test_note_color_contrast",
 		"test_note_color_round_trip",
@@ -1519,6 +1520,17 @@ func test_lbp_export() -> bool:
 	var read := FileAccess.get_file_as_string(path)
 	eq(read, text, "lbp file matches string")
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	return true
+
+
+## 回放视频：光标按录制点插值，超出末尾就停在最后。
+func test_video_export_cursor() -> bool:
+	var moves := [{"t": 0.0, "x": 0.0, "y": 0.0}, {"t": 100.0, "x": 100.0, "y": 50.0}]
+	var mid := VideoExport._cursor_at(moves, 50.0)
+	eq(int(mid.x), 50, "cursor interpolation x")
+	eq(int(mid.y), 25, "cursor interpolation y")
+	var after := VideoExport._cursor_at(moves, 500.0)
+	eq(int(after.x), 100, "cursor clamps to last point")
 	return true
 
 

@@ -234,6 +234,12 @@ const EXPORT_VIDEO_SIZE := Vector2i(1280, 720)
 ## 逐帧截取的帧率；视频时间轴 = 帧号 / 帧率。
 var _export_button: Button
 var _export_replay_button: Button
+## 静默视频导出（SubViewport 逐帧 → ffmpeg 管道，无音轨、优先硬件编码）。
+var _export_video_button: Button = null
+var _video_dialog: FileDialog = null
+var _video_export: VideoExport = null
+var _video_progress: AcceptDialog = null
+var _video_bar: ProgressBar = null
 ## 导出回放文件（.replay，gzip JSON；仿 osu 的 .osr）。
 var _replay_export_dialog: FileDialog = null
 var _toast_label: Label = null
@@ -814,6 +820,13 @@ func _build_ui() -> void:
 	_export_replay_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_export_replay_button.size_flags_stretch_ratio = 1.0
 	action_row.add_child(_export_replay_button)
+	_export_video_button = Button.new()
+	_export_video_button.text = "导出视频"
+	_export_video_button.tooltip_text = "静默渲染 1280×720 mp4：不播声音、不带音轨；优先用 NVENC / QSV / VideoToolbox / VAAPI，找不到再退回 libx264（需要外部 ffmpeg）"
+	_export_video_button.pressed.connect(_export_video)
+	_export_video_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_export_video_button.size_flags_stretch_ratio = 1.0
+	action_row.add_child(_export_video_button)
 	_results_text = RichTextLabel.new()
 	_results_text.bbcode_enabled = false
 	_results_text.fit_content = false
@@ -3139,6 +3152,73 @@ func _apply_bias_to_chart() -> void:
 ## 把本局偏差换算成谱面 offset（纯函数，符号有回归测试）。
 static func chart_offset_for_bias(current_offset_ms: float, bias_ms: float) -> float:
 	return clampf(current_offset_ms - bias_ms, -10000.0, 10000.0)
+
+
+## ── 静默视频导出 ────────────────────────────────────────────────
+func _export_video() -> void:
+	if _video_dialog == null:
+		_video_dialog = FileDialog.new()
+		_video_dialog.file_mode = FileDialog.FILE_MODE_SAVE_FILE
+		_video_dialog.access = FileDialog.ACCESS_FILESYSTEM
+		_video_dialog.filters = PackedStringArray(["*.mp4 ; MP4 视频"])
+		_video_dialog.title = "导出回放视频（静默）"
+		_video_dialog.file_selected.connect(_start_video_export)
+		add_child(_video_dialog)
+	_video_dialog.current_dir = OS.get_system_dir(OS.SYSTEM_DIR_DOWNLOADS)
+	_video_dialog.current_file = "replay.mp4"
+	_video_dialog.popup_centered()
+
+
+func _start_video_export(path: String) -> void:
+	if chart == null:
+		return
+	if not path.to_lower().ends_with(".mp4"):
+		path += ".mp4"
+	if _video_export == null:
+		_video_export = VideoExport.new()
+		_video_export.finished.connect(_on_video_finished)
+		_video_export.progress.connect(func(done: int, total: int) -> void:
+			if _video_bar != null:
+				_video_bar.value = 100.0 * float(done) / float(maxi(1, total))
+		)
+		add_child(_video_export)
+	_ensure_video_progress()
+	_video_bar.value = 0.0
+	_video_progress.popup_centered()
+	var data := _current_replay()
+	var events: Array = data.events if data != null else []
+	var end_ms := maxf(1000.0, chart.timing.beat_to_chart_ms(chart.duration_beats()) + 2000.0)
+	_video_export.export_chart(chart, 0.0, end_ms, path, events, _app.show_storyboard if _app != null else true)
+
+
+func _ensure_video_progress() -> void:
+	if _video_progress != null:
+		return
+	_video_progress = AcceptDialog.new()
+	_video_progress.title = "导出视频"
+	_video_progress.ok_button_text = "取消"
+	var box := VBoxContainer.new()
+	box.custom_minimum_size = Vector2(360, 0)
+	_video_bar = ProgressBar.new()
+	_video_bar.min_value = 0.0
+	_video_bar.max_value = 100.0
+	box.add_child(_video_bar)
+	var hint := Label.new()
+	hint.text = "静默导出中：不播放声音，输出无音轨。"
+	hint.add_theme_font_size_override("font_size", 11)
+	box.add_child(hint)
+	_video_progress.add_child(box)
+	_video_progress.canceled.connect(func() -> void:
+		if _video_export != null:
+			_video_export.cancel()
+	)
+	add_child(_video_progress)
+
+
+func _on_video_finished(_path: String, message: String) -> void:
+	if _video_progress != null:
+		_video_progress.hide()
+	_notify_result(message)
 
 
 ## 结算页已经在显示，往上补一行，而不是只写进看不到的 _log。
