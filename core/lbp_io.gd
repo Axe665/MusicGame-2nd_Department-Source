@@ -230,3 +230,163 @@ static func _num(value: float) -> String:
 
 static func _clean(value: String) -> String:
 	return value.replace("\r", " ").replace("\n", " ").strip_edges()
+
+
+# ── 可解压的 .lbp 包 ────────────────────────────────────────────────────────
+# 单个 zip：manifest.json + chart.json（完整 JSON，能往返）+ assets/（音频/曲绘/
+# 视频/故事板）。纯文本 LBP 是有损旁路，这里只负责“能带走、能读回来”。
+const PACK_FORMAT := "tamaki3-pack"
+const PACK_VERSION := 1
+const PACK_CHART := "chart.json"
+const PACK_MANIFEST := "manifest.json"
+
+
+static func export_package(chart: Chart, path: String) -> Error:
+	if chart == null:
+		last_error = "没有谱面"
+		return ERR_INVALID_PARAMETER
+	var data := ChartIO.chart_to_dict(chart)
+	var general: Dictionary = data.get("general", {})
+	var metadata: Dictionary = data.get("metadata", {})
+	var files: Array[String] = []
+	for key in ["audio", "video"]:
+		var value := String(general.get(key, ""))
+		if FileAccess.file_exists(value):
+			files.append(value)
+	var cover := String(metadata.get("background", ""))
+	if FileAccess.file_exists(cover):
+		files.append(cover)
+	var sb_dir := String(metadata.get("storyboard", ""))
+	var sb_files: Array[String] = []
+	if not sb_dir.is_empty() and DirAccess.dir_exists_absolute(sb_dir):
+		for name in DirAccess.get_files_at(sb_dir):
+			sb_files.append(sb_dir + "/" + name)
+
+	# 写临时文件再改名：导出中断不会留下半个包。
+	var temp := path + ".tmp"
+	var packer := ZIPPacker.new()
+	var err := packer.open(temp)
+	if err != OK:
+		last_error = "无法写入 %s：%s" % [path, error_string(err)]
+		return err
+
+	var index := 0
+	for src in files:
+		var dst := "assets/%02d_%s" % [index, _pack_name(src.get_file())]
+		index += 1
+		if _pack_write(packer, dst, FileAccess.get_file_as_bytes(src)) != OK:
+			packer.close()
+			last_error = "打包失败：%s" % src.get_file()
+			return ERR_CANT_CREATE
+		for key in ["audio", "video"]:
+			if String(general.get(key, "")) == src:
+				general[key] = dst
+		if cover == src:
+			metadata["background"] = dst
+	if not sb_files.is_empty():
+		for src in sb_files:
+			if _pack_write(packer, "assets/sb/" + _pack_name(src.get_file()),
+					FileAccess.get_file_as_bytes(src)) != OK:
+				packer.close()
+				last_error = "打包故事板失败：%s" % src.get_file()
+				return ERR_CANT_CREATE
+		metadata["storyboard"] = "assets/sb"
+	data["general"] = general
+	data["metadata"] = metadata
+
+	var manifest := {
+		"format": PACK_FORMAT,
+		"version": PACK_VERSION,
+		"chart": PACK_CHART,
+		"title": String(metadata.get("title", "")),
+		"difficulty": chart.difficulty,
+	}
+	if _pack_write(packer, PACK_CHART, JSON.stringify(data, "\t").to_utf8_buffer()) != OK \
+			or _pack_write(packer, PACK_MANIFEST, JSON.stringify(manifest, "\t").to_utf8_buffer()) != OK:
+		packer.close()
+		last_error = "打包失败：写不进谱面"
+		return ERR_CANT_CREATE
+	packer.close()
+	if FileAccess.file_exists(path):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	err = DirAccess.rename_absolute(ProjectSettings.globalize_path(temp), ProjectSettings.globalize_path(path))
+	if err != OK:
+		last_error = "无法写入 %s：%s" % [path, error_string(err)]
+	return err
+
+
+static func import_package(path: String) -> Chart:
+	last_error = ""
+	var zip := ZIPReader.new()
+	if zip.open(path) != OK:
+		last_error = "不是可读的谱面包：%s" % path.get_file()
+		return null
+	var manifest = JSON.parse_string(zip.read_file(PACK_MANIFEST).get_string_from_utf8())
+	if not (manifest is Dictionary) or String((manifest as Dictionary).get("format", "")) != PACK_FORMAT:
+		zip.close()
+		last_error = "不是 Tamaki 谱面包"
+		return null
+	var data = JSON.parse_string(zip.read_file(PACK_CHART).get_string_from_utf8())
+	if not (data is Dictionary):
+		zip.close()
+		last_error = "谱面包里的谱面损坏"
+		return null
+	var base := "user://imports/lbp_%s" % path.md5_text().substr(0, 8)
+	for name in zip.get_files():
+		if name == PACK_MANIFEST or name == PACK_CHART or not _pack_safe(name):
+			continue
+		var target := base + "/" + name
+		DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(target.get_base_dir()))
+		var file := FileAccess.open(target, FileAccess.WRITE)
+		if file != null:
+			file.store_buffer(zip.read_file(name))
+			file.close()
+	zip.close()
+
+	var general: Dictionary = data.get("general", {})
+	for key in ["audio", "video"]:
+		general[key] = _unpack_path(String(general.get(key, "")), base)
+	var metadata: Dictionary = data.get("metadata", {})
+	metadata["background"] = _unpack_path(String(metadata.get("background", "")), base)
+	metadata["storyboard"] = _unpack_path(String(metadata.get("storyboard", "")), base)
+	data["general"] = general
+	data["metadata"] = metadata
+	var chart := ChartIO.chart_from_dict(data)
+	if chart == null:
+		last_error = "谱面包里的谱面无法解析"
+	return chart
+
+
+static func is_package(path: String) -> bool:
+	var file := FileAccess.open(path, FileAccess.READ)
+	if file == null:
+		return false
+	var magic := file.get_buffer(2)
+	file.close()
+	return magic.size() == 2 and magic[0] == 0x50 and magic[1] == 0x4B
+
+
+static func _pack_write(packer: ZIPPacker, name: String, bytes: PackedByteArray) -> Error:
+	var err := packer.start_file(name)
+	if err != OK:
+		return err
+	err = packer.write_file(bytes)
+	packer.close_file()
+	return err
+
+
+static func _pack_name(name: String) -> String:
+	var clean := name.validate_filename().strip_edges()
+	return clean if not clean.is_empty() else "asset"
+
+
+## 包内路径只允许相对、正斜杠；挡住 zip-slip（../、绝对路径、盘符）。
+static func _pack_safe(name: String) -> bool:
+	return not name.contains("..") and not name.begins_with("/") and not name.contains("\\") \
+		and not name.contains(":")
+
+
+static func _unpack_path(value: String, base: String) -> String:
+	if value.begins_with("assets/"):
+		return base + "/" + value
+	return value

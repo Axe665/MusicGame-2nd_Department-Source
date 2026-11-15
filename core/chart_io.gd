@@ -92,8 +92,11 @@ static func chart_to_dict(chart: Chart) -> Dictionary:
 		if note.lock:
 			note_flags[str(note.id)] = {"lock": true}
 	var meta := {}
-	for key in ["title", "artist", "creator", "version", "tags", "license", "background"]:
+	for key in ["title", "artist", "creator", "version", "tags", "license", "background", "storyboard"]:
 		meta[key] = String(chart.metadata.get(key, ""))
+	# 宽屏故事板标志：不存的话重开谱面会退回按内容猜（854/640 混判）。
+	if bool(chart.metadata.get("widescreen", false)):
+		meta["widescreen"] = 1
 	# 紧凑代码丢不掉的字段旁挂在这里；旧版本读到会直接忽略。
 	var note_extras := {}
 	for note in chart.notes:
@@ -328,8 +331,11 @@ static func chart_from_dict(data: Dictionary) -> Chart:
 	chart.offset_ms = float(general.get("offset_ms", 0.0))
 	chart.difficulty = String(general.get("difficulty", "Normal"))
 	var meta: Dictionary = data.get("metadata", {})
-	for key in ["title", "artist", "creator", "version", "tags", "license", "background"]:
+	for key in ["title", "artist", "creator", "version", "tags", "license", "background", "storyboard"]:
 		chart.metadata[key] = String(meta.get(key, ""))
+	# 兼容旧存档：没有这个键就交给故事板内容启发式判断。
+	if meta.has("widescreen"):
+		chart.metadata["widescreen"] = int(meta.get("widescreen", 0)) != 0
 	var timing_data: Dictionary = data.get("timing", {})
 	chart.timing = TimingMap.new()
 	chart.timing.points.clear()
@@ -534,7 +540,7 @@ static func load_set(path: String) -> Dictionary:
 			continue
 		var name := String(entry.get("name", "难度"))
 		chart.metadata["version"] = name
-		entries.append({"name": name, "chart": chart})
+		entries.append({"name": name, "stars": float(entry.get("stars", -1.0)), "chart": chart})
 	if entries.is_empty():
 		last_error = "套组里没有可用的难度"
 		return {"ok": false, "error": last_error}
@@ -557,6 +563,8 @@ static func save_set(path: String, entries: Array, title: String = "", source: S
 			continue
 		difficulties.append({
 			"name": String(entry.get("name", "难度")),
+			# 星数只影响显示与排序；<=0 表示未知，不写进文件。
+			"stars": float(entry.get("stars", -1.0)),
 			"chart": chart_to_dict(chart),
 		})
 	if difficulties.is_empty():

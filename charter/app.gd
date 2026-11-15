@@ -79,6 +79,10 @@ var hud_show_watermark: bool = false
 var background_brightness: int = 100
 ## 试玩时鼠标左右键是否算 Tap（关掉后移动/滚轮照常）。
 var mouse_keys: bool = true
+## 试玩/预览里是否绘制 osu! storyboard。
+var show_storyboard: bool = true
+## storyboard 的背景层（Background/Video）是否绘制。
+var show_storyboard_background: bool = true
 ## 右侧预览宽度与折叠状态（编辑器布局记忆）。
 var preview_width: float = 340.0
 var preview_collapsed: bool = false
@@ -95,6 +99,12 @@ var audio_buffer_ms: int = 3
 var dynamic_offset: bool = false
 ## AUTO 自动演示：试玩时自动完美演奏，用来快速检查谱面（成绩不计入）。
 var playtest_auto: bool = false
+## 试玩镜像：off / lr（左右翻转）/ rot180（旋转 180°），只影响试玩，不改谱面。
+var playtest_mirror: String = "off"
+## 试玩背景暗度（0 = 原样，100 = 全黑），和 osu 的 Background dim 一样。
+var playtest_dim: int = 70
+## 启动时默认打开的标签页（set.json 绝对/用户路径列表）。
+var startup_tabs: Array[String] = []
 ## 上一局的平均判定偏差，供试玩设置显示。
 var last_bias_ms: float = 0.0
 
@@ -116,6 +126,9 @@ var vertical_lines: int = 11
 var vertical_stretch: float = 0.0
 var zoom_px_per_beat: float = 28.0
 var time_flows_down: bool = true
+## 播放滚动：page（翻页）/ pin（播放头固定，方向由 time_flows_down 决定）。
+## 只在播放和拖进度条时钉住；暂停浏览仍可自由滚动。
+var playback_scroll: String = "pin"
 var hud_visible: bool = true
 var use_3d_ring: bool = true
 var mouse_tilt: bool = true
@@ -169,6 +182,16 @@ func _ready() -> void:
 	if child_window:
 		# 新开的转谱窗口默认最大化：编辑器三栏 + 顶部工具在 1600×900 以下会挤掉右侧控件。
 		DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_MAXIMIZED)
+	var tabs_arg := cmdline_value("--open-tabs=")
+	if tabs_arg.is_empty() and not startup_tabs.is_empty() \
+			and cmdline_value("--open-set=").is_empty() and cmdline_value("--import-source=").is_empty():
+		# 没带命令行参数时，按设置里记着的默认标签页开机。
+		tabs_arg = "|".join(startup_tabs)
+	if not tabs_arg.is_empty():
+		# 多标签启动：第一个当主标签，其余每个都开成新标签页。
+		set_chart(Chart.new(), "", false)
+		call_deferred("_boot_tabs_window", tabs_arg)
+		return
 	var set_arg := cmdline_value("--open-set=")
 	if not set_arg.is_empty():
 		# 转谱窗口：先放一张空谱占位，等主界面建好再载入套组。
@@ -203,6 +226,37 @@ static func cmdline_value(prefix: String) -> String:
 	return ""
 
 
+## 多标签启动：--open-tabs=a.set.json|b.set.json|...
+func _boot_tabs_window(paths_arg: String) -> void:
+	var paths := paths_arg.split("|", false)
+	var opened := 0
+	for path in paths:
+		if path.is_empty() or not FileAccess.file_exists(path):
+			continue
+		var ok := false
+		if path.ends_with(".set.json"):
+			ok = open_set_file(path)
+		else:
+			ok = load_chart(path)
+		if not ok:
+			continue
+		var title := path.get_file().get_basename()
+		if opened == 0:
+			ensure_tab()
+			if not tabs.is_empty():
+				tabs[tabs.size() - 1].title = title
+				tabs_changed.emit()
+		else:
+			add_tab_from_current(title)
+		opened += 1
+	if opened == 0:
+		notice.emit("多标签启动：一个都没打开", "error")
+		set_chart(DemoChart.make_demo(), "user://charts/demo.json", false)
+		ensure_tab()
+		return
+	activate_tab(0)
+
+
 ## 转谱窗口的启动流程：解析来源 → 建难度列表 → 导入第一份。
 func _boot_import_window(source: String) -> void:
 	if open_import_source(source):
@@ -225,7 +279,7 @@ func _boot_set_window(path: String) -> void:
 
 ## 打开一个导入来源（.osz/.zip/maidata.txt），把来源里的所有难度都转好放进难度组，
 ## 所以不管在哪个窗口导入，顶部都会出现难度下拉框。
-func open_import_source(source: String) -> bool:
+func open_import_source(source: String, star_hints: Dictionary = {}) -> bool:
 	if source.is_empty() or not FileAccess.file_exists(source):
 		return false
 	import_source = source
@@ -238,14 +292,17 @@ func open_import_source(source: String) -> bool:
 		import_kind = "simai"
 		for i in simai.size():
 			var item: Dictionary = simai[i]
-			var version := String(item.get("version", ""))
+			if not bool(item.get("has_notes", true)):
+				continue
+			var index := int(item.get("index", i))
+			var label := SimaiIO.difficulty_label(index, String(item.get("level", "")))
 			import_difficulties.append({
-				"index": int(item.get("index", i)),
-				"name": version if not version.is_empty() else "未命名难度",
-				"label": import_label(version, String(item.get("title", "")), String(item.get("creator", "")), ""),
+				"index": index,
+				"name": label,
+				"label": import_label(label, String(item.get("title", "")), String(item.get("creator", "")), ""),
 			})
 	else:
-		var diffs := OsuIO.list_osz_difficulties(source)
+		var diffs := OsuIO.list_osz_difficulties(source, star_hints)
 		if diffs.is_empty():
 			import_source = ""
 			return false
@@ -254,10 +311,13 @@ func open_import_source(source: String) -> bool:
 			var item: Dictionary = diffs[i]
 			var mode_label := "taiko" if int(item.get("mode", 0)) == 1 else "std"
 			var version := String(item.get("version", ""))
+			var stars := float(item.get("stars", -1.0))
 			import_difficulties.append({
-				"index": i,
+				# 排序后的顺序 ≠ 压缩包里的顺序，取 .osu 要按原始下标
+				"index": int(item.get("index", i)),
 				"name": version if not version.is_empty() else "未命名难度",
-				"label": import_label(version, String(item.get("title", "")), String(item.get("creator", "")), mode_label),
+				"stars": stars,
+				"label": import_label(version, String(item.get("title", "")), String(item.get("creator", "")), mode_label, stars),
 			})
 	# 一次性把每个难度都转出来：切换是瞬时的，也不会因为重新导入丢改动。
 	for i in import_difficulties.size():
@@ -270,7 +330,11 @@ func open_import_source(source: String) -> bool:
 			if not result.is_empty():
 				converted = result.get("chart")
 		if converted != null:
-			difficulties.append({"name": String(entry.get("name", "难度")), "chart": converted})
+			difficulties.append({
+				"name": String(entry.get("name", "难度")),
+				"stars": float(entry.get("stars", -1.0)),
+				"chart": converted,
+			})
 	if difficulties.is_empty():
 		return false
 	# 先把所有转好的谱面落盘成一个难度套组文件，再切第一个进去。
@@ -342,17 +406,23 @@ func save_set_file(path: String = "") -> bool:
 
 
 ## 当前窗口能切的所有难度名（下拉框用）。
+## 难度名后面带星数（未知星数就不带）。名字本身保持干净，写文件时仍然用原名。
+static func star_label(name: String, stars: float) -> String:
+	return "%s  %.2f★" % [name, stars] if stars > 0.0 else name
+
+
 func difficulty_names() -> Array[String]:
 	var names: Array[String] = []
 	for entry in difficulties:
-		names.append(String(entry.get("name", "难度")))
+		names.append(star_label(String(entry.get("name", "难度")), float(entry.get("stars", -1.0))))
 	return names
 
 
 func difficulty_name(index: int) -> String:
 	if index < 0 or index >= difficulties.size():
 		return ""
-	return String(difficulties[index].get("name", "难度"))
+	var entry: Dictionary = difficulties[index]
+	return star_label(String(entry.get("name", "难度")), float(entry.get("stars", -1.0)))
 
 
 ## 切到难度组里的第 index 个（0 起）。
@@ -442,15 +512,20 @@ static func _safe_file_name(text: String) -> String:
 	return out.strip_edges()
 
 
-static func import_label(version: String, title: String, creator: String, mode_label: String) -> String:
+static func import_label(version: String, title: String, creator: String, mode_label: String, stars: float = -1.0) -> String:
 	var head := version if not version.is_empty() else "未命名难度"
 	if not mode_label.is_empty():
 		head += "  [%s]" % mode_label
-	if title.is_empty() and creator.is_empty():
-		return head
-	if creator.is_empty():
-		return "%s  %s" % [head, title]
-	return "%s  %s  (%s)" % [head, title, creator]
+	var label := head
+	if not (title.is_empty() and creator.is_empty()):
+		if creator.is_empty():
+			label = "%s  %s" % [head, title]
+		else:
+			label = "%s  %s  (%s)" % [head, title, creator]
+	# 星数放在最末尾，和 osu 的难度显示顺序对得上
+	if stars > 0.0:
+		label += "  %.2f★" % stars
+	return label
 
 
 func import_difficulty_label(position: int) -> String:
@@ -518,6 +593,8 @@ func _load_settings() -> void:
 			hud_show_watermark = bool(data.get("hud_show_watermark", hud_show_watermark))
 			background_brightness = clampi(int(data.get("background_brightness", background_brightness)), 0, 100)
 			mouse_keys = bool(data.get("mouse_keys", mouse_keys))
+			show_storyboard = bool(data.get("show_storyboard", show_storyboard))
+			show_storyboard_background = bool(data.get("show_storyboard_background", show_storyboard_background))
 			preview_width = clampf(float(data.get("preview_width", preview_width)), 280.0, 720.0)
 			preview_collapsed = bool(data.get("preview_collapsed", preview_collapsed))
 			hit_fx_style = String(data.get("hit_fx_style", hit_fx_style))
@@ -531,6 +608,22 @@ func _load_settings() -> void:
 			sfx_volume = clampf(float(data.get("sfx_volume", sfx_volume)), 0.0, 100.0)
 			dynamic_offset = bool(data.get("dynamic_offset", dynamic_offset))
 			playtest_auto = bool(data.get("playtest_auto", playtest_auto))
+			var mirror_mode := String(data.get("playtest_mirror", playtest_mirror))
+			playtest_mirror = mirror_mode if mirror_mode in ["off", "lr", "rot180"] else "off"
+			var scroll_mode := String(data.get("playback_scroll", playback_scroll))
+			# 旧版三档（pin_down / pin_up）迁移成「固定播放头 + 谱面方向」。
+			if scroll_mode == "pin_down":
+				playback_scroll = "pin"
+				time_flows_down = false
+			elif scroll_mode == "pin_up":
+				playback_scroll = "pin"
+				time_flows_down = true
+			else:
+				playback_scroll = scroll_mode if scroll_mode in ["page", "pin"] else "pin"
+			playtest_dim = clampi(int(data.get("playtest_dim", playtest_dim)), 0, 70)
+			startup_tabs.clear()
+			for item in data.get("startup_tabs", []):
+				startup_tabs.append(String(item))
 			osu_favorites.clear()
 			for value in data.get("osu_favorites", []):
 				osu_favorites.append(int(value))
@@ -684,13 +777,13 @@ func effective_latency_sec() -> float:
 
 
 func save_settings() -> void:
-	var data := {"path_wait_indicator": path_wait_indicator, "note_skin": note_skin, "hit_fx_style": hit_fx_style, "hit_sfx_style": hit_sfx_style, "ffmpeg": ffmpeg_path, "frame_cap": frame_cap, "audio_buffer_ms": audio_buffer_ms, "playtest_offset_ms": playtest_offset_ms, "audio_latency_ms": audio_latency_ms, "music_volume": music_volume, "sfx_volume": sfx_volume, "dynamic_offset": dynamic_offset, "playtest_auto": playtest_auto, "osu_favorites": osu_favorites, "last_bias_ms": last_bias_ms, "cursor_scale": cursor_scale, "flow_scale": flow_scale, "star_speed": star_speed, "aa_2d_level": aa_2d_level, "msaa_3d_level": msaa_3d_level, "ring_pad_rect": ring_pad_rect, "note_detail_fine": note_detail_fine, "note_glow": note_glow, "cursor_trail": cursor_trail, "fx_budget": fx_budget, "ring_3d_scale": ring_3d_scale, "ring_3d_hz": ring_3d_hz, "bar_lines": bar_lines, "quality_preset": quality_preset,
+	var data := {"path_wait_indicator": path_wait_indicator, "note_skin": note_skin, "hit_fx_style": hit_fx_style, "hit_sfx_style": hit_sfx_style, "ffmpeg": ffmpeg_path, "frame_cap": frame_cap, "audio_buffer_ms": audio_buffer_ms, "playtest_offset_ms": playtest_offset_ms, "audio_latency_ms": audio_latency_ms, "music_volume": music_volume, "sfx_volume": sfx_volume, "dynamic_offset": dynamic_offset, "playtest_auto": playtest_auto, "playtest_mirror": playtest_mirror, "playback_scroll": playback_scroll, "playtest_dim": playtest_dim, "startup_tabs": startup_tabs, "osu_favorites": osu_favorites, "last_bias_ms": last_bias_ms, "cursor_scale": cursor_scale, "flow_scale": flow_scale, "star_speed": star_speed, "aa_2d_level": aa_2d_level, "msaa_3d_level": msaa_3d_level, "ring_pad_rect": ring_pad_rect, "note_detail_fine": note_detail_fine, "note_glow": note_glow, "cursor_trail": cursor_trail, "fx_budget": fx_budget, "ring_3d_scale": ring_3d_scale, "ring_3d_hz": ring_3d_hz, "bar_lines": bar_lines, "quality_preset": quality_preset,
 		"hud_scale": hud_scale, "hud_combo_mode": hud_combo_mode, "hud_progress_style": hud_progress_style,
 		"hud_judge_position": hud_judge_position, "hud_opacity": hud_opacity,
 		"hud_show_title": hud_show_title, "hud_show_difficulty": hud_show_difficulty,
 		"hud_show_percent": hud_show_percent, "hud_show_time": hud_show_time,
 		"hud_show_watermark": hud_show_watermark,
-		"background_brightness": clampi(background_brightness, 0, 100), "mouse_keys": mouse_keys,
+		"background_brightness": clampi(background_brightness, 0, 100), "mouse_keys": mouse_keys, "show_storyboard": show_storyboard, "show_storyboard_background": show_storyboard_background,
 		"preview_width": preview_width, "preview_collapsed": preview_collapsed}
 	var file := FileAccess.open(SETTINGS_PATH, FileAccess.WRITE)
 	if file != null:
@@ -934,6 +1027,15 @@ func load_chart(path: String) -> bool:
 	# .set.json 是难度套组：走套组流程，顶部会出现难度下拉。
 	if _is_set_file(path):
 		return open_set_file(path)
+	# .lbp 包：单个 zip（谱面 JSON + 音频/曲绘/视频/故事板）。
+	if path.to_lower().ends_with(".lbp") and LBPIO.is_package(path):
+		var packed := LBPIO.import_package(path)
+		if packed == null:
+			notice.emit("打开失败：%s" % LBPIO.last_error, "error")
+			return false
+		set_chart(packed, path)
+		notice.emit("已打开谱面包 %s" % path.get_file(), "info")
+		return true
 	var loaded := ChartIO.load_chart(path)
 	if loaded == null:
 		notice.emit("打开失败：%s" % ChartIO.last_error, "error")
@@ -1118,7 +1220,7 @@ func import_maimai(path: String, difficulty_index: int = 0) -> bool:
 func export_lbp(path: String) -> bool:
 	if chart == null:
 		return false
-	var err := LBPIO.export_to_file(chart, path)
+	var err := LBPIO.export_package(chart, path)
 	if err != OK:
 		notice.emit("导出 .lbp 失败：%s" % LBPIO.last_error, "error")
 		return false
@@ -1159,10 +1261,20 @@ func _on_autosave_timer() -> void:
 	autosave()
 
 
+## 谱面内容（音符/区域/事件/音频）真正的末尾。
+func chart_content_end_beats() -> float:
+	return chart.content_end_beat() if chart != null else 0.0
+
+
+## 编辑器可滚动/可跳转的终点：内容末尾 + 4 小节。
+func chart_limit_beats() -> float:
+	return chart.end_limit_beat() if chart != null else 0.0
+
+
 func set_playhead(beat: float) -> void:
 	if chart == null:
 		return
-	playhead_beat = clampf(beat, -4.0, chart.duration_beats() + 8.0)
+	playhead_beat = clampf(beat, -4.0, chart_limit_beats())
 	playhead_changed.emit(playhead_beat)
 
 
@@ -1171,7 +1283,7 @@ func set_playhead(beat: float) -> void:
 func seek(beat: float) -> void:
 	if chart == null:
 		return
-	var target := clampf(beat, -4.0, chart.duration_beats() + 8.0)
+	var target := clampf(beat, -4.0, chart_limit_beats())
 	seek_requested.emit(target)
 	set_playhead(target)
 

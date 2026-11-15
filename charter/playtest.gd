@@ -79,6 +79,10 @@ const JUDGE_LOOKBEHIND_MS := 6000.0
 
 var _app: Node = null
 var chart: Chart = null
+## 试玩用的原谱；chart 可能是它的镜像副本（重试必须从原谱重建）。
+var _source_chart: Chart = null
+## off / lr / rot180：只翻试玩副本，原谱不动。
+var mirror_mode: String = "off"
 var chart_path: String = ""
 var start_beat: float = 0.0
 
@@ -265,7 +269,8 @@ func _sync_sfx_style() -> void:
 
 func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	_close_path_input_log()
-	chart = p_chart
+	_source_chart = p_chart
+	chart = p_chart.mirrored_copy(mirror_mode) if p_chart != null else null
 	start_beat = p_start_beat
 	chart_path = p_chart_path
 	playback_rate = clampf(next_playback_rate, 0.5, 2.0)
@@ -296,7 +301,9 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	_preview.custom_cursor_visible = true
 	_preview.show_hud = true
 	_preview.use_3d_ring = true
-	_preview.mouse_tilt = true
+	# 试玩里环要正面朝玩家：鼠标视差会让环整体倾斜、环心还会跟着平移，
+	# 观感就是「环不在正中心、有点歪」。编辑器预览保留视差。
+	_preview.mouse_tilt = false
 	_preview.show_debug = false
 	_preview.flow_scale = flow
 	_preview.star_speed = float(_app.star_speed if _app != null else 1.0)
@@ -596,7 +603,8 @@ func _refresh_pause_status() -> void:
 		_mouse_keys_toggle.set_pressed_no_signal(bool(_app.mouse_keys))
 	var skin_label := String(Preview3D.skin_presets().get(_preview.note_skin, {}).get("label", _preview.note_skin))
 	var fx_label := String(Preview3D.hit_fx_presets().get(_preview.hit_fx_style, _preview.hit_fx_style))
-	_pause_style.text = "皮肤 %s，特效 %s%s" % [skin_label, fx_label, "，AUTO" if auto_play else ""]
+	var mirror_suffix := "" if mirror_mode == "off" else "，镜像 %s" % _mirror_label()
+	_pause_style.text = "皮肤 %s，特效 %s%s%s" % [skin_label, fx_label, "，AUTO" if auto_play else "", mirror_suffix]
 	_pause_tiers.text = "PERFECT %d   GREAT %d   GOOD %d   BAD %d   MISS %d" % [
 		int(_tier_counts.get("PERFECT", 0)), int(_tier_counts.get("GREAT", 0)),
 		int(_tier_counts.get("GOOD", 0)), int(_tier_counts.get("BAD", 0)),
@@ -1671,6 +1679,8 @@ func _toggle_auto() -> void:
 			_auto_index += 1
 	_auto_key_phase = 0
 	_add_log("AUTO %s" % ("ON" if auto_play else "OFF"))
+	if mirror_mode != "off":
+		_add_log("MIRROR %s" % _mirror_label())
 	if chart != null:
 		_update_hud_state()
 
@@ -2481,7 +2491,7 @@ func _press_target(note: Note, ms: float, beat: float) -> Dictionary:
 			if bool(state.get("head_judged", false)) or ms < target - EARLY_MS:
 				return {}
 			return _shape_target(note, target - EARLY_MS, target + HIT_WINDOW_MS, target,
-				PackedVector2Array([_preview.note_head_screen(note, beat)]),
+				_preview.path_head_arc(note, beat),
 				POSITION_TOLERANCE_PX + float(_preview.note_graphic_radius("path")), 0.0)
 		"anchor":
 			# 成对 Anchor 由 _judge_anchor_pairs 整对收键，不走单键分配。
@@ -2510,7 +2520,8 @@ func _match_press(press: Dictionary, target: Dictionary) -> Dictionary:
 	var pad := float(target["pad"])
 	if bool(target["dense"]):
 		var slack := rad_to_deg(tolerance / maxf(1.0, float(target.get("ring_radius", 1.0))))
-		var half := maxf(24.0, (0.0 if points.size() <= 1 else note.arc_width() + pad + 2.0 * slack) * 0.5)
+		var span := note.width if note.type == "path" else note.arc_width()
+		var half := maxf(24.0, (0.0 if points.size() <= 1 else span + pad + 2.0 * slack) * 0.5)
 		if not bool(press.get("valid", true)):
 			return {}
 		var press_angle := float(press.get("angle", NAN))
@@ -3035,6 +3046,8 @@ func _finish() -> void:
 			lines.append("★ ALL PERFECT")
 		else:
 			lines.append("★ FULL COMBO")
+	if mirror_mode != "off":
+		lines.append("镜像：%s（只翻本局，原谱未改）" % _mirror_label())
 	lines.append("命中 %d / 失误 %d" % [_hit_count, _miss_count])
 	lines.append("调试准确率：%s" % ("—" if _accuracy() < 0.0 else "%.2f%%" % _accuracy()))
 	lines.append("评级：%s（预览/非正式）" % _rating(_accuracy()))
@@ -3105,13 +3118,14 @@ func _fade_out_audio(seconds: float = 1.2) -> void:
 func _apply_bias_to_chart() -> void:
 	if _app == null or chart == null or _errors.size() < 8:
 		return
-	if _app.chart != chart:
+	var target: Chart = _source_chart if _source_chart != null else chart
+	if _app.chart != target:
 		_notify_result("谱面已换掉，未写回 offset")
 		return
 	var bias := _mean_error()
-	var offset := chart_offset_for_bias(float(chart.offset_ms), bias)
-	chart.offset_ms = offset
-	chart.timing.offset_ms = offset
+	var offset := chart_offset_for_bias(float(target.offset_ms), bias)
+	target.offset_ms = offset
+	target.timing.offset_ms = offset
 	if not _app.save_chart():
 		_notify_result("写回 offset 失败（保存被拒绝）")
 		return
@@ -3154,11 +3168,21 @@ func _cycle_hit_fx(step: int) -> void:
 	_update_hud_state()
 
 
+func _mirror_label() -> String:
+	match mirror_mode:
+		"lr":
+			return "左右翻转"
+		"rot180":
+			return "旋转 180°"
+	return "关闭"
+
+
 func _retry() -> void:
 	if chart == null:
 		_exit()
 		return
-	setup(chart, 0.0, chart_path)
+	# 从原谱重来：不能把镜像副本当源，否则重试会再翻一次。
+	setup(_source_chart if _source_chart != null else chart, 0.0, chart_path)
 
 
 func _exit() -> void:

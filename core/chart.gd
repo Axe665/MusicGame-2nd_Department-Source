@@ -170,6 +170,51 @@ func sorted_notes() -> Array[Note]:
 	return result
 
 
+## 试玩镜像：音符与 Limit 红区各翻一份，形状/视图/时间共用。原谱不动。
+## mode: "off"（原样返回）/ "lr"（左右翻转）/ "rot180"（旋转 180°）。
+func mirrored_copy(mode: String) -> Chart:
+	if mode != "lr" and mode != "rot180":
+		return self
+	var result := Chart.new()
+	result.format_version = format_version
+	result.audio_path = audio_path
+	result.video_path = video_path
+	result.video_offset_ms = video_offset_ms
+	result.video_fps = video_fps
+	result.video_opacity = video_opacity
+	result.pre_read_ms = pre_read_ms
+	result.offset_ms = offset_ms
+	result.difficulty = difficulty
+	result.metadata = metadata.duplicate(true)
+	result.timing = timing
+	result.default_shape_id = default_shape_id
+	result.shapes = shapes
+	result.events = events
+	result.shape_keys = shape_keys
+	result.view_states = view_states
+	result.load_warnings = load_warnings
+	result.editor = editor
+	result.palette = palette
+	result._next_note_id = _next_note_id
+	result._next_region_id = _next_region_id
+	result._next_event_id = _next_event_id
+	result.notes = []
+	for note in notes:
+		var copy := Note.from_dict(note.to_dict())
+		if mode == "lr":
+			copy.mirror_lr()
+		else:
+			copy.mirror_u()
+		result.notes.append(copy)
+	result.regions = []
+	for region in regions:
+		var copy := Region.from_dict(region.to_dict())
+		var flipped := 180.0 - copy.angle if mode == "lr" else copy.angle + 180.0
+		copy.angle = fposmod(flipped, 360.0)
+		result.regions.append(copy)
+	return result
+
+
 func next_note_id() -> int:
 	var result := _next_note_id
 	_next_note_id += 1
@@ -242,6 +287,31 @@ func duration_beats() -> float:
 
 func bar_length() -> float:
 	return float(timing.beats_per_bar_at(0.0))
+
+
+## 音频长度（毫秒）：导入歌曲或加载播放流时写入 editor，没有就返回 0。
+func audio_length_ms() -> float:
+	return maxf(0.0, float(editor.get("audio_length_ms", 0.0)))
+
+
+## 音频最后一个拍的位置。offset 是音频偏移，换算回谱面毫秒要加回去。
+func audio_end_beat() -> float:
+	var length := audio_length_ms()
+	if length <= 0.0:
+		return 0.0
+	return timing.chart_ms_to_beat(length + offset_ms)
+
+
+## 音频与最后一个音符/区域/事件取大：播放和「音频结束」标记都用它。
+func content_end_beat() -> float:
+	return maxf(duration_beats(), audio_end_beat())
+
+
+## 编辑器可滚动/可跳转的终点：内容末尾再留 4 小节。
+func end_limit_beat() -> float:
+	var last := content_end_beat()
+	var bpb := maxf(1.0, float(timing.beats_per_bar_at(last)))
+	return last + bpb * 4.0
 
 
 # ---------------------------------------------------------------- 配色分组

@@ -41,11 +41,20 @@ func _initialize() -> void:
 		"test_nearest_u",
 		"test_pre_read",
 		"test_bar_lines",
+		"test_beat_grid_lines",
+		"test_pinned_scroll",
+		"test_flow_flip_anchor",
+		"test_ring_span_label",
+		"test_ring_span_end",
+		"test_chart_end_limit",
+		"test_uniform_meter",
+		"test_timing_presorted",
 		"test_shrink_example",
 		"test_event_restore",
 		"test_playability_validator",
 		"test_media_formats",
 		"test_lbp_export",
+		"test_lbp_package",
 		"test_note_color_palette",
 		"test_note_color_contrast",
 		"test_note_color_round_trip",
@@ -74,6 +83,8 @@ func _initialize() -> void:
 		"test_trace_distance",
 		"test_sfx_assets",
 		"test_simai_import",
+		"test_simai_button_layout",
+		"test_chart_mirror",
 		"test_osu_std_sentakki_rules",
 		"test_simai_directive_slot",
 		"test_simai_bend_shapes",
@@ -122,7 +133,19 @@ func _initialize() -> void:
 		"test_mouse_button_input",
 		"test_osu_star_color",
 		"test_osu_filters",
+		"test_osu_difficulty_star_sort",
+		"test_osu_star_hints_json",
+		"test_osu_beatmap_set_id",
+		"test_import_label_stars",
+		"test_difficulty_star_label",
+		"test_difficulty_stars_round_trip",
+		"test_storyboard_parse",
+		"test_storyboard_loops_and_easing",
+		"test_storyboard_serialize",
+		"test_storyboard_editor_model",
+		"test_storyboard_layers",
 		"test_osu_pill_rows",
+		"test_path_chevron_spacing",
 		"test_audio_clock",
 		"test_audio_clock_rate",
 		"test_calibration_offset",
@@ -177,9 +200,9 @@ func test_timing() -> bool:
 	near(map.chart_ms_to_beat(8000.0), 12.0, 0.001, "timing bpm change inverse")
 	map.offset_ms = -18.0
 	near(map.beat_to_audio_ms(0.0), 18.0, 0.001, "timing offset")
-	eq(map.format_beat(16.0), "4:0:4", "timing format beat")
-	near(map.parse_beat("4:0:4"), 16.0, 0.001, "timing parse beat")
-	near(map.parse_beat("4:2:4"), 18.0, 0.001, "timing parse half bar")
+	eq(map.format_beat(16.0), "5:0:4", "timing format beat")
+	near(map.parse_beat("5:0:4"), 16.0, 0.001, "timing parse beat")
+	near(map.parse_beat("5:2:4"), 18.0, 0.001, "timing parse half bar")
 	eq(TimingMap.parse_beat_subdivision("4"), 4, "beat subdivision parse 4")
 	eq(TimingMap.parse_beat_subdivision(" 8 "), 8, "beat subdivision parse trims spaces")
 	eq(TimingMap.parse_beat_subdivision("0"), 0, "beat subdivision rejects zero")
@@ -1237,6 +1260,31 @@ func test_bar_lines() -> bool:
 	return true
 
 
+func test_beat_grid_lines() -> bool:
+	near(ChartCanvas.beat_line_width(false, true), 2.0, 0.001, "4/4 quarter lines are bold")
+	near(ChartCanvas.beat_line_width(true, true), 2.5, 0.001, "4/4 bar lines are boldest")
+	near(ChartCanvas.beat_line_width(false, false), 1.0, 0.001, "other meters keep plain quarter lines")
+	near(ChartCanvas.beat_line_width(true, false), 1.5, 0.001, "other meters keep plain bar lines")
+	var timing := TimingMap.new()
+	ok(ChartCanvas.is_uniform_four_four(timing), "an empty meter defaults to 4/4")
+	timing.points.append(TimingPoint.new(8.0, 120.0, 3))
+	ok(not ChartCanvas.is_uniform_four_four(timing), "a 3/4 point disables the emphasis")
+	ok(ChartCanvas.is_eighth_offset(0.5), "0.5 is the eighth line")
+	ok(not ChartCanvas.is_eighth_offset(0.25), "0.25 is not the eighth line")
+	var counts := {}
+	for divisions in [1, 2, 3, 4, 6, 8]:
+		var hits := 0
+		for offset in TimingMap.beat_subdivision_offsets(divisions):
+			if ChartCanvas.is_eighth_offset(offset):
+				hits += 1
+		counts[divisions] = hits
+	eq(counts[4], 1, "N=4 draws exactly one eighth line per beat")
+	eq(counts[6], 1, "N=6 draws exactly one eighth line per beat")
+	eq(counts[3], 0, "N=3 has no eighth line")
+	eq(counts[1], 0, "N=1 has no eighth line")
+	return true
+
+
 func test_pre_read() -> bool:
 	var chart := Chart.new()
 	chart.shapes["S1"] = BoundaryShape.ellipse("S1", 410.0, 245.0, 24)
@@ -1249,6 +1297,68 @@ func test_pre_read() -> bool:
 			var p := _preview_point(chart, u, target, target)
 			var c: Vector2 = BoundaryRuntime.eval_point(chart, u, target).point
 			near(p.distance_to(c), 0.0, 0.01, "P(T)=C at u=%.2f T=%.1f" % [u, target])
+	return true
+
+
+func test_pinned_scroll() -> bool:
+	near(ChartCanvas.pinned_scroll_beat(40.0, 20.0), 38.4, 0.001, "pinned playhead sits 8% from the edge")
+	eq(ChartCanvas.pinned_scroll_beat(0.5, 20.0), 0.0, "pinned scroll never goes negative")
+	near(ChartCanvas.pinned_scroll_beat(40.0, 20.0, 0.0), 40.0, 0.001, "zero margin pins the playhead to the edge")
+	return true
+
+
+func test_flow_flip_anchor() -> bool:
+	# 翻转方向后播放头仍停在同一屏幕比例：ratio 0.2 → 仍是 0.2。
+	near(ChartCanvas.flipped_scroll_beat(24.0, 20.0, 20.0), 8.0, 0.001, "flip keeps the playhead ratio")
+	near(ChartCanvas.flipped_scroll_beat(4.0, 0.0, 20.0), -12.0, 0.001, "flip may go negative before clamping")
+	eq(ChartCanvas.flipped_scroll_beat(80.0, 20.0, 20.0), 20.0, "off-screen playhead keeps the scroll unchanged")
+	return true
+
+
+func test_chart_end_limit() -> bool:
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	chart.editor["audio_length_ms"] = 60000.0
+	near(chart.audio_end_beat(), 120.0, 0.01, "60s at 120 BPM is 120 beats")
+	near(chart.end_limit_beat(), 136.0, 0.01, "limit is audio end + 4 bars")
+	var note := Note.new("tap", 140.0, 0.0, 60.0)
+	chart.notes.append(note)
+	near(chart.content_end_beat(), 140.0, 0.01, "content can extend past the audio")
+	near(chart.end_limit_beat(), 156.0, 0.01, "limit follows the later of audio and content")
+	return true
+
+
+func test_ring_span_label() -> bool:
+	eq(RingWorkspace.span_label(2.0, 4.0), "2 拍", "short span counts beats")
+	eq(RingWorkspace.span_label(8.0, 4.0), "2 小节", "whole bars")
+	eq(RingWorkspace.span_label(6.0, 4.0), "1 小节 2 拍", "mixed bars and beats")
+	eq(RingWorkspace.span_label(0.5, 4.0), "0.5 拍", "fractional beat")
+	return true
+
+
+func test_ring_span_end() -> bool:
+	var beats: Array[float] = [0.0, 2.0, 10.0]
+	near(RingWorkspace.span_end(beats, 0, 12.0, 4.0), 2.0, 0.001, "span ends at the next key")
+	near(RingWorkspace.span_end(beats, 2, 12.0, 4.0), 12.0, 0.001, "last span ends at content end")
+	near(RingWorkspace.span_end(beats, 2, 10.0, 4.0), 14.0, 0.001, "empty tail still gets one bar")
+	return true
+
+
+func test_uniform_meter() -> bool:
+	var timing := TimingMap.new()
+	timing.points = [TimingPoint.new(0.0, 120.0, 4), TimingPoint.new(16.0, 140.0, 4)]
+	eq(timing.uniform_beats_per_bar(), 4, "same meter everywhere")
+	timing.points.append(TimingPoint.new(32.0, 160.0, 3))
+	eq(timing.uniform_beats_per_bar(), 0, "mixed meters disable measure shading")
+	return true
+
+
+func test_timing_presorted() -> bool:
+	var timing := TimingMap.new()
+	timing.points = [TimingPoint.new(0.0, 120.0, 4), TimingPoint.new(8.0, 180.0, 4)]
+	timing.sort_points()
+	for beat in [-2.0, 0.0, 3.5, 8.0, 13.25]:
+		near(timing.beat_to_ms_sorted(beat), timing.beat_to_chart_ms(beat), 0.001, "presorted ms matches at beat %.2f" % beat)
 	return true
 
 
@@ -1408,6 +1518,22 @@ func test_lbp_export() -> bool:
 	eq(LBPIO.export_to_file(chart, path), OK, "lbp write")
 	var read := FileAccess.get_file_as_string(path)
 	eq(read, text, "lbp file matches string")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	return true
+
+
+## .lbp 包：单个 zip、能读回、音符与判定数据不丢。
+func test_lbp_package() -> bool:
+	var chart := DemoChart.make_demo()
+	var path := "user://test_package.lbp"
+	var err := LBPIO.export_package(chart, path)
+	eq(err, OK, "lbp package export ok")
+	ok(LBPIO.is_package(path), "lbp package is a zip")
+	var back := LBPIO.import_package(path)
+	ok(back != null, "lbp package imports")
+	if back != null:
+		eq(back.notes.size(), chart.notes.size(), "lbp package keeps notes")
+		eq(back.timing.points.size(), chart.timing.points.size(), "lbp package keeps timing")
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
 	return true
 
@@ -2129,6 +2255,7 @@ func test_simai_import() -> bool:
 	if chart == null:
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
 		return true
+	eq(String(chart.metadata.get("version", "")), "EASY 5", "simai chart uses difficulty name")
 	near(chart.offset_ms, -1000.0, 0.001, "simai first -> offset")
 	eq(chart.notes.size(), 4, "simai keeps four notes")
 	var types: Array[String] = []
@@ -2138,7 +2265,7 @@ func test_simai_import() -> bool:
 	eq(chart.notes[1].hold_style, "straight", "simai hold imports straight")
 	eq(Validator.errors(Validator.validate(chart)).size(), 0, "simai import is playable without double-hand conflicts")
 	if chart.notes.size() >= 3:
-		near(chart.notes[0].angle, 90.0, 0.001, "simai button 1 is top")
+		near(chart.notes[0].angle, 45.0, 0.001, "simai button 1 is top-right")
 		near(chart.notes[2].wait_beat, 1.0, 0.001, "maimai star waits one beat after the head tap")
 		near(chart.notes[2].end_beat, 4.0, 0.001, "slide tail is head + 1 beat wait + slide length")
 		var trace: Array = chart.notes[2].trace_pts
@@ -2148,8 +2275,73 @@ func test_simai_import() -> bool:
 			var held := Vector2(float(trace[1]["x"]), float(trace[1]["y"]))
 			near(float(trace[1]["db"]), 1.0, 0.001, "trace keeps the star at the head for the wait beat")
 			ok(held.distance_to(head) < 0.001, "star is parked during the wait beat")
-		near(chart.notes[2].tail_angle, 270.0, 0.001, "simai slide tail button 5")
+		near(chart.notes[2].tail_angle, 225.0, 0.001, "simai slide tail button 5")
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	return true
+
+
+func test_simai_button_layout() -> bool:
+	eq(SimaiSlide.button_angle(1), 45.0, "maimai button 1 is top-right")
+	eq(SimaiSlide.button_angle(2), 0.0, "maimai button 2 is right")
+	eq(SimaiSlide.button_angle(5), 225.0, "maimai button 5 is bottom-left")
+	eq(SimaiSlide.button_angle(8), 90.0, "maimai button 8 is top")
+	eq(SimaiSlide.button_angle(9), 45.0, "button index wraps")
+	var chart := _import_inote("(120){4}\n1,2,5,8,\n")
+	ok(chart != null, "button layout chart imports")
+	if chart != null:
+		var angles: Array[float] = []
+		for note in chart.notes:
+			if note.type == "tap":
+				angles.append(note.angle)
+		eq(angles.size(), 4, "four taps import")
+		if angles.size() == 4:
+			near(angles[0], 45.0, 0.01, "button 1 maps to top-right")
+			near(angles[1], 0.0, 0.01, "button 2 maps to right")
+			near(angles[2], 225.0, 0.01, "button 5 maps to bottom-left")
+			near(angles[3], 90.0, 0.01, "button 8 maps to top")
+	var touch := _import_inote("(120){4}\nD1,\n")
+	ok(touch != null, "D1 chart imports")
+	if touch != null and not touch.notes.is_empty():
+		near(touch.notes[0].angle, 67.5, 0.01, "D1 is counterclockwise from button 1")
+	return true
+
+
+func test_chart_mirror() -> bool:
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	var tap := Note.new("tap", 1.0, 45.0, 60.0)
+	var path := Note.new("path", 2.0, 90.0, 62.0)
+	path.tail_angle = 315.0
+	path.path_controls_set = true
+	path.path_axis = 0.5
+	path.trace_pts = [{"x": 0.5, "y": 0.25, "db": 0.0}, {"x": -0.5, "y": -0.25, "db": 4.0}]
+	path.visual_pts = [{"db": 1.0, "da": 30.0}]
+	var bell := Note.new("bell", 3.0, 225.0, 26.0)
+	bell.center_u = 0.75
+	var region := Region.new(1, 0.0, 2.0)
+	region.angle = 30.0
+	region.width = 40.0
+	chart.notes = [tap, path, bell]
+	chart.regions = [region]
+	var lr := chart.mirrored_copy("lr")
+	ok(lr != chart, "mirror works on a copy")
+	near(chart.notes[0].angle, 45.0, 0.001, "mirror leaves the source chart alone")
+	near(lr.notes[0].angle, 135.0, 0.001, "left-right mirror flips tap angle")
+	near(lr.notes[1].tail_angle, 225.0, 0.001, "left-right mirror flips tail angle")
+	near(float(lr.notes[1].trace_pts[0]["x"]), -0.5, 0.001, "left-right mirror flips trace x")
+	near(float(lr.notes[1].trace_pts[0]["y"]), 0.25, 0.001, "left-right mirror keeps trace y")
+	near(float(lr.notes[1].visual_pts[0]["da"]), -30.0, 0.001, "left-right mirror flips visual angle")
+	near(lr.notes[1].path_axis, -0.5, 0.001, "left-right mirror flips path axis")
+	near(lr.notes[2].center_u, 0.25, 0.001, "left-right mirror flips bell center_u")
+	near(lr.regions[0].angle, 150.0, 0.001, "left-right mirror flips limit angle")
+	near(lr.regions[0].width, 40.0, 0.001, "mirror keeps limit width")
+	var rot := chart.mirrored_copy("rot180")
+	near(rot.notes[0].angle, 225.0, 0.001, "180 rotation flips tap angle")
+	near(float(rot.notes[1].trace_pts[0]["x"]), -0.5, 0.001, "180 rotation flips trace x")
+	near(float(rot.notes[1].trace_pts[0]["y"]), -0.25, 0.001, "180 rotation flips trace y")
+	near(rot.notes[1].path_axis, 0.5, 0.001, "180 rotation keeps path axis")
+	near(rot.regions[0].angle, 210.0, 0.001, "180 rotation flips limit angle")
+	ok(chart.mirrored_copy("off") == chart, "off mode returns the same chart")
 	return true
 
 
@@ -2858,7 +3050,7 @@ func test_simai_same_head_and_chain() -> bool:
 				paths.append(note)
 		eq(paths.size(), 1, "same-head group keeps one track")
 		if paths.size() == 1:
-			near(paths[0].tail_angle, 315.0, 0.01, "same-head keeps the tail nearest the next note")
+			near(paths[0].tail_angle, 270.0, 0.01, "same-head keeps the tail nearest the next note")
 	var chain := _import_inote("(120){4}\n1-4q7-2[4:2],\n")
 	ok(chain != null, "chain chart imports")
 	if chain != null:
@@ -2868,7 +3060,7 @@ func test_simai_same_head_and_chain() -> bool:
 				paths.append(note)
 		eq(paths.size(), 1, "chain is one path")
 		if paths.size() == 1:
-			near(paths[0].tail_angle, 45.0, 0.01, "chain ends on its final button")
+			near(paths[0].tail_angle, 0.0, 0.01, "chain ends on its final button")
 			near(paths[0].end_beat, 3.0, 0.01, "chain uses the final duration")
 	return true
 
@@ -2889,7 +3081,7 @@ func test_simai_touch_layers() -> bool:
 		near(bells[2].bell_radius, 1.0, 0.001, "C also joins the outer ring")
 		near(bells[3].bell_radius, 1.0, 0.001, "D is on the outer gap")
 		near(bells[4].bell_radius, 1.0, 0.001, "E joins the outer ring for mouse sweeps")
-		near(bells[0].angle, 90.0, 0.01, "A1 sits on button 1")
+		near(bells[0].angle, 45.0, 0.01, "A1 sits on button 1")
 		near(bells[3].angle, 67.5, 0.01, "D1 sits between button 1 and 2")
 		var restored := Note.from_dict(bells[2].to_dict())
 		near(restored.bell_radius, 1.0, 0.001, "legacy center bells roundtrip as outer ring bells")
@@ -3261,18 +3453,38 @@ func test_chart_browser_helpers() -> bool:
 
 	var levels := ChartBrowser.maj_levels(["", "5", "7+", "", "12", "13+", ""])
 	eq(levels.size(), 4, "majdata levels skip empty slots")
-	eq(int(levels[0].get("index", 0)), 1, "majdata keeps the difficulty index")
+	eq(int(levels[0].get("index", 0)), 2, "majdata normalizes 0-based API index")
 	eq(String(levels[3].get("level", "")), "13+", "majdata keeps Re:Master")
+	eq(int(levels[3].get("index", 0)), 6, "majdata Re:Master is index 6")
+	var all_levels := ChartBrowser.maj_levels(["1", "5", "7+", "", "12", "13+", "14?"])
+	eq(all_levels.size(), 6, "majdata keeps EASY and Utage")
+	eq(int(all_levels[0].get("index", 0)), 1, "majdata EASY is index 1")
+	eq(int(all_levels[5].get("index", 0)), 7, "majdata Utage is index 7")
 
 	var path := "user://test_maidata_levels.txt"
 	var file := FileAccess.open(path, FileAccess.WRITE)
-	file.store_string("&title=T\n&artist=A\n&lv_1=4\n&des_1=x\n&inote_1=(120){1},1,\n&lv_4=12+\n&des_4=y\n&inote_4=(120){1},2,\n")
+	file.store_string("&title=T\n&artist=A\n&lv_1=4\n&des_1=x\n&inote_1=(120){1},1,\n&lv_4=12+\n&des_4=y\n&inote_4=(120){1},2,\n&lv_6=13.2\n&inote_6=(120){1},3,\n&lv_7=12?\n&inote_7=(120){1},4,\n")
 	file.close()
 	var parsed := ChartBrowser.levels_from_maidata(path)
-	eq(parsed.size(), 2, "maidata parses only real difficulties")
+	eq(parsed.size(), 4, "maidata parses all seven difficulty slots")
 	eq(String(parsed[0].get("level", "")), "4", "maidata level is read")
 	eq(String(parsed[1].get("creator", "")), "y", "maidata designer is read")
+	eq(int(parsed[2].get("index", 0)), 6, "maidata keeps Re:MAS")
+	eq(int(parsed[3].get("index", 0)), 7, "maidata keeps Utage")
+	eq(String(parsed[3].get("level", "")), "12?", "maidata keeps unconfirmed level")
+	file = FileAccess.open(path, FileAccess.WRITE)
+	file.store_string("&title=T\n&lv_2=5\n&inote_2=\n&lv_3=7\n&inote_3=(120){1},1,\n")
+	file.close()
+	eq(ChartBrowser.levels_from_maidata(path).size(), 1, "maidata skips empty inote")
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+
+	eq(SimaiIO.difficulty_name(1), "EASY", "difficulty 1 is EASY")
+	eq(SimaiIO.difficulty_name(6), "Re:MAS", "difficulty 6 is Re:MAS")
+	eq(SimaiIO.difficulty_name(7), "宴", "difficulty 7 is Utage")
+	eq(SimaiIO.difficulty_label(2, "6.0"), "BASIC 6.0", "difficulty label includes tier")
+	eq(SimaiIO.difficulty_label(7, "?"), "宴 ?", "difficulty label keeps unknown level")
+	eq(ChartBrowser.favorites_from_json({"adx:11": {}}).size(), 0, "old favorites are cleared")
+	eq(ChartBrowser.favorites_from_json({"version": 2, "items": {"adx:11": {}}}).size(), 1, "new favorites load")
 
 	var spec := {
 		"files": [
@@ -3676,6 +3888,108 @@ func test_osu_star_color() -> bool:
 	ok(green != yellow and yellow != orange and orange != red and red != violet, "each bucket has its own colour")
 	ok(violet == OsuBrowser.star_color(9.9), "purple bucket is stable")
 	return true
+## 镜像站返回的两种 JSON 都要能解析成「难度名 → 星数」。
+func test_osu_star_hints_json() -> bool:
+	# sayobot：data.bid_data[].version / star
+	var sayobot: Variant = JSON.parse_string('{"status":0,"data":{"bid_data":[{"version":"Insane","star":4.7},{"version":"Hard","star":2.5}]}}')
+	var from_sayobot := OsuIO.hints_from_json(sayobot)
+	eq(from_sayobot.size(), 2, "sayobot yields two difficulties")
+	ok(absf(float(from_sayobot.get("Insane", 0.0)) - 4.7) < 0.001, "sayobot star value")
+	ok(absf(float(from_sayobot.get("Hard", 0.0)) - 2.5) < 0.001, "sayobot second value")
+
+	# osu.direct：顶层 beatmaps[].version / difficulty_rating
+	var direct: Variant = JSON.parse_string('{"id":1,"beatmaps":[{"version":"Extra","difficulty_rating":6.39},{"version":"Normal","difficulty_rating":2.0}]}')
+	var from_direct := OsuIO.hints_from_json(direct)
+	eq(from_direct.size(), 2, "osu.direct yields two difficulties")
+	ok(absf(float(from_direct.get("Extra", 0.0)) - 6.39) < 0.001, "osu.direct rating value")
+
+	# 没有星数字段就返回空，调用方按文件顺序处理
+	ok(OsuIO.hints_from_json(JSON.parse_string('{"data":{"bid_data":[{"version":"X"}]}}')).is_empty(), "no star field means empty hints")
+	ok(OsuIO.hints_from_json(null).is_empty(), "null input is safe")
+	return true
+
+
+## .osu 文本里的 BeatmapSetID 能读出来。
+func test_osu_beatmap_set_id() -> bool:
+	var text := """osu file format v14
+
+[Metadata]
+Title:Shoujo A
+BeatmapID:4499482
+BeatmapSetID:2137985
+
+[Difficulty]
+CircleSize:4
+"""
+	eq(OsuIO._read_beatmap_set_id(text), 2137985, "BeatmapSetID parsed")
+	eq(OsuIO._read_beatmap_set_id("[Metadata]\nTitle:X\n"), 0, "missing id gives 0")
+	return true
+
+
+
+## 难度按星数排序：升序、未知排最后、原始下标不变。
+func test_osu_difficulty_star_sort() -> bool:
+	var entries := [
+		{"index": 0, "version": "ANOTHER", "stars": 6.5},
+		{"index": 1, "version": "BEGINNER", "stars": 1.2},
+		{"index": 2, "version": "HYPER", "stars": 4.0},
+		{"index": 3, "version": "LOCAL ONLY", "stars": -1.0},
+	]
+	var sorted := OsuIO.sort_by_stars(entries)
+	eq(sorted.size(), 4, "keeps every difficulty")
+	eq(String(sorted[0]["version"]), "BEGINNER", "lowest stars first")
+	eq(String(sorted[1]["version"]), "HYPER", "then middle")
+	eq(String(sorted[2]["version"]), "ANOTHER", "then highest")
+	eq(String(sorted[3]["version"]), "LOCAL ONLY", "unknown stars go last")
+	eq(int(sorted[2]["index"]), 0, "original zip index is preserved")
+	eq(int(sorted[0]["index"]), 1, "original zip index follows the entry")
+
+	# 没有星数时顺序原样保留
+	var plain := OsuIO.sort_by_stars([{"index": 0, "version": "B"}, {"index": 1, "version": "A"}])
+	eq(String(plain[0]["version"]), "B", "no stars keeps file order")
+	return true
+
+
+## 难度名后缀星数：顶部下拉和窗口标题显示，名字本身保持干净。
+func test_difficulty_star_label() -> bool:
+	var app_script := load("res://charter/app.gd")
+	eq(String(app_script.star_label("Insane", 5.42)), "Insane  5.42★", "known stars are appended")
+	eq(String(app_script.star_label("Insane", -1.0)), "Insane", "unknown stars keep the bare name")
+	var app = app_script.new()
+	app.difficulties.append({"name": "Insane", "stars": 5.42, "chart": null})
+	app.difficulties.append({"name": "Easy", "chart": null})
+	eq(app.difficulty_names()[0], "Insane  5.42★", "difficulty list shows stars")
+	eq(app.difficulty_names()[1], "Easy", "difficulty without stars stays bare")
+	eq(app.difficulty_name(0), "Insane  5.42★", "single difficulty name shows stars")
+	app.free()
+	return true
+
+
+## 星数写进套组文件，重新打开还在（否则排序对了但看不到星）。
+func test_difficulty_stars_round_trip() -> bool:
+	var path := "user://test_stars_set.json"
+	var chart := DemoChart.make_demo()
+	var entries: Array = [{"name": "Insane", "stars": 5.42, "chart": chart}]
+	eq(ChartIO.save_set(path, entries), OK, "set with stars saves")
+	var loaded := ChartIO.load_set(path)
+	ok(bool(loaded.get("ok", false)), "set with stars loads")
+	var first: Dictionary = loaded.get("entries", [])[0]
+	near(float(first.get("stars", -1.0)), 5.42, 0.001, "stars survive the set round trip")
+	eq(String(first.get("name", "")), "Insane", "stored name stays clean")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	return true
+
+
+## 难度标签末尾追加星数。
+func test_import_label_stars() -> bool:
+	var app_script := load("res://charter/app.gd")
+	var with_stars := String(app_script.import_label("Insane", "Song", "Mapper", "std", 5.42))
+	ok(with_stars.ends_with("5.42★"), "star rating appended at the end, got: %s" % with_stars)
+	ok(with_stars.contains("Insane"), "version still in label")
+	var without := String(app_script.import_label("Insane", "Song", "Mapper", "std"))
+	ok(not without.contains("★"), "no star when rating is unknown")
+	return true
+
 
 
 ## osu 官方筛选：类型 / 语言 / 标签（tags 是 AND）。
@@ -3709,4 +4023,173 @@ func test_osu_pill_rows() -> bool:
 	eq(OsuBrowser.pill_rows(19, 1300), 2, "wide card fits 19 on two rows")
 	ok(OsuBrowser.pill_rows(19, 700) > OsuBrowser.pill_rows(19, 1300), "narrower card needs more rows")
 	eq(OsuBrowser.pill_rows(0, 900), 1, "no difficulties still one row (the toggle chip)")
+	return true
+
+
+## Path 方向箭头：固定弧长间距；锯齿状轨迹再按屏幕距离去重。
+func test_path_chevron_spacing() -> bool:
+	var line := PackedVector2Array([Vector2(0, 0), Vector2(300, 0)])
+	var fractions := Preview3D.chevron_fractions(line, 60.0, 40.0)
+	eq(fractions.size(), 5, "300px with 60px spacing gives 5 arrows")
+	for i in range(1, fractions.size()):
+		var gap := (fractions[i] - fractions[i - 1]) * 300.0
+		ok(absf(gap - 60.0) < 0.01, "arrow spacing is uniform (%.2f)" % gap)
+
+	# 短于间距的一条线：一只箭头都不画
+	ok(Preview3D.chevron_fractions(PackedVector2Array([Vector2(0, 0), Vector2(20, 0)]), 60.0, 40.0).is_empty(),
+		"short stub gets no arrow")
+
+	# 锯齿：弧长够长，但同一片区域反复折返 → 去重后数量明显变少
+	var zig := PackedVector2Array([Vector2(0, 0), Vector2(120, 0), Vector2(20, 12), Vector2(130, 24), Vector2(30, 36)])
+	var zig_fractions := Preview3D.chevron_fractions(zig, 40.0, 70.0)
+	var zig_arc := 0.0
+	for i in zig.size() - 1:
+		zig_arc += zig[i].distance_to(zig[i + 1])
+	ok(zig_fractions.size() < int(zig_arc / 40.0), "crowded zigzag drops overlapping arrows")
+	ok(zig_fractions.size() >= 2, "zigzag still gets some arrows")
+
+	# 超长轨迹：箭头上限 48 只时必须整体拉开间距、铺到终点，不能在 48 * spacing 处截断
+	var long_line := PackedVector2Array([Vector2(0, 0), Vector2(4000, 0)])
+	var long_fractions := Preview3D.chevron_fractions(long_line, 60.0, 30.0)
+	eq(long_fractions.size(), 48, "long path caps at 48 arrows")
+	ok(float(long_fractions[long_fractions.size() - 1]) > 0.9, "arrows still reach the end of a long path")
+	var long_gap := (float(long_fractions[1]) - float(long_fractions[0])) * 4000.0
+	var last_gap := (float(long_fractions[long_fractions.size() - 1]) - float(long_fractions[long_fractions.size() - 2])) * 4000.0
+	ok(absf(long_gap - last_gap) < 0.5, "capped long path keeps uniform spacing")
+	return true
+
+
+## osu! storyboard：静态 sprite + 单条命令插值。
+func test_storyboard_parse() -> bool:
+	var text := """[Events]
+Sprite,Background,Centre,"bg.jpg",320,240
+ F,0,0,1000,0,1
+ M,0,0,1000,100,200,300,400
+"""
+	var board := Storyboard.parse(text)
+	eq(board.sprites.size(), 1, "one sprite parsed")
+	var sprite: Storyboard.Sprite = board.sprites[0]
+	eq(sprite.layer, "Background", "layer")
+	eq(sprite.origin, 4, "centre origin")
+	eq(sprite.path, "bg.jpg", "path")
+
+	# 起始 alpha = 0 的 sprite 不参与绘制（osu 也是这样）
+	ok(board.sample(0.0).is_empty(), "alpha 0 sprite is culled")
+
+	var quarter := board.sample(250.0)
+	eq(quarter.size(), 1, "visible once faded in")
+	ok(absf(float(quarter[0]["alpha"]) - 0.25) < 0.01, "alpha starts at 0 and fades in")
+	var start_pos: Vector2 = quarter[0]["pos"]
+	ok(start_pos.distance_to(Vector2(150, 250)) < 0.5, "move start")
+
+	var mid := board.sample(500.0)
+	ok(absf(float(mid[0]["alpha"]) - 0.5) < 0.01, "alpha interpolates linearly")
+	var mid_pos: Vector2 = mid[0]["pos"]
+	ok(mid_pos.distance_to(Vector2(200, 300)) < 0.01, "move interpolates")
+
+	var end := board.sample(1000.0)
+	ok(absf(float(end[0]["alpha"]) - 1.0) < 0.001, "alpha ends at 1")
+
+	# lazer 的 EndTimeForDisplay：命令全部结束后对象就不存在了
+	ok(board.sample(1500.0).is_empty(), "sprite is gone after its last command")
+	return true
+
+
+## 故事板写回 .osb 后再解析，对象和命令数量要一致（覆盖编辑器的保存/导出）。
+func test_storyboard_serialize() -> bool:
+	var text := """[Events]
+Sprite,Background,Centre,"sb/a.png",320,240
+ F,0,0,1000,0,1
+ M,17,1000,2000,320,240,400,300
+Sprite,Foreground,TopCentre,"sb/b.png",320,0
+ S,0,0,,0.5
+ V,0,0,,2,3
+ R,0,0,90,0
+ C,0,0,,255,0,0
+"""
+	var board := Storyboard.parse(text, "test.osb")
+	eq(board.sprites.size(), 2, "serialize: 2 sprites")
+	eq(board.sprites[0].commands.size(), 2, "serialize: first sprite commands")
+	var written := board.to_osb_text()
+	var again := Storyboard.parse(written, "again.osb")
+	eq(again.sprites.size(), 2, "round-trip: sprite count")
+	eq(again.sprites[0].commands.size(), 2, "round-trip: first sprite commands")
+	eq(again.sprites[1].commands.size(), 4, "round-trip: second sprite commands")
+	ok(written.contains("Sprite,Background,Centre"), "writes sprite header")
+	ok(written.contains(" F,"), "writes alpha command")
+	return true
+
+
+## 编辑器新建对象 + 加命令后能保存并解析回来。
+func test_storyboard_editor_model() -> bool:
+	var board := Storyboard.create_blank()
+	var sprite := board.add_sprite("sb/x.png", "Foreground", 4, Vector2(320, 240))
+	board.add_command(sprite, "alpha", 0, 1000.0, 2000.0, [0.0], [1.0])
+	board.add_command(sprite, "move", 0, 0.0, 1000.0, [0.0, 0.0], [320.0, 240.0])
+	eq(board.sprites.size(), 1, "editor: sprite added")
+	eq(sprite.commands.size(), 2, "editor: commands added")
+	# 首条 alpha 是 0→1：按 lazer 的 StartTime 规则，生命周期从「第一个可见的 alpha」开始
+	ok(absf(sprite.start_time - 1000.0) < 0.001, "editor: start time follows lazer StartTime")
+	var text := board.to_osb_text()
+	var parsed := Storyboard.parse(text, "edit.osb")
+	eq(parsed.sprites.size(), 1, "editor: saved board parses back")
+	eq(parsed.sprites[0].commands.size(), 2, "editor: saved commands parse back")
+	return true
+
+
+## loop 展开 + 缓动。
+func test_storyboard_loops_and_easing() -> bool:
+	var text := """[Events]
+Sprite,Foreground,TopLeft,"p.png",0,0
+ L,1000,2
+  F,0,0,500,1,0
+ S,0,0,500,2,1
+"""
+	var board := Storyboard.parse(text)
+	eq(board.sprites.size(), 1, "sprite parsed")
+	var sprite: Storyboard.Sprite = board.sprites[0]
+	# 两轮 × 一条 F/S 命令 = 每条命令 2 段
+	eq((sprite.timeline.get("alpha", []) as Array).size(), 2, "loop expanded alpha into two commands")
+	eq((sprite.timeline.get("scale", []) as Array).size(), 2, "loop expanded scale into two commands")
+
+	var first := board.sample(1250.0)
+	ok(absf(float(first[0]["alpha"]) - 0.5) < 0.01, "first loop iteration fades")
+	ok(absf(float(first[0]["scale"].x) - 1.5) < 0.01, "first loop iteration scales")
+
+	var second := board.sample(1750.0)
+	ok(absf(float(second[0]["alpha"]) - 0.5) < 0.01, "second loop iteration repeats")
+
+	# 第二轮结束后 alpha 终值是 0，对象被剔除（osu 里也就是看不见）
+	ok(board.sample(2500.0).is_empty(), "loop ends at alpha 0 (culled)")
+
+	# 缓动：OutQuad（id=4）在 25% 处应大于线性
+	var eased := """[Events]
+Sprite,Background,Centre,"a.png",0,0
+ F,4,0,1000,0,1
+"""
+	var board2 := Storyboard.parse(eased)
+	var quarter := board2.sample(250.0)
+	ok(float(quarter[0]["alpha"]) > 0.4, "ease-out is ahead of linear at 25%")
+	eq(Storyboard.Easing.apply(0, 0.25), 0.25, "linear easing")
+	eq(Storyboard.Easing.apply(4, 0.5), 0.75, "out-quad at half")
+	eq(Storyboard.Easing.apply(35, 1.0), 1.0, "out-pow10 ends at 1")
+	return true
+
+
+## 图层 / 原点 / 动画帧。
+func test_storyboard_layers() -> bool:
+	var text := """[Events]
+Sprite,Background,Centre,"bg.png",320,240
+Sprite,Foreground,BottomRight,"fg.png",640,480
+Sprite,Overlay,TopLeft,"over.png",0,0
+Animation,Foreground,Centre,"anim.png",10,10,4,120,1
+"""
+	var board := Storyboard.parse(text)
+	eq(board.sprites.size(), 4, "four objects")
+	eq((board.sprites[1] as Storyboard.Sprite).layer, "Foreground", "foreground layer")
+	eq((board.sprites[2] as Storyboard.Sprite).origin, 0, "top-left origin")
+	var anim: Storyboard.Sprite = board.sprites[3]
+	eq(anim.frames, 4, "animation frames")
+	ok(absf(anim.frame_delay - 120.0) < 0.001, "frame delay")
+	eq(anim.loop_type, 1, "loop once")
 	return true

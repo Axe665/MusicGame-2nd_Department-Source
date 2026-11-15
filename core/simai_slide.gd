@@ -2,17 +2,17 @@ class_name SimaiSlide
 extends RefCounted
 
 ## simai 星星几何（设计坐标，环半径 = 1.0，0° = 右，逆时针）。
-## 按钮 1 在 90°（上），顺时针每键 45°。
+## 按钮 1 在 45°（右上），顺时针每键 45°（官方舞萌布局）。
 ##
 ## p/q = U 型，pp/qq = Cup 型，s/z = 闪电，V = 经过点的大 V，
 ## w = 扇形（这里只取中轴，三条尾巴不画），其余是直线 / 外周弧 / 过圆心 v。
-## Sentakki 的 U/Cup/Thunder 用 22.5° 起的道坐标，这里整体 +22.5° 对齐本作按钮。
+## Sentakki 的 U/Cup/Thunder 用 22.5° 起的道坐标，这里整体 -22.5° 对齐本作按钮。
 
 const BUTTON_STEP := 45.0
 
 
 static func button_angle(button: int) -> float:
-	return fposmod(90.0 - float(button - 1) * BUTTON_STEP, 360.0)
+	return fposmod(45.0 - float(button - 1) * BUTTON_STEP, 360.0)
 
 
 static func button_point(button: int, radius: float = 1.0) -> Vector2:
@@ -65,7 +65,7 @@ static func build(start_button: int, segments: Array) -> Array[Vector2]:
 
 static func _rotated(points: Array[Vector2]) -> Array[Vector2]:
 	var result: Array[Vector2] = []
-	var rotation := deg_to_rad(22.5)
+	var rotation := deg_to_rad(-22.5)
 	for point in points:
 		result.append(point.rotated(rotation))
 	return result

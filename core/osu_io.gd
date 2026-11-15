@@ -8,7 +8,11 @@ const STD_STREAM_STEP := 45.0
 const STD_JUMP_DISTANCE := 128.0
 
 
-static func list_osz_difficulties(path: String) -> Array[Dictionary]:
+## 列出 .osz 里的难度。
+##
+## [param star_hints] 是「难度名 → 星数」，在线导入时由 osu! 接口带下来；
+## 有星数时按星数升序排列（osu 那边的习惯），没有就保持文件顺序。
+static func list_osz_difficulties(path: String, star_hints: Dictionary = {}) -> Array[Dictionary]:
 	var result: Array[Dictionary] = []
 	var zip := ZIPReader.new()
 	if zip.open(path) != OK:
@@ -19,16 +23,143 @@ static func list_osz_difficulties(path: String) -> Array[Dictionary]:
 			continue
 		var text := zip.read_file(name).get_string_from_utf8()
 		var meta := _read_osu_meta(text)
+		var version := String(meta.get("version", ""))
 		result.append({
+			# 这里必须是"压缩包里的原始顺序"，转谱时按它取 .osu，排序后不能改。
 			"index": result.size(),
 			"file": name,
 			"title": String(meta.get("title", name.get_file().get_basename())),
 			"artist": String(meta.get("artist", "")),
 			"creator": String(meta.get("creator", "")),
-			"version": String(meta.get("version", "")),
+			"version": version,
 			"mode": int(meta.get("mode", 0)),
+			"stars": float(star_hints.get(version, -1.0)),
 		})
 	zip.close()
+	return sort_by_stars(result)
+
+
+## 读取 .osz 里第一个 .osu 的 BeatmapSetID（本地导入时用它去镜像站查星数）。
+static func read_beatmap_set_id(path: String) -> int:
+	if not FileAccess.file_exists(path):
+		return 0
+	var zip := ZIPReader.new()
+	if zip.open(path) != OK:
+		return 0
+	var result := 0
+	for name in zip.get_files():
+		if name.get_extension().to_lower() != "osu":
+			continue
+		var text := zip.read_file(name).get_string_from_utf8()
+		result = _read_beatmap_set_id(text)
+		break
+	zip.close()
+	return result
+
+
+static func _read_beatmap_set_id(text: String) -> int:
+	var section := ""
+	for raw_line in text.split("\n"):
+		var line := raw_line.strip_edges()
+		if line.begins_with("[") and line.ends_with("]"):
+			section = line.substr(1, line.length() - 2)
+			continue
+		if section != "Metadata":
+			continue
+		var split := line.split(":", true, 1)
+		if split.size() < 2:
+			continue
+		if split[0].strip_edges() == "BeatmapSetID":
+			return int(split[1].strip_edges())
+	return 0
+
+
+## 从镜像站取「难度名 → 星数」。
+## 先用 sayobot（和下载源同一家，字段是 version/star），失败再试 osu.direct（difficulty_rating）。
+static func fetch_star_hints(set_id: int, timeout_s: float = 8.0) -> Dictionary:
+	if set_id <= 0:
+		return {}
+	var urls := [
+		"https://api.sayobot.cn/v2/beatmapinfo?0=%d" % set_id,
+		"https://osu.direct/api/v2/s/%d" % set_id,
+	]
+	for url in urls:
+		var response := await _http_text(url, timeout_s)
+		if not bool(response.get("reachable", false)):
+			# 连不上就直接放弃，别让离线导入干等两个镜像
+			break
+		var text := String(response.get("text", ""))
+		if text.is_empty():
+			continue
+		var hints := hints_from_json(JSON.parse_string(text))
+		if not hints.is_empty():
+			return hints
+	return {}
+
+
+## 把镜像站返回的 JSON 解析成「难度名 → 星数」（抽出来便于测试）。
+static func hints_from_json(parsed: Variant) -> Dictionary:
+	var hints := {}
+	var sources: Array = []
+	if parsed is Dictionary:
+		sources.append(parsed)
+		var data: Variant = (parsed as Dictionary).get("data", null)
+		if data is Dictionary:
+			sources.append(data)
+	for source in sources:
+		var block: Dictionary = source
+		for item in block.get("bid_data", []):
+			if item is Dictionary and item.has("version") and item.has("star"):
+				var map: Dictionary = item
+				hints[String(map["version"])] = float(map["star"])
+		for item in block.get("beatmaps", []):
+			if item is Dictionary and item.has("version"):
+				var map: Dictionary = item
+				var rating := float(map.get("difficulty_rating", 0.0))
+				if rating > 0.0:
+					hints[String(map["version"])] = rating
+	return hints
+
+
+## 返回 {"reachable": 是否连上并拿到 200, "text": 正文}。
+static func _http_text(url: String, timeout_s: float) -> Dictionary:
+	var tree := Engine.get_main_loop() as SceneTree
+	if tree == null or tree.root == null:
+		return {"reachable": false, "text": ""}
+	var http := HTTPRequest.new()
+	http.timeout = timeout_s
+	tree.root.add_child(http)
+	if http.request(url) != OK:
+		http.queue_free()
+		return {"reachable": false, "text": ""}
+	var result: Array = await http.request_completed
+	http.queue_free()
+	if result.size() < 4:
+		return {"reachable": false, "text": ""}
+	var connected := int(result[0]) == HTTPRequest.RESULT_SUCCESS
+	if not connected or int(result[1]) != 200:
+		return {"reachable": connected, "text": ""}
+	var body: PackedByteArray = result[3]
+	return {"reachable": true, "text": body.get_string_from_utf8()}
+
+
+## 按星数升序；没有星数（<=0）的排到最后，各自保持原顺序。
+static func sort_by_stars(entries: Array) -> Array[Dictionary]:
+	var ranked: Array[Dictionary] = []
+	var unknown: Array[Dictionary] = []
+	for item in entries:
+		if not item is Dictionary:
+			continue
+		var entry: Dictionary = item
+		if float(entry.get("stars", -1.0)) > 0.0:
+			ranked.append(entry)
+		else:
+			unknown.append(entry)
+	ranked.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return float(a.get("stars", 0.0)) < float(b.get("stars", 0.0)))
+	var result: Array[Dictionary] = []
+	result.append_array(ranked)
+	result.append_array(unknown)
 	return result
 
 
@@ -181,6 +312,8 @@ static func parse_osu(text: String, source_name: String = "") -> Dictionary:
 		"audio": "",
 		"bpm": 120.0,
 		"difficulty": String(metadata.get("Version", "Imported")),
+		# osu 的宽屏故事板用 854x480 坐标场；不记这个标志会把整张图右移 107 单位。
+		"widescreen": String(general.get("WidescreenStoryboard", "0")).strip_edges() == "1",
 	}
 	var chart := DemoChart.make_empty(meta)
 	chart.timing.points.clear()
@@ -829,7 +962,53 @@ static func _extract_assets(zip: ZIPReader, files: PackedStringArray, chart: Cha
 				chart.video_path = target
 				report.append("视频：%s（直接解码）" % target)
 			break
+	# ── storyboard：包里 .osb 优先，否则用 .osu 内联的 [Events] ──────────
+	var sb_text := ""
+	var sb_name := ""
+	for name in files:
+		if name.get_extension().to_lower() == "osb":
+			sb_name = name
+			sb_text = zip.read_file(name).get_string_from_utf8()
+			break
+	if sb_text.is_empty():
+		sb_text = _inline_storyboard(text)
+	var sb_dir := target_dir + "/sb"
+	if not sb_text.is_empty():
+		var board := Storyboard.parse(sb_text, sb_name)
+		if not board.sprites.is_empty():
+			DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(sb_dir))
+			var copied := 0
+			var missing := 0
+			for ref in board.referenced_files:
+				var found := _find_file(files, ref)
+				if found.is_empty():
+					missing += 1
+					continue
+				_write_zip_file(zip, found, sb_dir + "/" + found.get_file())
+				copied += 1
+			var handle := FileAccess.open(sb_dir + "/storyboard.osb", FileAccess.WRITE)
+			if handle != null:
+				handle.store_string(sb_text)
+				handle.close()
+			chart.metadata["storyboard"] = sb_dir
+			report.append("故事板：%d 个对象 / %d 张素材（缺 %d）" % [board.sprites.size(), copied, missing])
 	return report
+
+
+## 从 .osu 的内联 [Events] 抽出 storyboard 行（Sprite / Animation）。
+static func _inline_storyboard(text: String) -> String:
+	var lines: Array[String] = []
+	var section := ""
+	for raw_line in text.split("\n"):
+		var line := raw_line.strip_edges()
+		if line.begins_with("[") and line.ends_with("]"):
+			section = line.substr(1, line.length() - 2).to_lower()
+			continue
+		if section != "events":
+			continue
+		if line.begins_with("Sprite") or line.begins_with("Animation"):
+			lines.append(line)
+	return "\n".join(lines)
 
 
 static func _find_file(files: PackedStringArray, wanted: String) -> String:
