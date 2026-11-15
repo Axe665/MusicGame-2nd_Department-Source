@@ -1,0 +1,34 @@
+[configuration]
+
+entry_symbol = "ffmpeg_init"
+compatibility_minimum = 4.1
+
+; BGA 直接解码（EIRTeam.FFmpeg，MIT）。Windows / Linux x86_64 的库和 FFmpeg 运行时
+; 已经随仓库提交，克隆后直接能用；macOS / Android / arm64 暂未带库，运行时会退回
+; ffmpeg 转码缓存。要从上游补平台：下载 https://github.com/EIRTeam/EIRTeam.FFmpeg/releases
+; 里对应平台的目录放进 addons/ffmpeg/，再在下面补两行。
+
+[libraries]
+
+windows.debug.x86_64 = "res://addons/ffmpeg/win64/libgdffmpeg.windows.template_debug.x86_64.dll"
+windows.release.x86_64 = "res://addons/ffmpeg/win64/libgdffmpeg.windows.template_release.x86_64.dll"
+linux.debug.x86_64 = "res://addons/ffmpeg/linux64/libgdffmpeg.linux.template_debug.x86_64.so"
+linux.release.x86_64 = "res://addons/ffmpeg/linux64/libgdffmpeg.linux.template_release.x86_64.so"
+
+[dependencies]
+
+windows.x86_64 =
+    {"res://addons/ffmpeg/win64/avcodec-60.dll": "",
+    "res://addons/ffmpeg/win64/avfilter-9.dll": "",
+    "res://addons/ffmpeg/win64/avformat-60.dll": "",
+    "res://addons/ffmpeg/win64/avutil-58.dll": "",
+    "res://addons/ffmpeg/win64/swresample-4.dll": "",
+    "res://addons/ffmpeg/win64/swscale-7.dll": ""}
+
+linux.x86_64 =
+    {"res://addons/ffmpeg/linux64/libavcodec.so.60": "",
+    "res://addons/ffmpeg/linux64/libavfilter.so.9": "",
+    "res://addons/ffmpeg/linux64/libavformat.so.60": "",
+    "res://addons/ffmpeg/linux64/libavutil.so.58": "",
+    "res://addons/ffmpeg/linux64/libswresample.so.4": "",
+    "res://addons/ffmpeg/linux64/libswscale.so.7": ""}

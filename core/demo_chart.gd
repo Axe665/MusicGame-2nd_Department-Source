@@ -29,7 +29,7 @@ static func make_empty(meta: Dictionary) -> Chart:
 	))
 	chart.timing.offset_ms = chart.offset_ms
 	chart.shapes.clear()
-	chart.shapes["S0"] = BoundaryShape.circle("S0", 330.0, 32)
+	chart.shapes["S0"] = BoundaryShape.circle("S0", 330.0, 48)
 	chart.default_shape_id = "S0"
 	chart.view_states.clear()
 	chart.view_states.append(ViewState.new(0.0, 1.0, 0.0, 0.0, 1.0, 0.0, "linear"))
@@ -50,19 +50,17 @@ static func make_demo() -> Chart:
 		"beats_per_bar": 4,
 		"difficulty": "Insane",
 	})
-	chart.shapes["S1"] = BoundaryShape.ellipse("S1", 410.0, 245.0, 32)
-	chart.shapes["S2"] = BoundaryShape.ellipse("S2", 300.0, 400.0, 32)
+	chart.shapes["S1"] = BoundaryShape.ellipse("S1", 410.0, 245.0, 48)
+	chart.shapes["S2"] = BoundaryShape.ellipse("S2", 300.0, 400.0, 48)
 
-	var e0 := BoundaryEvent.new("E0", 8.0, 12.0, 0.0, 1.0, "S0", "S1")
-	e0.easing = "in-out"
-	e0.end_behavior = "restore"
-	e0.restore_duration = 0.5
-	chart.events.append(e0)
-	var e1 := BoundaryEvent.new("E1", 20.0, 24.0, 0.0, 1.0, "S0", "S2")
-	e1.easing = "in-out"
-	e1.end_behavior = "restore"
-	e1.restore_duration = 0.5
-	chart.events.append(e1)
+	chart.shape_keys = [
+		{"beat": 8.0, "shape_id": "S0", "easing": "in-out"},
+		{"beat": 12.0, "shape_id": "S1", "easing": "in-out"},
+		{"beat": 12.5, "shape_id": "S0", "easing": "in-out"},
+		{"beat": 20.0, "shape_id": "S0", "easing": "in-out"},
+		{"beat": 24.0, "shape_id": "S2", "easing": "in-out"},
+		{"beat": 24.5, "shape_id": "S0", "easing": "in-out"},
+	]
 	chart.refresh_ids()
 
 	chart.view_states.clear()
@@ -90,7 +88,7 @@ static func make_demo() -> Chart:
 	_add_tap(chart, 13.0, 315.0)
 	_add_tap(chart, 13.5, 0.0)
 	_add_tap(chart, 14.0, 45.0)
-	_add_trace(chart, 14.0, 16.0)
+	_add_seek(chart, 14.0, 0)
 	_add_anchor_pair(chart, 16.0, 0.0, "A0")
 	_add_bell(chart, 17.0, 0.25)
 	_add_bell(chart, 17.5, 0.5)
@@ -151,17 +149,11 @@ static func _add_path(
 	chart.notes.append(note)
 
 
-static func _add_trace(chart: Chart, beat: float, end_beat: float) -> void:
-	var note := Note.new("trace", beat, 0.0, 0.0)
+static func _add_seek(chart: Chart, beat: float, orien: int) -> void:
+	var note := Note.new("seek", beat, 0.0, 360.0)
 	note.id = chart.next_note_id()
-	note.end_beat = end_beat
-	note.move_px = 120.0
-	note.trace_pts = [
-		{"x": 0.26, "y": 0.62, "db": 0.0},
-		{"x": 0.38, "y": 0.48, "db": 0.5},
-		{"x": 0.56, "y": 0.44, "db": 1.0},
-		{"x": 0.72, "y": 0.34, "db": 1.5},
-	]
+	note.end_beat = beat
+	note.seek_orien = 1 if orien == 1 else 0
 	chart.notes.append(note)
 
 

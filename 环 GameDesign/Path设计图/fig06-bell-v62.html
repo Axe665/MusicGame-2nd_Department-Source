@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>Bell</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:1200px;height:760px;overflow:hidden}
+body{background:radial-gradient(120% 90% at 50% 0%,#141722 0%,#0A0B10 62%);color:#F4EFE9;
+ font-family:"Noto Sans CJK SC",sans-serif;padding:44px 48px 0;display:flex;flex-direction:column}
+.k{font-family:"DejaVu Sans Mono",monospace;font-size:12px;letter-spacing:3px;color:#5FD3D0}
+h1{font-size:27px;margin-top:8px}
+.sub{font-size:14px;color:#9A948C;margin-top:6px}
+.body{flex:1;position:relative}
+.legend{position:absolute;left:0;right:0;bottom:34px;height:52px;background:#12141C;border-radius:8px;
+ display:flex;align-items:center;gap:26px;padding:0 18px}
+.legend span{font-size:13px;display:flex;align-items:center;gap:8px}
+.dot{width:11px;height:11px;border-radius:3px}
+.note{position:absolute;left:0;bottom:0;font-size:12px;color:#5F5A55}
+</style></head><body>
+<div class="k">TAMAKI₃ / BELL</div>
+<h1>Bell：环上的金币</h1>
+<div class="sub">圆形收集范围 + 目标时刻 ±130ms；经过即收，不按键，也不进普通连击。</div>
+<div class="body">
+<svg viewBox="0 0 1100 470" width="1100" height="470">
+  <!-- 环 -->
+  <circle cx="360" cy="230" r="170" fill="none" stroke="#4A4F5C" stroke-width="2"/>
+  <circle cx="360" cy="230" r="150" fill="none" stroke="#5F5A55" stroke-width="1" stroke-dasharray="4 7"/>
+  <!-- 金币 -->
+  <circle cx="470" cy="120" r="56" fill="none" stroke="#FFC08A" stroke-width="1.5" stroke-dasharray="5 6"/>
+  <circle cx="470" cy="120" r="30" fill="#FFC08A" opacity=".92"/>
+  <circle cx="470" cy="120" r="30" fill="none" stroke="#0A0B10" stroke-width="3"/>
+  <text x="470" y="127" text-anchor="middle" fill="#0A0B10" font-family="DejaVu Sans Mono" font-size="15" font-weight="700">B</text>
+  <text x="470" y="62" fill="#FFC08A" font-family="Noto Sans CJK SC" font-size="13" text-anchor="middle">收取半径</text>
+  <!-- 光标路径 -->
+  <path d="M 120 330 Q 300 300 470 200" fill="none" stroke="#5FD3D0" stroke-width="2" stroke-dasharray="6 6"/>
+  <circle cx="470" cy="180" r="5" fill="#5FD3D0"/>
+  <text x="120" y="352" fill="#9A948C" font-family="DejaVu Sans Mono" font-size="11">CURSOR PATH</text>
+  <!-- 时间轴 -->
+  <g transform="translate(700,120)">
+    <text x="0" y="-8" fill="#9A948C" font-family="DejaVu Sans Mono" font-size="11">TIME WINDOW</text>
+    <line x1="0" y1="30" x2="300" y2="30" stroke="#4A4F5C" stroke-width="2"/>
+    <rect x="105" y="16" width="90" height="28" rx="4" fill="#FFC08A" opacity=".28" stroke="#FFC08A"/>
+    <line x1="150" y1="10" x2="150" y2="50" stroke="#FFC08A" stroke-width="2"/>
+    <text x="150" y="72" fill="#FFC08A" font-family="DejaVu Sans Mono" font-size="11" text-anchor="middle">target</text>
+    <text x="105" y="92" fill="#9A948C" font-family="DejaVu Sans Mono" font-size="11" text-anchor="middle">-130ms</text>
+    <text x="195" y="92" fill="#9A948C" font-family="DejaVu Sans Mono" font-size="11" text-anchor="middle">+130ms</text>
+  </g>
+  <!-- 说明 -->
+  <rect x="700" y="256" width="360" height="150" rx="8" fill="#12141C" stroke="#2A2E38"/>
+  <text x="720" y="284" fill="#F4EFE9" font-family="Noto Sans CJK SC" font-size="14">设计口径：只记收集率</text>
+  <text x="720" y="310" fill="#9A948C" font-family="Noto Sans CJK SC" font-size="12.5">Bell 不进普通连击，不扣普通准确率</text>
+  <text x="720" y="334" fill="#9A948C" font-family="Noto Sans CJK SC" font-size="12.5">结算单独显示收集率，作为第二目标</text>
+  <text x="720" y="364" fill="#FF9A80" font-family="Noto Sans CJK SC" font-size="12.5">当前实现：命中计 PERFECT，进连击</text>
+  <text x="720" y="388" fill="#FF9A80" font-family="Noto Sans CJK SC" font-size="12.5">结算页暂无单独的收集率列</text>
+</svg>
+<div class="legend">
+  <span><i class="dot" style="background:#FFC08A"></i>金币与收取半径</span>
+  <span><i class="dot" style="background:#5FD3D0"></i>光标路线</span>
+  <span><i class="dot" style="background:#E4D9CB"></i>目标时刻</span>
+</div>
+<div class="note">连续扫链之间至少 45ms，避免一次滚轮被拆成两下。</div>
+</div>
+</body></html>

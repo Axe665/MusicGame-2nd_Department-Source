@@ -111,7 +111,7 @@ static func intervals_for_notes(notes: Array, beat: float) -> Array:
 static func red_intervals(regions: Array[Region], beat: float) -> Array[Vector2]:
 	var result: Array[Vector2] = []
 	for region in regions:
-		if region.kind == "red" and region.active_at(beat):
+		if region.kind == "limit" and region.active_at(beat):
 			result.append_array(interval(region.angle, region.width))
 	return result
 

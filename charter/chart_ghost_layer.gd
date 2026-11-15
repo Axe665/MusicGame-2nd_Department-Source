@@ -31,8 +31,8 @@ func _draw() -> void:
 				_draw_hold(note)
 			"path":
 				_draw_path(note)
-			"trace":
-				_draw_trace(note, plot)
+			"seek":
+				_draw_seek(note)
 			"anchor":
 				_draw_anchor(note)
 			"bell":

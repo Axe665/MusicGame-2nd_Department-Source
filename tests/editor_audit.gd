@@ -37,7 +37,7 @@ func _part(name: String, detail: String) -> void:
 func _make_note(chart: Chart, type: String, beat: float) -> Note:
 	var note := Note.new(type, beat, 30.0, 60.0)
 	note.id = chart.next_note_id()
-	if type in ["hold", "path", "trace"]:
+	if type in ["hold", "path"]:
 		note.end_beat = beat + 2.0
 	if type == "path":
 		note.tail_angle = 150.0
@@ -45,8 +45,6 @@ func _make_note(chart: Chart, type: String, beat: float) -> Note:
 			{"x": 1.0, "y": 0.0, "db": 0.0},
 			{"x": 0.0, "y": 1.0, "db": 2.0},
 		]
-	if type == "trace":
-		note.trace_style = "slider"
 		note.trace_pts = [
 			{"x": 0.8, "y": 0.0, "db": 0.0},
 			{"x": 0.0, "y": 0.8, "db": 2.0},
@@ -73,7 +71,6 @@ func _audit_notes() -> void:
 	_check("Tap 保留可变宽度", _find(chart, "tap").width == 60.0, "width=%.0f" % _find(chart, "tap").width)
 	_check("Hold 头部+持续", _find(chart, "hold").duration() > 0.0)
 	_check("Path 头尾+平面点", _find(chart, "path").trace_pts.size() >= 2 and _find(chart, "path").duration() > 0.0)
-	_check("Trace 二维点", _find(chart, "trace").trace_pts.size() >= 2)
 	_check("Bell 圆心+半径", _find(chart, "bell").radius > 0.0 and _find(chart, "bell").center_u >= 0.0)
 	_check("Anchor 配对字段", _find(chart, "anchor").pair_id == "" and _find(chart, "anchor").anchor_pair == -1)
 
@@ -90,8 +87,12 @@ func _audit_validation() -> void:
 	_make_note(good, "tap", 0.0)
 	_make_note(good, "hold", 2.0)
 	_make_note(good, "path", 4.0)
-	_make_note(good, "trace", 6.0)
-	_make_note(good, "anchor", 8.0)
+	var anchor_a := _make_note(good, "anchor", 8.0)
+	var anchor_b := _make_note(good, "anchor", 8.0)
+	anchor_a.angle = 0.0
+	anchor_b.angle = 180.0
+	anchor_a.pair_id = "A0"
+	anchor_b.pair_id = "A0"
 	_make_note(good, "bell", 10.0)
 	_check("有效谱面通过校验", Validator.errors(Validator.validate(good)).is_empty(), str(Validator.errors(Validator.validate(good))))
 
@@ -114,9 +115,23 @@ func _audit_validation() -> void:
 	lone.anchor_pair = 0
 	_check("Anchor 缺配对被拒绝", not Validator.errors(Validator.validate(anchor)).is_empty())
 
+	var triple := Chart.new()
+	for i in 3:
+		_make_note(triple, "anchor", 4.0).angle = float(i) * 120.0
+	_check("同拍超过双押上限被拒绝", not Validator.errors(Validator.validate(triple)).is_empty())
+
+	var free_angle := Chart.new()
+	var free_a := _make_note(free_angle, "anchor", 6.0)
+	var free_b := _make_note(free_angle, "anchor", 6.0)
+	free_a.angle = 10.0
+	free_b.angle = 95.0
+	free_a.pair_id = "A1"
+	free_b.pair_id = "A1"
+	_check("任意角度仍可配对", Validator.errors(Validator.validate(free_angle)).is_empty())
+
 	var shape := BoundaryShape.star("S", 380.0, 190.0, 5)
 	var shape_issues := shape.validate()
-	_check("非凸形状被标记", not shape_issues.is_empty(), str(shape_issues))
+	_check("凹形允许保存", shape_issues.is_empty(), str(shape_issues))
 	var bow := BoundaryShape.new()
 	bow.id = "BOW"
 	bow.closed = true
@@ -216,7 +231,7 @@ func _audit_ui(app: Node) -> void:
 	add_child(inspector)
 	await get_tree().process_frame
 	await get_tree().process_frame
-	inspector.current_tab = 4
+	inspector.current_tab = 2
 	await get_tree().process_frame
 	await get_tree().process_frame
 	var page: VBoxContainer = inspector._pages["视图"]
@@ -244,13 +259,13 @@ func _audit_source() -> void:
 	var canvas_text := FileAccess.get_file_as_string("res://charter/chart_canvas.gd")
 	var preview_text := FileAccess.get_file_as_string("res://charter/preview_3d.gd")
 	var inspector_text := FileAccess.get_file_as_string("res://charter/inspector.gd")
+	var workspace_text := FileAccess.get_file_as_string("res://charter/ring_workspace.gd")
 	_check("工具 1–7", main_text.contains("KEY_1, KEY_2, KEY_3, KEY_4, KEY_5, KEY_6, KEY_7"))
 	_check("边界 B/事件 E", main_text.contains("KEY_B") and main_text.contains("KEY_E"))
 	_check("HUD H", main_text.contains("KEY_H"))
 	_check("F5 试玩", main_text.contains("KEY_F5"))
 	_check("波形/时间轴", canvas_text.contains("_draw_waveform") and canvas_text.contains("_draw_notes"))
 	_check("Path 预览绘制", preview_text.contains("_draw_one_path"))
-	_check("Trace 屏幕擦带", preview_text.contains("_draw_traces") and preview_text.contains("_append_trace_point"))
 	_check("框选", canvas_text.contains("_finish_marquee"))
 	_check("皮肤/特效设置", main_text.contains("_sync_appearance"))
 	var hold_start := preview_text.find("func _draw_holds(")
@@ -262,6 +277,9 @@ func _audit_source() -> void:
 	_check("Ctrl+滚轮缩放", canvas_text.contains("MOUSE_BUTTON_WHEEL"))
 	_check("Alt+单击重叠循环", canvas_text.contains("alt_pressed"))
 	_check("K 形变关键帧快捷键", main_text.contains("KEY_K"))
+	# 回归：第二次打开环编辑器时预览必须重新挂进工作区，否则预览槽为空、
+	# 关闭后主界面也回不来。
+	_check("环编辑器可重复打开", not workspace_text.contains("preview != _preview"))
 	_check("X 擦除快捷键", main_text.contains("KEY_X"))
 	_check("Ctrl+Shift+V 视频属性", main_text.contains("KEY_V") and main_text.contains("ctrl_pressed") and main_text.contains("shift_pressed"))
 	_check("Anchor 双锚点创建", inspector_text.contains("_add_anchor_pair"))
