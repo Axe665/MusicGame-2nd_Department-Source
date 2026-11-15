@@ -1045,9 +1045,6 @@ func _start_audio() -> void:
 		_add_log("音频不可用，使用系统时钟继续试玩。")
 		return
 	_audio_available = true
-	if replay_mode and _loaded_audio != null:
-		# 音频加载完之后把回放总长补到整首歌，导出才不会截掉尾巴。
-		_replay_total_ms = maxf(_replay_total_ms, _loaded_audio.get_length() * 1000.0)
 	_audio = AudioStreamPlayer.new()
 	_audio.name = "PlaytestAudio"
 	_audio.bus = "Music"
@@ -1108,13 +1105,13 @@ func _process(delta: float) -> void:
 		_ui_accum = 0.0
 		_update_hud_state()
 		_update_replay_bar()
-	if replay_mode:
-		# 回放按「整首歌」收尾：谱面最后一颗之后通常还有几秒音乐，按 chart 结束会切成短尾。
-		# 导出由 _replay_ms >= _replay_total_ms 收尾；无音频时退回按总长收尾。
-		if not _audio_available and chart_ms >= _replay_total_ms:
+	if beat > chart.duration_beats() + 2.0:
+		# osu 口径：对局和回放都在「最后一颗 +2 拍」结束，结果页立刻出来；
+		# 音乐不在这里停，继续放到尾（见 _finish），离开时淡出。
+		if replay_mode:
 			_exit_replay()
-	elif beat > chart.duration_beats() + 2.0:
-		_finish()
+		else:
+			_finish()
 	_prune_input_queues(judge_ms)
 	if _recording and _record != null:
 		var offset_now := _active_offset()
@@ -1170,7 +1167,7 @@ func _enter_replay(data: Replay) -> void:
 	_replay_start_ms = _replay_ms
 	_offset_override = float(data.settings.get("offset_ms", 0.0))
 	_replay_start_offset = _offset_override
-	# 回放总长取「谱面结束」和「音频长度」的较大值：只按最后一颗音符算会让视频比歌短。
+	# 回放跨度 = 谱面长度（和对局一致；片尾音乐照常放，但不占进度条）。
 	_replay_total_ms = chart.timing.beat_to_chart_ms(chart.duration_beats())
 	_timeline_start_beat = start_beat
 	_replay_cursor = Vector2.INF
@@ -3024,11 +3021,9 @@ func _finish() -> void:
 		}
 	_close_path_input_log()
 	_running = false
-	# 结算页立刻出来，但音乐继续放到尾：谱面最后一颗通常早于音乐结束，这里直接
-	# stop() 会把片尾切掉（同一次谱面，回放会放到整首歌，观感就对不上了）。
-	# 真正的停止在 _exit() / 重试（_start_audio 会换掉播放器）里做。
-	if _audio != null and replay_mode:
-		_audio.stop()
+	# 结算页立刻出来，但音乐继续放到尾（osu 也是进结果页后音乐还在响）：
+	# 谱面最后一颗通常早于音乐结束，这里直接 stop() 会把片尾切掉。
+	# 真正的停止在 _exit()（淡出）或重试（_start_audio 换播放器）里做。
 	_preview.playing = false
 	_preview.set_process(true)
 	_preview.custom_cursor_visible = false
@@ -3091,6 +3086,18 @@ func _finish() -> void:
 	_results_text.text = "\n".join(lines)
 	_results.visible = true
 	Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
+
+
+## 离开试玩/回放时淡出音乐（osu 进结果页后音乐继续，退出时渐变而不是硬切）。
+func _fade_out_audio(seconds: float = 1.2) -> void:
+	if _audio == null or not _audio.playing:
+		return
+	var player := _audio
+	var tween := create_tween()
+	tween.tween_property(player, "volume_db", -40.0, seconds)
+	tween.tween_callback(func() -> void:
+		if is_instance_valid(player):
+			player.stop())
 
 
 ## 一次修一张：把「本局平均偏差」反向加到这张谱面的 offset 并存盘。
@@ -3159,8 +3166,7 @@ func _exit() -> void:
 	if _ready_layer != null:
 		_ready_layer.visible = false
 	_close_path_input_log()
-	if _audio != null:
-		_audio.stop()
+	_fade_out_audio()
 	_flush_offset()
 	Input.set_use_accumulated_input(true)
 	Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
