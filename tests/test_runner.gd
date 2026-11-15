@@ -56,6 +56,7 @@ func _initialize() -> void:
 		"test_lbp_export",
 		"test_lbp_package",
 		"test_video_export_cursor",
+		"test_video_export_plan_hits",
 		"test_note_color_palette",
 		"test_note_color_contrast",
 		"test_note_color_round_trip",
@@ -1531,6 +1532,32 @@ func test_video_export_cursor() -> bool:
 	eq(int(mid.y), 25, "cursor interpolation y")
 	var after := VideoExport._cursor_at(moves, 500.0)
 	eq(int(after.x), 100, "cursor clamps to last point")
+	return true
+
+
+## 回放视频：按键事件要真的配到音符上；时间/角度不对就不该出命中反馈。
+func test_video_export_plan_hits() -> bool:
+	var chart := DemoChart.make_demo()
+	var exporter := VideoExport.new()
+	var events: Array = []
+	var late: Array = []
+	var flipped: Array = []
+	for note in chart.notes:
+		if not (note.type in ["tap", "hold", "path"]):
+			continue
+		var target := chart.timing.beat_to_chart_ms(note.beat)
+		if target > 3000.0:
+			continue
+		events.append({"t": target, "k": "press", "a": note.angle})
+		late.append({"t": target + 500.0, "k": "press", "a": note.angle})
+		flipped.append({"t": target, "k": "press", "a": fposmod(note.angle + 180.0, 360.0)})
+		if events.size() >= 3:
+			break
+	ok(not events.is_empty(), "demo chart has notes in the first 3s")
+	eq(exporter.plan_hits(chart, events).size(), events.size(), "on-time presses all hit")
+	eq(exporter.plan_hits(chart, late).size(), 0, "late presses do not hit")
+	eq(exporter.plan_hits(chart, flipped).size(), 0, "wrong-angle presses do not hit")
+	exporter.free()
 	return true
 
 

@@ -142,7 +142,11 @@ func export_chart(chart: Chart, start_ms: float, end_ms: float, out_path: String
 	preview.chart_override = chart
 	preview.follow_app = false
 	preview.playtest_mode = true
-	preview.show_hud = false
+	# 导出的是回放视频：HUD（连击/准度）要进画面，命中特效才有成绩可看。
+	preview.show_hud = true
+	preview.hud_title = String(chart.metadata.get("title", ""))
+	preview.hud_difficulty = String(chart.metadata.get("version", chart.difficulty))
+	preview.hud_total_ms = end_ms
 	preview.use_3d_ring = true
 	preview.mouse_tilt = false
 	preview.show_storyboard = show_storyboard
@@ -154,6 +158,15 @@ func export_chart(chart: Chart, start_ms: float, end_ms: float, out_path: String
 	var written := 0
 	var empty := 0
 	var moves := _move_events(events)
+	# 没有移动事件时别画光标：SubViewport 里的“真实鼠标位置”是窗口坐标，会乱飘。
+	preview.custom_cursor_visible = not moves.is_empty()
+	var hits := plan_hits(chart, events)
+	var hit_index := 0
+	var combo := 0
+	var judged := 0
+	var score_sum := 0.0
+	preview.hud_combo = 0
+	preview.hud_accuracy = -1.0
 	var cursor := Vector2.INF
 	var move_index := 0
 	# 先空转两帧：SubViewport 要渲染过才会分配贴图。
@@ -168,6 +181,24 @@ func export_chart(chart: Chart, start_ms: float, end_ms: float, out_path: String
 			move_index += 1
 		preview.auto_cursor = cursor if cursor.is_finite() else Vector2.INF
 		var beat: float = chart.timing.chart_ms_to_beat(ms + chart.offset_ms)
+		# 回放里的按键到点就放命中反馈：爆点 + 环绕闪光 + 连击/准度。
+		while hit_index < hits.size() and float(hits[hit_index]["ms"]) <= ms:
+			var hit: Dictionary = hits[hit_index]
+			preview.set_note_state(hit["note"].id, "hit", beat)
+			# 爆点用音符的目标拍：用当前拍会把特效画到环外（音符已经过了落点）。
+			preview.add_note_pop(String(hit["kind"]), hit["note"], float(hit["note"].beat))
+			preview.add_arc_flash(float(hit["note"].angle), float(hit["note"].arc_width()),
+				float(hit["note"].beat), _tier_colour(int(hit["tier"])))
+			if int(hit["tier"]) >= 3:
+				combo = 0
+			else:
+				combo += 1
+				judged += 1
+				score_sum += [1.0, 0.6667, 0.3333, 0.0][clampi(int(hit["tier"]), 0, 3)]
+			preview.hud_combo = combo
+			preview.hud_accuracy = 100.0 * score_sum / float(maxi(1, judged)) if judged > 0 else -1.0
+			preview.hud_ms = ms
+			hit_index += 1
 		preview.time_beat = beat
 		preview.prepare_playtest_frame(beat, 1.0 / float(FPS))
 		await RenderingServer.frame_post_draw
@@ -234,6 +265,80 @@ func _write_frame(stdin: FileAccess, data: PackedByteArray) -> bool:
 
 func cancel() -> void:
 	_cancel = true
+
+
+## 把 .replay 里的 press 事件配到谱面音符上（只用于画面反馈，不改成绩文件）。
+## 规则和试玩一致：时间在 ±HIT_WINDOW_MS 内、角度落在音符弧宽 + 容差里，先到先得。
+func plan_hits(chart: Chart, events: Array) -> Array:
+	var notes: Array[Dictionary] = []
+	for note in chart.notes:
+		if not (note.type in ["tap", "hold", "path"]):
+			continue
+		notes.append({
+			"note": note,
+			"target": chart.timing.beat_to_chart_ms(note.beat),
+			"half": maxf(12.0, (note.arc_width() + 20.0) * 0.5),
+			"used": false,
+		})
+	if notes.is_empty():
+		return []
+	var hits: Array[Dictionary] = []
+	for raw in events:
+		var event := raw as Dictionary
+		if String(event.get("k", "")) != "press":
+			continue
+		var time := float(event.get("t", 0.0))
+		var angle := float(event.get("a", NAN))
+		var best := -1
+		var best_error := 1.0e9
+		for i in notes.size():
+			var entry: Dictionary = notes[i]
+			if bool(entry["used"]):
+				continue
+			var error: float = absf(time - float(entry["target"]))
+			if error > 200.0:
+				continue
+			if not is_nan(angle):
+				var note: Note = entry["note"]
+				if absf(JudgeMath.angle_delta(angle, note.angle)) > float(entry["half"]):
+					continue
+			if error < best_error:
+				best_error = error
+				best = i
+		if best < 0:
+			continue
+		notes[best]["used"] = true
+		var picked: Note = notes[best]["note"]
+		hits.append({
+			"ms": float(notes[best]["target"]),
+			"note": picked,
+			"kind": picked.type,
+			"tier": _tier_for(best_error),
+		})
+	hits.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return float(a["ms"]) < float(b["ms"]))
+	return hits
+
+
+## 0=PERFECT 1=GREAT 2=GOOD 3=MISS/BAD，和试玩窗口一致。
+static func _tier_for(error: float) -> int:
+	if error <= 65.0:
+		return 0
+	if error <= 115.0:
+		return 1
+	if error <= 170.0:
+		return 2
+	return 3
+
+
+static func _tier_colour(tier: int) -> Color:
+	match tier:
+		0:
+			return UITheme.GOLD
+		1:
+			return UITheme.CYAN
+		2:
+			return UITheme.INK
+	return UITheme.RED
 
 
 static func _move_events(events: Array) -> Array:

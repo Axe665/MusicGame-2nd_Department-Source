@@ -4750,6 +4750,33 @@ func _hud_layout() -> Dictionary:
 	return layout
 
 
+## 诊断/测试用：HUD 左右列相对环心与半径的位置（单位 px）。
+## 和 _draw_play_hud 用同一组常数，改了那边要同步改这里。
+func hud_metrics() -> Dictionary:
+	var bounds := size
+	var hs := clampf(bounds.y / 900.0, 0.8, 1.8)
+	var s := hs * clampf(float(hud_options.get("scale", 100)) / 100.0, 0.5, 2.0)
+	var margin := 14.0 * s
+	var layout := _hud_layout()
+	var center: Vector2 = layout["center"]
+	var ring_r: float = float(layout["ring"]) * 1.2
+	var gap := 20.0 * s
+	var side := minf(center.x, bounds.x - center.x) - ring_r - margin - gap
+	var col_w := clampf(side, 90.0 * s, 320.0 * s)
+	return {
+		"size": bounds,
+		"s": s,
+		"gap": gap,
+		"center": center,
+		"live_center": project_design(Vector2.ZERO),
+		"ring": ring_r,
+		"live_ring": _hud_ring_radius(0.0) * 1.2,
+		"left_edge": center.x - ring_r - gap,
+		"right_edge": center.x + ring_r + gap,
+		"col_w": col_w,
+	}
+
+
 func _hud_ring_radius(t: float) -> float:
 	if _max_design_radius > 0.0:
 		var affine := _screen_affine()
