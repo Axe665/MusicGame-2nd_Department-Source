@@ -76,6 +76,7 @@ func _initialize() -> void:
 		"test_osu_bpm_change",
 		"test_osu_multi_difficulty",
 		"test_json_roundtrip",
+		"test_chart_project_format",
 		"test_validation_demo",
 		"test_angle_math",
 		"test_note_mirror",
@@ -566,7 +567,7 @@ func test_path_axis_centrifuge() -> bool:
 
 
 func test_demo_path_migration() -> bool:
-	var chart := ChartIO.load_chart("res://charts/demo.json")
+	var chart := ChartIO.load_chart("res://charts/夜に駆ける（示例）/main.json")
 	ok(chart != null, "migrated demo loads")
 	if chart == null:
 		return true
@@ -2133,13 +2134,55 @@ func test_json_roundtrip() -> bool:
 		return true
 	var text_b := ChartIO.to_json(loaded)
 	eq(text_b, text_a, "json save/load/save is byte-stable")
-	var path := "user://test_roundtrip.json"
-	eq(ChartIO.save_chart(chart, path), OK, "json file save")
-	var from_file := ChartIO.load_chart(path)
-	ok(from_file != null, "json file load")
+	var dir := "user://test_project"
+	var entries: Array = [{"name": "Insane", "chart": chart}]
+	eq(ChartIO.save_project(entries, dir, "test"), OK, "project save")
+	ok(ChartIO.is_project_path(dir), "project folder detected")
+	ok(FileAccess.file_exists(dir.path_join("main.json")), "project main exists")
+	ok(FileAccess.file_exists(dir.path_join("chart0.json")), "project chart0 exists")
+	ok(FileAccess.file_exists(dir.path_join("shaped.json")), "project shaped exists")
+	ok(FileAccess.file_exists(dir.path_join("color.json")), "project color exists")
+	ok(not FileAccess.file_exists(dir.path_join("bpmlist.json")), "constant bpm omits bpmlist")
+	var from_file := ChartIO.load_chart(dir.path_join("main.json"))
+	ok(from_file != null, "project chart load")
 	if from_file != null:
-		eq(ChartIO.to_json(from_file), text_a, "json file roundtrip stable")
-	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+		eq(from_file.notes.size(), chart.notes.size(), "project notes survive")
+		eq(String(from_file.metadata.get("title", "")), String(chart.metadata.get("title", "")), "project title survives")
+	for name in ["main.json", "chart0.json", "shaped.json", "color.json", "storyboard.json", "music.wav", "music.ogg", "music.mp3"]:
+		var p := ProjectSettings.globalize_path(dir.path_join(name))
+		if FileAccess.file_exists(p):
+			DirAccess.remove_absolute(p)
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(dir))
+	return true
+
+
+func test_chart_project_format() -> bool:
+	var chart := DemoChart.make_demo()
+	chart.notes[0].color = 2
+	chart.timing.points.append(TimingPoint.new(8.0, 140.0, 3))
+	var copy := ChartIO.chart_from_dict(ChartIO.chart_to_dict(chart))
+	var dir := "user://project_format_test"
+	var entries: Array = [{"name": "Beginner", "chart": chart}, {"name": "Master", "chart": copy}]
+	eq(ChartIO.save_project(entries, dir, "project test"), OK, "multi difficulty project save")
+	ok(FileAccess.file_exists(dir.path_join("main.json")), "main.json")
+	ok(FileAccess.file_exists(dir.path_join("chart0.json")), "chart0.json")
+	ok(FileAccess.file_exists(dir.path_join("chart1.json")), "chart1.json")
+	ok(FileAccess.file_exists(dir.path_join("shaped.json")), "shaped.json")
+	ok(FileAccess.file_exists(dir.path_join("color.json")), "color.json")
+	ok(FileAccess.file_exists(dir.path_join("bpmlist.json")), "bpmlist.json with bpm change")
+	ok(FileAccess.file_exists(dir.path_join("storyboard.json")), "storyboard.json with events")
+	var loaded := ChartIO.load_project(dir)
+	ok(bool(loaded.get("ok", false)), "multi difficulty project load")
+	if bool(loaded.get("ok", false)):
+		eq(loaded.entries.size(), 2, "two difficulties")
+		var first: Chart = loaded.entries[0].chart
+		eq(first.notes[0].color, 2, "note color survives")
+		eq(first.timing.points.size(), 2, "bpm change survives")
+	for name in ["main.json", "chart0.json", "chart1.json", "shaped.json", "color.json", "bpmlist.json", "storyboard.json", "music.wav", "music.ogg", "music.mp3"]:
+		var p := ProjectSettings.globalize_path(dir.path_join(name))
+		if FileAccess.file_exists(p):
+			DirAccess.remove_absolute(p)
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(dir))
 	return true
 
 
@@ -3352,30 +3395,36 @@ func test_import_window_set() -> bool:
 	eq(app.difficulties.size(), before_add + 1, "group grows by one")
 	eq(app.difficulty_names()[added], "我的难度", "new difficulty keeps its name")
 	ok(app.chart != null and app.chart.notes.size() > 0, "new difficulty starts as a copy of the chart")
-	ok(app.save_set_file(), "saving the set writes every difficulty")
+	ok(app.save_set_file(), "saving the group writes a project")
 	var out_dir := "user://test_set_out"
 	var written: int = app.save_all_difficulties(out_dir)
 	eq(written, app.difficulties.size(), "every difficulty is written to disk")
-	# 难度套组：一个文件装下所有难度，重新打开还在。
-	ok(not app.set_path.is_empty(), "import writes a .set.json next to the import")
+	# 旧套组保存时转成工程；重新打开工程仍在。
+	ok(not app.set_path.is_empty(), "import writes a project main.json")
+	ok(FileAccess.file_exists(app.set_path), "project main exists")
 	var reopened: App = load("res://charter/app.gd").new()
-	ok(reopened.open_set_file(app.set_path), "set file reopens")
-	eq(reopened.difficulties.size(), app.difficulties.size(), "reopened set has every difficulty")
+	ok(reopened.open_project(app.set_path), "project reopens")
+	eq(reopened.difficulties.size(), app.difficulties.size(), "reopened project has every difficulty")
 	eq(reopened.difficulty_names()[0], app.difficulty_names()[0], "difficulty names survive the round trip")
-	ok(reopened.chart != null and reopened.chart.notes.size() > 0, "reopened set loads its first difficulty")
-	ok(reopened.switch_difficulty(1), "reopened set can switch difficulty")
+	ok(reopened.chart != null and reopened.chart.notes.size() > 0, "reopened project loads its first difficulty")
+	ok(reopened.switch_difficulty(1), "reopened project can switch difficulty")
 	ok(reopened.chart.notes.size() > 0, "switched difficulty has notes")
 	# 静态小工具：命令行参数解析与标签拼装。
 	eq(app.import_label("Lv.9", "Song", "me", "std"), "Lv.9  [std]  Song  (me)", "import label format")
 	eq(app.import_label("", "", "", ""), "未命名难度", "empty label falls back")
 	reopened.free()
 	app.free()
-	if FileAccess.file_exists(ProjectSettings.globalize_path("user://sets")):
-		for file_name in DirAccess.get_files_at(ProjectSettings.globalize_path("user://sets")):
-			DirAccess.remove_absolute(ProjectSettings.globalize_path("user://sets").path_join(file_name))
-	for file_name in DirAccess.get_files_at(ProjectSettings.globalize_path(out_dir)):
-		DirAccess.remove_absolute(ProjectSettings.globalize_path(out_dir).path_join(file_name))
-	DirAccess.remove_absolute(ProjectSettings.globalize_path(out_dir))
+	for cleanup_dir in ["user://sets", out_dir]:
+		var abs_dir := ProjectSettings.globalize_path(cleanup_dir)
+		if not DirAccess.dir_exists_absolute(abs_dir):
+			continue
+		for file_name in DirAccess.get_files_at(abs_dir):
+			DirAccess.remove_absolute(abs_dir.path_join(file_name))
+		for sub_name in DirAccess.get_directories_at(abs_dir):
+			for file_name in DirAccess.get_files_at(abs_dir.path_join(sub_name)):
+				DirAccess.remove_absolute(abs_dir.path_join(sub_name).path_join(file_name))
+			DirAccess.remove_absolute(abs_dir.path_join(sub_name))
+		DirAccess.remove_absolute(abs_dir)
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
 	return true
 

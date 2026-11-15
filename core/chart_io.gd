@@ -3,6 +3,8 @@ extends RefCounted
 
 const FORMAT := "tamaki3-chart"
 const VERSION := 1
+const PROJECT_FORMAT := "tamaki3-project"
+const PROJECT_VERSION := 1
 
 static var last_error: String = ""
 
@@ -475,7 +477,19 @@ static func from_json(text: String) -> Chart:
 
 static func load_chart(path: String) -> Chart:
 	last_error = ""
+	if is_project_path(path):
+		var project := load_project(path)
+		if not bool(project.get("ok", false)):
+			return null
+		var entries: Array = project.get("entries", [])
+		if entries.is_empty():
+			last_error = "谱面工程没有可用难度"
+			return null
+		return entries[0].get("chart", null)
 	if not FileAccess.file_exists(path):
+		# A legacy .json path may have been migrated to its project folder.
+		if is_project_path(project_dir_for(path)):
+			return load_chart(project_dir_for(path))
 		last_error = "文件不存在：%s" % path
 		return null
 	var file := FileAccess.open(path, FileAccess.READ)
@@ -484,12 +498,18 @@ static func load_chart(path: String) -> Chart:
 		return null
 	var text := file.get_as_text()
 	file.close()
-	return from_json(text)
+	var chart := from_json(text)
+	if chart != null:
+		chart.project_dir = ""
+		chart.project_main_path = ""
+	return chart
 
 
 static func save_chart(chart: Chart, path: String) -> Error:
-	var text := to_json(chart)
-	return atomic_write(path, text)
+	# From this version on, saving a chart writes a project folder. A legacy
+	# .json path is converted to <basename>/main.json and removed afterwards.
+	var entries: Array = [{"name": String(chart.metadata.get("version", chart.difficulty)), "chart": chart}]
+	return save_project(entries, path, String(chart.metadata.get("title", "")), "")
 
 
 ## ── 难度套组（一首歌多个难度，存成一个文件）──────────────────────────────
@@ -574,11 +594,386 @@ static func save_set(path: String, entries: Array, title: String = "", source: S
 	return atomic_write(path, JSON.stringify(data, "\t", true) + "\n")
 
 
-static func atomic_write(path: String, text: String) -> Error:
+## ── 谱面工程 ────────────────────────────────────────────────────────────────
+static func project_dir_for(path: String) -> String:
+	var p := path.trim_suffix("/")
+	if p.get_file().to_lower() == "main.json":
+		return p.get_base_dir()
+	if p.get_extension().is_empty():
+		return p
+	return p.get_basename()
+
+
+static func project_main_path(path: String) -> String:
+	return project_dir_for(path).path_join("main.json")
+
+
+static func is_project_path(path: String) -> bool:
+	if path.is_empty():
+		return false
+	var dir := project_dir_for(path)
+	if not DirAccess.dir_exists_absolute(dir):
+		return false
+	return FileAccess.file_exists(dir.path_join("main.json"))
+
+
+static func load_project(path: String) -> Dictionary:
+	last_error = ""
+	var dir := project_dir_for(path)
+	var main_path := dir.path_join("main.json")
+	if not FileAccess.file_exists(main_path):
+		last_error = "谱面工程缺少 main.json：%s" % dir
+		return {"ok": false, "error": last_error}
+	var main := _read_json(main_path)
+	if main.is_empty():
+		return {"ok": false, "error": last_error}
+	if String(main.get("format", "")) != PROJECT_FORMAT:
+		last_error = "不是 Tamaki 谱面工程"
+		return {"ok": false, "error": last_error}
+	var shaped := _read_json(dir.path_join("shaped.json"))
+	var color := _read_json(dir.path_join("color.json"))
+	var bpm_data := _read_json(dir.path_join("bpmlist.json"))
+	var storyboard := _read_json(dir.path_join("storyboard.json"))
+	var chart_files := _project_chart_files(dir)
+	if chart_files.is_empty():
+		last_error = "谱面工程没有 chartN.json"
+		return {"ok": false, "error": last_error}
+	var names: Array = main.get("difficulty_list", main.get("difficulties", []))
+	var points := _project_timing_points(main, bpm_data)
+	var view: Dictionary = main.get("view", {})
+	var entries: Array = []
+	for i in chart_files.size():
+		var part := _read_json(dir.path_join(String(chart_files[i])))
+		if part.is_empty():
+			continue
+		var name := String(part.get("difficulty", ""))
+		if name.is_empty() and i < names.size():
+			name = String(names[i])
+		if name.is_empty():
+			name = "难度 %d" % (i + 1)
+		var music := String(main.get("music", ""))
+		var audio := dir.path_join(music) if not music.is_empty() else ""
+		var jacket := String(main.get("jacket", ""))
+		var data := {
+			"format": FORMAT,
+			"version": VERSION,
+			"general": {
+				"audio": audio,
+				"video": "",
+				"offset_ms": float(main.get("offset_ms", 0.0)),
+				"pre_read_ms": float(main.get("pre_read_ms", 1000.0)),
+				"difficulty": name,
+			},
+			"metadata": {
+				"title": String(main.get("title", "")),
+				"artist": String(main.get("artist", "")),
+				"creator": String(main.get("creator", main.get("charter", ""))),
+				"version": name,
+				"tags": String(main.get("tags", "")),
+				"license": String(main.get("license", "")),
+				"background": dir.path_join(jacket) if not jacket.is_empty() else "",
+			},
+			"timing": {"offset_ms": float(main.get("offset_ms", 0.0)), "points": points},
+			"default_shape": String(view.get("default_shape", main.get("default_shape", "S0"))),
+			"shapes": String(shaped.get("shapes", "")),
+			"events": storyboard.get("events", []),
+			"shape_keys": storyboard.get("shape_keys", []),
+			"view_states": view.get("view_states", main.get("view_states", [])),
+			"regions": part.get("regions", []),
+			"notes": part.get("notes", []),
+			"editor": view.get("editor", main.get("editor", {})),
+			"note_extras": part.get("note_extras", {}),
+			"note_flags": part.get("note_flags", {}),
+			"note_colors": _project_colors_for(color, i),
+			"palette": color.get("palette", []),
+		}
+		var chart := chart_from_dict(data)
+		if chart == null:
+			continue
+		chart.project_dir = dir
+		chart.project_main_path = main_path
+		entries.append({"name": name, "chart": chart})
+	if entries.is_empty():
+		last_error = "谱面工程没有可用难度"
+		return {"ok": false, "error": last_error}
+	return {
+		"ok": true,
+		"title": String(main.get("title", "")),
+		"source": String(main.get("source", "")),
+		"dir": dir,
+		"main_path": main_path,
+		"entries": entries,
+	}
+
+
+static func save_project(entries: Array, path: String, title: String = "", source: String = "") -> Error:
+	if entries.is_empty():
+		last_error = "没有可保存的难度"
+		return ERR_INVALID_DATA
+	var dir := project_dir_for(path)
+	var main_path := dir.path_join("main.json")
+	var legacy_path := path if path.to_lower().ends_with(".json") and path.get_file().to_lower() != "main.json" else ""
+	DirAccess.make_dir_recursive_absolute(dir)
+	var first: Chart = entries[0].get("chart", null)
+	if first == null:
+		last_error = "第一个难度为空"
+		return ERR_INVALID_DATA
+	var base := chart_to_dict(first)
+	var meta: Dictionary = first.metadata
+	var names: Array[String] = []
+	for entry in entries:
+		names.append(String(entry.get("name", "难度")))
+	var audio_name := _copy_project_audio(first, dir)
+	var jacket_name := _copy_project_jacket(first, dir)
+	var view := {
+		"editor": base.get("editor", {}),
+		"view_states": base.get("view_states", []),
+		"default_shape": base.get("default_shape", "S0"),
+	}
+	var main := {
+		"format": PROJECT_FORMAT,
+		"version": PROJECT_VERSION,
+		"title": String(meta.get("title", title)),
+		"artist": String(meta.get("artist", "")),
+		"charter": String(meta.get("creator", "")),
+		"creator": String(meta.get("creator", "")),
+		"difficulty": names[0],
+		"difficulty_list": names,
+		"bpm": _first_bpm(first),
+		"beats_per_bar": _first_beats_per_bar(first),
+		"offset_ms": snappedf(first.offset_ms, 0.001),
+		"pre_read_ms": snappedf(first.pre_read_ms, 0.001),
+		"music": audio_name,
+		"jacket": jacket_name,
+		"view": view,
+		"source": source,
+	}
+	var err := atomic_write(main_path, JSON.stringify(main, "\t", false) + "\n", false)
+	if err != OK:
+		return err
+	err = atomic_write(dir.path_join("shaped.json"), JSON.stringify({
+		"format": "tamaki3-shapes",
+		"version": 1,
+		"shapes": String(base.get("shapes", "")),
+	}, "\t", false) + "\n", false)
+	if err != OK:
+		return err
+	var bpm_changes := _project_bpm_changes(first)
+	var bpm_path := dir.path_join("bpmlist.json")
+	if bpm_changes.is_empty():
+		if FileAccess.file_exists(bpm_path):
+			DirAccess.remove_absolute(bpm_path)
+	else:
+		err = atomic_write(bpm_path, JSON.stringify({"changes": bpm_changes}, "\t", false) + "\n", false)
+		if err != OK:
+			return err
+	var events: Array = base.get("events", [])
+	var keys: Array = base.get("shape_keys", [])
+	var story_path := dir.path_join("storyboard.json")
+	if events.is_empty() and keys.is_empty():
+		if FileAccess.file_exists(story_path):
+			DirAccess.remove_absolute(story_path)
+	else:
+		err = atomic_write(story_path, JSON.stringify({
+			"format": "tamaki3-storyboard",
+			"version": 1,
+			"events": events,
+			"shape_keys": keys,
+		}, "\t", false) + "\n", false)
+		if err != OK:
+			return err
+	var color_charts: Array = []
+	for i in entries.size():
+		var chart: Chart = entries[i].get("chart", null)
+		if chart == null:
+			continue
+		var part := chart_to_dict(chart)
+		var part_data := {
+			"format": FORMAT,
+			"version": VERSION,
+			"difficulty": String(entries[i].get("name", "难度")),
+			"notes": part.get("notes", []),
+			"regions": part.get("regions", []),
+			"note_flags": part.get("note_flags", {}),
+			"note_extras": part.get("note_extras", {}),
+		}
+		err = atomic_write(dir.path_join("chart%d.json" % i), JSON.stringify(part_data, "\t", false) + "\n", false)
+		if err != OK:
+			return err
+		color_charts.append({
+			"name": String(entries[i].get("name", "难度")),
+			"notes": _project_color_codes(chart),
+		})
+	var color_data := {
+		"format": "tamaki3-colors",
+		"version": 1,
+		"default": "begin",
+		"palette": base.get("palette", []),
+		"notes": color_charts[0].get("notes", []) if color_charts.size() == 1 else [],
+	}
+	if color_charts.size() > 1:
+		color_data["charts"] = color_charts
+	err = atomic_write(dir.path_join("color.json"), JSON.stringify(color_data, "\t", false) + "\n", false)
+	if err != OK:
+		return err
+	# Remove stale chartN.json when difficulties were removed.
+	for name in _project_chart_files(dir):
+		var index_text := String(name).get_basename().trim_prefix("chart")
+		if index_text.is_valid_int() and int(index_text) >= entries.size():
+			DirAccess.remove_absolute(dir.path_join(String(name)))
+	for chart_entry in entries:
+		var chart: Chart = chart_entry.get("chart", null)
+		if chart != null:
+			chart.project_dir = dir
+			chart.project_main_path = main_path
+	for name in DirAccess.get_files_at(dir):
+		if String(name).contains(".bak."):
+			DirAccess.remove_absolute(dir.path_join(String(name)))
+	if not legacy_path.is_empty() and FileAccess.file_exists(legacy_path):
+		DirAccess.remove_absolute(legacy_path)
+	return OK
+
+
+static func _read_json(path: String) -> Dictionary:
+	if not FileAccess.file_exists(path):
+		return {}
+	var file := FileAccess.open(path, FileAccess.READ)
+	if file == null:
+		return {}
+	var parser := JSON.new()
+	var text := file.get_as_text()
+	file.close()
+	if parser.parse(text) != OK or not (parser.data is Dictionary):
+		last_error = "JSON 解析失败：%s" % path
+		return {}
+	return parser.data
+
+
+static func _project_chart_files(dir: String) -> Array[String]:
+	var names: Array[String] = []
+	var files := DirAccess.get_files_at(dir)
+	for name in files:
+		if name.begins_with("chart") and name.ends_with(".json") and name.substr(5, name.length() - 10).is_valid_int():
+			names.append(name)
+	if names.is_empty() and FileAccess.file_exists(dir.path_join("chart.json")):
+		names.append("chart.json")
+	names.sort_custom(func(a: String, b: String) -> bool:
+		var ai := String(a).get_basename().trim_prefix("chart")
+		var bi := String(b).get_basename().trim_prefix("chart")
+		return (int(ai) if ai.is_valid_int() else 0) < (int(bi) if bi.is_valid_int() else 0))
+	return names
+
+
+static func _project_timing_points(main: Dictionary, bpm_data: Dictionary) -> Array:
+	var points: Array = [{
+		"beat": 0.0,
+		"bpm": float(main.get("bpm", 120.0)),
+		"beats_per_bar": int(main.get("beats_per_bar", 4)),
+	}]
+	var changes: Array = bpm_data.get("changes", [])
+	var regex := RegEx.new()
+	regex.compile("\\[\\s*([0-9.]+)\\s*\\]\\s*\\(\\s*([0-9.]+)\\s*,\\s*([0-9]+)\\s*\\)")
+	for raw in changes:
+		var found := regex.search(String(raw))
+		if found != null:
+			points.append({
+				"beat": float(found.get_string(1)),
+				"bpm": float(found.get_string(2)),
+				"beats_per_bar": int(found.get_string(3)),
+			})
+	return points
+
+
+static func _project_bpm_changes(chart: Chart) -> Array[String]:
+	var result: Array[String] = []
+	if chart.timing.points.size() <= 1:
+		return result
+	for i in range(1, chart.timing.points.size()):
+		var point := chart.timing.points[i]
+		result.append("[%s](%s,%d)" % [
+			str(snappedf(point.beat, 0.001)), str(snappedf(point.bpm, 0.001)),
+			point.beats_per_bar,
+		])
+	return result
+
+
+static func _project_colors_for(color: Dictionary, index: int) -> Dictionary:
+	var rows: Array = color.get("notes", [])
+	var charts: Array = color.get("charts", [])
+	if index < charts.size() and charts[index] is Dictionary:
+		rows = (charts[index] as Dictionary).get("notes", [])
+	var result := {}
+	var regex := RegEx.new()
+	regex.compile("^\\[(\\d+)\\][^(]*\\((\\d+)\\)$")
+	for raw in rows:
+		var found := regex.search(String(raw).strip_edges())
+		if found != null:
+			result[found.get_string(1)] = {"g": int(found.get_string(2))}
+	return result
+
+
+static func _project_color_codes(chart: Chart) -> Array[String]:
+	var result: Array[String] = []
+	for note in chart.sorted_notes():
+		if note.color != 0:
+			result.append("[%d]%s(%d)" % [note.id, note.type, note.color])
+	return result
+
+
+static func _copy_project_audio(chart: Chart, dir: String) -> String:
+	if chart.audio_path.is_empty():
+		return ""
+	var ext := chart.audio_path.get_extension().to_lower()
+	if ext.is_empty():
+		ext = "wav"
+	var target := dir.path_join("music." + ext)
+	if chart.audio_path == target:
+		return target.get_file()
+	if _copy_file(chart.audio_path, target):
+		return target.get_file()
+	return ""
+
+
+static func _copy_project_jacket(chart: Chart, dir: String) -> String:
+	var source := String(chart.metadata.get("background", ""))
+	if source.is_empty():
+		return ""
+	var ext := source.get_extension().to_lower()
+	if ext not in ["jpg", "jpeg", "png"]:
+		return ""
+	var target := dir.path_join("jacket." + ext)
+	if source != target and not _copy_file(source, target):
+		return ""
+	return target.get_file()
+
+
+static func _copy_file(source: String, target: String) -> bool:
+	var input := FileAccess.open(source, FileAccess.READ)
+	if input == null:
+		return false
+	var data := input.get_buffer(input.get_length())
+	input.close()
+	var output := FileAccess.open(target, FileAccess.WRITE)
+	if output == null:
+		return false
+	output.store_buffer(data)
+	output.close()
+	return true
+
+
+static func _first_bpm(chart: Chart) -> float:
+	return chart.timing.points[0].bpm if not chart.timing.points.is_empty() else 120.0
+
+
+static func _first_beats_per_bar(chart: Chart) -> int:
+	return chart.timing.points[0].beats_per_bar if not chart.timing.points.is_empty() else 4
+
+
+static func atomic_write(path: String, text: String, backup: bool = true) -> Error:
 	var dir := path.get_base_dir()
 	if not dir.is_empty():
 		DirAccess.make_dir_recursive_absolute(dir)
-	if FileAccess.file_exists(path):
+	if backup and FileAccess.file_exists(path):
 		_backup(path)
 	var tmp := path + ".tmp"
 	var file := FileAccess.open(tmp, FileAccess.WRITE)

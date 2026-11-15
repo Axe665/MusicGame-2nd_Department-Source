@@ -8,7 +8,7 @@ Godot 4.7.2 实现的《Tamaki₃》谱面编辑器纵向切片。设计依据�
 
 首版目标是“能写、能看、能打”：三栏编辑器、u×时间画布、分段边界、Seek、Limit、3D 预览、F5 二值试玩、紧凑代码谱面，以及一套可被文档算例证伪的 `core/` 数学层。
 
-> **合并基线**：本项目是本地 Seek / Limit / 紧凑谱面改动与 GitHub `Axe665/MusicGame-2nd_Department-Source` 的 `d6c82bb` 合并后的版本。
+> **合并基线**：本项目是本地 Seek / Limit / 紧凑谱面改动与 GitHub `Axe665/MusicGame-2nd_Department-Source` 的 `7aff95e4` 合并后的版本。
 
 ## 运行
 
@@ -16,7 +16,7 @@ Godot 4.7.2 实现的《Tamaki₃》谱面编辑器纵向切片。设计依据�
 godot --path .
 ```
 
-或用 Godot 4.7.2 打开 `project.godot` 后按 F6/F5。首次启动会载入 `charts/demo.json`（35 个音符、2 个 BoundaryEvent、2 个 Limit、RingState 关键帧），并自动生成 `audio/demo_click.wav` 的示例音频。
+或用 Godot 4.7.2 打开 `project.godot` 后按 F6/F5。首次启动会载入 `charts/夜に駆ける（示例）/` 谱面工程（35 个音符、2 个 BoundaryEvent、2 个 Limit、RingState 关键帧），音频已复制到工程内的 `music.wav`。
 
 - 空格：播放/暂停；Shift+空格：从头播放；Ctrl+空格：循环
 - F5：从播放头试玩；Shift+F5：从头试玩。右上角是「文件 / 编辑 / 视图 / 插入」菜单组加一个黄色「试玩 F5」按钮（原来的「试玩」下拉菜单已合并进这个按钮），点开后底部只有两个选择：**继续游玩**（从播放头）和 **从头开始玩**（从第 0 拍）；试玩中从暂停菜单打开时只剩「完成」
@@ -111,6 +111,7 @@ godot --path .
 - 写入方向：画布右上角「从上往下」开关，关闭后时间轴上下翻转（后出现的音符在上），翻转状态随谱面存进 `editor.flow_down`
 - Path/Hold 编辑：弧线 Path 与 Hold 选中后可在预览中拖动青色体节点；五角星 Path 不含可拖节点
 - 格式：File 菜单可导入 osu!std/taiko `.osz`、导出 `.lbp` v2（Tap/Hold 写实际弧宽，Bell 行尾带 `width=` 选项）；导入报告用对话框显示；谱面 notes/shapes 采用紧凑代码：`[id]tap(beat,angle[,width[,1,size]])`、`[id]hold(beat,end,angle[,width])`、`[id]path{(part0,beat,angle,end,end_angle,centrifuge,axis);...}`、`[id]seek(beat,orien)`、`[id]anchor(beat,angle,pair_id[,pair])`、`[id]bell(beat,angle[,width[,radius]])`、`[id]red(beat,end_beat,width)` 与单块无缩进 `shape{[id,closed,segments{...}];...}`；`timing` 位于 `notes` 之前。宽度/大小 Tap 只在非默认时追加可选段：普通 Tap 不写宽度（60°/0.5 l）、普通 Hold 不写宽度（60°）、普通 Bell 不写宽度/半径（30°/26px）；旧版读到尾巴会忽略，旧谱面照常载入。
+- 谱面工程：以谱面名称命名文件夹，包含 `main.json`（曲师、谱师、BPM、offset、难度、拍号分子、视图设置）、`chart0.json`/`chart1.json`…（按难度从低到高存放 note/region 代码）、`shaped.json`（独立 shape 代码）、`color.json`（`default: begin` + 非默认配色音符 `[id]type(color)`）、`bpmlist.json`（有 BPM 变化时写 `[beat](bpm,beats_per_bar)`，全程恒定则省略）、`music.<格式>`、可选 `jacket.jpg/png/jpeg` 与 `storyboard.json`。旧 `.json` 谱面保存时自动转为工程文件夹并删除旧文件。
 - Path 造型：选中 Path 后在检查器“路径造型”切换弧线/五角星；五角星在环内画出五条弦，头尾圆环仍落在环上，中段判定仍走头尾弦
 - 预览：默认开启 3D 环网格；环、八边形舞台、八束光、刻度、外圈、投影阴影全部走 GPU 网格；相机投影 tilt/zoom/ellipse/rotation + 鼠标倾斜/视差；固定预读 P(u,q,t)、单光标最近点、HUD 60° 弧、误差刻度、视频层；视图页可关闭“3D 环网格”回退到投影环线
 - Limit 表现与绘制：填充红色扇区、亮色外弧、扇区斜纹、LIMIT/LIMIT IN 标签；Limit 工具在预览中横向拖角度、纵向拖时长（最多 4 拍）；Seek 表现：扩散圆环、方向箭头、朝里冷蓝/朝外暖橙、PERFECT/MISS 双档
@@ -175,7 +176,7 @@ godot --headless --path . --import
 godot --headless --path . --script res://tests/test_runner.gd
 ```
 
-当前结果：**596 passed, 0 failed**。测试覆盖：
+当前结果：**1405 passed, 0 failed**。测试覆盖：
 
 - 120 BPM / 变速 / offset 的时间换算与反解
 - 新建谱面 BPM 三位小数/一位小数取整与 offset 三位小数规范化
@@ -217,7 +218,7 @@ core/      引擎无关的谱面模型、时间/边界数学、校验、JSON
 charter/   编辑器 UI、3D 预览、画布、检查器、试玩
 assets/    内置 Noto Sans CJK SC / Noto Sans Mono 字体
 audio/     示例点击轨（脚本生成，18s）与试玩打击音（CC0）
-charts/    示例谱 demo.json
+charts/    示例谱工程 夜に駆ける（示例）/
 tests/     SceneTree 无头测试
 ```
 
@@ -293,4 +294,4 @@ Path 判定采用“有序判定组 + 容差扫描”：轨迹按弧长（约 0.
 - `assets/fonts/NotoSansSC-Regular.ttf` / `-Bold.ttf`：从系统 Noto Sans CJK SC 提取，随工程分发
 - `assets/fonts/NotoSansMono-Regular.ttf` / `-Medium.ttf`：数值/拍号/时间读数
 - `audio/demo_click.wav`：脚本生成的 120 BPM 示例点击轨
-- `charts/demo.json`：示例谱，可另存或替换
+- `charts/夜に駆ける（示例）/`：示例谱工程，可另存或替换

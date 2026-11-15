@@ -1456,8 +1456,8 @@ func _build_dialogs() -> void:
 	_open_dialog = FileDialog.new()
 	_open_dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
 	_open_dialog.access = FileDialog.ACCESS_FILESYSTEM
-	_open_dialog.filters = PackedStringArray(["*.json ; Tamaki 谱面"])
-	_open_dialog.title = "打开谱面"
+	_open_dialog.filters = PackedStringArray(["main.json ; Tamaki 谱面工程", "*.json ; 旧版谱面"])
+	_open_dialog.title = "打开谱面工程（选择 main.json）"
 	_open_dialog.file_selected.connect(func(path: String) -> void:
 		_app.ensure_tab()
 		if _app.load_chart(path):
@@ -1471,9 +1471,9 @@ func _build_dialogs() -> void:
 	_save_dialog = FileDialog.new()
 	_save_dialog.file_mode = FileDialog.FILE_MODE_SAVE_FILE
 	_save_dialog.access = FileDialog.ACCESS_FILESYSTEM
-	_save_dialog.filters = PackedStringArray(["*.json ; Tamaki 谱面"])
-	_save_dialog.title = "另存为"
-	_save_dialog.current_file = "chart.json"
+	_save_dialog.filters = PackedStringArray(["main.json ; Tamaki 谱面工程", "*.json ; 旧版谱面（保存时转为工程）"])
+	_save_dialog.title = "另存为谱面工程（选择 main.json 所在文件夹）"
+	_save_dialog.current_file = "main.json"
 	_save_dialog.file_selected.connect(func(path: String) -> void:
 		if not path.to_lower().ends_with(".json"):
 			path += ".json"
