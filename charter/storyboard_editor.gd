@@ -56,6 +56,8 @@ var _timeline = null
 ## 可视化画布：点选 / 拖动 sprite。
 var _canvas = null
 var _drag_undo_pushed := false
+var _drag_last_delta := Vector2.ZERO
+var _syncing_selection := false
 var _undo: Array[String] = []
 var _redo: Array[String] = []
 var _snap_option: OptionButton = null
@@ -89,6 +91,7 @@ func _build_ui() -> void:
 	left.add_child(left_title)
 	_objects = ItemList.new()
 	_objects.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_objects.select_mode = ItemList.SELECT_MULTI
 	_objects.item_selected.connect(_on_object_selected)
 	left.add_child(_objects)
 	var row := HBoxContainer.new()
@@ -148,16 +151,11 @@ func _build_ui() -> void:
 	_canvas = CanvasScript.new()
 	_canvas.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_canvas.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	_canvas.picked.connect(func(index: int) -> void:
-		_selected = index
-		if index >= 0:
-			_objects.select(index)
-		_on_object_selected(index)
-		_canvas.queue_redraw()
-	)
+	_canvas.selection_changed.connect(_on_canvas_selection)
 	_canvas.dragged.connect(_on_canvas_drag)
 	_canvas.released.connect(func() -> void:
 		_drag_undo_pushed = false
+		_drag_last_delta = Vector2.ZERO
 		_refresh_commands()
 	)
 	right.add_child(_canvas)
@@ -237,6 +235,28 @@ func _build_ui() -> void:
 	del_cmd.text = "删除命令"
 	del_cmd.pressed.connect(_on_remove_command)
 	cmd_buttons.add_child(del_cmd)
+	var anchor_row := HBoxContainer.new()
+	right.add_child(anchor_row)
+	var prev_anchor := Button.new()
+	prev_anchor.text = "◀ 锚点"
+	prev_anchor.tooltip_text = "跳到当前对象上一个关键帧"
+	prev_anchor.pressed.connect(func() -> void: _jump_anchor(-1))
+	anchor_row.add_child(prev_anchor)
+	var add_anchor := Button.new()
+	add_anchor.text = "+ 锚点"
+	add_anchor.tooltip_text = "在播放头处给当前类型加一个关键帧（取当前值）"
+	add_anchor.pressed.connect(_add_anchor)
+	anchor_row.add_child(add_anchor)
+	var del_anchor := Button.new()
+	del_anchor.text = "− 锚点"
+	del_anchor.tooltip_text = "删掉播放头附近的关键帧"
+	del_anchor.pressed.connect(_remove_anchor)
+	anchor_row.add_child(del_anchor)
+	var next_anchor := Button.new()
+	next_anchor.text = "锚点 ▶"
+	next_anchor.tooltip_text = "跳到当前对象下一个关键帧"
+	next_anchor.pressed.connect(func() -> void: _jump_anchor(1))
+	anchor_row.add_child(next_anchor)
 	var tl_row := HBoxContainer.new()
 	right.add_child(tl_row)
 	var snap_label := Label.new()
@@ -406,7 +426,7 @@ func _on_object_selected(index: int) -> void:
 	_timeline.set_selected(index)
 	_timeline.queue_redraw()
 	if _canvas != null:
-		_canvas.set_selected(index)
+		_canvas.ensure_selected(index)
 	_refresh_commands()
 
 
@@ -450,15 +470,51 @@ func _canvas_dir() -> String:
 	return String(_chart.audio_path).get_base_dir() if _chart != null else ""
 
 
-## 画布拖动：改当前时刻生效的移动关键帧；没有就改默认位置。
-func _on_canvas_drag(index: int, from: Vector2, to: Vector2) -> void:
-	if _board == null or index < 0 or index >= _board.sprites.size():
+## 画布框选 / Ctrl 点选后同步列表与属性面板。
+func _on_canvas_selection(indices: Array) -> void:
+	_syncing_selection = true
+	_objects.deselect_all()
+	_selected = -1
+	for index in indices:
+		_objects.select(int(index), false)
+		if _selected < 0:
+			_selected = int(index)
+	_syncing_selection = false
+	if _selected >= 0:
+		_on_object_selected(_selected)
+	else:
+		_commands.clear()
+		_refresh_commands()
+	_status.text = "已选 %d 个对象" % indices.size()
+
+
+## 画布拖动：所有选中对象一起动，改当前时刻生效的移动关键帧；没有就改默认位置。
+## delta 是「相对按下点的总位移」，这里只应用增量，否则每帧都会累加。
+func _on_canvas_drag(indices: Array, _bases: Array, delta: Vector2) -> void:
+	if _board == null or indices.is_empty():
 		return
 	if not _drag_undo_pushed:
 		_push_undo()
 		_drag_undo_pushed = true
-	var sprite := _board.sprites[index] as Storyboard.Sprite
-	var delta := to - from
+	var step := delta - _drag_last_delta
+	_drag_last_delta = delta
+	if step == Vector2.ZERO:
+		return
+	for raw in indices:
+		var index := int(raw)
+		if index < 0 or index >= _board.sprites.size():
+			continue
+		_shift_sprite(_board.sprites[index] as Storyboard.Sprite, step)
+	_board.invalidate()
+	var primary := _board.sprites[int(indices[0])] as Storyboard.Sprite
+	_pos_x.value = primary.pos.x
+	_pos_y.value = primary.pos.y
+	_timeline.queue_redraw()
+	_canvas.queue_redraw()
+	edited.emit()
+
+
+func _shift_sprite(sprite: Storyboard.Sprite, delta: Vector2) -> void:
 	var ms := float(_timeline.playhead_ms)
 	var touched := false
 	for command in sprite.commands:
@@ -473,12 +529,106 @@ func _on_canvas_drag(index: int, from: Vector2, to: Vector2) -> void:
 	if not touched:
 		sprite.pos += delta
 	sprite.build()
-	_board.invalidate()
-	_pos_x.value = sprite.pos.x
-	_pos_y.value = sprite.pos.y
+
+
+## 关键帧锚点：在播放头处按当前类型加一个零时长关键帧（from = to = 当前值）。
+func _add_anchor() -> void:
+	if _board == null or _selected < 0 or _selected >= _board.sprites.size():
+		_status.text = "先选一个对象"
+		return
+	var sprite := _board.sprites[_selected] as Storyboard.Sprite
+	var kind := String(COMMANDS[clampi(_kind_option.selected, 0, COMMANDS.size() - 1)][1])
+	var ms := float(_timeline.playhead_ms)
+	var values := _kind_values(sprite, kind, ms)
+	_push_undo()
+	_board.add_command(sprite, kind, 0, ms, ms, values, values)
+	_refresh_commands()
 	_timeline.queue_redraw()
 	_canvas.queue_redraw()
 	edited.emit()
+	_status.text = "%.0fms 加了 %s 锚点" % [ms, kind]
+
+
+func _remove_anchor() -> void:
+	if _board == null or _selected < 0 or _selected >= _board.sprites.size():
+		_status.text = "先选一个对象"
+		return
+	var sprite := _board.sprites[_selected] as Storyboard.Sprite
+	var ms := float(_timeline.playhead_ms)
+	var best := -1
+	var best_distance := 2.0
+	for i in sprite.commands.size():
+		var command := sprite.commands[i] as Storyboard.Command
+		var distance := absf(command.start - ms)
+		if distance <= best_distance:
+			best_distance = distance
+			best = i
+	if best < 0:
+		_status.text = "%.0fms 附近没有锚点" % ms
+		return
+	_push_undo()
+	sprite.commands.remove_at(best)
+	sprite.build()
+	_board.invalidate()
+	_refresh_commands()
+	_timeline.queue_redraw()
+	_canvas.queue_redraw()
+	edited.emit()
+	_status.text = "删掉了 %.0fms 的锚点" % ms
+
+
+func _jump_anchor(direction: int) -> void:
+	if _board == null or _selected < 0 or _selected >= _board.sprites.size():
+		return
+	var sprite := _board.sprites[_selected] as Storyboard.Sprite
+	var starts: Array[float] = []
+	for command in sprite.commands:
+		starts.append((command as Storyboard.Command).start)
+	starts.sort()
+	var ms := float(_timeline.playhead_ms)
+	var target := -1.0
+	if direction > 0:
+		for value in starts:
+			if value > ms + 0.5:
+				target = value
+				break
+	else:
+		for i in range(starts.size() - 1, -1, -1):
+			if starts[i] < ms - 0.5:
+				target = starts[i]
+				break
+	if target < 0.0:
+		return
+	_timeline.set_playhead(target)
+	_canvas.set_playhead(target)
+	seek_requested.emit(target)
+
+
+static func _kind_values(sprite: Storyboard.Sprite, kind: String, ms: float) -> Array:
+	var state := Storyboard.object_state(sprite, ms, 1.0)
+	var pos: Vector2 = state["pos"]
+	var scale: Vector2 = state["scale"]
+	var colour: Color = state["colour"]
+	match kind:
+		"alpha":
+			return [sprite.sample_float("alpha", ms, 1.0)]
+		"move":
+			return [pos.x, pos.y]
+		"x":
+			return [pos.x]
+		"y":
+			return [pos.y]
+		"scale":
+			return [(scale.x + scale.y) * 0.5]
+		"vector":
+			return [scale.x, scale.y]
+		"rotation":
+			return [float(state["rotation"])]
+		"colour":
+			return [colour.r * 255.0, colour.g * 255.0, colour.b * 255.0]
+		"additive":
+			return [1.0 if bool(state["additive"]) else 0.0]
+	return [0.0]
 
 
 static func _shift_values(values: Array, delta: Vector2, kind: String) -> Array:
