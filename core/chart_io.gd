@@ -534,7 +534,7 @@ static func load_set(path: String) -> Dictionary:
 			continue
 		var name := String(entry.get("name", "难度"))
 		chart.metadata["version"] = name
-		entries.append({"name": name, "chart": chart})
+		entries.append({"name": name, "stars": float(entry.get("stars", -1.0)), "chart": chart})
 	if entries.is_empty():
 		last_error = "套组里没有可用的难度"
 		return {"ok": false, "error": last_error}
@@ -557,6 +557,8 @@ static func save_set(path: String, entries: Array, title: String = "", source: S
 			continue
 		difficulties.append({
 			"name": String(entry.get("name", "难度")),
+			# 星数只影响显示与排序；<=0 表示未知，不写进文件。
+			"stars": float(entry.get("stars", -1.0)),
 			"chart": chart_to_dict(chart),
 		})
 	if difficulties.is_empty():

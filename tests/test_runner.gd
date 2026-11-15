@@ -136,6 +136,8 @@ func _initialize() -> void:
 		"test_osu_star_hints_json",
 		"test_osu_beatmap_set_id",
 		"test_import_label_stars",
+		"test_difficulty_star_label",
+		"test_difficulty_stars_round_trip",
 		"test_osu_pill_rows",
 		"test_audio_clock",
 		"test_audio_clock_rate",
@@ -3783,6 +3785,36 @@ func test_osu_difficulty_star_sort() -> bool:
 	# 没有星数时顺序原样保留
 	var plain := OsuIO.sort_by_stars([{"index": 0, "version": "B"}, {"index": 1, "version": "A"}])
 	eq(String(plain[0]["version"]), "B", "no stars keeps file order")
+	return true
+
+
+## 难度名后缀星数：顶部下拉和窗口标题显示，名字本身保持干净。
+func test_difficulty_star_label() -> bool:
+	var app_script := load("res://charter/app.gd")
+	eq(String(app_script.star_label("Insane", 5.42)), "Insane  5.42★", "known stars are appended")
+	eq(String(app_script.star_label("Insane", -1.0)), "Insane", "unknown stars keep the bare name")
+	var app = app_script.new()
+	app.difficulties.append({"name": "Insane", "stars": 5.42, "chart": null})
+	app.difficulties.append({"name": "Easy", "chart": null})
+	eq(app.difficulty_names()[0], "Insane  5.42★", "difficulty list shows stars")
+	eq(app.difficulty_names()[1], "Easy", "difficulty without stars stays bare")
+	eq(app.difficulty_name(0), "Insane  5.42★", "single difficulty name shows stars")
+	app.free()
+	return true
+
+
+## 星数写进套组文件，重新打开还在（否则排序对了但看不到星）。
+func test_difficulty_stars_round_trip() -> bool:
+	var path := "user://test_stars_set.json"
+	var chart := DemoChart.make_demo()
+	var entries: Array = [{"name": "Insane", "stars": 5.42, "chart": chart}]
+	eq(ChartIO.save_set(path, entries), OK, "set with stars saves")
+	var loaded := ChartIO.load_set(path)
+	ok(bool(loaded.get("ok", false)), "set with stars loads")
+	var first: Dictionary = loaded.get("entries", [])[0]
+	near(float(first.get("stars", -1.0)), 5.42, 0.001, "stars survive the set round trip")
+	eq(String(first.get("name", "")), "Insane", "stored name stays clean")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
 	return true
 
 

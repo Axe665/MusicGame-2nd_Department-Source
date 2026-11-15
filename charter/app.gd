@@ -281,7 +281,11 @@ func open_import_source(source: String, star_hints: Dictionary = {}) -> bool:
 			if not result.is_empty():
 				converted = result.get("chart")
 		if converted != null:
-			difficulties.append({"name": String(entry.get("name", "难度")), "chart": converted})
+			difficulties.append({
+				"name": String(entry.get("name", "难度")),
+				"stars": float(entry.get("stars", -1.0)),
+				"chart": converted,
+			})
 	if difficulties.is_empty():
 		return false
 	# 先把所有转好的谱面落盘成一个难度套组文件，再切第一个进去。
@@ -353,17 +357,23 @@ func save_set_file(path: String = "") -> bool:
 
 
 ## 当前窗口能切的所有难度名（下拉框用）。
+## 难度名后面带星数（未知星数就不带）。名字本身保持干净，写文件时仍然用原名。
+static func star_label(name: String, stars: float) -> String:
+	return "%s  %.2f★" % [name, stars] if stars > 0.0 else name
+
+
 func difficulty_names() -> Array[String]:
 	var names: Array[String] = []
 	for entry in difficulties:
-		names.append(String(entry.get("name", "难度")))
+		names.append(star_label(String(entry.get("name", "难度")), float(entry.get("stars", -1.0))))
 	return names
 
 
 func difficulty_name(index: int) -> String:
 	if index < 0 or index >= difficulties.size():
 		return ""
-	return String(difficulties[index].get("name", "难度"))
+	var entry: Dictionary = difficulties[index]
+	return star_label(String(entry.get("name", "难度")), float(entry.get("stars", -1.0)))
 
 
 ## 切到难度组里的第 index 个（0 起）。
