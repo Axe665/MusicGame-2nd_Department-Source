@@ -75,6 +75,7 @@ func _initialize() -> void:
 		"test_sfx_assets",
 		"test_simai_import",
 		"test_simai_button_layout",
+		"test_chart_mirror",
 		"test_osu_std_sentakki_rules",
 		"test_simai_directive_slot",
 		"test_simai_bend_shapes",
@@ -2173,6 +2174,45 @@ func test_simai_button_layout() -> bool:
 	ok(touch != null, "D1 chart imports")
 	if touch != null and not touch.notes.is_empty():
 		near(touch.notes[0].angle, 67.5, 0.01, "D1 is counterclockwise from button 1")
+	return true
+
+
+func test_chart_mirror() -> bool:
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	var tap := Note.new("tap", 1.0, 45.0, 60.0)
+	var path := Note.new("path", 2.0, 90.0, 62.0)
+	path.tail_angle = 315.0
+	path.path_controls_set = true
+	path.path_axis = 0.5
+	path.trace_pts = [{"x": 0.5, "y": 0.25, "db": 0.0}, {"x": -0.5, "y": -0.25, "db": 4.0}]
+	path.visual_pts = [{"db": 1.0, "da": 30.0}]
+	var bell := Note.new("bell", 3.0, 225.0, 26.0)
+	bell.center_u = 0.75
+	var region := Region.new(1, 0.0, 2.0)
+	region.angle = 30.0
+	region.width = 40.0
+	chart.notes = [tap, path, bell]
+	chart.regions = [region]
+	var lr := chart.mirrored_copy("lr")
+	ok(lr != chart, "mirror works on a copy")
+	near(chart.notes[0].angle, 45.0, 0.001, "mirror leaves the source chart alone")
+	near(lr.notes[0].angle, 135.0, 0.001, "left-right mirror flips tap angle")
+	near(lr.notes[1].tail_angle, 225.0, 0.001, "left-right mirror flips tail angle")
+	near(float(lr.notes[1].trace_pts[0]["x"]), -0.5, 0.001, "left-right mirror flips trace x")
+	near(float(lr.notes[1].trace_pts[0]["y"]), 0.25, 0.001, "left-right mirror keeps trace y")
+	near(float(lr.notes[1].visual_pts[0]["da"]), -30.0, 0.001, "left-right mirror flips visual angle")
+	near(lr.notes[1].path_axis, -0.5, 0.001, "left-right mirror flips path axis")
+	near(lr.notes[2].center_u, 0.25, 0.001, "left-right mirror flips bell center_u")
+	near(lr.regions[0].angle, 150.0, 0.001, "left-right mirror flips limit angle")
+	near(lr.regions[0].width, 40.0, 0.001, "mirror keeps limit width")
+	var rot := chart.mirrored_copy("rot180")
+	near(rot.notes[0].angle, 225.0, 0.001, "180 rotation flips tap angle")
+	near(float(rot.notes[1].trace_pts[0]["x"]), -0.5, 0.001, "180 rotation flips trace x")
+	near(float(rot.notes[1].trace_pts[0]["y"]), -0.25, 0.001, "180 rotation flips trace y")
+	near(rot.notes[1].path_axis, 0.5, 0.001, "180 rotation keeps path axis")
+	near(rot.regions[0].angle, 210.0, 0.001, "180 rotation flips limit angle")
+	ok(chart.mirrored_copy("off") == chart, "off mode returns the same chart")
 	return true
 
 
