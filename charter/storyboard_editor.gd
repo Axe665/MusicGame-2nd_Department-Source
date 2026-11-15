@@ -59,6 +59,8 @@ var _drag_undo_pushed := false
 var _undo: Array[String] = []
 var _redo: Array[String] = []
 var _snap_option: OptionButton = null
+## 素材库：故事板目录里的图片，点两下加一个 Sprite。
+var _library: ItemList = null
 
 
 func _init() -> void:
@@ -103,12 +105,44 @@ func _build_ui() -> void:
 	remove.text = "删除"
 	remove.pressed.connect(_on_remove_sprite)
 	row.add_child(remove)
+	var library_title := Label.new()
+	library_title.text = "素材库（点两下加到画布）"
+	library_title.add_theme_font_size_override("font_size", 11)
+	left.add_child(library_title)
+	_library = ItemList.new()
+	_library.custom_minimum_size = Vector2i(0, 150)
+	_library.item_activated.connect(_on_library_pick)
+	left.add_child(_library)
+	var library_row := HBoxContainer.new()
+	left.add_child(library_row)
+	var library_refresh := Button.new()
+	library_refresh.text = "刷新素材"
+	library_refresh.pressed.connect(_refresh_library)
+	library_row.add_child(library_refresh)
 
 	# ── 右：选中对象的属性 + 命令 ───────────────────────────────────
 	var right := VBoxContainer.new()
 	right.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	right.add_theme_constant_override("separation", 8)
 	root.add_child(right)
+
+	# ── 图层显隐（照 osu Design 的 Layer Toggles，纯显示过滤）─────────
+	var layer_row := HBoxContainer.new()
+	layer_row.add_theme_constant_override("separation", 4)
+	right.add_child(layer_row)
+	var layer_label := Label.new()
+	layer_label.text = "图层"
+	layer_label.add_theme_font_size_override("font_size", 11)
+	layer_row.add_child(layer_label)
+	var layer_titles := {"Background": "背景", "Fail": "Fail", "Pass": "Pass",
+		"Foreground": "前景", "Overlay": "覆盖", "Video": "Video"}
+	for layer_name in LAYERS:
+		var toggle := CheckBox.new()
+		toggle.text = String(layer_titles.get(layer_name, layer_name))
+		toggle.button_pressed = true
+		toggle.add_theme_font_size_override("font_size", 11)
+		toggle.toggled.connect(func(on: bool) -> void: _canvas.set_layer_visible(layer_name, on))
+		layer_row.add_child(toggle)
 
 	# ── 画布：点选 / 拖动（osu Design 页的画布位）────────────────────
 	_canvas = CanvasScript.new()
@@ -314,6 +348,7 @@ func open_for(chart: Chart) -> void:
 	_timeline.set_zoom(0.0, 0.0)
 	_canvas.set_board(_board, _canvas_dir())
 	_canvas.set_playhead(float(_timeline.playhead_ms))
+	_refresh_library()
 	_undo.clear()
 	_redo.clear()
 	popup_centered(Vector2i(1040, 760))
@@ -373,6 +408,38 @@ func _on_object_selected(index: int) -> void:
 	if _canvas != null:
 		_canvas.set_selected(index)
 	_refresh_commands()
+
+
+## 素材库：列出故事板目录里的图片（osu 的 Sprite Library 就是这份列表）。
+func _refresh_library() -> void:
+	if _library == null:
+		return
+	_library.clear()
+	var dir := _canvas_dir()
+	if dir.is_empty() or not DirAccess.dir_exists_absolute(dir):
+		return
+	var names := DirAccess.get_files_at(dir)
+	names.sort()
+	for file_name in names:
+		if not (file_name.get_extension().to_lower() in ["png", "jpg", "jpeg", "webp"]):
+			continue
+		_library.add_item(file_name)
+		_library.set_item_metadata(_library.item_count - 1, file_name)
+
+
+func _on_library_pick(index: int) -> void:
+	if _board == null or _library == null:
+		return
+	var file_name := String(_library.get_item_metadata(index))
+	if file_name.is_empty():
+		return
+	_push_undo()
+	_board.add_sprite(file_name, "Foreground", 4, Vector2(320, 240))
+	_refresh_objects()
+	_objects.select(_board.sprites.size() - 1)
+	_on_object_selected(_board.sprites.size() - 1)
+	_status.text = "已添加 %s（Foreground · 居中）" % file_name
+	edited.emit()
 
 
 ## 画布解析素材的目录：没挂故事板目录时退回谱面音频所在目录，
@@ -587,6 +654,7 @@ func _on_save() -> void:
 	if _chart != null:
 		_chart.metadata["storyboard"] = _dir
 	saved.emit(path)
+	_refresh_library()
 	_status.text = "已保存：%d 个对象 → %s" % [_board.sprites.size(), path]
 
 

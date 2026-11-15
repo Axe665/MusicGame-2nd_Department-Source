@@ -14,6 +14,8 @@ var board: Storyboard = null
 var dir := ""
 var playhead_ms := 0.0
 var selected := -1
+## 图层显隐（只在画布上过滤，不影响数据）。
+var hidden_layers: Dictionary = {}
 
 const TEX_MAX := 1024
 
@@ -47,6 +49,14 @@ func set_board(value: Storyboard, path: String) -> void:
 
 func set_playhead(ms: float) -> void:
 	playhead_ms = ms
+	queue_redraw()
+
+
+func set_layer_visible(layer: String, visible: bool) -> void:
+	if visible:
+		hidden_layers.erase(layer)
+	else:
+		hidden_layers[layer] = true
 	queue_redraw()
 
 
@@ -107,6 +117,8 @@ func _draw() -> void:
 	draw_rect(Rect2(offset, Vector2(640, 480) * scale), Color(1, 1, 1, 0.10), false, 1.0)
 	_items = board.sample(playhead_ms)
 	for item in _items:
+		if hidden_layers.has(String(item["layer"])):
+			continue
 		var full := dir + "/" + String(item["path"]).get_file()
 		var texture := _texture(full)
 		if texture == null:
@@ -135,6 +147,8 @@ func _hit(point: Vector2) -> int:
 	var offset: Vector2 = layout["offset"]
 	for i in range(_items.size() - 1, -1, -1):
 		var item: Dictionary = _items[i]
+		if hidden_layers.has(String(item["layer"])):
+			continue
 		var sprite = item.get("sprite")
 		if sprite == null:
 			continue

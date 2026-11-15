@@ -93,6 +93,8 @@ var cursor_scale: float = 1.0
 ## 帧率上限："60" / "120" / "144" / "240" / "vsync" / "unlimited"。
 ## 默认 120：240Hz 屏上跑不满 240 会按 240/120 交替出帧，反而比稳定 120 更抖。
 var frame_cap: String = "120"
+## 视频导出编码器：auto 按 nvenc → qsv → videotoolbox → vaapi → libx264 探测。
+var video_encoder: String = "auto"
 ## 音频缓冲（ms）。Godot 只在启动时读它，改动写进 override.cfg，重启生效。
 var audio_buffer_ms: int = 3
 ## 局内动态校准判定偏移（默认关）。
@@ -601,6 +603,7 @@ func _load_settings() -> void:
 			hit_sfx_style = String(data.get("hit_sfx_style", hit_sfx_style))
 			ffmpeg_path = String(data.get("ffmpeg", ffmpeg_path))
 			frame_cap = String(data.get("frame_cap", frame_cap))
+			video_encoder = String(data.get("video_encoder", video_encoder))
 			audio_buffer_ms = clampi(int(data.get("audio_buffer_ms", audio_buffer_ms)), 3, 40)
 			playtest_offset_ms = float(data.get("playtest_offset_ms", playtest_offset_ms))
 			audio_latency_ms = clampf(float(data.get("audio_latency_ms", audio_latency_ms)), 0.0, 250.0)
@@ -777,7 +780,7 @@ func effective_latency_sec() -> float:
 
 
 func save_settings() -> void:
-	var data := {"path_wait_indicator": path_wait_indicator, "note_skin": note_skin, "hit_fx_style": hit_fx_style, "hit_sfx_style": hit_sfx_style, "ffmpeg": ffmpeg_path, "frame_cap": frame_cap, "audio_buffer_ms": audio_buffer_ms, "playtest_offset_ms": playtest_offset_ms, "audio_latency_ms": audio_latency_ms, "music_volume": music_volume, "sfx_volume": sfx_volume, "dynamic_offset": dynamic_offset, "playtest_auto": playtest_auto, "playtest_mirror": playtest_mirror, "playback_scroll": playback_scroll, "playtest_dim": playtest_dim, "startup_tabs": startup_tabs, "osu_favorites": osu_favorites, "last_bias_ms": last_bias_ms, "cursor_scale": cursor_scale, "flow_scale": flow_scale, "star_speed": star_speed, "aa_2d_level": aa_2d_level, "msaa_3d_level": msaa_3d_level, "ring_pad_rect": ring_pad_rect, "note_detail_fine": note_detail_fine, "note_glow": note_glow, "cursor_trail": cursor_trail, "fx_budget": fx_budget, "ring_3d_scale": ring_3d_scale, "ring_3d_hz": ring_3d_hz, "bar_lines": bar_lines, "quality_preset": quality_preset,
+	var data := {"path_wait_indicator": path_wait_indicator, "note_skin": note_skin, "hit_fx_style": hit_fx_style, "hit_sfx_style": hit_sfx_style, "ffmpeg": ffmpeg_path, "frame_cap": frame_cap, "video_encoder": video_encoder, "audio_buffer_ms": audio_buffer_ms, "playtest_offset_ms": playtest_offset_ms, "audio_latency_ms": audio_latency_ms, "music_volume": music_volume, "sfx_volume": sfx_volume, "dynamic_offset": dynamic_offset, "playtest_auto": playtest_auto, "playtest_mirror": playtest_mirror, "playback_scroll": playback_scroll, "playtest_dim": playtest_dim, "startup_tabs": startup_tabs, "osu_favorites": osu_favorites, "last_bias_ms": last_bias_ms, "cursor_scale": cursor_scale, "flow_scale": flow_scale, "star_speed": star_speed, "aa_2d_level": aa_2d_level, "msaa_3d_level": msaa_3d_level, "ring_pad_rect": ring_pad_rect, "note_detail_fine": note_detail_fine, "note_glow": note_glow, "cursor_trail": cursor_trail, "fx_budget": fx_budget, "ring_3d_scale": ring_3d_scale, "ring_3d_hz": ring_3d_hz, "bar_lines": bar_lines, "quality_preset": quality_preset,
 		"hud_scale": hud_scale, "hud_combo_mode": hud_combo_mode, "hud_progress_style": hud_progress_style,
 		"hud_judge_position": hud_judge_position, "hud_opacity": hud_opacity,
 		"hud_show_title": hud_show_title, "hud_show_difficulty": hud_show_difficulty,

@@ -3176,6 +3176,7 @@ func _start_video_export(path: String) -> void:
 		path += ".mp4"
 	if _video_export == null:
 		_video_export = VideoExport.new()
+		_video_export.encoder_pref = String(_app.video_encoder if _app != null else "auto")
 		_video_export.finished.connect(_on_video_finished)
 		_video_export.progress.connect(func(done: int, total: int) -> void:
 			if _video_bar != null:

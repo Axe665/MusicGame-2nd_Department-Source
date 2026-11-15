@@ -146,6 +146,9 @@ var _storyboard_bg: Control = null
 ## 加色（P,A）元素单独一层：粒子/光晕走 BLEND_MODE_ADD，叠在普通层上面。
 var _storyboard_add_bg: Control = null
 var _storyboard_add_fg: Control = null
+## Foreground 在判定环之上、音符之下；Overlay 在音符之上（osu 的层序）。
+var _storyboard_fg: Control = null
+var _storyboard_top: Control = null
 ## 背景调暗层：盖住背景和 storyboard，但压在 3D 判定环下面（osu 的 Background dim）。
 var _dim_layer: ColorRect = null
 var background_dim: int = 0
@@ -524,6 +527,26 @@ func _build_layers() -> void:
 	_storyboard_add_fg.set("additive_front", true)
 	add_child(_storyboard_add_fg)
 	_storyboard_add_fg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	# Foreground：盖住判定环，但在音符下面。
+	_storyboard_fg = Control.new()
+	_storyboard_fg.set_script(load("res://charter/preview_overlay.gd"))
+	_storyboard_fg.name = "StoryboardForeground"
+	_storyboard_fg.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_storyboard_fg.set("preview", self)
+	_storyboard_fg.set("storyboard_front", true)
+	add_child(_storyboard_fg)
+	_storyboard_fg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	move_child(_storyboard_fg, _overlay.get_index())
+	# Overlay：压在音符上面，光标层下面。
+	_storyboard_top = Control.new()
+	_storyboard_top.set_script(load("res://charter/preview_overlay.gd"))
+	_storyboard_top.name = "StoryboardOverlay"
+	_storyboard_top.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_storyboard_top.set("preview", self)
+	_storyboard_top.set("storyboard_overlay", true)
+	add_child(_storyboard_top)
+	_storyboard_top.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	move_child(_storyboard_top, _cursor_layer.get_index())
 
 
 func _build_3d() -> void:
@@ -756,6 +779,10 @@ func _process(_delta: float) -> void:
 				_storyboard_bg.queue_redraw()
 			if _storyboard_add_bg != null:
 				_storyboard_add_bg.queue_redraw()
+			if _storyboard_fg != null:
+				_storyboard_fg.queue_redraw()
+			if _storyboard_top != null:
+				_storyboard_top.queue_redraw()
 			if _storyboard_add_fg != null:
 				_storyboard_add_fg.queue_redraw()
 	if mouse_moved or time_changed or view_changed or not _cursor_trail.is_empty():
@@ -2086,6 +2113,22 @@ func _affine_point(point: Vector2, affine: Array) -> Vector2:
 	return center + x_axis * point.x + y_axis * point.y
 
 
+## 统一开关所有故事板图层（画布 + 加色 + 前景 + Overlay）。
+func set_storyboard_visible(on: bool) -> void:
+	show_storyboard = on
+	for layer in [_storyboard_bg, _storyboard_add_bg, _storyboard_fg, _storyboard_top, _storyboard_add_fg]:
+		if layer != null:
+			layer.visible = on
+	refresh_storyboard_layers()
+
+
+## 编辑 / 换谱后重画所有故事板层（暂停时没有 time_changed，不会自动重绘）。
+func refresh_storyboard_layers() -> void:
+	for layer in [_storyboard_bg, _storyboard_add_bg, _storyboard_fg, _storyboard_top, _storyboard_add_fg]:
+		if layer != null:
+			layer.queue_redraw()
+
+
 ## 谱面切换时重建 storyboard 缓存。
 ## 换谱/切标签后把故事板缓存清掉并重画（否则会一直显示上一个谱的故事板层）。
 func invalidate_storyboard() -> void:
@@ -2102,6 +2145,10 @@ func invalidate_storyboard() -> void:
 		_storyboard_bg.queue_redraw()
 	if _storyboard_add_bg != null:
 		_storyboard_add_bg.queue_redraw()
+	if _storyboard_fg != null:
+		_storyboard_fg.queue_redraw()
+	if _storyboard_top != null:
+		_storyboard_top.queue_redraw()
 	if _overlay != null:
 		_overlay.queue_redraw()
 
@@ -2149,6 +2196,7 @@ func _prefetch_storyboard_textures() -> void:
 			return
 	# 先把后台解码完的图上传成贴图：一张 1024² 就是 4MB 显存，每帧最多 2 张。
 	var budget := 2
+	var uploaded := 0
 	_tex_mutex.lock()
 	var ready_keys: Array = _tex_decoded.keys()
 	_tex_mutex.unlock()
@@ -2165,7 +2213,11 @@ func _prefetch_storyboard_textures() -> void:
 			continue
 		_tex_cache[key] = ImageTexture.create_from_image(image)
 		_tex_boost[key] = float(entry[1]) if entry.size() > 1 else 1.0
+		uploaded += 1
 		budget -= 1
+	# 刚上传的贴图要重画一次：暂停/编辑器里没有 time_changed，否则会一直空着。
+	if uploaded > 0:
+		refresh_storyboard_layers()
 	# 还没排队的引用文件，趁早丢给后台线程。
 	for ref in _storyboard.referenced_files:
 		var full := _storyboard_dir + "/" + String(ref).get_file()
@@ -2312,7 +2364,7 @@ func draw_storyboard_background(canvas: Control) -> void:
 	var chart := get_chart()
 	if chart == null:
 		return
-	_draw_storyboard_layers(canvas, chart, get_time_beat(), ["Video", "Background", "Fail", "Pass", "Foreground", "Overlay"], false)
+	_draw_storyboard_layers(canvas, chart, get_time_beat(), ["Video", "Background", "Fail", "Pass"], false)
 
 
 ## 背景层的加色元素（粒子 / 光晕）。
@@ -2320,7 +2372,23 @@ func draw_storyboard_additive_background(canvas: Control) -> void:
 	var chart := get_chart()
 	if chart == null:
 		return
-	_draw_storyboard_layers(canvas, chart, get_time_beat(), ["Video", "Background", "Fail", "Pass", "Foreground", "Overlay"], true)
+	_draw_storyboard_layers(canvas, chart, get_time_beat(), ["Video", "Background", "Fail", "Pass"], true)
+
+
+## Foreground 层：判定环之上、音符之下。
+func draw_storyboard_front(canvas: Control) -> void:
+	var chart := get_chart()
+	if chart == null:
+		return
+	_draw_storyboard_layers(canvas, chart, get_time_beat(), ["Foreground"], false)
+
+
+## Overlay 层：压在音符上面。
+func draw_storyboard_overlay(canvas: Control) -> void:
+	var chart := get_chart()
+	if chart == null:
+		return
+	_draw_storyboard_layers(canvas, chart, get_time_beat(), ["Overlay"], false)
 
 
 ## 前景的加色元素。
@@ -2328,6 +2396,7 @@ func draw_storyboard_additive_front(canvas: Control) -> void:
 	var chart := get_chart()
 	if chart == null:
 		return
+	_draw_storyboard_layers(canvas, chart, get_time_beat(), ["Foreground", "Overlay"], true)
 
 
 ## osu! storyboard 图层：按图层名过滤后绘制。

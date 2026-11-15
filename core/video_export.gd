@@ -12,6 +12,8 @@ signal finished(path: String, message: String)
 const SIZE := Vector2i(1280, 720)
 const FPS := 60
 
+## auto / nvenc / qsv / videotoolbox / vaapi / libx264。强制指定但跑不了时自动回退。
+var encoder_pref := "auto"
 var _running := false
 var _cancel := false
 var _chosen: Dictionary = {}
@@ -25,13 +27,34 @@ func pick_encoder() -> Dictionary:
 	if ffmpeg.is_empty():
 		return {}
 	var listed := _list_encoders(ffmpeg)
+	var wanted := _pref_name()
+	if not wanted.is_empty():
+		for cand in _candidates():
+			if String(cand["name"]) == wanted and listed.has(wanted) and await _smoke(ffmpeg, cand):
+				_chosen = cand
+				return _chosen
 	for cand in _candidates():
 		if not listed.has(String(cand["name"])):
 			continue
-		if _smoke(ffmpeg, cand):
+		if await _smoke(ffmpeg, cand):
 			_chosen = cand
 			return _chosen
 	return {}
+
+
+func _pref_name() -> String:
+	match encoder_pref:
+		"nvenc":
+			return "h264_nvenc"
+		"qsv":
+			return "h264_qsv"
+		"videotoolbox":
+			return "h264_videotoolbox"
+		"vaapi":
+			return "h264_vaapi"
+		"libx264":
+			return "libx264"
+	return ""
 
 
 static func _candidates() -> Array:
@@ -62,16 +85,17 @@ func _list_encoders(ffmpeg: String) -> Dictionary:
 ## 用一帧黑图试编码，确认这个编码器在这台机器上真的能出文件。
 func _smoke(ffmpeg: String, cand: Dictionary) -> bool:
 	var temp := ProjectSettings.globalize_path("user://.encoder_probe.mp4")
-	var args: Array = _input_args(Vector2i(64, 64)) + cand["args"] + ["-frames:v", "1", "-y", temp]
+	var args: Array = _input_args(Vector2i(256, 256)) + cand["args"] + ["-frames:v", "1", "-y", temp]
 	var pipe := OS.execute_with_pipe(ffmpeg, args, false)
 	if pipe.is_empty():
 		return false
 	var stdin: FileAccess = pipe.get("stdio")
 	if stdin == null:
 		return false
-	var image := Image.create(64, 64, false, Image.FORMAT_RGBA8)
+	# 256x256：VAAPI 要求至少 128x128，用小图探测会把它误判成不可用。
+	var image := Image.create(256, 256, false, Image.FORMAT_RGBA8)
 	image.fill(Color.BLACK)
-	stdin.store_buffer(image.get_data())
+	await _write_frame(stdin, image.get_data())
 	stdin.close()
 	var pid := int(pipe.get("pid", -1))
 	var deadline := Time.get_ticks_msec() + 6000
@@ -93,7 +117,7 @@ func export_chart(chart: Chart, start_ms: float, end_ms: float, out_path: String
 		events: Array = [], show_storyboard: bool = true) -> void:
 	if _running or chart == null:
 		return
-	var encoder := pick_encoder()
+	var encoder: Dictionary = await pick_encoder()
 	if encoder.is_empty():
 		finished.emit("", "找不到可用的 H.264 编码器（需要外部 ffmpeg）")
 		return

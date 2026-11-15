@@ -42,6 +42,7 @@ const QUALITY_OPTIONS := [
 	{"key": "background_brightness", "label": "背景明暗", "choices": [["关", 96], ["25%", 97], ["50%", 98], ["75%", 99], ["100%（默认）", 100]]},
 	{"key": "show_storyboard", "label": "故事板", "choices": [["开", 166], ["关", 167]]},
 	{"key": "show_storyboard_background", "label": "故事板背景层", "choices": [["开", 168], ["关", 169]]},
+	{"key": "video_encoder", "label": "视频导出编码器", "choices": [["自动（优先硬件）", 170], ["NVENC", 171], ["QSV", 172], ["VideoToolbox", 173], ["VAAPI（Linux）", 174], ["libx264（软件）", 175]]},
 ]
 
 ## 界面（HUD）选项：和 视图 → 画质 同样的菜单结构，只影响显示。
@@ -1150,6 +1151,8 @@ func _quality_index(key: String) -> int:
 			return 0 if _app.show_storyboard else 1
 		"show_storyboard_background":
 			return 0 if _app.show_storyboard_background else 1
+		"video_encoder":
+			return ["auto", "nvenc", "qsv", "videotoolbox", "vaapi", "libx264"].find(_app.video_encoder)
 	return -1
 
 
@@ -1193,6 +1196,9 @@ func _set_quality_index(key: String, index: int) -> void:
 		"show_storyboard_background":
 			_app.show_storyboard_background = index == 0
 			return
+		"video_encoder":
+			_app.video_encoder = ["auto", "nvenc", "qsv", "videotoolbox", "vaapi", "libx264"][clampi(index, 0, 5)]
+			return
 	_app.quality_preset = "custom"
 
 
@@ -1216,8 +1222,7 @@ func _apply_visual_options() -> void:
 	_preview.hud_options = _app.hud_options()
 	_preview.show_storyboard = _app.show_storyboard
 	_preview.show_storyboard_background = _app.show_storyboard_background
-	if _preview._storyboard_bg != null:
-		_preview._storyboard_bg.visible = _app.show_storyboard
+	_preview.set_storyboard_visible(_app.show_storyboard)
 	_preview._refresh_background_layering()
 	_preview.apply_ring_quality()
 	_preview.request_redraw()
@@ -2240,8 +2245,7 @@ func _on_storyboard_edited() -> void:
 	_preview._sb_render_items = []
 	_preview._refresh_background_layering()
 	_preview.queue_redraw()
-	if _preview._storyboard_bg != null:
-		_preview._storyboard_bg.queue_redraw()
+	_preview.refresh_storyboard_layers()
 
 
 func _on_storyboard_saved(path: String) -> void:
@@ -2665,9 +2669,7 @@ func _on_menu(id: int) -> void:
 			_app.show_storyboard = _preview.show_storyboard
 			_app.save_settings()
 			_preview._refresh_background_layering()
-			if _preview._storyboard_bg != null:
-				_preview._storyboard_bg.visible = _preview.show_storyboard
-				_preview._storyboard_bg.queue_redraw()
+			_preview.set_storyboard_visible(_preview.show_storyboard)
 			_preview._overlay.queue_redraw()
 			_show_toast("故事板：%s" % ("显示" if _preview.show_storyboard else "隐藏"), "info")
 		30, 31, 32, 33, 34, 35, 36:

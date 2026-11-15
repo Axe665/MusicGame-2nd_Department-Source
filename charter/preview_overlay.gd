@@ -11,6 +11,10 @@ var cursor_only: bool = false
 var storyboard_background: bool = false
 ## true 时画 storyboard 的加色层（前景/背景由 additive_front 决定）。
 var storyboard_additive: bool = false
+## true 时画 storyboard 的 Foreground（在判定环之上、音符之下）。
+var storyboard_front: bool = false
+## true 时画 storyboard 的 Overlay（在所有音符之上）。
+var storyboard_overlay: bool = false
 var additive_front: bool = false
 
 
@@ -25,6 +29,12 @@ func _draw() -> void:
 	if storyboard_background:
 		if preview.has_method("draw_storyboard_background"):
 			preview.draw_storyboard_background(self)
+	elif storyboard_front:
+		if preview.has_method("draw_storyboard_front"):
+			preview.draw_storyboard_front(self)
+	elif storyboard_overlay:
+		if preview.has_method("draw_storyboard_overlay"):
+			preview.draw_storyboard_overlay(self)
 	elif storyboard_additive:
 		var method := "draw_storyboard_additive_front" if additive_front else "draw_storyboard_additive_background"
 		if preview.has_method(method):
