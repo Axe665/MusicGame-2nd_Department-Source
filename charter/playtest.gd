@@ -3024,7 +3024,10 @@ func _finish() -> void:
 		}
 	_close_path_input_log()
 	_running = false
-	if _audio != null:
+	# 结算页立刻出来，但音乐继续放到尾：谱面最后一颗通常早于音乐结束，这里直接
+	# stop() 会把片尾切掉（同一次谱面，回放会放到整首歌，观感就对不上了）。
+	# 真正的停止在 _exit() / 重试（_start_audio 会换掉播放器）里做。
+	if _audio != null and replay_mode:
 		_audio.stop()
 	_preview.playing = false
 	_preview.set_process(true)
