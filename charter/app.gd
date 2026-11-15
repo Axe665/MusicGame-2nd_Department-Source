@@ -26,24 +26,82 @@ var dirty: bool = false
 var playhead_beat: float = 0.0
 var last_import_report: String = ""
 var playtest_offset_ms: float = 0.0
+## 输出延迟回退（ms）。驱动报告 0 时使用（Android/Web 常见）；0 = 自动。
+var audio_latency_ms: float = 0.0
+## Music / SFX 总线音量（0–100），编辑器「音频」弹窗和试玩设置共用。
+var music_volume: float = 100.0
+var sfx_volume: float = 100.0
 var flow_scale: float = 1.0
 var ffmpeg_path: String = "ffmpeg"
 var star_speed: float = 1.0
-## 星星主色（舞萌蓝），所有 Path 共用；试玩设置里可改。
-var star_color: Color = Color(0.55, 0.75, 1.0)
+## Path 等待阶段的启动提示（全局外观设置，不参与判定）。
+const PATH_WAIT_MODES: Array[String] = ["off", "progress", "shrink"]
+const PATH_WAIT_LABELS: Array[String] = ["关闭", "环形进度", "淡蓝收缩圆环"]
+var path_wait_indicator: String = "progress"
 ## Trace 门框主色（默认银白）。
-var trace_color: Color = Color(0.78, 0.86, 1.0)
 var note_skin: String = "candy"
+## 画质选项（视图 → 画质）。全部只影响渲染，不碰判定。
+var quality_preset: String = "high"
+## 0 = 关，1 = 2×，2 = 4×（2D 层的 MSAA）。高画质用 2×，极高才上 4×。
+var aa_2d_level: int = 1
+## 3D 环抗锯齿：0 = 关，1 = 2x，2 = 4x
+var msaa_3d_level: int = 1
+## 环编辑 2D 形状浮层的位置/大小：[x, y, w, h]，空 = 居中默认。
+var ring_pad_rect: Array = []
+var note_detail_fine: bool = true
+var note_glow: bool = true
+## long / short / off
+var cursor_trail: String = "long"
+## full / light / off
+var fx_budget: String = "full"
+## high / mid / low（3D 背景渲染分辨率 0.8 / 0.65 / 0.5）
+var ring_3d_scale: String = "high"
+## 3D 背景刷新率上限 60 / 30（只在视角或形变变化时重画；2D 与判定永远按游戏帧率）
+var ring_3d_hz: int = 30
+var bar_lines: bool = true
+## HUD 选项（视图 → 界面）。只影响显示，不碰判定。
+## 80 / 100 / 120
+var hud_scale: int = 100
+## center / corner / off
+var hud_combo_mode: String = "center"
+## ring / off
+var hud_progress_style: String = "ring"
+## note / ring_in / ring_out / center / off
+var hud_judge_position: String = "ring_out"
+## 100 / 85 / 70
+var hud_opacity: int = 100
+var hud_show_title: bool = true
+var hud_show_difficulty: bool = true
+var hud_show_percent: bool = false
+var hud_show_time: bool = false
+var hud_show_watermark: bool = false
+## 背景明暗（百分比，100 = 默认观感）：静图和 BGA 共用。
+var background_brightness: int = 100
+## 试玩时鼠标左右键是否算 Tap（关掉后移动/滚轮照常）。
+var mouse_keys: bool = true
+## 右侧预览宽度与折叠状态（编辑器布局记忆）。
+var preview_width: float = 340.0
+var preview_collapsed: bool = false
 var hit_fx_style: String = "burst"
 var hit_sfx_style: String = "default"
-## 帧率上限："60" / "120" / "vsync" / "unlimited"。
-var frame_cap: String = "vsync"
+## 试玩光标大小倍率（1.0 = 默认）。
+var cursor_scale: float = 1.0
+## 帧率上限："60" / "120" / "144" / "240" / "vsync" / "unlimited"。
+## 默认 120：240Hz 屏上跑不满 240 会按 240/120 交替出帧，反而比稳定 120 更抖。
+var frame_cap: String = "120"
+## 音频缓冲（ms）。Godot 只在启动时读它，改动写进 override.cfg，重启生效。
+var audio_buffer_ms: int = 3
 ## 局内动态校准判定偏移（默认关）。
 var dynamic_offset: bool = false
 ## AUTO 自动演示：试玩时自动完美演奏，用来快速检查谱面（成绩不计入）。
 var playtest_auto: bool = false
+## 试玩镜像：off / lr（左右翻转）/ rot180（旋转 180°），只影响试玩，不改谱面。
+var playtest_mirror: String = "off"
 ## 上一局的平均判定偏差，供试玩设置显示。
 var last_bias_ms: float = 0.0
+
+## 在线 osu! 谱面的星标收藏（谱面包 id）。
+var osu_favorites: Array[int] = []
 
 var selected_notes: Array[int] = []
 var clipboard_notes: Array[Dictionary] = []
@@ -60,6 +118,9 @@ var vertical_lines: int = 11
 var vertical_stretch: float = 0.0
 var zoom_px_per_beat: float = 28.0
 var time_flows_down: bool = true
+## 播放滚动：page（翻页）/ pin（播放头固定，方向由 time_flows_down 决定）。
+## 只在播放和拖进度条时钉住；暂停浏览仍可自由滚动。
+var playback_scroll: String = "pin"
 var hud_visible: bool = true
 var use_3d_ring: bool = true
 var mouse_tilt: bool = true
@@ -67,12 +128,15 @@ var debug_overlay: bool = false
 var waveform_visible: bool = true
 var ghost_regions: bool = false
 var boundary_mode: bool = false
-var trace_draw_mode: bool = false
 
 var undo := UndoStack.new()
 var _edit_before: Dictionary = {}
 var _editing: bool = false
 var _live_change_pending: bool = false
+## 环工作区打开时，被盖住的检查器不用跟着重建。
+var ring_editor_open: bool = false
+var _validation_pending: bool = false
+var _validation_timer: float = 0.0
 var _commands_since_autosave: int = 0
 var _autosave_timer: Timer
 
@@ -166,7 +230,7 @@ func _boot_set_window(path: String) -> void:
 
 ## 打开一个导入来源（.osz/.zip/maidata.txt），把来源里的所有难度都转好放进难度组，
 ## 所以不管在哪个窗口导入，顶部都会出现难度下拉框。
-func open_import_source(source: String) -> bool:
+func open_import_source(source: String, star_hints: Dictionary = {}) -> bool:
 	if source.is_empty() or not FileAccess.file_exists(source):
 		return false
 	import_source = source
@@ -179,14 +243,17 @@ func open_import_source(source: String) -> bool:
 		import_kind = "simai"
 		for i in simai.size():
 			var item: Dictionary = simai[i]
-			var version := String(item.get("version", ""))
+			if not bool(item.get("has_notes", true)):
+				continue
+			var index := int(item.get("index", i))
+			var label := SimaiIO.difficulty_label(index, String(item.get("level", "")))
 			import_difficulties.append({
-				"index": int(item.get("index", i)),
-				"name": version if not version.is_empty() else "未命名难度",
-				"label": import_label(version, String(item.get("title", "")), String(item.get("creator", "")), ""),
+				"index": index,
+				"name": label,
+				"label": import_label(label, String(item.get("title", "")), String(item.get("creator", "")), ""),
 			})
 	else:
-		var diffs := OsuIO.list_osz_difficulties(source)
+		var diffs := OsuIO.list_osz_difficulties(source, star_hints)
 		if diffs.is_empty():
 			import_source = ""
 			return false
@@ -195,10 +262,13 @@ func open_import_source(source: String) -> bool:
 			var item: Dictionary = diffs[i]
 			var mode_label := "taiko" if int(item.get("mode", 0)) == 1 else "std"
 			var version := String(item.get("version", ""))
+			var stars := float(item.get("stars", -1.0))
 			import_difficulties.append({
-				"index": i,
+				# 排序后的顺序 ≠ 压缩包里的顺序，取 .osu 要按原始下标
+				"index": int(item.get("index", i)),
 				"name": version if not version.is_empty() else "未命名难度",
-				"label": import_label(version, String(item.get("title", "")), String(item.get("creator", "")), mode_label),
+				"stars": stars,
+				"label": import_label(version, String(item.get("title", "")), String(item.get("creator", "")), mode_label, stars),
 			})
 	# 一次性把每个难度都转出来：切换是瞬时的，也不会因为重新导入丢改动。
 	for i in import_difficulties.size():
@@ -211,7 +281,11 @@ func open_import_source(source: String) -> bool:
 			if not result.is_empty():
 				converted = result.get("chart")
 		if converted != null:
-			difficulties.append({"name": String(entry.get("name", "难度")), "chart": converted})
+			difficulties.append({
+				"name": String(entry.get("name", "难度")),
+				"stars": float(entry.get("stars", -1.0)),
+				"chart": converted,
+			})
 	if difficulties.is_empty():
 		return false
 	# 先把所有转好的谱面落盘成一个难度套组文件，再切第一个进去。
@@ -272,22 +346,34 @@ func save_set_file(path: String = "") -> bool:
 	dirty = false
 	save_state_changed.emit()
 	status_changed.emit()
-	notice.emit("已保存 %d 个难度到 %s" % [difficulties.size(), target.get_file()], "info")
+	var faint := 0
+	for entry in difficulties:
+		faint += _low_contrast_count(entry.get("chart", null))
+	if faint > 0:
+		notice.emit("已保存 %d 个难度到 %s；其中 %d 个音符的配色对比度偏低（不影响保存）" % [difficulties.size(), target.get_file(), faint], "warning")
+	else:
+		notice.emit("已保存 %d 个难度到 %s" % [difficulties.size(), target.get_file()], "info")
 	return true
 
 
 ## 当前窗口能切的所有难度名（下拉框用）。
+## 难度名后面带星数（未知星数就不带）。名字本身保持干净，写文件时仍然用原名。
+static func star_label(name: String, stars: float) -> String:
+	return "%s  %.2f★" % [name, stars] if stars > 0.0 else name
+
+
 func difficulty_names() -> Array[String]:
 	var names: Array[String] = []
 	for entry in difficulties:
-		names.append(String(entry.get("name", "难度")))
+		names.append(star_label(String(entry.get("name", "难度")), float(entry.get("stars", -1.0))))
 	return names
 
 
 func difficulty_name(index: int) -> String:
 	if index < 0 or index >= difficulties.size():
 		return ""
-	return String(difficulties[index].get("name", "难度"))
+	var entry: Dictionary = difficulties[index]
+	return star_label(String(entry.get("name", "难度")), float(entry.get("stars", -1.0)))
 
 
 ## 切到难度组里的第 index 个（0 起）。
@@ -377,15 +463,20 @@ static func _safe_file_name(text: String) -> String:
 	return out.strip_edges()
 
 
-static func import_label(version: String, title: String, creator: String, mode_label: String) -> String:
+static func import_label(version: String, title: String, creator: String, mode_label: String, stars: float = -1.0) -> String:
 	var head := version if not version.is_empty() else "未命名难度"
 	if not mode_label.is_empty():
 		head += "  [%s]" % mode_label
-	if title.is_empty() and creator.is_empty():
-		return head
-	if creator.is_empty():
-		return "%s  ·  %s" % [head, title]
-	return "%s  ·  %s  (%s)" % [head, title, creator]
+	var label := head
+	if not (title.is_empty() and creator.is_empty()):
+		if creator.is_empty():
+			label = "%s  %s" % [head, title]
+		else:
+			label = "%s  %s  (%s)" % [head, title, creator]
+	# 星数放在最末尾，和 osu 的难度显示顺序对得上
+	if stars > 0.0:
+		label += "  %.2f★" % stars
+	return label
 
 
 func import_difficulty_label(position: int) -> String:
@@ -404,11 +495,13 @@ func _update_window_title() -> void:
 		return
 	var title := String(chart.metadata.get("title", "Tamaki₃ 制谱器"))
 	var version := difficulty_name(difficulty_index)
-	var suffix := "  ·  %s" % version if not version.is_empty() else ""
+	var suffix := "  %s" % version if not version.is_empty() else ""
 	DisplayServer.window_set_title("Tamaki₃ 制谱器  —  %s%s" % [title, suffix])
 
 
 const SETTINGS_PATH := "user://settings.json"
+## 舞台底色（project.godot 的 default_clear_color），用于对比度提示。
+const STAGE_BACKGROUND := Color(0.043137, 0.047059, 0.062745)
 
 
 func _load_settings() -> void:
@@ -417,26 +510,174 @@ func _load_settings() -> void:
 		if parsed is Dictionary:
 			var data: Dictionary = parsed
 			note_skin = String(data.get("note_skin", note_skin))
+			# 旧版只有 aa_2d 布尔值，读进来换算成三档。
+			aa_2d_level = clampi(int(data.get("aa_2d_level", 2 if bool(data.get("aa_2d", true)) else 0)), 0, 3)
+			msaa_3d_level = clampi(int(data.get("msaa_3d_level", 1)), 0, 7)
+			if data.get("ring_pad_rect") is Array:
+				ring_pad_rect = data["ring_pad_rect"]
+			note_detail_fine = bool(data.get("note_detail_fine", note_detail_fine))
+			note_glow = bool(data.get("note_glow", note_glow))
+			var trail_mode := String(data.get("cursor_trail", cursor_trail))
+			cursor_trail = trail_mode if trail_mode in ["long", "short", "off"] else "long"
+			var fx_mode := String(data.get("fx_budget", fx_budget))
+			fx_budget = fx_mode if fx_mode in ["full", "light", "off"] else "full"
+			var ring_scale := String(data.get("ring_3d_scale", ring_3d_scale))
+			ring_3d_scale = ring_scale if ring_scale in ["high", "mid", "low"] else "high"
+			ring_3d_hz = 30 if int(data.get("ring_3d_hz", ring_3d_hz)) == 30 else 60
+			bar_lines = bool(data.get("bar_lines", bar_lines))
+			var preset := String(data.get("quality_preset", "high"))
+			quality_preset = preset if preset in ["ultra", "high", "mid", "low", "custom"] else "high"
+			hud_scale = int(data.get("hud_scale", hud_scale))
+			hud_scale = hud_scale if hud_scale in [80, 100, 120] else 100
+			var combo_mode := String(data.get("hud_combo_mode", hud_combo_mode))
+			hud_combo_mode = combo_mode if combo_mode in ["center", "corner", "off"] else "center"
+			var progress_style := String(data.get("hud_progress_style", hud_progress_style))
+			hud_progress_style = progress_style if progress_style in ["ring", "off"] else "ring"
+			var judge_pos := String(data.get("hud_judge_position", hud_judge_position))
+			hud_judge_position = judge_pos if judge_pos in ["note", "ring_in", "ring_out", "center", "off"] else "ring_out"
+			hud_opacity = int(data.get("hud_opacity", hud_opacity))
+			hud_opacity = hud_opacity if hud_opacity in [100, 85, 70] else 100
+			hud_show_title = bool(data.get("hud_show_title", hud_show_title))
+			hud_show_difficulty = bool(data.get("hud_show_difficulty", hud_show_difficulty))
+			hud_show_percent = bool(data.get("hud_show_percent", hud_show_percent))
+			hud_show_time = bool(data.get("hud_show_time", hud_show_time))
+			hud_show_watermark = bool(data.get("hud_show_watermark", hud_show_watermark))
+			background_brightness = clampi(int(data.get("background_brightness", background_brightness)), 0, 100)
+			mouse_keys = bool(data.get("mouse_keys", mouse_keys))
+			preview_width = clampf(float(data.get("preview_width", preview_width)), 280.0, 720.0)
+			preview_collapsed = bool(data.get("preview_collapsed", preview_collapsed))
 			hit_fx_style = String(data.get("hit_fx_style", hit_fx_style))
 			hit_sfx_style = String(data.get("hit_sfx_style", hit_sfx_style))
 			ffmpeg_path = String(data.get("ffmpeg", ffmpeg_path))
 			frame_cap = String(data.get("frame_cap", frame_cap))
+			audio_buffer_ms = clampi(int(data.get("audio_buffer_ms", audio_buffer_ms)), 3, 40)
 			playtest_offset_ms = float(data.get("playtest_offset_ms", playtest_offset_ms))
+			audio_latency_ms = clampf(float(data.get("audio_latency_ms", audio_latency_ms)), 0.0, 250.0)
+			music_volume = clampf(float(data.get("music_volume", music_volume)), 0.0, 100.0)
+			sfx_volume = clampf(float(data.get("sfx_volume", sfx_volume)), 0.0, 100.0)
 			dynamic_offset = bool(data.get("dynamic_offset", dynamic_offset))
 			playtest_auto = bool(data.get("playtest_auto", playtest_auto))
+			var mirror_mode := String(data.get("playtest_mirror", playtest_mirror))
+			playtest_mirror = mirror_mode if mirror_mode in ["off", "lr", "rot180"] else "off"
+			var scroll_mode := String(data.get("playback_scroll", playback_scroll))
+			# 旧版三档（pin_down / pin_up）迁移成「固定播放头 + 谱面方向」。
+			if scroll_mode == "pin_down":
+				playback_scroll = "pin"
+				time_flows_down = false
+			elif scroll_mode == "pin_up":
+				playback_scroll = "pin"
+				time_flows_down = true
+			else:
+				playback_scroll = scroll_mode if scroll_mode in ["page", "pin"] else "pin"
+			osu_favorites.clear()
+			for value in data.get("osu_favorites", []):
+				osu_favorites.append(int(value))
 			last_bias_ms = float(data.get("last_bias_ms", last_bias_ms))
+			var wait_mode := String(data.get("path_wait_indicator", "progress"))
+			path_wait_indicator = wait_mode if wait_mode in PATH_WAIT_MODES else "progress"
+			cursor_scale = clampf(float(data.get("cursor_scale", cursor_scale)), 0.5, 2.0)
+			flow_scale = clampf(float(data.get("flow_scale", flow_scale)), 0.05, 3.0)
+			star_speed = clampf(float(data.get("star_speed", star_speed)), 0.5, 2.0)
 	MediaIO.set_ffmpeg_exe(ffmpeg_path)
 	apply_frame_cap()
+	apply_visual_quality()
 
 
-## 帧率选项：60 / 120 关垂直同步；vsync 跟随显示器；unlimited 不限帧。
+## HUD 选项打包给 Preview3D（试玩 HUD 全部从这里读）。
+func hud_options() -> Dictionary:
+	return {
+		"scale": hud_scale,
+		"combo_mode": hud_combo_mode,
+		"progress_style": hud_progress_style,
+		"judge_position": hud_judge_position,
+		"opacity": hud_opacity,
+		"show_title": hud_show_title,
+		"show_difficulty": hud_show_difficulty,
+		"show_percent": hud_show_percent,
+		"show_time": hud_show_time,
+		"show_watermark": hud_show_watermark,
+	}
+
+
+## 2D 抗锯齿在运行时就能改：关掉能省 1.5–2.5ms 的填充开销。
+func apply_visual_quality() -> void:
+	var viewport := get_viewport()
+	if viewport == null:
+		return
+	match aa_2d_level:
+		0:
+			viewport.msaa_2d = Viewport.MSAA_DISABLED
+		1:
+			viewport.msaa_2d = Viewport.MSAA_2X
+		2:
+			viewport.msaa_2d = Viewport.MSAA_4X
+		_:
+			viewport.msaa_2d = Viewport.MSAA_8X
+
+
+## 预设：一次把画质项调成一组常用组合（单项改动后预设显示为「自定义」）。
+func apply_quality_preset(name: String) -> void:
+	quality_preset = name
+	match name:
+		"ultra":
+			aa_2d_level = 3
+			msaa_3d_level = 2
+			note_detail_fine = true
+			note_glow = true
+			cursor_trail = "long"
+			fx_budget = "full"
+			ring_3d_scale = "native"
+			ring_3d_hz = 60
+			bar_lines = true
+		"low":
+			aa_2d_level = 0
+			msaa_3d_level = 0
+			note_detail_fine = false
+			note_glow = false
+			cursor_trail = "off"
+			fx_budget = "light"
+			ring_3d_scale = "low"
+			ring_3d_hz = 30
+			bar_lines = false
+		"mid":
+			aa_2d_level = 1
+			msaa_3d_level = 1
+			note_detail_fine = true
+			note_glow = true
+			cursor_trail = "short"
+			fx_budget = "light"
+			ring_3d_scale = "mid"
+			ring_3d_hz = 30
+			bar_lines = true
+		_:
+			quality_preset = "high"
+			aa_2d_level = 1
+			msaa_3d_level = 1
+			note_detail_fine = true
+			note_glow = true
+			cursor_trail = "long"
+			fx_budget = "full"
+			ring_3d_scale = "native"
+			ring_3d_hz = 30
+			bar_lines = true
+
+
+## 帧率选项：60 / 120 保留垂直同步（跑不满就自动落到下一个整除，稳定优先）；
+## vsync 完全跟随显示器；unlimited 才关垂直同步、能吃多少吃多少。
 func apply_frame_cap() -> void:
 	match frame_cap:
+		# 显式档位关掉垂直同步：否则 120/144 在 60Hz 屏上永远不起作用。
 		"60":
 			Engine.max_fps = 60
 			DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
 		"120":
 			Engine.max_fps = 120
+			DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
+		"144":
+			Engine.max_fps = 144
+			DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
+		"240":
+			Engine.max_fps = 240
 			DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
 		"unlimited":
 			Engine.max_fps = 0
@@ -446,8 +687,49 @@ func apply_frame_cap() -> void:
 			DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_ENABLED)
 
 
+## override.cfg 的位置：导出包写游戏目录，源码运行写工程目录；Godot 两种都会读。
+func audio_override_path() -> String:
+	if OS.has_feature("template"):
+		return OS.get_executable_path().get_base_dir().path_join("override.cfg")
+	return "res://override.cfg"
+
+
+## 音频缓冲是启动期设置（引擎不给运行时接口），只能写 override.cfg 后重启生效。
+static func write_buffer_override(path: String, ms: int) -> bool:
+	var config := ConfigFile.new()
+	if FileAccess.file_exists(path):
+		config.load(path)
+	config.set_value("audio", "driver/output_latency", clampi(ms, 3, 40))
+	return config.save(path) == OK
+
+
+func set_audio_buffer(ms: int) -> void:
+	audio_buffer_ms = clampi(ms, 3, 40)
+	save_settings()
+	if not write_buffer_override(audio_override_path(), audio_buffer_ms):
+		notice.emit("写入 override.cfg 失败，音频缓冲没改", "error")
+		return
+	var running := int(ProjectSettings.get_setting("audio/driver/output_latency", 15))
+	notice.emit("音频缓冲 %dms（重启后生效，当前 %dms）" % [audio_buffer_ms, running], "info")
+
+
+## Output latency used by playtest/calibration. A positive setting overrides the
+## driver value in both directions; 0 means "trust the driver".
+func effective_latency_sec() -> float:
+	if audio_latency_ms > 0.0:
+		return clampf(audio_latency_ms / 1000.0, 0.0, 0.25)
+	return maxf(0.0, AudioServer.get_output_latency())
+
+
 func save_settings() -> void:
-	var data := {"note_skin": note_skin, "hit_fx_style": hit_fx_style, "hit_sfx_style": hit_sfx_style, "ffmpeg": ffmpeg_path, "frame_cap": frame_cap, "playtest_offset_ms": playtest_offset_ms, "dynamic_offset": dynamic_offset, "playtest_auto": playtest_auto, "last_bias_ms": last_bias_ms}
+	var data := {"path_wait_indicator": path_wait_indicator, "note_skin": note_skin, "hit_fx_style": hit_fx_style, "hit_sfx_style": hit_sfx_style, "ffmpeg": ffmpeg_path, "frame_cap": frame_cap, "audio_buffer_ms": audio_buffer_ms, "playtest_offset_ms": playtest_offset_ms, "audio_latency_ms": audio_latency_ms, "music_volume": music_volume, "sfx_volume": sfx_volume, "dynamic_offset": dynamic_offset, "playtest_auto": playtest_auto, "playtest_mirror": playtest_mirror, "playback_scroll": playback_scroll, "osu_favorites": osu_favorites, "last_bias_ms": last_bias_ms, "cursor_scale": cursor_scale, "flow_scale": flow_scale, "star_speed": star_speed, "aa_2d_level": aa_2d_level, "msaa_3d_level": msaa_3d_level, "ring_pad_rect": ring_pad_rect, "note_detail_fine": note_detail_fine, "note_glow": note_glow, "cursor_trail": cursor_trail, "fx_budget": fx_budget, "ring_3d_scale": ring_3d_scale, "ring_3d_hz": ring_3d_hz, "bar_lines": bar_lines, "quality_preset": quality_preset,
+		"hud_scale": hud_scale, "hud_combo_mode": hud_combo_mode, "hud_progress_style": hud_progress_style,
+		"hud_judge_position": hud_judge_position, "hud_opacity": hud_opacity,
+		"hud_show_title": hud_show_title, "hud_show_difficulty": hud_show_difficulty,
+		"hud_show_percent": hud_show_percent, "hud_show_time": hud_show_time,
+		"hud_show_watermark": hud_show_watermark,
+		"background_brightness": clampi(background_brightness, 0, 100), "mouse_keys": mouse_keys,
+		"preview_width": preview_width, "preview_collapsed": preview_collapsed}
 	var file := FileAccess.open(SETTINGS_PATH, FileAccess.WRITE)
 	if file != null:
 		file.store_string(JSON.stringify(data, "\t"))
@@ -500,6 +782,9 @@ func set_chart(new_chart: Chart, path: String = "", mark_dirty: bool = false) ->
 	save_state_changed.emit()
 	status_changed.emit()
 	_emit_validation()
+	if chart != null and not chart.load_warnings.is_empty():
+		notice.emit("；".join(chart.load_warnings), "warning")
+		chart.load_warnings.clear()
 
 
 func apply_detected_timing(bpm: float, offset_ms: float, apply_offset: bool, audio_path: String) -> bool:
@@ -610,8 +895,15 @@ func touch_chart() -> void:
 	_live_change_pending = true
 
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
 	_flush_live_change()
+	# 校验会扫全谱（自交/可玩性），编辑时没必要每改一格就跑一次。
+	if _validation_pending:
+		_validation_timer -= delta
+		if _validation_timer <= 0.0:
+			_validation_pending = false
+			if chart != null:
+				validation_changed.emit(Validator.validate(chart))
 
 
 func _flush_live_change() -> void:
@@ -651,6 +943,7 @@ func save_chart() -> bool:
 	if not errors.is_empty():
 		notice.emit("有 %d 个校验错误，已阻止保存：%s" % [errors.size(), errors[0].get("message", "")], "error")
 		return false
+	var faint := low_contrast_note_count()
 	chart.offset_ms = chart.timing.offset_ms
 	var err := ChartIO.save_chart(chart, chart_path)
 	if err != OK:
@@ -660,7 +953,10 @@ func save_chart() -> bool:
 	_commands_since_autosave = 0
 	save_state_changed.emit()
 	status_changed.emit()
-	notice.emit("已保存 %s" % chart_path.get_file(), "info")
+	if faint > 0:
+		notice.emit("已保存 %s；其中 %d 个音符的配色与背景对比度偏低，可能看不清（不影响保存）" % [chart_path.get_file(), faint], "warning")
+	else:
+		notice.emit("已保存 %s" % chart_path.get_file(), "info")
 	return true
 
 
@@ -901,10 +1197,20 @@ func _on_autosave_timer() -> void:
 	autosave()
 
 
+## 谱面内容（音符/区域/事件/音频）真正的末尾。
+func chart_content_end_beats() -> float:
+	return chart.content_end_beat() if chart != null else 0.0
+
+
+## 编辑器可滚动/可跳转的终点：内容末尾 + 4 小节。
+func chart_limit_beats() -> float:
+	return chart.end_limit_beat() if chart != null else 0.0
+
+
 func set_playhead(beat: float) -> void:
 	if chart == null:
 		return
-	playhead_beat = clampf(beat, -4.0, chart.duration_beats() + 8.0)
+	playhead_beat = clampf(beat, -4.0, chart_limit_beats())
 	playhead_changed.emit(playhead_beat)
 
 
@@ -913,7 +1219,7 @@ func set_playhead(beat: float) -> void:
 func seek(beat: float) -> void:
 	if chart == null:
 		return
-	var target := clampf(beat, -4.0, chart.duration_beats() + 8.0)
+	var target := clampf(beat, -4.0, chart_limit_beats())
 	seek_requested.emit(target)
 	set_playhead(target)
 
@@ -966,7 +1272,6 @@ func request_audio_detect() -> void:
 func set_tool(new_tool: String) -> void:
 	tool = new_tool
 	boundary_mode = new_tool == "boundary"
-	trace_draw_mode = new_tool == "trace"
 	tool_changed.emit(tool)
 	status_changed.emit()
 
@@ -998,7 +1303,7 @@ func toggle_note_selection(note_id: int) -> void:
 
 
 func mirror_selected_notes() -> void:
-	var notes := get_selected_notes()
+	var notes := selection_with_partners()
 	if notes.is_empty():
 		return
 	begin_edit()
@@ -1020,7 +1325,7 @@ func rotate_selected_notes(degrees: float) -> void:
 			point["da"] = float(point.get("da", 0.0)) + degrees
 		if note.type == "bell":
 			note.center_u = fposmod(note.center_u + degrees / 360.0, 1.0)
-		if note.type in ["trace", "path"] or note.trace_style == "slider":
+		if note.type == "path":
 			var rad := deg_to_rad(degrees)
 			for point in note.trace_pts:
 				var x := float(point.get("x", 0.0))
@@ -1033,7 +1338,7 @@ func rotate_selected_notes(degrees: float) -> void:
 
 func copy_selected_notes() -> void:
 	clipboard_notes.clear()
-	var notes := get_selected_notes()
+	var notes := selection_with_partners()
 	if notes.is_empty():
 		return
 	var base_beat := notes[0].beat
@@ -1127,6 +1432,27 @@ func get_selected_notes() -> Array[Note]:
 	return result
 
 
+## 选中 Anchor 时把同拍、同 pairId 的伙伴一并带上：删除/复制/镜像按整对处理。
+func with_anchor_partners(notes: Array[Note]) -> Array[Note]:
+	var result: Array[Note] = []
+	var seen := {}
+	for note in notes:
+		if seen.has(note.id):
+			continue
+		seen[note.id] = true
+		result.append(note)
+		if note.type == "anchor" and chart != null:
+			var partner := chart.anchor_partner(note)
+			if partner != null and not seen.has(partner.id):
+				seen[partner.id] = true
+				result.append(partner)
+	return result
+
+
+func selection_with_partners() -> Array[Note]:
+	return with_anchor_partners(get_selected_notes())
+
+
 func get_selected_note() -> Note:
 	var notes := get_selected_notes()
 	return notes[0] if notes.size() == 1 else null
@@ -1200,13 +1526,36 @@ func _prune_selection() -> void:
 
 
 func _emit_validation() -> void:
-	if chart == null:
-		validation_changed.emit([])
-		return
-	validation_changed.emit(Validator.validate(chart))
+	_validation_pending = true
+	_validation_timer = 0.12
 
 
 func validation_issues() -> Array[Dictionary]:
 	if chart == null:
 		return []
 	return Validator.validate(chart)
+
+
+## 保存时的颜色提示：统计自定义色或配色组色与舞台背景对比度过低的音符。
+## 设计文档要求“提示但不阻止保存”，所以只发 warning，不做拦截。
+func low_contrast_note_count() -> int:
+	return _low_contrast_count(chart)
+
+
+func _low_contrast_count(target: Chart) -> int:
+	if target == null:
+		return 0
+	var count := 0
+	for note in target.notes:
+		if not note.supports_custom_color():
+			continue
+		var picked := Color(0, 0, 0, 0)
+		if note.has_custom_color:
+			picked = note.custom_color
+		elif note.color > 0:
+			picked = target.palette_color(note.color, note.type)
+		if picked.a <= 0.0:
+			continue
+		if Note.contrast_ratio(picked, STAGE_BACKGROUND) < Note.MIN_CONTRAST:
+			count += 1
+	return count

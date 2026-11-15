@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>六类基础音符的形状</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:1200px;height:760px;overflow:hidden}
+body{background:radial-gradient(120% 90% at 50% 0%,#141722 0%,#0A0B10 62%);color:#F4EFE9;
+ font-family:"Noto Sans CJK SC",sans-serif;padding:44px 48px 0;display:flex;flex-direction:column}
+.k{font-family:"DejaVu Sans Mono",monospace;font-size:12px;letter-spacing:3px;color:#5FD3D0}
+h1{font-size:27px;margin-top:8px}
+.sub{font-size:14px;color:#9A948C;margin-top:6px}
+.grid{flex:1;margin-top:26px;display:grid;grid-template-columns:repeat(3,1fr);grid-template-rows:repeat(2,1fr);gap:14px}
+.cell{background:#12141C;border:1px solid #2A2E38;border-radius:10px;padding:12px 14px;display:flex;flex-direction:column}
+.name{font-family:"DejaVu Sans Mono",monospace;font-size:13px;color:#5FD3D0;letter-spacing:2px}
+.desc{font-size:13px;color:#E4D9CB;margin-top:4px;line-height:1.5}
+.foot{position:absolute;left:48px;bottom:26px;font-size:12px;color:#5F5A55}
+svg{display:block;margin:2px auto}
+</style></head><body>
+<div class="k">TAMAKI₃ / NOTE TYPES</div>
+<h1>六类基础音符的形状</h1>
+<div class="sub">宽度、方向与接触范围各表达一件事；判定仍只看时间、逻辑角度与接触范围。</div>
+<div class="grid">
+  <div class="cell"><div class="name">TAP</div><div class="desc">一个拍点 + 角度宽度；定位后按键</div>
+    <svg width="300" height="150" viewBox="0 0 300 150">
+      <circle cx="150" cy="78" r="52" fill="none" stroke="#4A4F5C" stroke-width="1.5"/>
+      <path d="M 101 60 A 52 52 0 0 1 199 60" fill="none" stroke="#FF6242" stroke-width="13" stroke-linecap="round"/>
+      <circle cx="150" cy="78" r="2.5" fill="#9A948C"/>
+    </svg></div>
+  <div class="cell"><div class="name">HOLD</div><div class="desc">头部判一次，之后只需保持键盘；可换键</div>
+    <svg width="300" height="150" viewBox="0 0 300 150">
+      <circle cx="150" cy="78" r="52" fill="none" stroke="#4A4F5C" stroke-width="1.5"/>
+      <path d="M 150 26 A 52 52 0 0 1 150 130" fill="none" stroke="#E4D9CB" stroke-width="9" opacity=".45"/>
+      <circle cx="150" cy="26" r="9" fill="#FF6242"/>
+      <circle cx="150" cy="130" r="6" fill="none" stroke="#E4D9CB" stroke-width="2.5"/>
+      <text x="196" y="80" fill="#9A948C" font-family="DejaVu Sans Mono" font-size="10">HEAD</text>
+    </svg></div>
+  <div class="cell"><div class="name">PATH</div><div class="desc">头尾各判一次；中段走廊跟随，可跳 1 组</div>
+    <svg width="300" height="150" viewBox="0 0 300 150">
+      <path d="M 70 110 C 110 30 190 30 232 104" fill="none" stroke="#E4D9CB" stroke-width="3"/>
+      <path d="M 70 110 C 110 30 190 30 232 104" fill="none" stroke="#5FD3D0" stroke-opacity=".16" stroke-width="30" stroke-linecap="round"/>
+      <circle cx="70" cy="110" r="8" fill="#FF6242"/>
+      <circle cx="232" cy="104" r="8" fill="none" stroke="#FFC08A" stroke-width="3.5"/>
+      <circle cx="130" cy="52" r="3" fill="#5FD3D0"/><circle cx="180" cy="46" r="3" fill="#5FD3D0"/>
+    </svg></div>
+  <div class="cell"><div class="name">SEEK</div><div class="desc">滚轮上／下擦过；只判 PERFECT / MISS，±200ms</div>
+    <svg width="300" height="150" viewBox="0 0 300 150">
+      <circle cx="150" cy="78" r="52" fill="none" stroke="#4A4F5C" stroke-width="1.5" stroke-dasharray="4 6"/>
+      <path d="M 112 104 C 140 60 170 96 196 56" fill="none" stroke="#5FD3D0" stroke-width="14" stroke-opacity=".28" stroke-linecap="round"/>
+      <path d="M 112 104 C 140 60 170 96 196 56" fill="none" stroke="#5FD3D0" stroke-width="2.5" stroke-dasharray="5 5"/>
+      <path d="M 196 56 l 10 -14 l -16 4 z" fill="#5FD3D0"/>
+      <text x="112" y="126" fill="#9A948C" font-family="DejaVu Sans Mono" font-size="10">SCROLL ▲ / ▼</text>
+    </svg></div>
+  <div class="cell"><div class="name">ANCHOR</div><div class="desc">成对双押：瞄准任一锚点、同按两键</div>
+    <svg width="300" height="150" viewBox="0 0 300 150">
+      <circle cx="150" cy="78" r="52" fill="none" stroke="#4A4F5C" stroke-width="1.5"/>
+      <line x1="150" y1="34" x2="150" y2="122" stroke="#FFC08A" stroke-width="1.5" opacity=".5"/>
+      <rect x="142" y="18" width="16" height="16" fill="#FFC08A" transform="rotate(45 150 26)"/>
+      <rect x="142" y="122" width="16" height="16" fill="#FFC08A" transform="rotate(45 150 130)" opacity=".45"/>
+      <text x="182" y="30" fill="#9A948C" font-family="DejaVu Sans Mono" font-size="10">PAIR</text>
+    </svg></div>
+  <div class="cell"><div class="name">BELL</div><div class="desc">圆形收集范围，目标±130ms；设计上只记收集率</div>
+    <svg width="300" height="150" viewBox="0 0 300 150">
+      <circle cx="150" cy="78" r="52" fill="none" stroke="#4A4F5C" stroke-width="1.5"/>
+      <circle cx="206" cy="42" r="22" fill="none" stroke="#FFC08A" stroke-width="1.5" stroke-dasharray="4 5"/>
+      <circle cx="206" cy="42" r="11" fill="#FFC08A" opacity=".9"/>
+      <circle cx="206" cy="42" r="11" fill="none" stroke="#0A0B10" stroke-width="2"/>
+      <text x="196" y="88" fill="#9A948C" font-family="DejaVu Sans Mono" font-size="10">±130ms</text>
+    </svg></div>
+</div>
+<div class="foot">Limit（原红区）属于区域，不在音符分类里；它按逻辑角度计时，不新增按键。</div>
+</body></html>

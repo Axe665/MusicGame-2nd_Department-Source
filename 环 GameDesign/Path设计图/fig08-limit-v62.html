@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>Limit</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:1200px;height:760px;overflow:hidden}
+body{background:radial-gradient(120% 90% at 50% 0%,#141722 0%,#0A0B10 62%);color:#F4EFE9;
+ font-family:"Noto Sans CJK SC",sans-serif;padding:44px 48px 0;display:flex;flex-direction:column}
+.k{font-family:"DejaVu Sans Mono",monospace;font-size:12px;letter-spacing:3px;color:#5FD3D0}
+h1{font-size:27px;margin-top:8px}
+.sub{font-size:14px;color:#9A948C;margin-top:6px}
+.body{flex:1;position:relative}
+.legend{position:absolute;left:0;right:0;bottom:34px;height:52px;background:#12141C;border-radius:8px;
+ display:flex;align-items:center;gap:26px;padding:0 18px}
+.legend span{font-size:13px;display:flex;align-items:center;gap:8px}
+.dot{width:11px;height:11px;border-radius:3px}
+.note{position:absolute;left:0;bottom:0;font-size:12px;color:#5F5A55}
+</style></head><body>
+<div class="k">TAMAKI₃ / LIMIT</div>
+<h1>Limit（原红区）：环上的限时扇区</h1>
+<div class="sub">一段逻辑角度区间，持续一段时间；可以扫过，不能连续停在里面。</div>
+<div class="body">
+<svg viewBox="0 0 1100 470" width="1100" height="470">
+  <!-- 环 -->
+  <circle cx="330" cy="235" r="180" fill="none" stroke="#4A4F5C" stroke-width="2"/>
+  <!-- 扇区 -->
+  <path d="M 330 235 L 392 66 A 180 180 0 0 1 499 173 Z" fill="#FF6242" opacity=".28" stroke="#FF6242" stroke-width="2"/>
+  <text x="470" y="112" fill="#FF6242" font-family="DejaVu Sans Mono" font-size="12" letter-spacing="2">LIMIT</text>
+  <!-- 扫过轨迹 -->
+  <path d="M 190 380 Q 250 300 330 120 Q 400 50 480 90" fill="none" stroke="#5FD3D0" stroke-width="2" stroke-dasharray="6 6"/>
+  <circle cx="480" cy="90" r="5" fill="#5FD3D0"/>
+  <text x="150" y="402" fill="#9A948C" font-family="DejaVu Sans Mono" font-size="11">扫过：允许</text>
+  <!-- 计时 -->
+  <g transform="translate(660,120)">
+    <text x="0" y="-10" fill="#9A948C" font-family="DejaVu Sans Mono" font-size="11">DWELL TIMER</text>
+    <rect x="0" y="10" width="360" height="26" rx="13" fill="#191C25" stroke="#2A2E38"/>
+    <rect x="0" y="10" width="200" height="26" rx="13" fill="#FF6242" opacity=".55"/>
+    <line x1="200" y1="2" x2="200" y2="44" stroke="#FF6242" stroke-width="2"/>
+    <text x="200" y="66" fill="#FF6242" font-family="DejaVu Sans Mono" font-size="11" text-anchor="middle">200ms</text>
+    <text x="0" y="92" fill="#9A948C" font-family="Noto Sans CJK SC" font-size="12">离开后清零，再次进入重新计时</text>
+    <text x="0" y="114" fill="#9A948C" font-family="Noto Sans CJK SC" font-size="12">达到 200ms：断连一次 + 固定扣点，区内不重复惩罚</text>
+  </g>
+  <!-- 时长 -->
+  <rect x="660" y="286" width="360" height="104" rx="8" fill="#12141C" stroke="#2A2E38"/>
+  <text x="680" y="314" fill="#F4EFE9" font-family="Noto Sans CJK SC" font-size="14">区域时长：最长 4 拍</text>
+  <text x="680" y="340" fill="#9A948C" font-family="Noto Sans CJK SC" font-size="12.5">宽度自由设置，按逻辑角度解释</text>
+  <text x="680" y="364" fill="#9A948C" font-family="Noto Sans CJK SC" font-size="12.5">文件类型只接受 limit，旧谱 red 按 limit 读入</text>
+</svg>
+<div class="legend">
+  <span><i class="dot" style="background:#FF6242"></i>Limit 扇区</span>
+  <span><i class="dot" style="background:#5FD3D0"></i>光标扫过路线</span>
+  <span><i class="dot" style="background:#E4D9CB"></i>停留计时</span>
+</div>
+<div class="note">制谱规则比运行时更保守：同刻公共角度减去区域后必须还有安全落脚点。</div>
+</div>
+</body></html>

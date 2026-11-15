@@ -77,12 +77,13 @@ static func evaluate(states: Array[ViewState], beat: float) -> Dictionary:
 		if beat >= a.beat and beat <= b.beat:
 			var span := maxf(0.000001, b.beat - a.beat)
 			var p := Ease.apply(b.easing, (beat - a.beat) / span)
+			# zoom/rotation 平滑插值；tilt/ellipse 到关键帧瞬切（不动就按左帧）。
 			return {
 				"zoom": lerpf(a.zoom, b.zoom, p),
-				"tilt_x": lerpf(a.tilt_x, b.tilt_x, p),
-				"tilt_y": lerpf(a.tilt_y, b.tilt_y, p),
-				"ellipse": lerpf(a.ellipse, b.ellipse, p),
 				"rotation": lerpf(a.rotation, b.rotation, p),
+				"tilt_x": a.tilt_x,
+				"tilt_y": a.tilt_y,
+				"ellipse": a.ellipse,
 			}
 	return _state_dict(sorted[-1])
 

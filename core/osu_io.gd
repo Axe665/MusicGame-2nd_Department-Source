@@ -8,7 +8,11 @@ const STD_STREAM_STEP := 45.0
 const STD_JUMP_DISTANCE := 128.0
 
 
-static func list_osz_difficulties(path: String) -> Array[Dictionary]:
+## 列出 .osz 里的难度。
+##
+## [param star_hints] 是「难度名 → 星数」，在线导入时由 osu! 接口带下来；
+## 有星数时按星数升序排列（osu 那边的习惯），没有就保持文件顺序。
+static func list_osz_difficulties(path: String, star_hints: Dictionary = {}) -> Array[Dictionary]:
 	var result: Array[Dictionary] = []
 	var zip := ZIPReader.new()
 	if zip.open(path) != OK:
@@ -19,16 +23,143 @@ static func list_osz_difficulties(path: String) -> Array[Dictionary]:
 			continue
 		var text := zip.read_file(name).get_string_from_utf8()
 		var meta := _read_osu_meta(text)
+		var version := String(meta.get("version", ""))
 		result.append({
+			# 这里必须是"压缩包里的原始顺序"，转谱时按它取 .osu，排序后不能改。
 			"index": result.size(),
 			"file": name,
 			"title": String(meta.get("title", name.get_file().get_basename())),
 			"artist": String(meta.get("artist", "")),
 			"creator": String(meta.get("creator", "")),
-			"version": String(meta.get("version", "")),
+			"version": version,
 			"mode": int(meta.get("mode", 0)),
+			"stars": float(star_hints.get(version, -1.0)),
 		})
 	zip.close()
+	return sort_by_stars(result)
+
+
+## 读取 .osz 里第一个 .osu 的 BeatmapSetID（本地导入时用它去镜像站查星数）。
+static func read_beatmap_set_id(path: String) -> int:
+	if not FileAccess.file_exists(path):
+		return 0
+	var zip := ZIPReader.new()
+	if zip.open(path) != OK:
+		return 0
+	var result := 0
+	for name in zip.get_files():
+		if name.get_extension().to_lower() != "osu":
+			continue
+		var text := zip.read_file(name).get_string_from_utf8()
+		result = _read_beatmap_set_id(text)
+		break
+	zip.close()
+	return result
+
+
+static func _read_beatmap_set_id(text: String) -> int:
+	var section := ""
+	for raw_line in text.split("\n"):
+		var line := raw_line.strip_edges()
+		if line.begins_with("[") and line.ends_with("]"):
+			section = line.substr(1, line.length() - 2)
+			continue
+		if section != "Metadata":
+			continue
+		var split := line.split(":", true, 1)
+		if split.size() < 2:
+			continue
+		if split[0].strip_edges() == "BeatmapSetID":
+			return int(split[1].strip_edges())
+	return 0
+
+
+## 从镜像站取「难度名 → 星数」。
+## 先用 sayobot（和下载源同一家，字段是 version/star），失败再试 osu.direct（difficulty_rating）。
+static func fetch_star_hints(set_id: int, timeout_s: float = 8.0) -> Dictionary:
+	if set_id <= 0:
+		return {}
+	var urls := [
+		"https://api.sayobot.cn/v2/beatmapinfo?0=%d" % set_id,
+		"https://osu.direct/api/v2/s/%d" % set_id,
+	]
+	for url in urls:
+		var response := await _http_text(url, timeout_s)
+		if not bool(response.get("reachable", false)):
+			# 连不上就直接放弃，别让离线导入干等两个镜像
+			break
+		var text := String(response.get("text", ""))
+		if text.is_empty():
+			continue
+		var hints := hints_from_json(JSON.parse_string(text))
+		if not hints.is_empty():
+			return hints
+	return {}
+
+
+## 把镜像站返回的 JSON 解析成「难度名 → 星数」（抽出来便于测试）。
+static func hints_from_json(parsed: Variant) -> Dictionary:
+	var hints := {}
+	var sources: Array = []
+	if parsed is Dictionary:
+		sources.append(parsed)
+		var data: Variant = (parsed as Dictionary).get("data", null)
+		if data is Dictionary:
+			sources.append(data)
+	for source in sources:
+		var block: Dictionary = source
+		for item in block.get("bid_data", []):
+			if item is Dictionary and item.has("version") and item.has("star"):
+				var map: Dictionary = item
+				hints[String(map["version"])] = float(map["star"])
+		for item in block.get("beatmaps", []):
+			if item is Dictionary and item.has("version"):
+				var map: Dictionary = item
+				var rating := float(map.get("difficulty_rating", 0.0))
+				if rating > 0.0:
+					hints[String(map["version"])] = rating
+	return hints
+
+
+## 返回 {"reachable": 是否连上并拿到 200, "text": 正文}。
+static func _http_text(url: String, timeout_s: float) -> Dictionary:
+	var tree := Engine.get_main_loop() as SceneTree
+	if tree == null or tree.root == null:
+		return {"reachable": false, "text": ""}
+	var http := HTTPRequest.new()
+	http.timeout = timeout_s
+	tree.root.add_child(http)
+	if http.request(url) != OK:
+		http.queue_free()
+		return {"reachable": false, "text": ""}
+	var result: Array = await http.request_completed
+	http.queue_free()
+	if result.size() < 4:
+		return {"reachable": false, "text": ""}
+	var connected := int(result[0]) == HTTPRequest.RESULT_SUCCESS
+	if not connected or int(result[1]) != 200:
+		return {"reachable": connected, "text": ""}
+	var body: PackedByteArray = result[3]
+	return {"reachable": true, "text": body.get_string_from_utf8()}
+
+
+## 按星数升序；没有星数（<=0）的排到最后，各自保持原顺序。
+static func sort_by_stars(entries: Array) -> Array[Dictionary]:
+	var ranked: Array[Dictionary] = []
+	var unknown: Array[Dictionary] = []
+	for item in entries:
+		if not item is Dictionary:
+			continue
+		var entry: Dictionary = item
+		if float(entry.get("stars", -1.0)) > 0.0:
+			ranked.append(entry)
+		else:
+			unknown.append(entry)
+	ranked.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return float(a.get("stars", 0.0)) < float(b.get("stars", 0.0)))
+	var result: Array[Dictionary] = []
+	result.append_array(ranked)
+	result.append_array(unknown)
 	return result
 
 
@@ -219,12 +350,13 @@ static func parse_osu(text: String, source_name: String = "") -> Dictionary:
 	objects_raw.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return float(a["time"]) < float(b["time"]))
 	if mode == 0:
 		var std_counts := _convert_std_continuous(objects_raw, chart, timing_raw, slider_multiplier, circle_radius, difficulty)
-		var stats := ConvertOptimizer.optimize_osu(chart, std_counts)
+		var deduped := _dedupe_std_simultaneous(chart, std_counts)
+		var snapped := ConvertOptimizer.snap_heads_to_path_tails(chart)
 		var shift := _shift_chart_to_zero(chart)
 		chart.refresh_ids()
 		report.append("保留：Tap %d，Path %d，Hold %d；跳过：spinner %d，无效 %d" % [std_counts["tap"], std_counts["path"], std_counts["hold"], std_counts["spinner"], std_counts["invalid"]])
 		report.append("Sentakki 转换：circle → 环上 Tap；slider → 段库 Path；lazy/短 → Hold；流向按相邻中点，大跳按两端道差，Path 直接推进到相对终点道。")
-		report.append("鼠标优化：调整 %d，删除 %d。" % [stats["relaxed"], stats["dropped"]])
+		report.append("同刻去重：删除 %d 个；尾判撞头判：吸附 %d 个（鼠标只有一只）。" % [deduped, snapped])
 		if shift > 0.001:
 			report.append("已整体平移 %.2f 拍，使最早 note 落在 beat 0；offset 调整为 %.0f ms。" % [shift, chart.offset_ms])
 		if int(std_counts["spinner"]) > 0:
@@ -338,6 +470,50 @@ static func _shift_chart_to_zero(chart: Chart) -> float:
 	return delta
 
 
+## 鼠标只有一只：同一毫秒的多个 Sentakki 音符只留一个。
+## 优先级 Path > Hold > Tap；同优先级取离上一颗（含 Path 尾巴）最近的那颗。
+static func _dedupe_std_simultaneous(chart: Chart, counts: Dictionary) -> int:
+	var ordered := chart.sorted_notes()
+	var kept: Array[Note] = []
+	var dropped := 0
+	var i := 0
+	while i < ordered.size():
+		var group: Array[Note] = [ordered[i]]
+		var group_ms := chart.timing.beat_to_chart_ms(ordered[i].beat)
+		var j := i + 1
+		while j < ordered.size() and absf(chart.timing.beat_to_chart_ms(ordered[j].beat) - group_ms) < 1.0:
+			group.append(ordered[j])
+			j += 1
+		var best: Note = group[0]
+		var best_score := _std_dedupe_score(best, kept)
+		for k in range(1, group.size()):
+			var score := _std_dedupe_score(group[k], kept)
+			if score > best_score:
+				best = group[k]
+				best_score = score
+		kept.append(best)
+		for note in group:
+			if note == best:
+				continue
+			chart.notes.erase(note)
+			if counts.has(note.type):
+				counts[note.type] = maxi(0, int(counts[note.type]) - 1)
+			dropped += 1
+		i = j
+	return dropped
+
+
+static func _std_dedupe_score(note: Note, kept: Array[Note]) -> float:
+	var priority := 3.0 if note.type == "path" else (2.0 if note.type == "hold" else 1.0)
+	var distance := 0.0
+	if not kept.is_empty():
+		var previous: Note = kept[-1]
+		var previous_angle := previous.tail_angle if previous.type == "path" else previous.angle
+		distance = absf(JudgeMath.angle_delta(previous_angle, note.angle))
+	# 优先级远大于角度差：同刻先保星星，其次再比谁更顺。
+	return priority * 1000.0 - distance
+
+
 static func _convert_std_continuous(objects_raw: Array, chart: Chart, timing_raw: Array[Dictionary], slider_multiplier: float, circle_radius: float, difficulty: Dictionary) -> Dictionary:
 	var counts := {"tap": 0, "path": 0, "hold": 0, "spinner": 0, "invalid": 0}
 	var play: Array[Dictionary] = []
@@ -426,21 +602,12 @@ static func _convert_std_continuous(objects_raw: Array, chart: Chart, timing_raw
 					counts["path"] += 1
 					is_path = true
 			if not is_path:
-				var hold_duration := maxf(0.25, duration_beats)
-				end_beat = beat + hold_duration
-				var clamped := false
-				if i + 1 < play.size() and end_beat > float(play[i + 1]["beat"]) - 0.0625:
-					end_beat = float(play[i + 1]["beat"]) - 0.0625
-					clamped = true
-				if clamped and end_beat - beat < 0.5:
-					note = Note.new("tap", beat, u, 60.0)
-					end_beat = beat
-					counts["tap"] += 1
-				else:
-					note = Note.new("hold", beat, u, 60.0)
-					note.end_beat = end_beat
-					note.hold_style = "straight"
-					counts["hold"] += 1
+				# Sentakki 的 Hold 用滑条完整时长，不夹到下一颗音符。
+				end_beat = beat + duration_beats
+				note = Note.new("hold", beat, u, 60.0)
+				note.end_beat = end_beat
+				note.hold_style = "straight"
+				counts["hold"] += 1
 		if note == null:
 			note = Note.new("tap", beat, u, 60.0)
 			end_beat = beat
@@ -791,7 +958,7 @@ static func _extract_assets(zip: ZIPReader, files: PackedStringArray, chart: Cha
 				var target := target_dir + "/" + found.get_file()
 				_write_zip_file(zip, found, target)
 				chart.video_path = target
-				report.append("视频：%s（预览时按需转码）" % target)
+				report.append("视频：%s（直接解码）" % target)
 			break
 	return report
 

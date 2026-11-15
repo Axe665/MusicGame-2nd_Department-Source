@@ -45,8 +45,25 @@ func beats_per_bar_at(beat: float) -> int:
 	return maxi(result, 1)
 
 
+## 全谱拍号一致时返回每小节拍数，否则返回 0（混合拍号没法用整数小节分带）。
+func uniform_beats_per_bar() -> int:
+	if points.is_empty():
+		return 4
+	var first := maxi(1, points[0].beats_per_bar)
+	for point in points:
+		if maxi(1, point.beats_per_bar) != first:
+			return 0
+	return first
+
+
 func beat_to_chart_ms(beat: float) -> float:
 	sort_points()
+	return beat_to_ms_sorted(beat)
+
+
+## 与 beat_to_chart_ms 相同，但假设 points 已经排好序（调用方先跑一次 sort_points）。
+## 波形这类每帧按行查几百个拍的循环用它，省掉重复排序。
+func beat_to_ms_sorted(beat: float) -> float:
 	if beat < 0.0:
 		return beat * 60000.0 / maxf(0.001, bpm_at(0.0))
 	var cursor := 0.0
@@ -91,6 +108,29 @@ func beat_to_audio_ms(beat: float) -> float:
 
 func audio_ms_to_beat(audio_ms: float) -> float:
 	return chart_ms_to_beat(audio_ms + offset_ms)
+
+
+## 某个音符“从圆心开始飞出”的拍号。
+## 预读是固定毫秒（`pre_ms`），这里按毫秒反推成拍号：变 BPM 的段落里
+## 这根“起飞拍号”不会跟着当前 BPM 变，所以音符不会在 BPM 变化那一拍忽然提前/消失。
+func spawn_beat(target_beat: float, pre_ms: float) -> float:
+	return chart_ms_to_beat(beat_to_chart_ms(target_beat) - maxf(0.0, pre_ms))
+
+
+## 0..1 的接近进度：直接按毫秒算，所以跨 BPM 段也是恒速。
+func approach(target_beat: float, current_beat: float, pre_ms: float) -> float:
+	var target_ms := beat_to_chart_ms(target_beat)
+	var current_ms := beat_to_chart_ms(current_beat)
+	var span := maxf(0.001, maxf(0.0, pre_ms))
+	return clampf((current_ms - (target_ms - span)) / span, 0.0, 1.0)
+
+
+## from_beat → to_beat 之间，current_beat 走到哪儿了（按毫秒比例，跨 BPM 恒速）。
+func ms_fraction(from_beat: float, to_beat: float, current_beat: float) -> float:
+	var start_ms := beat_to_chart_ms(from_beat)
+	var end_ms := beat_to_chart_ms(to_beat)
+	var now_ms := beat_to_chart_ms(current_beat)
+	return clampf((now_ms - start_ms) / maxf(0.001, end_ms - start_ms), 0.0, 1.0)
 
 
 static func parse_positive_int(text: String, max_value: int) -> int:
@@ -185,7 +225,8 @@ func format_beat(beat: float, divide: int = 4) -> String:
 	if unit >= divide:
 		bar += 1
 		unit -= divide
-	return "%d:%d:%d" % [bar, unit, divide]
+	# 小节号从 1 起，和编辑器左侧标尺一致。
+	return "%d:%d:%d" % [bar + 1, unit, divide]
 
 
 func parse_beat(text: String) -> float:
@@ -197,5 +238,5 @@ func parse_beat(text: String) -> float:
 			var numerator := float(parts[1])
 			var denominator := float(parts[2]) if parts.size() > 2 else 4.0
 			var bpb := float(beats_per_bar_at(0.0))
-			return bar * bpb + (numerator / maxf(0.001, denominator)) * bpb
+			return (bar - 1.0) * bpb + (numerator / maxf(0.001, denominator)) * bpb
 	return float(clean)
