@@ -289,6 +289,31 @@ func bar_length() -> float:
 	return float(timing.beats_per_bar_at(0.0))
 
 
+## 音频长度（毫秒）：导入歌曲或加载播放流时写入 editor，没有就返回 0。
+func audio_length_ms() -> float:
+	return maxf(0.0, float(editor.get("audio_length_ms", 0.0)))
+
+
+## 音频最后一个拍的位置。offset 是音频偏移，换算回谱面毫秒要加回去。
+func audio_end_beat() -> float:
+	var length := audio_length_ms()
+	if length <= 0.0:
+		return 0.0
+	return timing.chart_ms_to_beat(length + offset_ms)
+
+
+## 音频与最后一个音符/区域/事件取大：播放和「音频结束」标记都用它。
+func content_end_beat() -> float:
+	return maxf(duration_beats(), audio_end_beat())
+
+
+## 编辑器可滚动/可跳转的终点：内容末尾再留 4 小节。
+func end_limit_beat() -> float:
+	var last := content_end_beat()
+	var bpb := maxf(1.0, float(timing.beats_per_bar_at(last)))
+	return last + bpb * 4.0
+
+
 # ---------------------------------------------------------------- 配色分组
 
 

@@ -1095,9 +1095,19 @@ func _build_view_page(page: VBoxContainer) -> void:
 		_app.status_changed.emit()
 	)
 	_section(page, "编辑")
-	_check(page, "从上往下写入", _app.time_flows_down, func(value: bool) -> void:
+	_check(page, "谱面从上往下", _app.time_flows_down, func(value: bool) -> void:
 		_app.set_time_flows_down(value)
 	)
+	_label(page, "只影响显示方向：关闭后时间从下往上走（播放头在下方时音符从上方落下）。切换时播放头所在的屏幕位置保持不变。", 11, UITheme.MUTED)
+	var scroll_keys: Array[String] = ["page", "pin"]
+	var scroll_labels: Array[String] = ["翻页", "固定播放头"]
+	_setting_option(page, "播放滚动", scroll_labels, maxi(0, scroll_keys.find(String(_app.playback_scroll))), func(index: int) -> void:
+		_app.playback_scroll = scroll_keys[index]
+		_app.save_settings()
+		_app.status_changed.emit()
+		_app.notice.emit("播放滚动：%s" % scroll_labels[index], "info")
+	)
+	_label(page, "固定播放头只在播放和拖进度条时生效：播放头停在流动方向的边缘 8%，谱面连续滚动；滚轮可临时脱离，1.2 秒后自动拉回。", 11, UITheme.MUTED)
 	_section(page, "视频")
 	var video_path := LineEdit.new()
 	video_path.text = _app.chart.video_path
@@ -1170,24 +1180,61 @@ func _build_chart_page(page: VBoxContainer) -> void:
 	}])
 
 
+## 列表里的位置写成「小节:拍:分音」；format_beat 已经是 1 起的小节号。
+func _timing_pos_text(chart: Chart, beat: float) -> String:
+	return chart.timing.format_beat(beat)
+
+
+func _timing_row_text(chart: Chart, index: int, point: TimingPoint) -> String:
+	var prefix := "● " if index == 0 else "  "
+	return "%s%-9s %7.1f  %d/4" % [prefix, _timing_pos_text(chart, point.beat), point.bpm, point.beats_per_bar]
+
+
 func _build_timing_page(page: VBoxContainer) -> void:
 	var chart: Chart = _app.chart
-	_section(page, "Timing Setup")
-	_label(page, "参考 osu! editor：基准 BPM、offset、BPM 列表在同一页；改动只影响拍↔毫秒换算。", 11, UITheme.MUTED)
+	_section(page, "速度与偏移")
+	_label(page, "BPM 点按“拍”定位；offset 是音频偏移（正数=音频整体延后）。两者只改拍↔毫秒换算，不改音符的拍位。", 11, UITheme.MUTED)
 	var points := chart.timing.points
 	if points.is_empty():
 		_label(page, "没有 BPM 点，先添加一个。", 12, UITheme.RED)
-		_buttons(page, [{"text": "播放头加 BPM", "callback": func() -> void: _add_timing_point()}])
+		_buttons(page, [{"text": "在播放头添加 BPM", "callback": func() -> void: _add_timing_point()}])
 		return
-	var base: TimingPoint = points[0]
 	_timing_chart = chart
+	var base: TimingPoint = points[0]
+	_timing_base_spin = _spin(page, "基准 BPM", base.bpm, 20.0, 600.0, 0.1, func(value: float) -> void:
+		var first: TimingPoint = chart.timing.points[0]
+		first.bpm = value
+		chart.timing.sort_points()
+		_refresh_timing_list_text()
+	)
+	var offset_spin := _spin(page, "音频 offset (ms)", chart.offset_ms, -10000.0, 10000.0, 1.0, func(value: float) -> void:
+		chart.offset_ms = value
+		chart.timing.offset_ms = value
+	)
+	offset_spin.tooltip_text = "正数：音频整体延后。改动只移动音频与拍线的对齐，不移动音符。"
+	_spin(page, "固定预读 ms", chart.pre_read_ms, 100.0, 3000.0, 10.0, func(value: float) -> void: chart.pre_read_ms = value)
+	_buttons(page, [
+		{"text": "Tap Tempo", "callback": _tap_tempo},
+		{"text": "重置 Tap", "callback": _reset_taps},
+	])
+	_tap_label = _label(page, "Tap Tempo：连点至少 2 次；结果写入第 1 个 BPM 点（基准）。", 11, UITheme.MUTED)
+	if base.beat > 0.0001:
+		_label(page, "第 1 个 BPM 点在第 1 小节之后：它之前的拍会用默认 120 BPM，请把第 1 个点放到 1:0:4 或更前。", 11, UITheme.RED)
+
+	_section(page, "BPM 点")
+	var header := Label.new()
+	header.text = "  位置        BPM    拍号"
+	header.add_theme_font_override("font", UITheme.mono_font())
+	header.add_theme_font_size_override("font_size", 11)
+	header.add_theme_color_override("font_color", UITheme.MUTED)
+	page.add_child(header)
 	var list := ItemList.new()
 	_timing_list = list
-	list.custom_minimum_size = Vector2(0, 152)
+	list.custom_minimum_size = Vector2(0, 132)
+	list.add_theme_font_override("font", UITheme.mono_font())
+	list.add_theme_font_size_override("font_size", 11)
 	for i in points.size():
-		var point: TimingPoint = points[i]
-		var prefix := "基准  " if i == 0 else "      "
-		list.add_item("%s%02d  %s  %.1f BPM  %d/4" % [prefix, i, chart.timing.format_beat(point.beat), point.bpm, point.beats_per_bar])
+		list.add_item(_timing_row_text(chart, i, points[i]))
 	_selected_timing = clampi(_selected_timing, 0, maxi(0, points.size() - 1))
 	if _selected_timing < list.item_count:
 		list.select(_selected_timing)
@@ -1195,9 +1242,7 @@ func _build_timing_page(page: VBoxContainer) -> void:
 		for i in chart.timing.points.size():
 			if i >= list.item_count:
 				break
-			var item: TimingPoint = chart.timing.points[i]
-			var prefix := "基准  " if i == 0 else "      "
-			list.set_item_text(i, "%s%02d  %s  %.1f BPM  %d/4" % [prefix, i, chart.timing.format_beat(item.beat), item.bpm, item.beats_per_bar])
+			list.set_item_text(i, _timing_row_text(chart, i, chart.timing.points[i]))
 	list.item_selected.connect(func(index: int) -> void:
 		_selected_timing = index
 		_rebuild()
@@ -1206,30 +1251,16 @@ func _build_timing_page(page: VBoxContainer) -> void:
 		if index >= 0 and index < chart.timing.points.size():
 			_app.set_playhead(chart.timing.points[index].beat)
 	)
-	_timing_base_spin = _spin(page, "基准 BPM", base.bpm, 20.0, 600.0, 0.1, func(value: float) -> void:
-		base.bpm = value
-		chart.timing.sort_points()
-		refresh_list.call()
-	)
-	_buttons(page, [{"text": "Tap Tempo", "callback": _tap_tempo}])
-	_tap_label = _label(page, "Tap Tempo：连点至少 2 次，按平均间隔设置基准 BPM。", 11, UITheme.MUTED)
-	_spin(page, "offset ms", chart.offset_ms, -10000.0, 10000.0, 1.0, func(value: float) -> void:
-		chart.offset_ms = value
-		chart.timing.offset_ms = value
-	)
-	_spin(page, "固定预读 ms", chart.pre_read_ms, 100.0, 3000.0, 10.0, func(value: float) -> void: chart.pre_read_ms = value)
-	_label(page, "基准 BPM = 第 1 个 BPM 点；offset 同时写入 timing.offset。", 11, UITheme.MUTED)
 	page.add_child(list)
-	_section(page, "BPM 点")
 	_buttons(page, [
-		{"text": "播放头加 BPM", "callback": func() -> void: _add_timing_point()},
+		{"text": "在播放头添加", "callback": func() -> void: _add_timing_point()},
 		{"text": "删除选中", "callback": func() -> void: _delete_timing_point()},
 	])
 	if _selected_timing >= 0 and _selected_timing < points.size():
 		var point: TimingPoint = points[_selected_timing]
 		var refresh_item := func() -> void:
 			refresh_list.call()
-		_beat(page, "起始拍", point.beat, func(value: float) -> void:
+		_beat(page, "生效位置（拍）", point.beat, func(value: float) -> void:
 			point.beat = value
 			chart.timing.sort_points()
 			refresh_item.call()
@@ -1239,16 +1270,36 @@ func _build_timing_page(page: VBoxContainer) -> void:
 			chart.timing.sort_points()
 			refresh_item.call()
 		)
-		_spin(page, "拍号分子", point.beats_per_bar, 1.0, 16.0, 1.0, func(value: float) -> void:
+		_buttons(page, [
+			{"text": "BPM ×2", "callback": func() -> void: _scale_timing_bpm(point, 2.0)},
+			{"text": "BPM ÷2", "callback": func() -> void: _scale_timing_bpm(point, 0.5)},
+		])
+		_spin(page, "每小节拍数 (x/4)", point.beats_per_bar, 1.0, 16.0, 1.0, func(value: float) -> void:
 			point.beats_per_bar = int(value)
 			chart.timing.sort_points()
 			refresh_item.call()
 		)
 		_buttons(page, [
-			{"text": "播放头设为起始拍", "callback": func() -> void: _set_timing_beat(point)},
+			{"text": "生效位置 = 播放头", "callback": func() -> void: _set_timing_beat(point)},
 			{"text": "定位到该点", "callback": func() -> void: _app.set_playhead(point.beat)},
 		])
-	_label(page, "第一个 BPM 点必须不晚于第 0 小节；列表双击可跳转。", 11, UITheme.MUTED)
+	else:
+		_label(page, "点一行 BPM 点来编辑位置、BPM、拍号。", 11, UITheme.MUTED)
+	_label(page, "列表按拍排序；双击一行跳到该点。逐点改 BPM 不会移动已放置的音符（音符存的是拍位）。", 11, UITheme.MUTED)
+
+
+func _scale_timing_bpm(point: TimingPoint, factor: float) -> void:
+	_apply(func() -> void:
+		point.bpm = clampf(point.bpm * factor, 20.0, 600.0)
+		_app.chart.timing.sort_points()
+	)
+	_refresh_timing_list_text()
+
+
+func _reset_taps() -> void:
+	_tap_times.clear()
+	if _tap_label != null:
+		_tap_label.text = "Tap Tempo：连点至少 2 次；结果写入第 1 个 BPM 点（基准）。"
 
 
 func _tap_tempo() -> void:
@@ -1260,7 +1311,7 @@ func _tap_tempo() -> void:
 		_tap_times.remove_at(0)
 	if _tap_times.size() < 2:
 		if _tap_label != null:
-			_tap_label.text = "Tap Tempo：再点 1 次。"
+			_tap_label.text = "Tap Tempo：再点 %d 次（已计 %d 次）。" % [2 - _tap_times.size(), _tap_times.size()]
 		return
 	var total := 0.0
 	for i in range(1, _tap_times.size()):
@@ -1274,10 +1325,9 @@ func _tap_tempo() -> void:
 		if _timing_base_spin != null:
 			_timing_base_spin.set_value_no_signal(bpm)
 		if _timing_list != null and _timing_list.item_count > 0:
-			var point: TimingPoint = _timing_chart.timing.points[0]
-			_timing_list.set_item_text(0, "基准  %02d  %s  %.1f BPM  %d/4" % [0, _timing_chart.timing.format_beat(point.beat), point.bpm, point.beats_per_bar])
+			_timing_list.set_item_text(0, _timing_row_text(_timing_chart, 0, _timing_chart.timing.points[0]))
 	if _tap_label != null:
-		_tap_label.text = "Tap Tempo：%.1f BPM（%d 次）" % [bpm, _tap_times.size()]
+		_tap_label.text = "Tap Tempo：%.1f BPM（%d 次，已写入第 1 个点）。" % [bpm, _tap_times.size()]
 
 
 func _set_timing_beat(point: TimingPoint) -> void:
@@ -1309,9 +1359,18 @@ func _add_timing_point() -> void:
 	_rebuild()
 
 
+func _refresh_timing_list_text() -> void:
+	if _timing_list == null or _timing_chart == null:
+		return
+	var count := mini(_timing_list.item_count, _timing_chart.timing.points.size())
+	for i in count:
+		_timing_list.set_item_text(i, _timing_row_text(_timing_chart, i, _timing_chart.timing.points[i]))
+
+
 func _delete_timing_point() -> void:
 	var chart: Chart = _app.chart
 	if chart.timing.points.size() <= 1:
+		_app.notice.emit("至少要保留 1 个 BPM 点（它定义开头速度）。", "warning")
 		return
 	if _selected_timing < 0 or _selected_timing >= chart.timing.points.size():
 		return

@@ -95,6 +95,10 @@ var _audio_stream_rate: float = 1.0
 var _audio_rate_key: float = 1.0
 var _audio_loading := false
 var _playing: bool = false
+## 正在拖底部进度条。
+var _seeking: bool = false
+## 上一次重建音频的时刻：拖动时按这个节流，避免每个鼠标事件都重启播放器。
+var _last_audio_rebase_msec: int = 0
 var _loop_enabled: bool = false
 var _loop_start: float = 0.0
 var _loop_end: float = 0.0
@@ -744,6 +748,14 @@ func _build_ui() -> void:
 	transport_row.add_child(_time_label)
 	_progress = SeekBar.new()
 	_progress.seek_to.connect(_on_seek_fraction)
+	_progress.drag_started.connect(func() -> void:
+		_seeking = true
+		_sync_playback_view()
+	)
+	_progress.drag_ended.connect(func() -> void:
+		_seeking = false
+		_sync_playback_view()
+	)
 	transport_row.add_child(_progress)
 	_beat_label = Label.new()
 	UITheme.style_mono(_beat_label, 12, UITheme.GOLD)
@@ -1587,6 +1599,8 @@ func _sync_from_app() -> void:
 	_preview.cursor_scale = _app.cursor_scale
 	_sfx.set_style(_app.hit_sfx_style)
 	_canvas.px_per_beat = _app.zoom_px_per_beat
+	_canvas.clamp_scroll()
+	_sync_playback_view()
 	if _beat_subdiv_edit != null:
 		_beat_subdiv_edit.text = str(_app.beat_subdivisions)
 		_set_beat_subdivision_error(false)
@@ -1673,6 +1687,13 @@ func _ensure_audio() -> void:
 	_audio_stream_rate = stream_rate
 	_audio.pitch_scale = _rate / maxf(0.01, _audio_stream_rate)
 	_audio_loading = false
+	# 音频长度是「谱面终点」的唯一可信来源：加载到就写进谱面，
+	# 老谱面不用重新导入也能得到正确的尾部上限。
+	if _app != null and _app.chart != null and base != null:
+		var length_ms := base.get_length() * 1000.0
+		if length_ms > 0.0 and absf(_app.chart.audio_length_ms() - length_ms) > 1.0:
+			_app.chart.editor["audio_length_ms"] = length_ms
+			_app.status_changed.emit()
 	print("[audio] editor ", prepared, " -> ", _audio.stream, " stream_rate=", _audio_stream_rate, " bus=", _audio.bus)
 	if _audio.stream == null:
 		_show_toast("音频不可用：预览使用系统时钟。", "warning")
@@ -1771,6 +1792,7 @@ func _start_play(beat: float) -> void:
 	_playing = true
 	_preview.playing = true
 	_play_button.text = "❚❚"
+	_sync_playback_view()
 	_rebase_playback(beat)
 
 
@@ -1786,12 +1808,17 @@ func _rebase_playback(beat: float) -> void:
 	if _audio.stream != null:
 		_audio.pitch_scale = _rate / maxf(0.01, _audio_stream_rate)
 		var from_sec := maxf(0.0, (_play_start_chart_ms - _app.chart.offset_ms) / 1000.0) / maxf(0.01, _audio_stream_rate)
-		# 音频比谱面短（或跳到了音频末尾之后）就别播了，交给墙钟继续推，
-		# 否则 play() 立刻 finished，播放会被误停。
-		if from_sec < _audio.stream.get_length():
-			_audio.play(from_sec)
-		else:
-			_audio.stop()
+		# 拖进度条时每个鼠标事件都重建音频太贵：节流到约 120ms 一次，
+		# 画面和墙钟照旧每次 seek 都对齐。
+		var now := Time.get_ticks_msec()
+		if not _seeking or now - _last_audio_rebase_msec >= 120:
+			_last_audio_rebase_msec = now
+			# 音频比谱面短（或跳到了音频末尾之后）就别播了，交给墙钟继续推，
+			# 否则 play() 立刻 finished，播放会被误停。
+			if from_sec < _audio.stream.get_length():
+				_audio.play(from_sec)
+			else:
+				_audio.stop()
 	_app.set_playhead(beat)
 
 
@@ -1808,8 +1835,8 @@ func _on_seek_requested(beat: float) -> void:
 func _on_seek_fraction(fraction: float) -> void:
 	if _app == null or _app.chart == null:
 		return
+	# seek() 会发 seek_requested，那边已经刷新过运输条，这里不重复。
 	_app.seek(clampf(fraction, 0.0, 1.0) * _timeline_total_beats())
-	_update_transport(true)
 
 
 func _set_loop(start: float, end: float, enabled: bool) -> void:
@@ -1827,6 +1854,15 @@ func _stop_play() -> void:
 		_preview.playing = false
 	if _play_button != null:
 		_play_button.text = "▶"
+	_sync_playback_view()
+
+
+## 播放滚动模式：翻页 or 钉住播放头。只在播放/拖进度条时钉住，
+## 暂停浏览回到“从上往下写入”的方向。
+func _sync_playback_view() -> void:
+	if _canvas == null:
+		return
+	_canvas.set_playback_view(String(_app.playback_scroll) if _app != null else "page", _playing or _seeking)
 
 
 ## 停止并重置播放进度：黄线回到 0:00。
@@ -1848,7 +1884,7 @@ func _on_audio_finished() -> void:
 	if _app == null or _app.chart == null:
 		_stop_play()
 		return
-	if _app.playhead_beat >= _app.chart.duration_beats():
+	if _app.playhead_beat >= _app.chart_content_end_beats():
 		_stop_play()
 
 
@@ -1929,7 +1965,7 @@ func _process(_delta: float) -> void:
 					_beat_label.add_theme_color_override("font_color", UITheme.GOLD)
 			)
 		var audio_playing := _audio.stream != null and _audio.playing
-		if beat >= _app.chart.duration_beats() + 2.0 and not audio_playing:
+		if beat >= _app.chart_content_end_beats() + 2.0 and not audio_playing:
 			_stop_play()
 
 
@@ -1946,7 +1982,7 @@ func _playback_total_ms() -> float:
 func _timeline_total_beats() -> float:
 	if _app == null or _app.chart == null:
 		return 1.0
-	return maxf(1.0, _app.chart.duration_beats())
+	return maxf(1.0, _app.chart_limit_beats())
 
 
 func _update_transport(force: bool = false) -> void:
@@ -1967,6 +2003,7 @@ func _update_transport(force: bool = false) -> void:
 
 
 func _update_status() -> void:
+	_sync_playback_view()
 	if _app == null or _app.chart == null:
 		return
 	_preview.use_3d_ring = _app.use_3d_ring

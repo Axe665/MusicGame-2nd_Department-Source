@@ -41,6 +41,14 @@ func _initialize() -> void:
 		"test_nearest_u",
 		"test_pre_read",
 		"test_bar_lines",
+		"test_beat_grid_lines",
+		"test_pinned_scroll",
+		"test_flow_flip_anchor",
+		"test_ring_span_label",
+		"test_ring_span_end",
+		"test_chart_end_limit",
+		"test_uniform_meter",
+		"test_timing_presorted",
 		"test_shrink_example",
 		"test_event_restore",
 		"test_playability_validator",
@@ -174,9 +182,9 @@ func test_timing() -> bool:
 	near(map.chart_ms_to_beat(8000.0), 12.0, 0.001, "timing bpm change inverse")
 	map.offset_ms = -18.0
 	near(map.beat_to_audio_ms(0.0), 18.0, 0.001, "timing offset")
-	eq(map.format_beat(16.0), "4:0:4", "timing format beat")
-	near(map.parse_beat("4:0:4"), 16.0, 0.001, "timing parse beat")
-	near(map.parse_beat("4:2:4"), 18.0, 0.001, "timing parse half bar")
+	eq(map.format_beat(16.0), "5:0:4", "timing format beat")
+	near(map.parse_beat("5:0:4"), 16.0, 0.001, "timing parse beat")
+	near(map.parse_beat("5:2:4"), 18.0, 0.001, "timing parse half bar")
 	eq(TimingMap.parse_beat_subdivision("4"), 4, "beat subdivision parse 4")
 	eq(TimingMap.parse_beat_subdivision(" 8 "), 8, "beat subdivision parse trims spaces")
 	eq(TimingMap.parse_beat_subdivision("0"), 0, "beat subdivision rejects zero")
@@ -1234,6 +1242,31 @@ func test_bar_lines() -> bool:
 	return true
 
 
+func test_beat_grid_lines() -> bool:
+	near(ChartCanvas.beat_line_width(false, true), 2.0, 0.001, "4/4 quarter lines are bold")
+	near(ChartCanvas.beat_line_width(true, true), 2.5, 0.001, "4/4 bar lines are boldest")
+	near(ChartCanvas.beat_line_width(false, false), 1.0, 0.001, "other meters keep plain quarter lines")
+	near(ChartCanvas.beat_line_width(true, false), 1.5, 0.001, "other meters keep plain bar lines")
+	var timing := TimingMap.new()
+	ok(ChartCanvas.is_uniform_four_four(timing), "an empty meter defaults to 4/4")
+	timing.points.append(TimingPoint.new(8.0, 120.0, 3))
+	ok(not ChartCanvas.is_uniform_four_four(timing), "a 3/4 point disables the emphasis")
+	ok(ChartCanvas.is_eighth_offset(0.5), "0.5 is the eighth line")
+	ok(not ChartCanvas.is_eighth_offset(0.25), "0.25 is not the eighth line")
+	var counts := {}
+	for divisions in [1, 2, 3, 4, 6, 8]:
+		var hits := 0
+		for offset in TimingMap.beat_subdivision_offsets(divisions):
+			if ChartCanvas.is_eighth_offset(offset):
+				hits += 1
+		counts[divisions] = hits
+	eq(counts[4], 1, "N=4 draws exactly one eighth line per beat")
+	eq(counts[6], 1, "N=6 draws exactly one eighth line per beat")
+	eq(counts[3], 0, "N=3 has no eighth line")
+	eq(counts[1], 0, "N=1 has no eighth line")
+	return true
+
+
 func test_pre_read() -> bool:
 	var chart := Chart.new()
 	chart.shapes["S1"] = BoundaryShape.ellipse("S1", 410.0, 245.0, 24)
@@ -1246,6 +1279,68 @@ func test_pre_read() -> bool:
 			var p := _preview_point(chart, u, target, target)
 			var c: Vector2 = BoundaryRuntime.eval_point(chart, u, target).point
 			near(p.distance_to(c), 0.0, 0.01, "P(T)=C at u=%.2f T=%.1f" % [u, target])
+	return true
+
+
+func test_pinned_scroll() -> bool:
+	near(ChartCanvas.pinned_scroll_beat(40.0, 20.0), 38.4, 0.001, "pinned playhead sits 8% from the edge")
+	eq(ChartCanvas.pinned_scroll_beat(0.5, 20.0), 0.0, "pinned scroll never goes negative")
+	near(ChartCanvas.pinned_scroll_beat(40.0, 20.0, 0.0), 40.0, 0.001, "zero margin pins the playhead to the edge")
+	return true
+
+
+func test_flow_flip_anchor() -> bool:
+	# 翻转方向后播放头仍停在同一屏幕比例：ratio 0.2 → 仍是 0.2。
+	near(ChartCanvas.flipped_scroll_beat(24.0, 20.0, 20.0), 8.0, 0.001, "flip keeps the playhead ratio")
+	near(ChartCanvas.flipped_scroll_beat(4.0, 0.0, 20.0), -12.0, 0.001, "flip may go negative before clamping")
+	eq(ChartCanvas.flipped_scroll_beat(80.0, 20.0, 20.0), 20.0, "off-screen playhead keeps the scroll unchanged")
+	return true
+
+
+func test_chart_end_limit() -> bool:
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	chart.editor["audio_length_ms"] = 60000.0
+	near(chart.audio_end_beat(), 120.0, 0.01, "60s at 120 BPM is 120 beats")
+	near(chart.end_limit_beat(), 136.0, 0.01, "limit is audio end + 4 bars")
+	var note := Note.new("tap", 140.0, 0.0, 60.0)
+	chart.notes.append(note)
+	near(chart.content_end_beat(), 140.0, 0.01, "content can extend past the audio")
+	near(chart.end_limit_beat(), 156.0, 0.01, "limit follows the later of audio and content")
+	return true
+
+
+func test_ring_span_label() -> bool:
+	eq(RingWorkspace.span_label(2.0, 4.0), "2 拍", "short span counts beats")
+	eq(RingWorkspace.span_label(8.0, 4.0), "2 小节", "whole bars")
+	eq(RingWorkspace.span_label(6.0, 4.0), "1 小节 2 拍", "mixed bars and beats")
+	eq(RingWorkspace.span_label(0.5, 4.0), "0.5 拍", "fractional beat")
+	return true
+
+
+func test_ring_span_end() -> bool:
+	var beats: Array[float] = [0.0, 2.0, 10.0]
+	near(RingWorkspace.span_end(beats, 0, 12.0, 4.0), 2.0, 0.001, "span ends at the next key")
+	near(RingWorkspace.span_end(beats, 2, 12.0, 4.0), 12.0, 0.001, "last span ends at content end")
+	near(RingWorkspace.span_end(beats, 2, 10.0, 4.0), 14.0, 0.001, "empty tail still gets one bar")
+	return true
+
+
+func test_uniform_meter() -> bool:
+	var timing := TimingMap.new()
+	timing.points = [TimingPoint.new(0.0, 120.0, 4), TimingPoint.new(16.0, 140.0, 4)]
+	eq(timing.uniform_beats_per_bar(), 4, "same meter everywhere")
+	timing.points.append(TimingPoint.new(32.0, 160.0, 3))
+	eq(timing.uniform_beats_per_bar(), 0, "mixed meters disable measure shading")
+	return true
+
+
+func test_timing_presorted() -> bool:
+	var timing := TimingMap.new()
+	timing.points = [TimingPoint.new(0.0, 120.0, 4), TimingPoint.new(8.0, 180.0, 4)]
+	timing.sort_points()
+	for beat in [-2.0, 0.0, 3.5, 8.0, 13.25]:
+		near(timing.beat_to_ms_sorted(beat), timing.beat_to_chart_ms(beat), 0.001, "presorted ms matches at beat %.2f" % beat)
 	return true
 
 

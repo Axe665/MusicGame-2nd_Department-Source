@@ -58,7 +58,7 @@ func _build() -> void:
 	_detail = Label.new()
 	UITheme.style_mono(_detail, 11, UITheme.MUTED)
 	_detail.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_detail.custom_minimum_size = Vector2(0, 32)
+	_detail.custom_minimum_size = Vector2(480, 32)
 	content.add_child(_detail)
 
 	var grid := GridContainer.new()
@@ -135,6 +135,9 @@ func _build() -> void:
 	var hint := Label.new()
 	UITheme.style_label(hint, 11, UITheme.FAINT)
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	# 自动换行标签在宽度未知时会报出 1500+ 的最小高度，把对话框撑到屏幕外；
+	# 给个最小宽度，高度就按 480 宽折行来算。
+	hint.custom_minimum_size = Vector2(480, 0)
 	hint.text = "支持 WAV / OGG / MP3 / FLAC；FLAC 等压缩格式通过 ffmpeg 解码一次并缓存。应用条件：BPM 检测成功、offset 校准成功、播放流时长与解码音频时长一致。"
 	content.add_child(hint)
 
@@ -160,12 +163,23 @@ func open_for(path: String) -> void:
 	_status.text = "分析中：%s" % path.get_file()
 	_status.add_theme_color_override("font_color", UITheme.INK)
 	_detail.text = "解码音频 → 起始包络 → 自相关 → 拍点跟踪"
-	popup_centered()
+	popup_centered(_fitted_size())
 	if _running:
 		# A previous song is still being analysed; queue this one behind it.
 		_restart_pending = true
 		return
 	_start()
+
+
+## 按内容算出窗口尺寸并限制在屏幕可用区域的 90% 内：只修内容尺寸不够，
+## 小屏幕时窗口仍然可能比屏幕高。
+func _fitted_size() -> Vector2i:
+	reset_size()
+	var usable := DisplayServer.screen_get_usable_rect()
+	return Vector2i(
+		mini(size.x, int(usable.size.x * 0.9)),
+		mini(size.y, int(usable.size.y * 0.9))
+	)
 
 
 func _start() -> void:
@@ -330,5 +344,7 @@ func _commit(apply_offset: bool) -> void:
 		return
 	if not _app.apply_detected_timing(_bpm_spin.value, _offset_spin.value, apply_offset, _path):
 		return
+	if _app.chart != null and _stream_ms > 0.0:
+		_app.chart.editor["audio_length_ms"] = _stream_ms
 	applied.emit()
 	hide()

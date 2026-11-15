@@ -5,6 +5,9 @@ extends Control
 ## 编辑器里替代只会显示的 ProgressBar，播放中拖动会立刻打断播放并重新对齐音频。
 
 signal seek_to(fraction: float)
+## 拖动开始/结束：播放中用来自动钉住播放头，并节流音频重建。
+signal drag_started
+signal drag_ended
 
 const TRACK_HEIGHT := 6.0
 const KNOB_IDLE := 5.5
@@ -13,6 +16,8 @@ const KNOB_HOT := 7.5
 var progress: float = 0.0
 var _hovered: bool = false
 var _dragging: bool = false
+## 拖动时攒下的目标位置：每帧只发一次 seek。
+var _pending_fraction: float = -1.0
 
 
 func _ready() -> void:
@@ -22,6 +27,7 @@ func _ready() -> void:
 	focus_mode = Control.FOCUS_NONE
 	mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	tooltip_text = "点击或拖动跳转播放位置（播放中也可以）"
+	set_process(false)
 	mouse_entered.connect(func() -> void:
 		_hovered = true
 		queue_redraw()
@@ -40,21 +46,55 @@ func set_progress(value: float) -> void:
 	queue_redraw()
 
 
+## 鼠标在进度条外面松开时 _gui_input 收不到释放：拖到条外松手会让
+## “正在拖动”永远为真，播放头一直钉住。这里兜底收尾。
+func _input(event: InputEvent) -> void:
+	if not _dragging:
+		return
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and not event.pressed:
+		_dragging = false
+		_flush_seek()
+		set_process(false)
+		drag_ended.emit()
+		queue_redraw()
+
+
 func _gui_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
 		if event.pressed:
 			_dragging = true
+			set_process(true)
+			drag_started.emit()
 			_seek(event.position.x)
 			queue_redraw()
 			accept_event()
 		elif _dragging:
 			_dragging = false
+			_flush_seek()
+			set_process(false)
+			drag_ended.emit()
 			queue_redraw()
 			accept_event()
 		return
 	if event is InputEventMouseMotion and _dragging:
-		_seek(event.position.x)
+		# 鼠标事件可能比帧还密（游戏鼠标 500Hz）；拖动时只记下位置，
+		# 每帧发一次，别让谱面每来一个事件就重绘一遍。
+		_pending_fraction = clampf(event.position.x / maxf(1.0, size.x), 0.0, 1.0)
+		progress = _pending_fraction
+		queue_redraw()
 		accept_event()
+
+
+func _process(_delta: float) -> void:
+	_flush_seek()
+
+
+func _flush_seek() -> void:
+	if _pending_fraction < 0.0:
+		return
+	var fraction := _pending_fraction
+	_pending_fraction = -1.0
+	seek_to.emit(fraction)
 
 
 func _seek(local_x: float) -> void:
