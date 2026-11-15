@@ -2860,32 +2860,53 @@ func _import_replay_dialog() -> void:
 
 
 func _open_replay_file(path: String) -> void:
+	if _app == null:
+		return
 	var data := Replay.load_from(path)
 	if data == null:
-		print("[replay] 读不出回放：", path)
+		_show_toast("读不出回放文件：%s" % path.get_file(), "error")
 		return
 	var chart_path := data.chart_path
 	if chart_path.is_empty() or not FileAccess.file_exists(chart_path):
-		# 回放里没有可用谱面路径时回落到当前打开的谱面；谱面被改过会提示。
-		if _app == null or _app.chart == null:
-			_show_toast("回放对应的谱面找不到：%s" % chart_path, "error")
-			return
-		if not data.chart_hash.is_empty() and data.chart_hash != Replay.hash_chart(_app.chart):
-			_show_toast("谱面在录制之后被改过，回放结果可能和当时不同", "error")
-		_start_replay(data)
+		_show_toast("回放对应的谱面不存在：%s\n（没有谱面就没法回放，请先打开/导入那张谱）" % chart_path, "error")
+		return
+	# 套组：按内容 hash 匹配到具体难度，而不是「用当前页面那张谱」。
+	if chart_path.to_lower().ends_with(".set.json"):
+		_open_replay_from_set(data, chart_path)
 		return
 	var chart: Chart = ChartIO.load_chart(chart_path)
 	if chart == null:
-		# 从难度套组里打开的谱面，chart_path 是 .set.json，load_chart 读不了：
-		# 这种情况回落到当前打开的谱面（hash 能对上就静默用）。
-		if _app != null and _app.chart != null:
-			if not data.chart_hash.is_empty() and data.chart_hash != Replay.hash_chart(_app.chart):
-				_show_toast("谱面在录制之后被改过，回放结果可能和当时不同", "error")
-			_start_replay(data)
-			return
 		_show_toast("回放对应的谱面读不出来：%s" % chart_path, "error")
 		return
+	if not data.chart_hash.is_empty() and data.chart_hash != Replay.hash_chart(chart):
+		_show_toast("谱面和录制时不一致（被改过或版本不同），无法回放", "error")
+		return
 	_app.set_chart(chart, chart_path, false)
+	_sync_from_app()
+	_start_replay(data)
+
+
+## 从难度套组里按 hash 找对应的难度再回放；找不到就报错，不拿别的难度凑合。
+func _open_replay_from_set(data: Replay, set_path: String) -> void:
+	if not _app.open_set_file(set_path):
+		_show_toast("回放对应的难度套组打不开：%s" % set_path.get_file(), "error")
+		return
+	var matched := -1
+	for i in _app.difficulties.size():
+		var entry: Dictionary = _app.difficulties[i]
+		var chart: Chart = entry.get("chart", null)
+		if chart == null:
+			continue
+		if data.chart_hash != Replay.hash_chart(chart):
+			continue
+		matched = i
+		break
+	if matched < 0:
+		_show_toast("回放对应的难度在套组里找不到（谱面被改过？）", "error")
+		return
+	if not _app.switch_difficulty(matched):
+		_show_toast("切换到难度 %d 失败" % matched, "error")
+		return
 	_sync_from_app()
 	_start_replay(data)
 

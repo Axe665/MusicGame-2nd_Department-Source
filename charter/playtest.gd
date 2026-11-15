@@ -231,7 +231,13 @@ var export_mode: bool = false
 ## 成品统一缩到 720p：缩小等于超采样，比直接低分辨率渲染更清楚。
 const EXPORT_VIDEO_SIZE := Vector2i(1280, 720)
 ## 逐帧截取的帧率；视频时间轴 = 帧号 / 帧率。
-const CAPTURE_FPS := 60
+## 导出帧率：30fps 足够看回放。长曲子会按「目标 30 秒」自动下调（最低 15fps）。
+const CAPTURE_FPS := 30
+const CAPTURE_TARGET_SEC := 30.0
+const CAPTURE_MIN_FPS := 15
+var capture_fps: int = CAPTURE_FPS
+## 上次导出的实测截帧速度（帧/秒），用来估算本次该用多少 fps。
+var _last_capture_fps: float = 55.0
 ## 导出时多截一小段尾巴：谱面最后一颗之后还有音乐，长度交给音频（-shortest）裁剪。
 const CAPTURE_TAIL_PAD_MS := 8000.0
 const CAPTURE_DIR := "user://export_frames"
@@ -243,6 +249,7 @@ var _replay_export_dialog: FileDialog = null
 var _saved_vsync: int = -1
 var _saved_max_fps: int = 0
 var _saved_window_size := Vector2i.ZERO
+var _capture_started_us: int = 0
 var _export_stage: int = 0
 var _export_pid: int = -1
 var _export_mp4: String = ""
@@ -1115,7 +1122,7 @@ func _process(delta: float) -> void:
 		return
 	if replay_mode and _capture_mode:
 		# 导出：锁成 1/60 秒一步，帧号就是视频时间轴（非导出时时钟由音频驱动）。
-		_replay_ms += (1.0 / float(CAPTURE_FPS)) * 1000.0 * maxf(0.05, replay_rate)
+		_replay_ms += (1.0 / float(capture_fps)) * 1000.0 * maxf(0.05, replay_rate)
 	var chart_ms := _chart_ms()
 	if _audio_delay_ms > 0.0 and _audio != null and chart_ms >= chart.offset_ms:
 		_audio_delay_ms = 0.0
@@ -1243,6 +1250,13 @@ func _enter_replay(data: Replay) -> void:
 		if String(event.get("k", "")) == "move":
 			_replay_cursor = Vector2(float(event.get("x", 0.0)), float(event.get("y", 0.0)))
 			break
+	# 关键：回放时让 preview 用「录制里的光标」。auto_cursor 是 INF 时，
+	# _draw 会退回 get_local_mouse_position()，玩家的真实鼠标会顶掉回放光标，
+	# Path/金键这类靠光标位置的判定就会和本局不一致（普遍偏低）。
+	if _replay_cursor.is_finite():
+		_preview.auto_cursor = _replay_cursor
+		_preview.mouse_screen = _replay_cursor
+		_preview._update_cursor()
 	if _replay_bar != null:
 		_replay_bar.visible = true
 	_update_replay_bar()
@@ -1267,6 +1281,8 @@ func _apply_replay_event(event: Dictionary) -> void:
 		"move":
 			var point := Vector2(float(event.get("x", 0.0)), float(event.get("y", 0.0)))
 			_replay_cursor = point
+			if _preview != null:
+				_preview.auto_cursor = point
 			_queue_path_motion(point, stamp)
 		"press":
 			var key := int(event.get("key", 0))
@@ -1470,6 +1486,15 @@ func _start_capture_export(path: String) -> void:
 			% [view.x, view.y, EXPORT_VIDEO_SIZE.x, EXPORT_VIDEO_SIZE.y])
 		return
 	_capture_frames = 0
+	# 按「目标 30 秒」挑帧率：截帧吞吐有限（每帧约 18ms），长曲子用 30fps 会明显超时。
+	var span_sec := maxf(0.1, (_replay_total_ms - _replay_start_ms) / 1000.0)
+	var pick := CAPTURE_FPS
+	while pick > CAPTURE_MIN_FPS and span_sec * float(pick) / maxf(1.0, _last_capture_fps) > CAPTURE_TARGET_SEC:
+		pick -= 5
+	capture_fps = pick
+	if pick < CAPTURE_FPS:
+		_set_export_progress(0.02, "%d fps 导出（约 %.0f 秒）" % [pick, span_sec * float(pick) / maxf(1.0, _last_capture_fps)])
+	_capture_started_us = Time.get_ticks_usec()
 	# 截帧期间关垂直同步、解除帧率上限：不然每帧都要等 vsync，导出等于按实时速度爬。
 	_saved_max_fps = Engine.max_fps
 	_saved_vsync = DisplayServer.window_get_vsync_mode()
@@ -1500,7 +1525,7 @@ func _start_capture_export(path: String) -> void:
 	_restart_for_capture(data)
 	# 谱面结束往往早于音乐结束：多截一段尾巴，最后交给 -shortest 按音频裁剪。
 	_replay_total_ms = maxf(_replay_total_ms, _replay_start_ms + 1000.0) + CAPTURE_TAIL_PAD_MS
-	_capture_total = maxi(1, int(ceil((_replay_total_ms - _replay_start_ms) / 1000.0 * float(CAPTURE_FPS))))
+	_capture_total = maxi(1, int(ceil((_replay_total_ms - _replay_start_ms) / 1000.0 * float(capture_fps))))
 	_capture_audio_offset = maxf(0.0, (_replay_start_ms - chart.offset_ms) / 1000.0)
 	_export_total_ms = maxf(1.0, (_replay_total_ms - _replay_start_ms))
 	if _capture_grabber == null:
@@ -1578,6 +1603,48 @@ class _FrameGrabber extends Node:
 	var busy := false
 	var grabbed := 0
 	var owner_pt: Playtest
+	## 落盘交给子线程：主线程只做「读回 + JPEG 编码到内存」，
+	## 磁盘写入和主线程并行，避免每帧都卡在 IO 上。
+	var _thread: Thread = null
+	var _mutex := Mutex.new()
+	var _queue: Array = []       # [{index, buffer}]
+	var _writing := 0
+	var _closing := false
+
+	func _ready() -> void:
+		_thread = Thread.new()
+		_thread.start(_worker)
+
+	func _worker() -> void:
+		while true:
+			var job: Dictionary = {}
+			_mutex.lock()
+			if not _queue.is_empty():
+				job = _queue.pop_front()
+			elif _closing:
+				_mutex.unlock()
+				return
+			_mutex.unlock()
+			if job.is_empty():
+				OS.delay_msec(1)
+				continue
+			var file := FileAccess.open("%s/%05d.jpg" % [folder, int(job["index"])], FileAccess.WRITE)
+			if file != null:
+				file.store_buffer(job["buffer"] as PackedByteArray)
+				file.close()
+			_mutex.lock()
+			_writing -= 1
+			_mutex.unlock()
+
+	## 等所有排队帧写完（编码前必须调）。
+	func flush() -> void:
+		while true:
+			_mutex.lock()
+			var pending := _queue.size() + _writing
+			_mutex.unlock()
+			if pending <= 0:
+				break
+			OS.delay_msec(2)
 
 	func _process(_delta: float) -> void:
 		if not active or busy:
@@ -1597,9 +1664,21 @@ class _FrameGrabber extends Node:
 				if owner_pt != null:
 					owner_pt._finish_export_error("截到的画面是黑的（窗口是不是最小化或被挡住了？）")
 				return
-			image.save_jpg("%s/%05d.jpg" % [folder, grabbed], 0.9)
+			var buffer := image.save_jpg_to_buffer(0.9)
+			_mutex.lock()
+			_queue.append({"index": grabbed, "buffer": buffer})
+			_writing += 1
+			_mutex.unlock()
 			grabbed += 1
 		busy = false
+
+	func shutdown() -> void:
+		_mutex.lock()
+		_closing = true
+		_mutex.unlock()
+		if _thread != null:
+			_thread.wait_to_finish()
+			_thread = null
 
 	func _has_content(image: Image) -> bool:
 		# 缩到 16×9 再取像素：只要 RGB 平均值不是全黑就算有内容。
@@ -1658,9 +1737,15 @@ func _finish_capture() -> void:
 	_running = false
 	if _capture_grabber != null:
 		_capture_grabber.active = false
-	# 最后一帧可能还在写盘。
-	await get_tree().create_timer(0.25).timeout
+	# 等子线程把排队帧写完，再统计。
+	if _capture_grabber != null:
+		_capture_grabber.flush()
+		_capture_grabber.shutdown()
 	_capture_frames = _capture_grabber.grabbed if _capture_grabber != null else 0
+	if _capture_started_us > 0 and _capture_frames > 0:
+		var used := maxf(0.001, float(Time.get_ticks_usec() - _capture_started_us) / 1000000.0)
+		_last_capture_fps = float(_capture_frames) / used
+		print("[export] 实测截帧 %.1f fps（%d 帧 / %.1fs）" % [_last_capture_fps, _capture_frames, used])
 	if _capture_frames < 2:
 		_finish_export_error("一帧都没截到")
 		return
@@ -1671,11 +1756,11 @@ func _finish_capture() -> void:
 func _start_encode() -> void:
 	var progress_file := ProjectSettings.globalize_path("user://export_ffmpeg.txt")
 	DirAccess.remove_absolute(progress_file)
-	var seconds := maxf(0.1, float(_capture_frames) / float(CAPTURE_FPS))
+	var seconds := maxf(0.1, float(_capture_frames) / float(capture_fps))
 	_export_total_ms = seconds * 1000.0
 	var args := PackedStringArray([
 		"-y", "-progress", progress_file, "-nostats",
-		"-framerate", str(CAPTURE_FPS), "-i", _capture_dir.replace("\\", "/") + "/%05d.jpg",
+		"-framerate", str(capture_fps), "-i", _capture_dir.replace("\\", "/") + "/%05d.jpg",
 	])
 	if not _capture_audio.is_empty():
 		# 不传 -t：视频比音频长时由 -shortest 按音频结尾裁掉多余帧，
