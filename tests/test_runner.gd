@@ -132,6 +132,12 @@ func _initialize() -> void:
 		"test_mouse_button_input",
 		"test_osu_star_color",
 		"test_osu_filters",
+		"test_osu_difficulty_star_sort",
+		"test_osu_star_hints_json",
+		"test_osu_beatmap_set_id",
+		"test_import_label_stars",
+		"test_difficulty_star_label",
+		"test_difficulty_stars_round_trip",
 		"test_osu_pill_rows",
 		"test_audio_clock",
 		"test_audio_clock_rate",
@@ -3720,6 +3726,108 @@ func test_osu_star_color() -> bool:
 	ok(green != yellow and yellow != orange and orange != red and red != violet, "each bucket has its own colour")
 	ok(violet == OsuBrowser.star_color(9.9), "purple bucket is stable")
 	return true
+## 镜像站返回的两种 JSON 都要能解析成「难度名 → 星数」。
+func test_osu_star_hints_json() -> bool:
+	# sayobot：data.bid_data[].version / star
+	var sayobot: Variant = JSON.parse_string('{"status":0,"data":{"bid_data":[{"version":"Insane","star":4.7},{"version":"Hard","star":2.5}]}}')
+	var from_sayobot := OsuIO.hints_from_json(sayobot)
+	eq(from_sayobot.size(), 2, "sayobot yields two difficulties")
+	ok(absf(float(from_sayobot.get("Insane", 0.0)) - 4.7) < 0.001, "sayobot star value")
+	ok(absf(float(from_sayobot.get("Hard", 0.0)) - 2.5) < 0.001, "sayobot second value")
+
+	# osu.direct：顶层 beatmaps[].version / difficulty_rating
+	var direct: Variant = JSON.parse_string('{"id":1,"beatmaps":[{"version":"Extra","difficulty_rating":6.39},{"version":"Normal","difficulty_rating":2.0}]}')
+	var from_direct := OsuIO.hints_from_json(direct)
+	eq(from_direct.size(), 2, "osu.direct yields two difficulties")
+	ok(absf(float(from_direct.get("Extra", 0.0)) - 6.39) < 0.001, "osu.direct rating value")
+
+	# 没有星数字段就返回空，调用方按文件顺序处理
+	ok(OsuIO.hints_from_json(JSON.parse_string('{"data":{"bid_data":[{"version":"X"}]}}')).is_empty(), "no star field means empty hints")
+	ok(OsuIO.hints_from_json(null).is_empty(), "null input is safe")
+	return true
+
+
+## .osu 文本里的 BeatmapSetID 能读出来。
+func test_osu_beatmap_set_id() -> bool:
+	var text := """osu file format v14
+
+[Metadata]
+Title:Shoujo A
+BeatmapID:4499482
+BeatmapSetID:2137985
+
+[Difficulty]
+CircleSize:4
+"""
+	eq(OsuIO._read_beatmap_set_id(text), 2137985, "BeatmapSetID parsed")
+	eq(OsuIO._read_beatmap_set_id("[Metadata]\nTitle:X\n"), 0, "missing id gives 0")
+	return true
+
+
+
+## 难度按星数排序：升序、未知排最后、原始下标不变。
+func test_osu_difficulty_star_sort() -> bool:
+	var entries := [
+		{"index": 0, "version": "ANOTHER", "stars": 6.5},
+		{"index": 1, "version": "BEGINNER", "stars": 1.2},
+		{"index": 2, "version": "HYPER", "stars": 4.0},
+		{"index": 3, "version": "LOCAL ONLY", "stars": -1.0},
+	]
+	var sorted := OsuIO.sort_by_stars(entries)
+	eq(sorted.size(), 4, "keeps every difficulty")
+	eq(String(sorted[0]["version"]), "BEGINNER", "lowest stars first")
+	eq(String(sorted[1]["version"]), "HYPER", "then middle")
+	eq(String(sorted[2]["version"]), "ANOTHER", "then highest")
+	eq(String(sorted[3]["version"]), "LOCAL ONLY", "unknown stars go last")
+	eq(int(sorted[2]["index"]), 0, "original zip index is preserved")
+	eq(int(sorted[0]["index"]), 1, "original zip index follows the entry")
+
+	# 没有星数时顺序原样保留
+	var plain := OsuIO.sort_by_stars([{"index": 0, "version": "B"}, {"index": 1, "version": "A"}])
+	eq(String(plain[0]["version"]), "B", "no stars keeps file order")
+	return true
+
+
+## 难度名后缀星数：顶部下拉和窗口标题显示，名字本身保持干净。
+func test_difficulty_star_label() -> bool:
+	var app_script := load("res://charter/app.gd")
+	eq(String(app_script.star_label("Insane", 5.42)), "Insane  5.42★", "known stars are appended")
+	eq(String(app_script.star_label("Insane", -1.0)), "Insane", "unknown stars keep the bare name")
+	var app = app_script.new()
+	app.difficulties.append({"name": "Insane", "stars": 5.42, "chart": null})
+	app.difficulties.append({"name": "Easy", "chart": null})
+	eq(app.difficulty_names()[0], "Insane  5.42★", "difficulty list shows stars")
+	eq(app.difficulty_names()[1], "Easy", "difficulty without stars stays bare")
+	eq(app.difficulty_name(0), "Insane  5.42★", "single difficulty name shows stars")
+	app.free()
+	return true
+
+
+## 星数写进套组文件，重新打开还在（否则排序对了但看不到星）。
+func test_difficulty_stars_round_trip() -> bool:
+	var path := "user://test_stars_set.json"
+	var chart := DemoChart.make_demo()
+	var entries: Array = [{"name": "Insane", "stars": 5.42, "chart": chart}]
+	eq(ChartIO.save_set(path, entries), OK, "set with stars saves")
+	var loaded := ChartIO.load_set(path)
+	ok(bool(loaded.get("ok", false)), "set with stars loads")
+	var first: Dictionary = loaded.get("entries", [])[0]
+	near(float(first.get("stars", -1.0)), 5.42, 0.001, "stars survive the set round trip")
+	eq(String(first.get("name", "")), "Insane", "stored name stays clean")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	return true
+
+
+## 难度标签末尾追加星数。
+func test_import_label_stars() -> bool:
+	var app_script := load("res://charter/app.gd")
+	var with_stars := String(app_script.import_label("Insane", "Song", "Mapper", "std", 5.42))
+	ok(with_stars.ends_with("5.42★"), "star rating appended at the end, got: %s" % with_stars)
+	ok(with_stars.contains("Insane"), "version still in label")
+	var without := String(app_script.import_label("Insane", "Song", "Mapper", "std"))
+	ok(not without.contains("★"), "no star when rating is unknown")
+	return true
+
 
 
 ## osu 官方筛选：类型 / 语言 / 标签（tags 是 AND）。
