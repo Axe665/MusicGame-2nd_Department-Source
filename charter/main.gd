@@ -40,6 +40,8 @@ const QUALITY_OPTIONS := [
 	{"key": "ring_3d_hz", "label": "3D 环刷新", "choices": [["60Hz", 76], ["30Hz", 77]]},
 	{"key": "bar_lines", "label": "小节线", "choices": [["开", 78], ["关", 79]]},
 	{"key": "background_brightness", "label": "背景明暗", "choices": [["关", 96], ["25%", 97], ["50%", 98], ["75%", 99], ["100%（默认）", 100]]},
+	{"key": "show_storyboard", "label": "故事板", "choices": [["开", 166], ["关", 167]]},
+	{"key": "show_storyboard_background", "label": "故事板背景层", "choices": [["开", 168], ["关", 169]]},
 ]
 
 ## 界面（HUD）选项：和 视图 → 画质 同样的菜单结构，只影响显示。
@@ -161,9 +163,6 @@ var _playtest_dynamic: CheckBox = null
 var _playtest_auto: CheckBox = null
 ## 试玩设置里的「背景暗度」0-100。
 var _playtest_dim: SpinBox = null
-## 试玩设置里的「显示故事板」开关。
-var _playtest_storyboard: CheckBox = null
-var _playtest_sb_bg: CheckBox = null
 var _playtest_mouse: CheckBox = null
 var _playtest_bias: Label = null
 ## 试玩设置底部的「从头开始玩」按钮（试玩中隐藏）。
@@ -1144,6 +1143,10 @@ func _quality_index(key: String) -> int:
 			return 0 if _app.bar_lines else 1
 		"background_brightness":
 			return [0, 25, 50, 75, 100].find(_app.background_brightness)
+		"show_storyboard":
+			return 0 if _app.show_storyboard else 1
+		"show_storyboard_background":
+			return 0 if _app.show_storyboard_background else 1
 	return -1
 
 
@@ -1180,6 +1183,13 @@ func _set_quality_index(key: String, index: int) -> void:
 			_app.background_brightness = [0, 25, 50, 75, 100][clampi(index, 0, 4)]
 			# 背景明暗不是画质参数，别把预设打成「自定义」。
 			return
+		"show_storyboard":
+			_app.show_storyboard = index == 0
+			# 故事板开关也不是画质参数，不参与预设。
+			return
+		"show_storyboard_background":
+			_app.show_storyboard_background = index == 0
+			return
 	_app.quality_preset = "custom"
 
 
@@ -1201,6 +1211,11 @@ func _apply_visual_options() -> void:
 	_preview.bar_lines_visible = _app.bar_lines
 	_preview.set_background_brightness(float(_app.background_brightness) / 100.0)
 	_preview.hud_options = _app.hud_options()
+	_preview.show_storyboard = _app.show_storyboard
+	_preview.show_storyboard_background = _app.show_storyboard_background
+	if _preview._storyboard_bg != null:
+		_preview._storyboard_bg.visible = _app.show_storyboard
+	_preview._refresh_background_layering()
 	_preview.apply_ring_quality()
 	_preview.request_redraw()
 	# 试玩里有自己的 Preview3D：局内改画质要同时推给它。
@@ -1215,6 +1230,9 @@ func _apply_visual_options() -> void:
 		inner.bar_lines_visible = _app.bar_lines
 		inner.set_background_brightness(float(_app.background_brightness) / 100.0)
 		inner.hud_options = _app.hud_options()
+		inner.show_storyboard = _app.show_storyboard
+		inner.show_storyboard_background = _app.show_storyboard_background
+		inner._refresh_background_layering()
 		inner.apply_ring_quality()
 		inner.request_redraw()
 
@@ -1470,7 +1488,7 @@ func _build_dialogs() -> void:
 	_open_dialog = FileDialog.new()
 	_open_dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
 	_open_dialog.access = FileDialog.ACCESS_FILESYSTEM
-	_open_dialog.filters = PackedStringArray(["*.json ; Tamaki 谱面"])
+	_open_dialog.filters = PackedStringArray(["*.json,*.lbp ; Tamaki 谱面 / 谱面包"])
 	_open_dialog.title = "打开谱面"
 	_open_dialog.file_selected.connect(func(path: String) -> void:
 		_app.ensure_tab()
@@ -1541,8 +1559,8 @@ func _build_dialogs() -> void:
 	_lbp_dialog = FileDialog.new()
 	_lbp_dialog.file_mode = FileDialog.FILE_MODE_SAVE_FILE
 	_lbp_dialog.access = FileDialog.ACCESS_FILESYSTEM
-	_lbp_dialog.filters = PackedStringArray(["*.lbp ; Tamaki LBP v2"])
-	_lbp_dialog.title = "导出 .lbp"
+	_lbp_dialog.filters = PackedStringArray(["*.lbp ; Tamaki 谱面包（zip）"])
+	_lbp_dialog.title = "导出 .lbp 谱面包"
 	_lbp_dialog.current_file = "chart.lbp"
 	_lbp_dialog.file_selected.connect(func(path: String) -> void:
 		if not path.to_lower().ends_with(".lbp"):
@@ -2724,10 +2742,6 @@ func _open_playtest_setup(from_start: bool) -> void:
 		_playtest_dynamic.button_pressed = bool(_app.dynamic_offset)
 	if _playtest_auto != null:
 		_playtest_auto.button_pressed = bool(_app.playtest_auto)
-	if _playtest_storyboard != null:
-		_playtest_storyboard.button_pressed = bool(_app.show_storyboard)
-	if _playtest_sb_bg != null:
-		_playtest_sb_bg.button_pressed = bool(_app.show_storyboard_background)
 	if _playtest_mouse != null:
 		_playtest_mouse.button_pressed = bool(_app.mouse_keys)
 	if _playtest_latency != null:
@@ -2941,7 +2955,7 @@ func _build_playtest_dialog() -> void:
 	mirror_row.add_child(_playtest_mirror)
 	box.add_child(mirror_row)
 	_playtest_dim = _playtest_spin_row(box, "背景暗度", 0.0, 70.0, 1.0, 70.0, "%")
-	_playtest_dim.tooltip_text = "和 osu 的 Background dim 一样：0% 不遮，100% 全黑；只暗背景和故事板，不暗判定环和音符"
+	_playtest_dim.tooltip_text = "和 osu 的 Background dim 一样：0% 不遮，70% 压暗；只暗背景和故事板，不暗判定环和音符"
 	_playtest_offset = _playtest_spin_row(box, "判定偏移", -200.0, 200.0, 1.0, 0.0, "ms")
 	_playtest_latency = _playtest_spin_row(box, "输出延迟", 0.0, 250.0, 1.0, 0.0, "ms")
 	_playtest_latency.tooltip_text = "0 = 用驱动报告值；>0 = 强制覆盖（可升可降）。驱动明显不准时才手动填"
@@ -2955,16 +2969,6 @@ func _build_playtest_dialog() -> void:
 	_playtest_dynamic.text = "动态 offset（局内自动校准，≤±50ms）"
 	_playtest_dynamic.tooltip_text = "至少 8 次命中后，每次命中按偏差的 5% 自动微调判定偏移"
 	box.add_child(_playtest_dynamic)
-	_playtest_storyboard = CheckBox.new()
-	_playtest_storyboard.button_pressed = bool(_app.show_storyboard) if _app != null else true
-	_playtest_storyboard.text = "显示故事板（osu! storyboard）"
-	_playtest_storyboard.tooltip_text = "关闭后只留谱面背景和 BGA，storyboard 不再绘制；写进 settings.json"
-	box.add_child(_playtest_storyboard)
-	_playtest_sb_bg = CheckBox.new()
-	_playtest_sb_bg.button_pressed = bool(_app.show_storyboard_background) if _app != null else true
-	_playtest_sb_bg.text = "故事板背景层（取消勾选=只看谱面背景图 + 特效）"
-	_playtest_sb_bg.tooltip_text = "storyboard 的 Background/Video 层通常是一整张背景，取消后谱面背景图会露出来，只保留前景特效"
-	box.add_child(_playtest_sb_bg)
 	_playtest_auto = CheckBox.new()
 	_playtest_auto.text = "AUTO 自动演示（游戏内 F8 切换）"
 	_playtest_auto.tooltip_text = "自动完美演奏所有音符，用来快速看谱面；结算会标注 AUTO"
@@ -3073,19 +3077,6 @@ func _commit_playtest_settings() -> void:
 		_app.dynamic_offset = _playtest_dynamic.button_pressed
 	if _playtest_auto != null:
 		_app.playtest_auto = _playtest_auto.button_pressed
-	if _playtest_sb_bg != null:
-		_app.show_storyboard_background = _playtest_sb_bg.button_pressed
-		_preview.show_storyboard_background = _app.show_storyboard_background
-	if _playtest_storyboard != null:
-		_app.show_storyboard = _playtest_storyboard.button_pressed
-		_preview.show_storyboard = _app.show_storyboard
-		_preview.show_storyboard_background = _app.show_storyboard_background
-		if _preview._storyboard_bg != null:
-			_preview._storyboard_bg.visible = _app.show_storyboard
-		_preview._refresh_background_layering()
-		if _playtest != null and _playtest._preview != null:
-			_playtest._preview.show_storyboard = _app.show_storyboard
-	_playtest._preview.show_storyboard_background = _app.show_storyboard_background
 	if _playtest_mouse != null:
 		_app.mouse_keys = _playtest_mouse.button_pressed
 	if _playtest_mirror != null:

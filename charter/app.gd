@@ -1027,6 +1027,15 @@ func load_chart(path: String) -> bool:
 	# .set.json 是难度套组：走套组流程，顶部会出现难度下拉。
 	if _is_set_file(path):
 		return open_set_file(path)
+	# .lbp 包：单个 zip（谱面 JSON + 音频/曲绘/视频/故事板）。
+	if path.to_lower().ends_with(".lbp") and LBPIO.is_package(path):
+		var packed := LBPIO.import_package(path)
+		if packed == null:
+			notice.emit("打开失败：%s" % LBPIO.last_error, "error")
+			return false
+		set_chart(packed, path)
+		notice.emit("已打开谱面包 %s" % path.get_file(), "info")
+		return true
 	var loaded := ChartIO.load_chart(path)
 	if loaded == null:
 		notice.emit("打开失败：%s" % ChartIO.last_error, "error")
@@ -1211,7 +1220,7 @@ func import_maimai(path: String, difficulty_index: int = 0) -> bool:
 func export_lbp(path: String) -> bool:
 	if chart == null:
 		return false
-	var err := LBPIO.export_to_file(chart, path)
+	var err := LBPIO.export_package(chart, path)
 	if err != OK:
 		notice.emit("导出 .lbp 失败：%s" % LBPIO.last_error, "error")
 		return false

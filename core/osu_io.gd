@@ -312,6 +312,8 @@ static func parse_osu(text: String, source_name: String = "") -> Dictionary:
 		"audio": "",
 		"bpm": 120.0,
 		"difficulty": String(metadata.get("Version", "Imported")),
+		# osu 的宽屏故事板用 854x480 坐标场；不记这个标志会把整张图右移 107 单位。
+		"widescreen": String(general.get("WidescreenStoryboard", "0")).strip_edges() == "1",
 	}
 	var chart := DemoChart.make_empty(meta)
 	chart.timing.points.clear()

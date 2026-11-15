@@ -257,7 +257,9 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	_preview.custom_cursor_visible = true
 	_preview.show_hud = true
 	_preview.use_3d_ring = true
-	_preview.mouse_tilt = true
+	# 试玩里环要正面朝玩家：鼠标视差会让环整体倾斜、环心还会跟着平移，
+	# 观感就是「环不在正中心、有点歪」。编辑器预览保留视差。
+	_preview.mouse_tilt = false
 	_preview.show_debug = false
 	_preview.flow_scale = flow
 	_preview.star_speed = float(_app.star_speed if _app != null else 1.0)
@@ -1971,7 +1973,7 @@ func _press_target(note: Note, ms: float, beat: float) -> Dictionary:
 			if bool(state.get("head_judged", false)) or ms < target - EARLY_MS:
 				return {}
 			return _shape_target(note, target - EARLY_MS, target + HIT_WINDOW_MS, target,
-				PackedVector2Array([_preview.note_head_screen(note, beat)]),
+				_preview.path_head_arc(note, beat),
 				POSITION_TOLERANCE_PX + float(_preview.note_graphic_radius("path")), 0.0)
 		"anchor":
 			# 成对 Anchor 由 _judge_anchor_pairs 整对收键，不走单键分配。
@@ -2000,7 +2002,8 @@ func _match_press(press: Dictionary, target: Dictionary) -> Dictionary:
 	var pad := float(target["pad"])
 	if bool(target["dense"]):
 		var slack := rad_to_deg(tolerance / maxf(1.0, float(target.get("ring_radius", 1.0))))
-		var half := maxf(24.0, (0.0 if points.size() <= 1 else note.arc_width() + pad + 2.0 * slack) * 0.5)
+		var span := note.width if note.type == "path" else note.arc_width()
+		var half := maxf(24.0, (0.0 if points.size() <= 1 else span + pad + 2.0 * slack) * 0.5)
 		if not bool(press.get("valid", true)):
 			return {}
 		var press_angle := float(press.get("angle", NAN))

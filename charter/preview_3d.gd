@@ -99,7 +99,24 @@ var _last_background_path: String = ""
 var _storyboard: Storyboard = null
 var _storyboard_dir := ""
 var _storyboard_chart: Chart = null
-var _storyboard_textures: Dictionary = {}
+var _storyboard_textures: Dictionary = {}   # 兼容旧代码的实例级视图；真实数据在 _tex_cache
+## 每次试玩都会新建一套 Preview3D，解析结果和贴图放类级缓存里共享：
+## 3936 sprite 的 .osb 实测 parse 232ms，135 张图解码更久，重建一次就是一次卡顿。
+static var _board_cache: Dictionary = {}
+static var _tex_cache: Dictionary = {}
+## 解码放后台线程：135 张 2560x1440 的图同步解码 = 几秒卡死。
+## 主线程只做 ImageTexture 上传（必须主线程），其余在 WorkerThreadPool 里跑。
+static var _tex_pending: Dictionary = {}
+## 超长边压到 1024 后，绘制时要按原尺寸放大回来，否则大背景会缩水成一半。
+static var _tex_boost: Dictionary = {}
+## .osb 解析也放后台：3936 sprite 的谱实测 parse 232ms，放在首帧 draw 里就是一次卡死。
+static var _parse_pending: Dictionary = {}
+static var _parse_done: Dictionary = {}
+static var _parse_mutex := Mutex.new()
+static var _tex_decoded: Dictionary = {}
+static var _tex_mutex := Mutex.new()
+## 预览最大也就屏幕那么高，超长边超过这个数只会白吃显存和解码时间。
+const STORYBOARD_TEX_MAX := 1024
 var show_storyboard := true
 ## 只画 Foreground/Overlay 层（关掉 storyboard 的背景层，让谱面背景图露出来）。
 var show_storyboard_background := true
@@ -111,6 +128,9 @@ var storyboard_fit := false
 ## storyboard 采样按 30Hz 走（60fps 下每帧重算 700+ 对象太贵），中间帧复用同一份结果。
 const STORYBOARD_SAMPLE_MS := 33.0
 var _sb_sample_ms := -1.0e9
+var _sb_queued_ms := -1.0e9
+var _sb_waiting_dir := ""
+var _sb_wide_detected := false
 var _sb_render_items: Array[Dictionary] = []
 ## 贴图预取队列：storyboard 一次几百张图，全在用到的那一帧读会卡一下，
 ## 改成每帧后台预取几张。
@@ -721,12 +741,17 @@ func _process(_delta: float) -> void:
 	var needs_overlay := time_changed or view_changed or flat_dirty or not _pulses.is_empty() or not _arc_flashes.is_empty() or not _note_pops.is_empty()
 	if needs_overlay:
 		_overlay.queue_redraw()
-		if _storyboard_bg != null:
-			_storyboard_bg.queue_redraw()
-		if _storyboard_add_bg != null:
-			_storyboard_add_bg.queue_redraw()
-		if _storyboard_add_fg != null:
-			_storyboard_add_fg.queue_redraw()
+		# 故事板本身只有 30Hz 采样，60/120fps 下每帧重画等于白画一遍；
+		# 只有采样桶变化（或几何/尺寸变了）才重绘这两层。
+		var sb_ms := chart.timing.beat_to_chart_ms(t) - chart.offset_ms
+		if view_changed or flat_dirty or absf(sb_ms - _sb_queued_ms) >= STORYBOARD_SAMPLE_MS:
+			_sb_queued_ms = sb_ms
+			if _storyboard_bg != null:
+				_storyboard_bg.queue_redraw()
+			if _storyboard_add_bg != null:
+				_storyboard_add_bg.queue_redraw()
+			if _storyboard_add_fg != null:
+				_storyboard_add_fg.queue_redraw()
 	if mouse_moved or time_changed or view_changed or not _cursor_trail.is_empty():
 		_cursor_layer.queue_redraw()
 	if use_3d_ring:
@@ -2054,6 +2079,7 @@ func invalidate_storyboard() -> void:
 	_storyboard_chart = null
 	_storyboard = null
 	_storyboard_dir = ""
+	_sb_waiting_dir = ""
 	_storyboard_textures.clear()
 	_storyboard_replaces_background = false
 	_sb_sample_ms = -1.0e9
@@ -2073,6 +2099,7 @@ func _ensure_storyboard(chart: Chart) -> void:
 	_storyboard_chart = chart
 	_storyboard = null
 	_storyboard_dir = ""
+	_sb_waiting_dir = ""
 	_storyboard_textures.clear()
 	_storyboard_replaces_background = false
 	_sb_sample_ms = -1.0e9
@@ -2085,42 +2112,143 @@ func _ensure_storyboard(chart: Chart) -> void:
 	if dir.is_empty():
 		_refresh_background_layering()
 		return
-	var text := FileAccess.get_file_as_string(dir + "/storyboard.osb")
-	if text.is_empty():
+	var board: Storyboard = _board_cache.get(dir)
+	if board == null:
+		# 后台解析：解析完在 _prefetch_storyboard_textures 里换上来。
+		_start_parse(dir)
+		_sb_waiting_dir = dir
 		_refresh_background_layering()
 		return
-	_storyboard = Storyboard.parse(text, "storyboard.osb")
-	if _storyboard.sprites.is_empty():
-		_storyboard = null
-		_refresh_background_layering()
-		return
+	_storyboard = board
 	_storyboard_dir = dir
+	_sb_wide_detected = _detect_wide(board)
 	_storyboard_replaces_background = _storyboard.replaces_background(String(chart.metadata.get("background", "")))
-	_sb_prefetch = _storyboard.referenced_files.duplicate()
+	if _sb_prefetch.is_empty():
+		for ref in _storyboard.referenced_files:
+			if not _tex_cache.has(dir + "/" + String(ref).get_file()):
+				_sb_prefetch.append(ref)
 	_refresh_background_layering()
 
 func _prefetch_storyboard_textures() -> void:
-	if _sb_prefetch.is_empty() or _storyboard == null:
-		return
-	var budget := 6
-	while budget > 0 and not _sb_prefetch.is_empty():
-		var path: String = _sb_prefetch.pop_back()
-		if _storyboard_textures.has(path):
+	if _storyboard == null:
+		_take_parsed_board()
+		if _storyboard == null:
+			return
+	# 先把后台解码完的图上传成贴图：一张 1024² 就是 4MB 显存，每帧最多 2 张。
+	var budget := 2
+	_tex_mutex.lock()
+	var ready_keys: Array = _tex_decoded.keys()
+	_tex_mutex.unlock()
+	for key in ready_keys:
+		if budget <= 0:
+			break
+		_tex_mutex.lock()
+		var entry: Array = _tex_decoded.get(key, [])
+		_tex_decoded.erase(key)
+		_tex_mutex.unlock()
+		var image: Image = entry[0] if entry.size() > 0 else null
+		if image == null:
+			_tex_cache[key] = null
 			continue
-		_storyboard_texture(path)
+		_tex_cache[key] = ImageTexture.create_from_image(image)
+		_tex_boost[key] = float(entry[1]) if entry.size() > 1 else 1.0
 		budget -= 1
+	# 还没排队的引用文件，趁早丢给后台线程。
+	for ref in _storyboard.referenced_files:
+		var full := _storyboard_dir + "/" + String(ref).get_file()
+		if _storyboard == null:
+			break
+		_request_texture(full)
+
+
+## 后台解析：同一目录只排一次。
+func _start_parse(dir: String) -> void:
+	if _board_cache.has(dir) or _parse_pending.has(dir):
+		return
+	_parse_pending[dir] = true
+	WorkerThreadPool.add_task(_parse_board.bind(dir), false, "storyboard parse")
+
+
+static func _parse_board(dir: String) -> void:
+	var board: Storyboard = null
+	var text := FileAccess.get_file_as_string(dir + "/storyboard.osb")
+	if not text.is_empty():
+		board = Storyboard.parse(text, "storyboard.osb")
+		if board.sprites.is_empty():
+			board = null
+	_parse_mutex.lock()
+	_parse_done[dir] = board
+	_parse_pending.erase(dir)
+	_parse_mutex.unlock()
+
+
+## 主线程把解析结果换上来（只在同一个谱面/目录还在等的时候）。
+func _take_parsed_board() -> void:
+	if _sb_waiting_dir.is_empty():
+		return
+	_parse_mutex.lock()
+	var has: bool = _parse_done.has(_sb_waiting_dir)
+	var board: Storyboard = _parse_done.get(_sb_waiting_dir) if has else null
+	if has:
+		_parse_done.erase(_sb_waiting_dir)
+	_parse_mutex.unlock()
+	if not has:
+		return
+	var dir := _sb_waiting_dir
+	_sb_waiting_dir = ""
+	if board == null:
+		return
+	_board_cache[dir] = board
+	_storyboard = board
+	_storyboard_dir = dir
+	_sb_wide_detected = _detect_wide(board)
+	var chart := get_chart()
+	if chart != null:
+		_storyboard_replaces_background = _storyboard.replaces_background(String(chart.metadata.get("background", "")))
+	_refresh_background_layering()
+	if _storyboard_bg != null:
+		_storyboard_bg.queue_redraw()
+	if _storyboard_add_bg != null:
+		_storyboard_add_bg.queue_redraw()
+
+
+## 把一张图排进后台解码队列（同一张只排一次）。
+func _request_texture(full: String) -> void:
+	if _tex_cache.has(full) or _tex_pending.has(full):
+		return
+	# 同时在飞的解码任务限到 8 个：135 张一起丢进线程池会把主线程也挤饿。
+	if _tex_pending.size() >= 2:
+		return
+	_tex_pending[full] = true
+	WorkerThreadPool.add_task(_decode_texture.bind(full), false, "storyboard texture")
+
+
+static func _decode_texture(full: String) -> void:
+	var image: Image = null
+	var boost := 1.0
+	if FileAccess.file_exists(full):
+		image = Image.load_from_file(ProjectSettings.globalize_path(full))
+		if image != null and not image.is_empty():
+			var longest := maxi(image.get_width(), image.get_height())
+			if longest > STORYBOARD_TEX_MAX:
+				boost = float(longest) / float(STORYBOARD_TEX_MAX)
+				var ratio := float(STORYBOARD_TEX_MAX) / float(longest)
+				image.resize(maxi(1, roundi(float(image.get_width()) * ratio)),
+					maxi(1, roundi(float(image.get_height()) * ratio)), Image.INTERPOLATE_BILINEAR)
+		else:
+			image = null
+	_tex_mutex.lock()
+	# [图, 放大倍率]：贴图被缩小了 ratio 倍，绘制时乘回去才是 osu 的原始尺寸。
+	_tex_decoded[full] = [image, boost]
+	_tex_pending.erase(full)
+	_tex_mutex.unlock()
 
 
 func _storyboard_texture(path: String) -> Texture2D:
-	if _storyboard_textures.has(path):
-		return _storyboard_textures[path]
 	var full := _storyboard_dir + "/" + path.get_file()
-	var texture: Texture2D = null
-	if FileAccess.file_exists(full):
-		var image := Image.load_from_file(ProjectSettings.globalize_path(full))
-		if image != null and not image.is_empty():
-			texture = ImageTexture.create_from_image(image)
-	_storyboard_textures[path] = texture
+	var texture: Texture2D = _tex_cache.get(full)
+	if texture == null:
+		_request_texture(full)
 	return texture
 
 
@@ -2128,12 +2256,35 @@ func _storyboard_texture(path: String) -> Texture2D:
 ## osu 是按 **高度** 缩放、场中心对齐屏幕中心（宽屏只是左右多露出来），
 ## 不是 cover——之前用 max() 会把 1920x540 这种横条撑满整屏，把背景图盖死。
 func _storyboard_layout() -> Dictionary:
+	var field := _storyboard_field_width()
 	var scale := size.y / Storyboard.FIELD_HEIGHT
 	if storyboard_fit:
-		scale = minf(size.x / Storyboard.FIELD_WIDTH, size.y / Storyboard.FIELD_HEIGHT)
+		scale = minf(size.x / field, size.y / Storyboard.FIELD_HEIGHT)
+	# osu 的宽屏只是左右多露 107 单位，场心永远是 640x480 的中心 (320,240)；
+	# 之前用 (854/2,240) 会把整张故事板左移 107×scale（1600x900 下约 200px）。
 	var field_center := Vector2(Storyboard.FIELD_WIDTH, Storyboard.FIELD_HEIGHT) * 0.5
 	var offset := size * 0.5 - field_center * scale
 	return {"scale": scale, "offset": offset}
+
+
+## osu 的宽屏故事板是 854x480，普通的是 640x480；用错会让整张图右移 107 单位。
+func _storyboard_field_width() -> float:
+	var chart := get_chart()
+	if chart != null and bool(chart.metadata.get("widescreen", false)):
+		return Storyboard.FIELD_WIDTH_WIDE
+	return Storyboard.FIELD_WIDTH_WIDE if _sb_wide_detected else Storyboard.FIELD_WIDTH
+
+
+## 老谱面导入时没存 WidescreenStoryboard：按内容猜一次。
+## 854 场的故事板一定有 x > 640 的元素（4:3 的不会超过 640）。
+static func _detect_wide(board: Storyboard) -> bool:
+	for sprite in board.sprites:
+		if sprite.pos.x > 641.0:
+			return true
+		for command in sprite.commands:
+			if command.kind_name in ["M", "MX"] and command.to.size() > 0 and float(command.to[0]) > 641.0:
+				return true
+	return false
 
 
 ## 背景层（Background / Video）：垫在 3D 判定环下面。
@@ -2173,8 +2324,7 @@ func _draw_storyboard_layers(canvas: Control, chart: Chart, t: float, layers: Ar
 	_ensure_storyboard(chart)
 	if _storyboard == null:
 		return
-	if not show_storyboard_background and (layers.has("Background") or layers.has("Video")):
-		return
+	var skip_background := not show_storyboard_background
 	var ms := chart.timing.beat_to_chart_ms(t) - chart.offset_ms
 	if absf(ms - _sb_sample_ms) >= STORYBOARD_SAMPLE_MS:
 		_sb_sample_ms = ms
@@ -2186,17 +2336,23 @@ func _draw_storyboard_layers(canvas: Control, chart: Chart, t: float, layers: Ar
 	var scale: float = layout["scale"]
 	var offset: Vector2 = layout["offset"]
 	for item in items:
-		if not (String(item["layer"]) in layers):
+		var item_layer := String(item["layer"])
+		if not (item_layer in layers):
+			continue
+		if skip_background and (item_layer == "Background" or item_layer == "Video"):
 			continue
 		if bool(item["additive"]) != additive_only:
 			continue
-		var texture := _storyboard_texture(String(item["path"]))
+		var tex_path := String(item["path"])
+		var full := _storyboard_dir + "/" + tex_path.get_file()
+		var texture: Texture2D = _tex_cache.get(full)
 		if texture == null:
+			_request_texture(full)
 			continue
 		var sprite_size := Vector2(texture.get_width(), texture.get_height())
 		var anchor := _storyboard_anchor(int(item["origin"]), sprite_size)
 		var pos: Vector2 = offset + (item["pos"] as Vector2) * scale
-		var sprite_scale: Vector2 = item["scale"] * scale
+		var sprite_scale: Vector2 = item["scale"] * scale * float(_tex_boost.get(full, 1.0))
 		var rotation := deg_to_rad(float(item["rotation"]))
 		# 屏幕外的 sprite 直接丢掉：storyboard 里数百张图会一直“可见”，
 		# 大部分已经被 M 命令挪出画面，不剔除的话每帧白画几百次。
@@ -4497,7 +4653,7 @@ var _hud_layout_cache: Dictionary = {}
 
 
 func _hud_layout() -> Dictionary:
-	var key := "%d|%dx%d" % [int(_max_design_radius), roundi(size.x), roundi(size.y)]
+	var key := "%d|%dx%d|%s" % [int(_max_design_radius), roundi(size.x), roundi(size.y), _last_view_key]
 	if _hud_layout_cache.has(key):
 		return _hud_layout_cache[key]
 	var center := project_design(Vector2.ZERO)
@@ -5083,6 +5239,13 @@ func note_head_screen(note: Note, beat: float) -> Vector2:
 	if chart == null:
 		return Vector2(INF, INF)
 	return _flying_position(chart, note.angle, note.beat, beat, _star_fall_beats(chart, beat))
+
+
+## Path 头在环上的落点弧（宽度 = note.width 度）。
+## 判定按整段弧给点，不能只认弧中点：红弧两端到中点的距离远超容差，
+## 玩家点在“看起来就是目标”的弧上却吃 MISS。
+func path_head_arc(note: Note, beat: float, pad: float = 0.0) -> PackedVector2Array:
+	return note_band_points(note.angle, note.width + pad, beat, 1.0)
 
 
 ## 音符图形自身的屏幕半径（位置判定容差用）。

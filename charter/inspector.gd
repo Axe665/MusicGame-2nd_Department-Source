@@ -1134,6 +1134,10 @@ func _build_chart_page(page: VBoxContainer) -> void:
 	_text(page, "难度", chart.difficulty, func(value: String) -> void: chart.difficulty = value)
 	_text(page, "音频路径", chart.audio_path, func(value: String) -> void: chart.audio_path = value)
 	_text(page, "视频路径", chart.video_path, func(value: String) -> void: chart.video_path = value)
+	_text(page, "曲绘 / 背景图", String(chart.metadata.get("background", "")), func(value: String) -> void:
+		chart.metadata["background"] = value.strip_edges()
+	)
+	_buttons(page, [{"text": "选择曲绘图片…", "callback": _pick_cover}])
 	_label(page, "时间/BPM/offset 已统一移到“时间”页。", 11, UITheme.MUTED)
 	_buttons(page, [
 		{"text": "选择音频并识别 BPM", "callback": func() -> void: _app.request_audio_import()},
@@ -1178,6 +1182,32 @@ func _build_chart_page(page: VBoxContainer) -> void:
 		_app.mutate(func() -> void: chart.add_palette_group())
 		_rebuild()
 	}])
+
+
+## 选一张图当曲绘：复制到 user://covers/ 再写进 metadata.background，
+## 这样换机器 / 打包时路径仍然有效（外部绝对路径会被打包进谱面包）。
+func _pick_cover() -> void:
+	var dialog := FileDialog.new()
+	dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
+	dialog.access = FileDialog.ACCESS_FILESYSTEM
+	dialog.filters = PackedStringArray(["*.png,*.jpg,*.jpeg,*.webp ; 图片"])
+	dialog.title = "选择曲绘 / 背景图"
+	dialog.file_selected.connect(func(path: String) -> void:
+		var name := path.get_file().validate_filename()
+		var target := "user://covers/%s" % name
+		DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path("user://covers"))
+		DirAccess.copy_absolute(ProjectSettings.globalize_path(path), ProjectSettings.globalize_path(target))
+		_app.mutate(func() -> void:
+			var chart: Chart = _app.chart
+			if chart != null:
+				chart.metadata["background"] = target
+		)
+		_rebuild()
+	)
+	dialog.canceled.connect(func() -> void: dialog.queue_free())
+	dialog.file_selected.connect(func(_path: String) -> void: dialog.queue_free())
+	add_child(dialog)
+	dialog.popup_centered_ratio(0.55)
 
 
 ## 列表里的位置写成「小节:拍:分音」；format_beat 已经是 1 起的小节号。

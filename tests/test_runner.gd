@@ -54,6 +54,7 @@ func _initialize() -> void:
 		"test_playability_validator",
 		"test_media_formats",
 		"test_lbp_export",
+		"test_lbp_package",
 		"test_note_color_palette",
 		"test_note_color_contrast",
 		"test_note_color_round_trip",
@@ -1512,6 +1513,22 @@ func test_lbp_export() -> bool:
 	eq(LBPIO.export_to_file(chart, path), OK, "lbp write")
 	var read := FileAccess.get_file_as_string(path)
 	eq(read, text, "lbp file matches string")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	return true
+
+
+## .lbp 包：单个 zip、能读回、音符与判定数据不丢。
+func test_lbp_package() -> bool:
+	var chart := DemoChart.make_demo()
+	var path := "user://test_package.lbp"
+	var err := LBPIO.export_package(chart, path)
+	eq(err, OK, "lbp package export ok")
+	ok(LBPIO.is_package(path), "lbp package is a zip")
+	var back := LBPIO.import_package(path)
+	ok(back != null, "lbp package imports")
+	if back != null:
+		eq(back.notes.size(), chart.notes.size(), "lbp package keeps notes")
+		eq(back.timing.points.size(), chart.timing.points.size(), "lbp package keeps timing")
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
 	return true
 

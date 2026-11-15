@@ -62,6 +62,9 @@ class Sprite:
 		last_ms = maxf(last_ms, command.end)
 
 	func build() -> void:
+		# 命令改了以后终态/初态缓存必须重算，否则拖完对象还停在旧位置。
+		_final_ready = false
+		_initial_ready = false
 		timeline.clear()
 		for command in commands:
 			if not timeline.has(command.kind_name):
@@ -408,6 +411,15 @@ func build_index() -> void:
 
 
 ## 索引统计（调试/测试用）。
+## 编辑后调用：索引与采样缓存都要重算（否则改完还画旧状态）。
+func invalidate() -> void:
+	_index_ready = false
+	_buckets.clear()
+	_persistent.clear()
+	_cache_ms = -INF
+	_cache_result = []
+
+
 func index_stats() -> Dictionary:
 	if not _index_ready:
 		build_index()
@@ -772,6 +784,7 @@ func add_sprite(path: String, layer: String = "Background", origin: int = 4, pos
 	sprite.order = sprites.size()
 	sprites.append(sprite)
 	_note_reference(path)
+	invalidate()
 	return sprite
 
 
@@ -786,6 +799,7 @@ func add_command(sprite: Sprite, kind: String, easing: int, start: float, end: f
 	command.to = to
 	sprite.add(command)
 	sprite.build()
+	invalidate()
 	return command
 
 
@@ -833,7 +847,10 @@ func _collect(s: Sprite, ms: float, out: Array[Dictionary]) -> void:
 		alpha = float(alpha_values[0]) if not alpha_values.is_empty() else 1.0
 	if alpha <= 0.004:
 		return
-	out.append(s.state_at(ms, alpha))
+	var state := s.state_at(ms, alpha)
+	# 可视化编辑器靠这个引用把画面上的对象映射回数据（order == sprites 下标）。
+	state["sprite"] = s
+	out.append(state)
 
 
 ## 单个对象在 ms 时刻的状态（测试直接用它）。

@@ -94,6 +94,9 @@ static func chart_to_dict(chart: Chart) -> Dictionary:
 	var meta := {}
 	for key in ["title", "artist", "creator", "version", "tags", "license", "background", "storyboard"]:
 		meta[key] = String(chart.metadata.get(key, ""))
+	# 宽屏故事板标志：不存的话重开谱面会退回按内容猜（854/640 混判）。
+	if bool(chart.metadata.get("widescreen", false)):
+		meta["widescreen"] = 1
 	# 紧凑代码丢不掉的字段旁挂在这里；旧版本读到会直接忽略。
 	var note_extras := {}
 	for note in chart.notes:
@@ -330,6 +333,9 @@ static func chart_from_dict(data: Dictionary) -> Chart:
 	var meta: Dictionary = data.get("metadata", {})
 	for key in ["title", "artist", "creator", "version", "tags", "license", "background", "storyboard"]:
 		chart.metadata[key] = String(meta.get(key, ""))
+	# 兼容旧存档：没有这个键就交给故事板内容启发式判断。
+	if meta.has("widescreen"):
+		chart.metadata["widescreen"] = int(meta.get("widescreen", 0)) != 0
 	var timing_data: Dictionary = data.get("timing", {})
 	chart.timing = TimingMap.new()
 	chart.timing.points.clear()

@@ -51,7 +51,11 @@ var _easing: SpinBox = null
 var _status: Label = null
 var _export_dialog: FileDialog = null
 const TimelineScript := preload("res://charter/storyboard_timeline.gd")
+const CanvasScript := preload("res://charter/storyboard_canvas.gd")
 var _timeline = null
+## 可视化画布：点选 / 拖动 sprite。
+var _canvas = null
+var _drag_undo_pushed := false
 var _undo: Array[String] = []
 var _redo: Array[String] = []
 var _snap_option: OptionButton = null
@@ -105,6 +109,24 @@ func _build_ui() -> void:
 	right.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	right.add_theme_constant_override("separation", 8)
 	root.add_child(right)
+
+	# ── 画布：点选 / 拖动（osu Design 页的画布位）────────────────────
+	_canvas = CanvasScript.new()
+	_canvas.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_canvas.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_canvas.picked.connect(func(index: int) -> void:
+		_selected = index
+		if index >= 0:
+			_objects.select(index)
+		_on_object_selected(index)
+		_canvas.queue_redraw()
+	)
+	_canvas.dragged.connect(_on_canvas_drag)
+	_canvas.released.connect(func() -> void:
+		_drag_undo_pushed = false
+		_refresh_commands()
+	)
+	right.add_child(_canvas)
 	var props := GridContainer.new()
 	props.columns = 4
 	right.add_child(props)
@@ -212,13 +234,17 @@ func _build_ui() -> void:
 	_timeline = TimelineScript.new()
 	_timeline.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_timeline.custom_minimum_size = Vector2i(0, 170)
-	_timeline.seek.connect(func(ms: float) -> void: seek_requested.emit(ms))
+	_timeline.seek.connect(func(ms: float) -> void:
+		_canvas.set_playhead(ms)
+		seek_requested.emit(ms)
+	)
 	_timeline.sprite_picked.connect(func(index: int) -> void:
 		_selected = index
 		_objects.select(index)
 		_on_object_selected(index))
 	_timeline.changed.connect(func() -> void:
 		_refresh_commands()
+		_canvas.queue_redraw()
 		edited.emit())
 	right.add_child(_timeline)
 	_status = Label.new()
@@ -286,6 +312,8 @@ func open_for(chart: Chart) -> void:
 	_timeline.set_chart(chart)
 	_timeline.set_board(_board)
 	_timeline.set_zoom(0.0, 0.0)
+	_canvas.set_board(_board, _canvas_dir())
+	_canvas.set_playhead(float(_timeline.playhead_ms))
 	_undo.clear()
 	_redo.clear()
 	popup_centered(Vector2i(1040, 760))
@@ -302,6 +330,9 @@ func _refresh_objects() -> void:
 	if _timeline != null:
 		_timeline.set_board(_board)
 		_timeline.set_selected(-1)
+	if _canvas != null:
+		_canvas.set_board(_board, _canvas_dir())
+		_canvas.set_selected(-1)
 	_refresh_commands()
 
 
@@ -339,7 +370,57 @@ func _on_object_selected(index: int) -> void:
 	_pos_y.value = sprite.pos.y
 	_timeline.set_selected(index)
 	_timeline.queue_redraw()
+	if _canvas != null:
+		_canvas.set_selected(index)
 	_refresh_commands()
+
+
+## 画布解析素材的目录：没挂故事板目录时退回谱面音频所在目录，
+## 这样新建的 .osb 也能立刻看到图。
+func _canvas_dir() -> String:
+	if not _dir.is_empty():
+		return _dir
+	return String(_chart.audio_path).get_base_dir() if _chart != null else ""
+
+
+## 画布拖动：改当前时刻生效的移动关键帧；没有就改默认位置。
+func _on_canvas_drag(index: int, from: Vector2, to: Vector2) -> void:
+	if _board == null or index < 0 or index >= _board.sprites.size():
+		return
+	if not _drag_undo_pushed:
+		_push_undo()
+		_drag_undo_pushed = true
+	var sprite := _board.sprites[index] as Storyboard.Sprite
+	var delta := to - from
+	var ms := float(_timeline.playhead_ms)
+	var touched := false
+	for command in sprite.commands:
+		var c := command as Storyboard.Command
+		if not (c.kind_name in ["M", "MX", "MY"]):
+			continue
+		if ms < c.start - 0.5 or ms > c.end + 0.5:
+			continue
+		c.from = _shift_values(c.from, delta, c.kind_name)
+		c.to = _shift_values(c.to, delta, c.kind_name)
+		touched = true
+	if not touched:
+		sprite.pos += delta
+	sprite.build()
+	_board.invalidate()
+	_pos_x.value = sprite.pos.x
+	_pos_y.value = sprite.pos.y
+	_timeline.queue_redraw()
+	_canvas.queue_redraw()
+	edited.emit()
+
+
+static func _shift_values(values: Array, delta: Vector2, kind: String) -> Array:
+	var out := values.duplicate()
+	if kind != "MY" and out.size() > 0:
+		out[0] = float(out[0]) + delta.x
+	if kind != "MX" and out.size() > 1:
+		out[1] = float(out[1]) + delta.y
+	return out
 
 
 ## 记录一步撤销快照（存 .osb 文本）。
