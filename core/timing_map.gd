@@ -45,8 +45,25 @@ func beats_per_bar_at(beat: float) -> int:
 	return maxi(result, 1)
 
 
+## 全谱拍号一致时返回每小节拍数，否则返回 0（混合拍号没法用整数小节分带）。
+func uniform_beats_per_bar() -> int:
+	if points.is_empty():
+		return 4
+	var first := maxi(1, points[0].beats_per_bar)
+	for point in points:
+		if maxi(1, point.beats_per_bar) != first:
+			return 0
+	return first
+
+
 func beat_to_chart_ms(beat: float) -> float:
 	sort_points()
+	return beat_to_ms_sorted(beat)
+
+
+## 与 beat_to_chart_ms 相同，但假设 points 已经排好序（调用方先跑一次 sort_points）。
+## 波形这类每帧按行查几百个拍的循环用它，省掉重复排序。
+func beat_to_ms_sorted(beat: float) -> float:
 	if beat < 0.0:
 		return beat * 60000.0 / maxf(0.001, bpm_at(0.0))
 	var cursor := 0.0
@@ -208,7 +225,8 @@ func format_beat(beat: float, divide: int = 4) -> String:
 	if unit >= divide:
 		bar += 1
 		unit -= divide
-	return "%d:%d:%d" % [bar, unit, divide]
+	# 小节号从 1 起，和编辑器左侧标尺一致。
+	return "%d:%d:%d" % [bar + 1, unit, divide]
 
 
 func parse_beat(text: String) -> float:
@@ -220,5 +238,5 @@ func parse_beat(text: String) -> float:
 			var numerator := float(parts[1])
 			var denominator := float(parts[2]) if parts.size() > 2 else 4.0
 			var bpb := float(beats_per_bar_at(0.0))
-			return bar * bpb + (numerator / maxf(0.001, denominator)) * bpb
+			return (bar - 1.0) * bpb + (numerator / maxf(0.001, denominator)) * bpb
 	return float(clean)

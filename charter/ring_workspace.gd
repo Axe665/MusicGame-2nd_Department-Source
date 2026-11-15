@@ -11,7 +11,49 @@ signal loop_requested(start: float, end: float, enabled: bool)
 const ZOOM_LEVELS := [8.0, 16.0, 32.0, 64.0]
 const WINDOW_BEATS := 16.0
 const THUMB_SIZE := Vector2(64, 64)
-const EASINGS := ["linear", "in-out", "cubic-bezier"]
+const EASINGS := ["linear", "in-out"]
+
+
+## 一段关键帧的长度文字：不足 1 小节写拍，超过写「N 小节 M 拍」。
+static func span_label(beats: float, bpb: float) -> String:
+	bpb = maxf(1.0, bpb)
+	var bars := floori(beats / bpb + 0.0001)
+	var rest := beats - float(bars) * bpb
+	if bars <= 0:
+		return "%s 拍" % _beat_num(rest)
+	if rest < 0.005:
+		return "%d 小节" % bars
+	return "%d 小节 %s 拍" % [bars, _beat_num(rest)]
+
+
+static func _beat_num(value: float) -> String:
+	var snapped := snappedf(value, 0.01)
+	if absf(snapped - round(snapped)) < 0.001:
+		return str(int(round(snapped)))
+	return String.num(snapped, 2)
+
+
+## 第 index 帧的保持段到哪结束：下一帧，或最后一个内容/音频结束；空谱至少留 1 小节。
+static func span_end(beats: Array, index: int, content_end: float, bpb: float) -> float:
+	if index < 0 or index >= beats.size():
+		return 0.0
+	var start := float(beats[index])
+	if index + 1 < beats.size():
+		return float(beats[index + 1])
+	var end := maxf(start, content_end)
+	if end - start < 0.001:
+		end = start + maxf(1.0, bpb)
+	return end
+
+
+static func easing_label(kind: String) -> String:
+	match kind:
+		"linear":
+			return "匀速"
+		"in-out", "cubic-bezier":
+			return "缓入缓出"
+	return kind
+
 
 var _app: Node = null
 var _preview: Preview3D = null
@@ -39,6 +81,9 @@ var _drag_kind := ""
 var _drag_key: Dictionary = {}
 var _drag_view: ViewState = null
 var _last_key_beat: float = -999.0
+var _sync_last_msec: int = 0
+var _sync_last_beat: float = -99999.0
+var _sync_last_spin: float = -99999.0
 
 
 class ShapeThumb:
@@ -82,13 +127,27 @@ class ShapeThumb:
 
 class Timeline:
 	extends Control
-	const GUTTER := 68.0
+	## 与 Animate / AE 一致：关键帧之间的「保持段」画成连续块，长度就是拍数。
+	const GUTTER := 84.0
+	const RULER_H := 26.0
+	const LANE_TOP := 30.0
+	const LANE_H := 44.0
+	const LANE_GAP := 6.0
+	const BAR_H := 24.0
+	const KEY_SIZE := 10.0
+	const LABEL_MIN := 42.0
+	const EDGE_HIT := 5.0
+	const KEY_HIT := 8.0
+
 	var workspace: RingWorkspace
 	var _drag_kind := ""
+	var _hover_lane := -1
+	var _hover_index := -1
+	var _hover_pos := Vector2(-9999, -9999)
 
 	func _init(p_workspace: RingWorkspace) -> void:
 		workspace = p_workspace
-		custom_minimum_size = Vector2(0, 92)
+		custom_minimum_size = Vector2(0, 150)
 		mouse_filter = Control.MOUSE_FILTER_STOP
 
 	func _x_for(beat: float) -> float:
@@ -97,55 +156,196 @@ class Timeline:
 	func _beat_at(x: float) -> float:
 		return workspace.window_start() + ((x - GUTTER) / maxf(1.0, size.x - GUTTER)) * workspace.view_beats()
 
+	func _lane_top(lane: int) -> float:
+		return LANE_TOP + float(lane) * (LANE_H + LANE_GAP)
+
+	func _lane_center(lane: int) -> float:
+		return _lane_top(lane) + LANE_H * 0.5
+
+	func _lane_at(y: float) -> int:
+		for lane in 2:
+			if y >= _lane_top(lane) and y <= _lane_top(lane) + LANE_H:
+				return lane
+		return -1
+
+	func _lane_items(chart: Chart, lane: int) -> Array:
+		if lane == 0:
+			return chart.sorted_shape_keys()
+		var states: Array = chart.view_states.duplicate()
+		states.sort_custom(func(a: ViewState, b: ViewState) -> bool: return a.beat < b.beat)
+		return states
+
+	func _item_beat(item) -> float:
+		return float(item.get("beat", 0.0)) if item is Dictionary else (item as ViewState).beat
+
+	func _item_easing(item) -> String:
+		return String(item.get("easing", "in-out")) if item is Dictionary else (item as ViewState).easing
+
+	func _item_beats(items: Array) -> Array[float]:
+		var beats: Array[float] = []
+		for item in items:
+			beats.append(_item_beat(item))
+		return beats
+
 	func _draw() -> void:
 		var chart: Chart = workspace.chart()
 		draw_rect(Rect2(Vector2.ZERO, size), Color("#0B0D12"))
-		# 左侧行名栏（Flash 的图层名位置）。
 		draw_rect(Rect2(Vector2(0, 0), Vector2(GUTTER, size.y)), Color("#0E1118"))
 		draw_line(Vector2(GUTTER, 0), Vector2(GUTTER, size.y), Color(1, 1, 1, 0.12), 1.0)
-		draw_string(UITheme.mono_font(), Vector2(8, 40), "形状", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, UITheme.CYAN)
-		draw_string(UITheme.mono_font(), Vector2(8, 66), "镜头", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, UITheme.AMBER)
-		draw_string(UITheme.mono_font(), Vector2(8, size.y - 6), "%d FPS" % Engine.get_frames_per_second(), HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(1, 1, 1, 0.35))
 		if chart == null:
 			return
 		var start := workspace.window_start()
 		var span := workspace.view_beats()
 		var bpb := maxf(1.0, chart.timing.beats_per_bar_at(start))
-		# 标尺：每拍一格，小节号写在上面。
-		var b := floorf(start)
-		while b <= start + span:
-			var x := _x_for(b)
-			var is_bar := absf(fmod(b, bpb)) < 0.0001
-			draw_line(Vector2(x, 0), Vector2(x, 22 if is_bar else 8), Color(1, 1, 1, 0.26 if is_bar else 0.10), 1.0)
-			if is_bar:
-				draw_string(UITheme.mono_font(), Vector2(x + 2, 12), "%d" % int(round(b / bpb)), HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(1, 1, 1, 0.5))
-			b += 1.0
-		var current := workspace.current_key()
-		var keys := chart.sorted_shape_keys()
-		for i in keys.size():
-			var key := keys[i]
-			var x := _x_for(float(key.get("beat", 0.0)))
-			if x < GUTTER - 20 or x > size.x + 20:
+		var snap_division: int = workspace.snap_division()
+		_draw_ruler(start, span, bpb)
+		var shape_keys := _lane_items(chart, 0)
+		var view_states := _lane_items(chart, 1)
+		_draw_lane(0, shape_keys, chart, bpb, snap_division)
+		_draw_lane(1, view_states, chart, bpb, snap_division)
+		_draw_gutter(shape_keys.size(), view_states.size())
+		_draw_playhead()
+		_draw_status(chart, shape_keys, view_states, bpb)
+
+	func _draw_ruler(start: float, span: float, bpb: float) -> void:
+		var font := UITheme.mono_font()
+		var beat_px := (size.x - GUTTER) / maxf(0.001, span)
+		var bar_px := beat_px * bpb
+		var step := 1
+		while float(step) * bar_px < 46.0 and step < 64:
+			step *= 2
+		var first := floori(start / bpb)
+		var last := ceili((start + span) / bpb)
+		for bar in range(first, last + 1):
+			var x := _x_for(float(bar) * bpb)
+			if x < GUTTER - 1.0 or x > size.x + 1.0:
 				continue
-			var selected := key == current
-			var d := 6.0
-			var diamond := PackedVector2Array([Vector2(x, 27), Vector2(x + d, 34), Vector2(x, 41), Vector2(x - d, 34)])
-			draw_colored_polygon(diamond, UITheme.CYAN if selected else Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.7))
-			# 每个关键帧都写自己的拍号。
-			draw_string(UITheme.mono_font(), Vector2(x + 8, 38), "%.2f" % float(key.get("beat", 0.0)), HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(1, 1, 1, 0.75))
-		for state in chart.view_states:
-			var x := _x_for(state.beat)
-			if x < GUTTER - 10 or x > size.x + 10:
+			draw_line(Vector2(x, RULER_H - 11.0), Vector2(x, RULER_H), Color(1, 1, 1, 0.45), 1.0)
+			if bar % step == 0:
+				draw_string(font, Vector2(x + 3, 13), str(bar + 1), HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(1, 1, 1, 0.75))
+		if beat_px >= 12.0:
+			for beat in range(floori(start), ceili(start + span) + 1):
+				var x := _x_for(float(beat))
+				if x < GUTTER or x > size.x:
+					continue
+				draw_line(Vector2(x, RULER_H - 5.0), Vector2(x, RULER_H), Color(1, 1, 1, 0.16), 1.0)
+		draw_line(Vector2(GUTTER, RULER_H), Vector2(size.x, RULER_H), Color(1, 1, 1, 0.10), 1.0)
+
+	func _draw_lane(lane: int, items: Array, chart: Chart, bpb: float, snap_division: int) -> void:
+		var top := _lane_top(lane)
+		var color := UITheme.CYAN if lane == 0 else UITheme.AMBER
+		draw_rect(Rect2(Vector2(GUTTER, top), Vector2(size.x - GUTTER, LANE_H)), Color(1, 1, 1, 0.018 if lane == 0 else 0.008))
+		_draw_lane_grid(lane, bpb, snap_division)
+		if items.is_empty():
+			draw_string(UITheme.FONT_REGULAR, Vector2(GUTTER + 8, _lane_center(lane) + 4), "还没有关键帧", HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(1, 1, 1, 0.28))
+			return
+		var beats := _item_beats(items)
+		var content_end := chart.content_end_beat()
+		for i in items.size():
+			var start := beats[i]
+			var seg_bpb := maxf(1.0, chart.timing.beats_per_bar_at(start))
+			var end := RingWorkspace.span_end(beats, i, content_end, seg_bpb)
+			if end <= start:
+				end = start + 0.25
+			var x0 := _x_for(start)
+			var x1 := _x_for(end)
+			if x1 < GUTTER - 4.0 or x0 > size.x + 4.0:
 				continue
-			var d := 5.0
-			var diamond := PackedVector2Array([Vector2(x, 58), Vector2(x + d, 65), Vector2(x, 72), Vector2(x - d, 65)])
-			draw_colored_polygon(diamond, Color(UITheme.AMBER.r, UITheme.AMBER.g, UITheme.AMBER.b, 0.85))
-			draw_string(UITheme.mono_font(), Vector2(x + 7, 69), "%.2f" % state.beat, HORIZONTAL_ALIGNMENT_LEFT, -1, 8, Color(1, 1, 1, 0.45))
+			var key_visible := x0 >= GUTTER - 0.5
+			x0 = clampf(x0, GUTTER + 1.0, size.x - 1.0)
+			x1 = clampf(x1, GUTTER + 1.0, size.x - 1.0)
+			var y := _lane_center(lane) - BAR_H * 0.5
+			var hovered := _hover_lane == lane and _hover_index == i
+			var selected := absf(workspace.playhead() - start) < 0.01
+			var fill_alpha := 0.34 if selected else (0.24 if hovered else 0.16)
+			var border_alpha := 0.90 if selected else (0.68 if hovered else 0.45)
+			var rect := Rect2(Vector2(x0, y), Vector2(maxf(2.0, x1 - x0), BAR_H))
+			draw_rect(rect, Color(color.r, color.g, color.b, fill_alpha))
+			draw_rect(rect, Color(color.r, color.g, color.b, border_alpha), false, 1.0)
+			_draw_easing(rect, String(_item_easing(items[i])), color)
+			if rect.size.x >= LABEL_MIN:
+				var text := RingWorkspace.span_label(end - start, seg_bpb)
+				draw_string(UITheme.FONT_REGULAR, Vector2(x0 + 7, y + 15), text, HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(1, 1, 1, 0.92 if (selected or hovered) else 0.72))
+			if key_visible:
+				var key_rect := Rect2(Vector2(x0 - KEY_SIZE * 0.5, _lane_center(lane) - KEY_SIZE * 0.5), Vector2(KEY_SIZE, KEY_SIZE))
+				draw_rect(key_rect, Color(color.r, color.g, color.b, 1.0 if selected else 0.9))
+				draw_rect(key_rect, Color(0.05, 0.06, 0.08, 0.9), false, 1.0)
+				if selected:
+					draw_rect(key_rect.grow(3.0), UITheme.CORAL, false, 1.5)
+		# 最后一段的端帽：Animate 的「竖线 + 空心方块」。
+		var tail_x := _x_for(RingWorkspace.span_end(beats, beats.size() - 1, content_end, maxf(1.0, chart.timing.beats_per_bar_at(beats[-1]))))
+		if tail_x <= size.x - 1.0:
+			var tail_end := clampf(tail_x, GUTTER, size.x - 3.0)
+			var ty := _lane_center(lane)
+			draw_line(Vector2(tail_end, ty - 8.0), Vector2(tail_end, ty + 8.0), Color(color.r, color.g, color.b, 0.55), 1.5)
+			draw_rect(Rect2(Vector2(tail_end - 3.0, ty + 5.0), Vector2(6, 6)), Color(color.r, color.g, color.b, 0.75), false, 1.0)
+
+	func _draw_easing(rect: Rect2, easing: String, color: Color) -> void:
+		if rect.size.x < 16.0:
+			return
+		var points := PackedVector2Array()
+		var steps := 14
+		for i in steps:
+			var t := float(i) / float(steps - 1)
+			var eased := Ease.apply(easing, t)
+			points.append(Vector2(lerpf(rect.position.x + 3.0, rect.end.x - 3.0, t), rect.end.y - 5.0 - (t - eased) * 12.0))
+		draw_polyline(points, Color(color.r, color.g, color.b, 0.80), 1.2, true)
+
+	func _draw_lane_grid(lane: int, bpb: float, snap_division: int) -> void:
+		var top := _lane_top(lane)
+		var start := workspace.window_start()
+		var span := workspace.view_beats()
+		var beat_px := (size.x - GUTTER) / maxf(0.001, span)
+		var half := LANE_H * 0.5
+		for beat in range(floori(start), ceili(start + span) + 1):
+			var x := _x_for(float(beat))
+			if x < GUTTER or x > size.x:
+				continue
+			var is_bar := posmod(beat, int(maxf(1.0, bpb))) == 0
+			draw_line(Vector2(x, top), Vector2(x, top + LANE_H), Color(1, 1, 1, 0.09 if is_bar else 0.04), 1.0)
+		var step := GridDivisions.step_beats(snap_division)
+		if step > 0.0 and step * beat_px >= 7.0:
+			var b := floorf(start / step) * step
+			while b <= start + span:
+				if absf(b - round(b)) > 0.001:
+					var x := _x_for(b)
+					if x >= GUTTER and x <= size.x:
+						draw_line(Vector2(x, top + 4.0), Vector2(x, top + LANE_H - 4.0), Color(1, 1, 1, 0.022), 1.0)
+				b += step
+
+	func _draw_gutter(shape_count: int, view_count: int) -> void:
+		var font := UITheme.FONT_REGULAR
+		draw_rect(Rect2(Vector2(6, _lane_center(0) - 9), Vector2(3, 18)), UITheme.CYAN)
+		draw_string(font, Vector2(13, _lane_center(0) + 4), "形状", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, UITheme.CYAN)
+		draw_string(UITheme.mono_font(), Vector2(44, _lane_center(0) + 4), str(shape_count), HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(1, 1, 1, 0.45))
+		draw_rect(Rect2(Vector2(6, _lane_center(1) - 9), Vector2(3, 18)), UITheme.AMBER)
+		draw_string(font, Vector2(13, _lane_center(1) + 4), "镜头", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, UITheme.AMBER)
+		draw_string(UITheme.mono_font(), Vector2(44, _lane_center(1) + 4), str(view_count), HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(1, 1, 1, 0.45))
+
+	func _draw_playhead() -> void:
 		var px := _x_for(workspace.playhead())
-		draw_rect(Rect2(Vector2(px - 1.0, 0), Vector2(2.5, size.y)), UITheme.CORAL)
-		# 标尺上的可拖手柄。
-		draw_colored_polygon(PackedVector2Array([Vector2(px - 6, 0), Vector2(px + 6, 0), Vector2(px + 6, 6), Vector2(px, 12), Vector2(px - 6, 6)]), UITheme.CORAL)
-		draw_string(UITheme.mono_font(), Vector2(px + 7, size.y - 6), "%.2f" % workspace.playhead(), HORIZONTAL_ALIGNMENT_LEFT, -1, 10, UITheme.CORAL)
+		if px < GUTTER or px > size.x:
+			return
+		draw_line(Vector2(px, RULER_H), Vector2(px, size.y - 18.0), UITheme.CORAL, 1.5)
+		draw_colored_polygon(PackedVector2Array([Vector2(px - 5, RULER_H - 10), Vector2(px + 5, RULER_H - 10), Vector2(px, RULER_H)]), UITheme.CORAL)
+
+	func _draw_status(chart: Chart, shape_keys: Array, view_states: Array, bpb: float) -> void:
+		var text := "吸附 %s · 滚轮滚动 · Ctrl+滚轮缩放" % GridDivisions.label(workspace.snap_division())
+		if _hover_index >= 0 and _hover_lane >= 0:
+			var items := shape_keys if _hover_lane == 0 else view_states
+			if _hover_index < items.size():
+				var beats := _item_beats(items)
+				var start := beats[_hover_index]
+				var end := RingWorkspace.span_end(beats, _hover_index, chart.content_end_beat(), bpb)
+				var lane_name := "形状" if _hover_lane == 0 else "镜头"
+				text = "%s · %s → %s · %s · %s" % [
+					lane_name,
+					chart.timing.format_beat(start),
+					chart.timing.format_beat(end),
+					RingWorkspace.span_label(end - start, bpb),
+					RingWorkspace.easing_label(String(_item_easing(items[_hover_index]))),
+				]
+		draw_string(UITheme.FONT_REGULAR, Vector2(GUTTER + 2, size.y - 5), text, HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(1, 1, 1, 0.42))
 
 	func _gui_input(event: InputEvent) -> void:
 		if workspace.chart() == null:
@@ -167,37 +367,83 @@ class Timeline:
 					if workspace.dragging():
 						workspace.end_drag()
 				accept_event()
-		elif event is InputEventMouseMotion and _drag_kind != "":
-			if _drag_kind == "playhead":
-				workspace.seek(workspace.snap(_beat_at(event.position.x)))
+		elif event is InputEventMouseMotion:
+			if _drag_kind != "":
+				if _drag_kind == "playhead":
+					workspace.seek(workspace.snap(_beat_at(event.position.x)))
+				else:
+					workspace.drag_to(_beat_at(event.position.x))
+				accept_event()
 			else:
-				workspace.drag_to(_beat_at(event.position.x))
-			accept_event()
+				_update_hover(event.position)
+
+	func _update_hover(pos: Vector2) -> void:
+		# 鼠标事件可能 500Hz；同一位置不重复排序关键帧。
+		if pos.distance_squared_to(_hover_pos) < 2.25:
+			return
+		_hover_pos = pos
+		var lane := _lane_at(pos.y)
+		var index := -1
+		if lane >= 0 and pos.x > GUTTER:
+			var chart: Chart = workspace.chart()
+			var items := _lane_items(chart, lane)
+			var beats := _item_beats(items)
+			for i in items.size():
+				var sx := _x_for(beats[i])
+				var bpb := maxf(1.0, chart.timing.beats_per_bar_at(beats[i]))
+				var ex := _x_for(RingWorkspace.span_end(beats, i, chart.content_end_beat(), bpb))
+				if absf(pos.x - sx) <= KEY_HIT or (pos.x > sx and pos.x < ex):
+					index = i
+					break
+		if lane != _hover_lane or index != _hover_index:
+			_hover_lane = lane
+			_hover_index = index
+			queue_redraw()
 
 	func _press(pos: Vector2, event: InputEventMouseButton) -> void:
-		var chart: Chart = workspace.chart()
-		if pos.y <= 22.0 and pos.x > GUTTER:
+		if pos.x <= GUTTER:
+			return
+		if pos.y <= RULER_H:
 			_drag_kind = "playhead"
 			workspace.seek(workspace.snap(_beat_at(pos.x)))
 			return
-		if pos.y >= 24.0 and pos.y <= 44.0 and pos.x > GUTTER:
-			for key in chart.sorted_shape_keys():
-				if absf(pos.x - _x_for(float(key.get("beat", 0.0)))) <= 10.0:
-					workspace.seek(float(key.get("beat", 0.0)))
-					if event.double_click:
-						workspace.open_pad_for_current()
-					else:
-						workspace.begin_key_drag(key)
-						_drag_kind = "key"
-					return
-		if pos.y >= 52.0 and pos.y <= 74.0 and pos.x > GUTTER:
-			for state in chart.view_states:
-				if absf(pos.x - _x_for(state.beat)) <= 7.0:
-					workspace.begin_view_drag(state)
-					_drag_kind = "view"
-					return
-		if pos.x > GUTTER:
+		var lane := _lane_at(pos.y)
+		if lane < 0:
 			workspace.seek(workspace.snap(_beat_at(pos.x)))
+			return
+		var chart: Chart = workspace.chart()
+		var items := _lane_items(chart, lane)
+		var beats := _item_beats(items)
+		# 关键帧方块：命中就选中并开始拖时间。
+		for i in items.size():
+			if absf(pos.x - _x_for(beats[i])) <= KEY_HIT:
+				workspace.seek(beats[i])
+				if event.double_click:
+					if lane == 0:
+						workspace.open_pad_for_current()
+					return
+				_begin_item_drag(lane, items[i])
+				return
+		# 段块右缘：拖下一帧；段块本身：选中该段起点。
+		for i in items.size() - 1:
+			var sx := _x_for(beats[i])
+			var ex := _x_for(beats[i + 1])
+			if pos.x >= sx - 2.0 and pos.x <= ex + 2.0:
+				if absf(pos.x - ex) <= EDGE_HIT:
+					workspace.seek(beats[i + 1])
+					_begin_item_drag(lane, items[i + 1])
+					return
+				workspace.seek(beats[i])
+				return
+		workspace.seek(workspace.snap(_beat_at(pos.x)))
+
+	func _begin_item_drag(lane: int, item) -> void:
+		if lane == 0:
+			workspace.begin_key_drag(item)
+			_drag_kind = "key"
+		else:
+			workspace.begin_view_drag(item)
+			_drag_kind = "view"
 
 
 ## 2D 简图：画形状用的浮层，改完立刻反映到背景 3D。
@@ -608,6 +854,7 @@ func _build() -> void:
 	header.add_child(title)
 	_title = Label.new()
 	UITheme.style_mono(_title, 12, UITheme.MUTED)
+	_title.add_theme_font_override("font", UITheme.FONT_REGULAR)
 	header.add_child(_title)
 	var spacer := Control.new()
 	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -675,12 +922,12 @@ func _build() -> void:
 	_loop_button = _button("循环本段", _toggle_loop)
 	time_row.add_child(_loop_button)
 	var zoom_option := OptionButton.new()
-	for value in ["8 拍", "16 拍", "32 拍", "64 拍"]:
+	for value in ["8 拍", "16 拍", "32 拍", "64 拍", "全部"]:
 		zoom_option.add_item(value)
 	zoom_option.selected = _zoom_index
 	zoom_option.add_theme_font_size_override("font_size", 11)
 	zoom_option.item_selected.connect(func(index: int) -> void:
-		_zoom_index = clampi(index, 0, 3)
+		_zoom_index = clampi(index, 0, ZOOM_LEVELS.size())
 		_follow_playhead(true)
 		_timeline.queue_redraw()
 	)
@@ -712,6 +959,7 @@ func _build() -> void:
 	time_row.add_child(fps_option)
 	_time_label = Label.new()
 	UITheme.style_mono(_time_label, 12, UITheme.CYAN)
+	_time_label.add_theme_font_override("font", UITheme.FONT_REGULAR)
 	time_row.add_child(_time_label)
 	_fps_label = Label.new()
 	UITheme.style_mono(_fps_label, 12, UITheme.MUTED)
@@ -724,7 +972,7 @@ func _build() -> void:
 	_timeline = Timeline.new(self)
 	root.add_child(_timeline)
 	var explain := Label.new()
-	explain.text = "每个关键帧 = 这一刻的形状；相邻两帧之间一直在渐变；想“停住”就复制一帧（两个同形状的关键帧）。青色菱形=形状帧，琥珀菱形=镜头帧，标尺上可拖播放头。"
+	explain.text = "块=这一帧保持到下一帧，块越长隔得越久；拖方块改时间，拖块右缘改下一帧；滚轮滚动，Ctrl+滚轮缩放。"
 	explain.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	UITheme.style_mono(explain, 11, UITheme.MUTED)
 	root.add_child(explain)
@@ -788,6 +1036,11 @@ func playhead() -> float:
 
 
 func view_beats() -> float:
+	if _zoom_index >= ZOOM_LEVELS.size():
+		# 「全部」：按内容长度铺满，再留 1 小节给最后一段的端帽。
+		if chart() == null:
+			return 16.0
+		return maxf(8.0, chart().content_end_beat() + chart().bar_length())
 	return float(ZOOM_LEVELS[clampi(_zoom_index, 0, ZOOM_LEVELS.size() - 1)])
 
 
@@ -796,20 +1049,24 @@ func window_start() -> float:
 
 
 func zoom_timeline(step: int) -> void:
-	_zoom_index = clampi(_zoom_index + step, 0, ZOOM_LEVELS.size() - 1)
+	_zoom_index = clampi(_zoom_index + step, 0, ZOOM_LEVELS.size())
 	_follow_playhead(true)
 	_timeline.queue_redraw()
 
 
 func scroll_timeline(direction: float) -> void:
 	var ahead := view_beats() * 0.15 * direction
-	var end := chart().duration_beats() if chart() != null else 0.0
+	var end := chart().content_end_beat() + chart().bar_length() if chart() != null else 0.0
 	_view_start = clampf(_view_start + ahead, 0.0, maxf(0.0, end - view_beats()))
 	_timeline.queue_redraw()
 
 
 func _follow_playhead(force: bool = false) -> void:
 	var span := view_beats()
+	if chart() != null and span >= chart().content_end_beat() + chart().bar_length():
+		# 「全部」能看到整张谱：播放头走动时不要把它重新滚走。
+		_view_start = 0.0
+		return
 	var beat := playhead()
 	if force or beat < _view_start or beat > _view_start + span * 0.9:
 		_view_start = maxf(0.0, beat - span * 0.3)
@@ -844,6 +1101,10 @@ func snap(beat: float) -> float:
 	return float(_app.snap_beat(beat, false)) if _app != null else beat
 
 
+func snap_division() -> int:
+	return int(_app.snap_division) if _app != null else GridDivisions.DEFAULT_DIVISION
+
+
 func _process(delta: float) -> void:
 	if not visible or _fps_label == null:
 		return
@@ -854,15 +1115,32 @@ func _process(delta: float) -> void:
 
 
 func _sync_time_tool() -> void:
-	if _beat_spin != null:
-		_beat_spin.set_value_no_signal(snappedf(playhead(), 0.001))
-	if _time_label != null and chart() != null:
-		var bpb := maxf(1.0, chart().timing.beats_per_bar_at(playhead()))
-		var beat := playhead()
-		_time_label.text = "第 %d 小节，拍 %.2f / %d" % [int(floorf(beat / bpb)) + 1, fmod(beat, bpb), int(bpb)]
+	# 每帧写 Label / SpinBox 会让整页 UI 重新排版（实测 78ms/帧）；
+	# 只在显示值变化时写，并且限到 ~12Hz。播放头位置本身仍然是逐帧的。
+	var now := Time.get_ticks_msec()
+	if now - _sync_last_msec < 80:
+		return
+	_sync_last_msec = now
+	var beat := playhead()
+	if not is_equal_approx(beat, _sync_last_beat):
+		_sync_last_beat = beat
+		# SpinBox / Label 的文本一变就会触发整页重新排版（实测 ~40ms），
+		# 所以只在显示值真的变了才写：拍数按 1/4 拍、时间按 0.1 拍。
+		if _beat_spin != null:
+			var spin_value := snappedf(beat, 0.25)
+			if not is_equal_approx(spin_value, _sync_last_spin):
+				_sync_last_spin = spin_value
+				_beat_spin.set_value_no_signal(spin_value)
+		if _time_label != null and chart() != null:
+			var bpb := maxf(1.0, chart().timing.beats_per_bar_at(beat))
+			var text := "第 %d 小节，拍 %.1f / %d" % [int(floorf(beat / bpb)) + 1, fmod(beat, bpb), int(bpb)]
+			if _time_label.text != text:
+				_time_label.text = text
 	var key := current_key()
 	if _title != null:
-		_title.text = "拍 %.2f，%s" % [playhead(), ("关键帧 " + String(key.get("shape_id", ""))) if not key.is_empty() else "无关键帧"]
+		var text := "拍 %.1f，%s" % [beat, ("关键帧 " + String(key.get("shape_id", ""))) if not key.is_empty() else "无关键帧"]
+		if _title.text != text:
+			_title.text = text
 	# 播放/拖时间跨过关键帧时，右侧按钮跟着换。
 	var key_beat := float(key.get("beat", -999.0)) if not key.is_empty() else -999.0
 	if not is_equal_approx(key_beat, _last_key_beat) and not dragging():

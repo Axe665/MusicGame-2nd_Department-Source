@@ -118,6 +118,9 @@ var vertical_lines: int = 11
 var vertical_stretch: float = 0.0
 var zoom_px_per_beat: float = 28.0
 var time_flows_down: bool = true
+## 播放滚动：page（翻页）/ pin（播放头固定，方向由 time_flows_down 决定）。
+## 只在播放和拖进度条时钉住；暂停浏览仍可自由滚动。
+var playback_scroll: String = "pin"
 var hud_visible: bool = true
 var use_3d_ring: bool = true
 var mouse_tilt: bool = true
@@ -538,6 +541,16 @@ func _load_settings() -> void:
 			playtest_auto = bool(data.get("playtest_auto", playtest_auto))
 			var mirror_mode := String(data.get("playtest_mirror", playtest_mirror))
 			playtest_mirror = mirror_mode if mirror_mode in ["off", "lr", "rot180"] else "off"
+			var scroll_mode := String(data.get("playback_scroll", playback_scroll))
+			# 旧版三档（pin_down / pin_up）迁移成「固定播放头 + 谱面方向」。
+			if scroll_mode == "pin_down":
+				playback_scroll = "pin"
+				time_flows_down = false
+			elif scroll_mode == "pin_up":
+				playback_scroll = "pin"
+				time_flows_down = true
+			else:
+				playback_scroll = scroll_mode if scroll_mode in ["page", "pin"] else "pin"
 			osu_favorites.clear()
 			for value in data.get("osu_favorites", []):
 				osu_favorites.append(int(value))
@@ -691,7 +704,7 @@ func effective_latency_sec() -> float:
 
 
 func save_settings() -> void:
-	var data := {"path_wait_indicator": path_wait_indicator, "note_skin": note_skin, "hit_fx_style": hit_fx_style, "hit_sfx_style": hit_sfx_style, "ffmpeg": ffmpeg_path, "frame_cap": frame_cap, "audio_buffer_ms": audio_buffer_ms, "playtest_offset_ms": playtest_offset_ms, "audio_latency_ms": audio_latency_ms, "music_volume": music_volume, "sfx_volume": sfx_volume, "dynamic_offset": dynamic_offset, "playtest_auto": playtest_auto, "playtest_mirror": playtest_mirror, "osu_favorites": osu_favorites, "last_bias_ms": last_bias_ms, "cursor_scale": cursor_scale, "flow_scale": flow_scale, "star_speed": star_speed, "aa_2d_level": aa_2d_level, "msaa_3d_level": msaa_3d_level, "ring_pad_rect": ring_pad_rect, "note_detail_fine": note_detail_fine, "note_glow": note_glow, "cursor_trail": cursor_trail, "fx_budget": fx_budget, "ring_3d_scale": ring_3d_scale, "ring_3d_hz": ring_3d_hz, "bar_lines": bar_lines, "quality_preset": quality_preset,
+	var data := {"path_wait_indicator": path_wait_indicator, "note_skin": note_skin, "hit_fx_style": hit_fx_style, "hit_sfx_style": hit_sfx_style, "ffmpeg": ffmpeg_path, "frame_cap": frame_cap, "audio_buffer_ms": audio_buffer_ms, "playtest_offset_ms": playtest_offset_ms, "audio_latency_ms": audio_latency_ms, "music_volume": music_volume, "sfx_volume": sfx_volume, "dynamic_offset": dynamic_offset, "playtest_auto": playtest_auto, "playtest_mirror": playtest_mirror, "playback_scroll": playback_scroll, "osu_favorites": osu_favorites, "last_bias_ms": last_bias_ms, "cursor_scale": cursor_scale, "flow_scale": flow_scale, "star_speed": star_speed, "aa_2d_level": aa_2d_level, "msaa_3d_level": msaa_3d_level, "ring_pad_rect": ring_pad_rect, "note_detail_fine": note_detail_fine, "note_glow": note_glow, "cursor_trail": cursor_trail, "fx_budget": fx_budget, "ring_3d_scale": ring_3d_scale, "ring_3d_hz": ring_3d_hz, "bar_lines": bar_lines, "quality_preset": quality_preset,
 		"hud_scale": hud_scale, "hud_combo_mode": hud_combo_mode, "hud_progress_style": hud_progress_style,
 		"hud_judge_position": hud_judge_position, "hud_opacity": hud_opacity,
 		"hud_show_title": hud_show_title, "hud_show_difficulty": hud_show_difficulty,
@@ -1166,10 +1179,20 @@ func _on_autosave_timer() -> void:
 	autosave()
 
 
+## 谱面内容（音符/区域/事件/音频）真正的末尾。
+func chart_content_end_beats() -> float:
+	return chart.content_end_beat() if chart != null else 0.0
+
+
+## 编辑器可滚动/可跳转的终点：内容末尾 + 4 小节。
+func chart_limit_beats() -> float:
+	return chart.end_limit_beat() if chart != null else 0.0
+
+
 func set_playhead(beat: float) -> void:
 	if chart == null:
 		return
-	playhead_beat = clampf(beat, -4.0, chart.duration_beats() + 8.0)
+	playhead_beat = clampf(beat, -4.0, chart_limit_beats())
 	playhead_changed.emit(playhead_beat)
 
 
@@ -1178,7 +1201,7 @@ func set_playhead(beat: float) -> void:
 func seek(beat: float) -> void:
 	if chart == null:
 		return
-	var target := clampf(beat, -4.0, chart.duration_beats() + 8.0)
+	var target := clampf(beat, -4.0, chart_limit_beats())
 	seek_requested.emit(target)
 	set_playhead(target)
 
