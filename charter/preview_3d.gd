@@ -42,6 +42,10 @@ var playing: bool = false
 var interactive: bool = true
 var playtest_mode: bool = false
 var show_hud: bool = true
+## 仅轨迹导出时关掉：不画音符/轨迹条/判定特效，只留背景与鼠标轨迹。
+var show_notes: bool = true
+## 仅轨迹导出时关掉：不显示 3D 判定环。
+var show_playfield: bool = true
 var show_debug: bool = false
 ## Dedicated input overlay: geometry and progress come from live playtest states.
 var show_path_judgement := false
@@ -653,6 +657,8 @@ func _process(_delta: float) -> void:
 		_overlay.queue_redraw()
 	if mouse_moved or time_changed or view_changed or not _cursor_trail.is_empty():
 		_cursor_layer.queue_redraw()
+	if _viewport_container != null:
+		_viewport_container.visible = show_playfield
 	if use_3d_ring:
 		var animate_3d := playing or playtest_mode or _tilt.distance_to(_tilt_target) > 0.01
 		# 形变时每帧都要重画：UPDATE_ONCE 渲染完会被引擎改回 DISABLED，
@@ -1856,19 +1862,24 @@ func draw_overlay(canvas: Control) -> void:
 	if playtest_mode and show_hud:
 		_draw_play_combo_layer(canvas)
 	var sec_usec := Time.get_ticks_usec()
-	_draw_seeks(canvas, chart, t)
+	if show_notes:
+		_draw_seeks(canvas, chart, t)
 	var sec2 := Time.get_ticks_usec()
 	_perf_sections[0] += sec2 - sec_usec
-	_draw_paths(canvas, chart, t, pre)
+	if show_notes:
+		_draw_paths(canvas, chart, t, pre)
 	sec_usec = Time.get_ticks_usec()
 	_perf_sections[1] += sec_usec - sec2
-	_draw_holds(canvas, chart, t, pre)
+	if show_notes:
+		_draw_holds(canvas, chart, t, pre)
 	sec2 = Time.get_ticks_usec()
 	_perf_sections[2] += sec2 - sec_usec
-	_draw_notes(canvas, chart, t, pre)
-	if show_path_judgement:
+	if show_notes:
+		_draw_notes(canvas, chart, t, pre)
+	if show_path_judgement and show_notes:
 		_draw_path_judgement(canvas, chart, t, pre)
-	_draw_note_pops(canvas)
+	if show_notes:
+		_draw_note_pops(canvas)
 	sec_usec = Time.get_ticks_usec()
 	_perf_sections[3] += sec_usec - sec2
 	var t_hud := Time.get_ticks_usec()

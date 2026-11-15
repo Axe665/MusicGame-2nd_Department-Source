@@ -132,6 +132,8 @@ var _slow_windows: int = 0
 ## 每个键上一次按下的时间，用来吃掉手抖双击。
 var _last_press_ms: Dictionary = {}
 var _keys_held: Dictionary = {}
+## 每个键最后一次松手的时刻（录制/回放都写）：Hold 尾判用它而不是「发现松手的这一帧」。
+var _release_ms: Dictionary = {}
 var _red_states: Dictionary = {}
 
 var _hit_count: int = 0
@@ -234,7 +236,14 @@ const CAPTURE_FPS := 60
 const CAPTURE_TAIL_PAD_MS := 8000.0
 const CAPTURE_DIR := "user://export_frames"
 var _export_button: Button
+var _trail_button: Button
 var _export_dialog: FileDialog = null
+## 仅轨迹导出：只留背景与鼠标轨迹（不画音符/判定环/HUD）。
+var _export_trail_dialog: FileDialog = null
+var capture_trail_only: bool = false
+var _saved_vsync: int = -1
+var _saved_max_fps: int = 0
+var _saved_window_size := Vector2i.ZERO
 var _export_stage: int = 0
 var _export_pid: int = -1
 var _export_mp4: String = ""
@@ -826,6 +835,13 @@ func _build_ui() -> void:
 	_export_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_export_button.size_flags_stretch_ratio = 1.0
 	action_row.add_child(_export_button)
+	_trail_button = Button.new()
+	_trail_button.text = "导出轨迹"
+	_trail_button.tooltip_text = "只导鼠标轨迹：不画音符、判定环和 HUD，只留背景 + 轨迹（适合做集锦/核对走位）"
+	_trail_button.pressed.connect(_export_trail_video)
+	_trail_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_trail_button.size_flags_stretch_ratio = 1.0
+	action_row.add_child(_trail_button)
 	_results_text = RichTextLabel.new()
 	_results_text.bbcode_enabled = false
 	_results_text.fit_content = false
@@ -1188,6 +1204,8 @@ func _prepare_export_recording() -> void:
 	# HUD 现在由 Preview3D 自己画，用开关关掉，别让成绩/连击进视频。
 	if _preview != null:
 		_preview.show_hud = false
+		_preview.show_notes = not capture_trail_only
+		_preview.show_playfield = not capture_trail_only
 	# 开局倒计时那层也不能进视频。
 	if _ready_layer != null:
 		_ready_layer.visible = false
@@ -1264,8 +1282,11 @@ func _apply_replay_event(event: Dictionary) -> void:
 				"key": key,
 			})
 			_keys_held[key] = true
+			_release_ms.erase(key)
 		"release":
-			_keys_held.erase(int(event.get("key", 0)))
+			var released := int(event.get("key", 0))
+			_keys_held.erase(released)
+			_release_ms[released] = stamp
 		"seek":
 			_seek_presses.append({
 				"time": stamp,
@@ -1387,7 +1408,31 @@ func _ffmpeg_path() -> String:
 	return MediaIO.ffmpeg_exe if MediaIO.has_ffmpeg() else ""
 
 
-func _start_capture_export(path: String) -> void:
+## 仅轨迹导出：同一个渲染管线，只是把音符/判定环/HUD 关掉。
+func _export_trail_video() -> void:
+	var data := _current_replay()
+	if data == null or _export_stage != 0:
+		return
+	if _ffmpeg_path().is_empty():
+		_notify_result("导出视频需要 ffmpeg；当前 PATH 中找不到 ffmpeg。")
+		return
+	if _export_trail_dialog == null:
+		_export_trail_dialog = FileDialog.new()
+		_export_trail_dialog.use_native_dialog = true
+		_export_trail_dialog.file_mode = FileDialog.FILE_MODE_SAVE_FILE
+		_export_trail_dialog.access = FileDialog.ACCESS_FILESYSTEM
+		_export_trail_dialog.title = "导出轨迹视频"
+		_export_trail_dialog.add_filter("*.mp4", "MP4 视频")
+		_export_trail_dialog.file_selected.connect(func(path: String) -> void:
+			_start_capture_export(path, true))
+		add_child(_export_trail_dialog)
+	_export_trail_dialog.current_dir = OS.get_system_dir(OS.SYSTEM_DIR_DOWNLOADS)
+	_export_trail_dialog.current_file = "trail.mp4"
+	_export_trail_dialog.popup_centered_ratio(0.7)
+
+
+func _start_capture_export(path: String, trail_only: bool = false) -> void:
+	capture_trail_only = trail_only
 	var data := _current_replay()
 	if data == null or _export_stage != 0:
 		return
@@ -1408,6 +1453,15 @@ func _start_capture_export(path: String) -> void:
 			% [view.x, view.y, EXPORT_VIDEO_SIZE.x, EXPORT_VIDEO_SIZE.y])
 		return
 	_capture_frames = 0
+	# 截帧期间关垂直同步、解除帧率上限：不然每帧都要等 vsync，导出等于按实时速度爬。
+	_saved_max_fps = Engine.max_fps
+	_saved_vsync = DisplayServer.window_get_vsync_mode()
+	Engine.max_fps = 0
+	DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
+	# 截帧尺寸直接压到 720p：输出本来就是 720p，少读回 40% 像素，省掉一次缩小。
+	_saved_window_size = DisplayServer.window_get_size()
+	if _saved_window_size != EXPORT_VIDEO_SIZE:
+		DisplayServer.window_set_size(EXPORT_VIDEO_SIZE)
 	_capture_dir = ProjectSettings.globalize_path(CAPTURE_DIR)
 	_clear_capture_frames()
 	DirAccess.make_dir_recursive_absolute(_capture_dir)
@@ -1668,6 +1722,17 @@ func _poll_encode_stage() -> void:
 
 
 ## 导出结束后把界面恢复成结算页，用户可以接着重试/返回。
+## 把导出时改过的帧率/垂直同步设置还原。
+func _restore_frame_settings() -> void:
+	if _saved_vsync >= 0:
+		DisplayServer.window_set_vsync_mode(_saved_vsync as DisplayServer.VSyncMode)
+		_saved_vsync = -1
+	Engine.max_fps = _saved_max_fps
+	if _saved_window_size != Vector2i.ZERO:
+		DisplayServer.window_set_size(_saved_window_size)
+		_saved_window_size = Vector2i.ZERO
+
+
 func _restore_after_capture() -> void:
 	_capture_mode = false
 	export_mode = false
@@ -1676,6 +1741,9 @@ func _restore_after_capture() -> void:
 	set_process_input(true)
 	if _preview != null:
 		_preview.show_hud = true
+		_preview.show_notes = true
+		_preview.show_playfield = true
+	_restore_frame_settings()
 	# 暂停层盖在最上面，导出完必须明确藏掉，否则会卡在「暂停」画面。
 	_paused = false
 	if _pause_overlay != null:
@@ -2216,7 +2284,9 @@ func _judge_hold(note: Note, ms: float, beat: float) -> void:
 	if hold_key != 0 and not _keys_held.has(hold_key):
 		# 短暂松手不算断：补按窗口内继续按住；超时才按已按住的比例结算。
 		if not state.has("release_ms"):
-			state["release_ms"] = ms
+			# 用「真正松手的时刻」（录制/回放都有），而不是发现松手的这一帧：
+			# 否则回放会因为帧边界不同得出和本局不一样的尾判误差。
+			state["release_ms"] = float(_release_ms.get(hold_key, ms))
 			# 变暗提示玩家：手松了，但还有时间按回来。
 			_preview.set_note_state(note.id, "slip")
 		var release_ms := float(state["release_ms"])
@@ -3242,6 +3312,7 @@ func _register_press(key: int, point: Vector2 = Vector2.INF) -> void:
 	# 同一个键的手抖双击只算一次；和弦用不同键，不受影响。
 	var repeated := stamp - float(_last_press_ms.get(key, -INF)) < KEY_DEBOUNCE_MS
 	_last_press_ms[key] = stamp
+	_release_ms.erase(key)
 	if not repeated:
 		_key_presses.append({
 			"time": stamp,
@@ -3315,8 +3386,9 @@ func _input(event: InputEvent) -> void:
 			_queue_path_motion(point, _chart_ms() + float(_app.playtest_offset_ms if _app != null else 0.0))
 		else:
 			_keys_held.erase(click)
+			var mouse_span := _input_interval(_chart_ms() + _active_offset())
+			_release_ms[click] = (mouse_span.x + mouse_span.y) * 0.5
 			if _recording and _record != null:
-				var mouse_span := _input_interval(_chart_ms() + _active_offset())
 				_record.add_release((mouse_span.x + mouse_span.y) * 0.5, click)
 		get_viewport().set_input_as_handled()
 		return
@@ -3393,8 +3465,9 @@ func _input(event: InputEvent) -> void:
 		elif not event.pressed:
 			var key: int = event.physical_keycode if event.physical_keycode != 0 else event.keycode
 			_keys_held.erase(key)
+			var release_span := _input_interval(_chart_ms() + _active_offset())
+			_release_ms[key] = (release_span.x + release_span.y) * 0.5
 			if _recording and _record != null:
-				var release_span := _input_interval(_chart_ms() + _active_offset())
 				_record.add_release((release_span.x + release_span.y) * 0.5, key)
 			get_viewport().set_input_as_handled()
 
