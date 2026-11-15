@@ -420,7 +420,7 @@ func _build_ui() -> void:
 	# 文件 0–9 / 15–19、编辑 10–14、视图 20–25、插入 30–38、事件 40–41、试玩 50–51。
 	brand_row.add_child(_menu("文件", [
 		["新建", 0], ["打开", 1], ["保存", 2], ["另存为", 3], ["-", 0],
-		["导入", [["歌曲 / 识别 BPM…", 9], ["导入视频…", 19], ["谱面 (.osz/.zip/.txt)", 6], ["舞萌文件夹", 8], ["在线舞萌谱面…", 15], ["在线 osu! 谱面…", 18], ["回放 (.replay)…", 17]]],
+		["导入", [["歌曲 / 识别 BPM…", 9], ["导入视频…", 19], ["谱面 (.osz/.zip/.txt)", 6], ["舞萌文件夹", 8], ["在线舞萌谱面…", 15], ["在线 osu! 谱面…", 18], ["回放 (.replay)…", 57]]],
 		["导出", [["导出 .lbp", 7]]],
 		["-", 0], ["恢复自动保存", 4], ["-", 0], ["退出", 5],
 	]))
@@ -2404,7 +2404,7 @@ func _on_menu(id: int) -> void:
 			_chart_browser.popup_centered_ratio(0.8)
 		18:
 			_osu_browser.popup_centered_ratio(0.8)
-		17:
+		57:
 			_import_replay_dialog()
 		7:
 			_lbp_dialog.popup_centered_ratio(0.75)
@@ -2876,7 +2876,14 @@ func _open_replay_file(path: String) -> void:
 		return
 	var chart: Chart = ChartIO.load_chart(chart_path)
 	if chart == null:
-		print("[replay] 谱面读取失败：", ChartIO.last_error)
+		# 从难度套组里打开的谱面，chart_path 是 .set.json，load_chart 读不了：
+		# 这种情况回落到当前打开的谱面（hash 能对上就静默用）。
+		if _app != null and _app.chart != null:
+			if not data.chart_hash.is_empty() and data.chart_hash != Replay.hash_chart(_app.chart):
+				_show_toast("谱面在录制之后被改过，回放结果可能和当时不同", "error")
+			_start_replay(data)
+			return
+		_show_toast("回放对应的谱面读不出来：%s" % chart_path, "error")
 		return
 	_app.set_chart(chart, chart_path, false)
 	_sync_from_app()
