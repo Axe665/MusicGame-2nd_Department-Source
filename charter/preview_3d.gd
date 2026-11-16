@@ -10,7 +10,9 @@ signal ring_rotate(degrees: float)
 const RING_WIDTH := 4.0
 const GLOW_WIDTH := 18.0
 const PREVIEW_MARGIN := 1.24
-const MOUSE_TILT_DEGREES := 11.0
+## 鼠标视差的最大倾斜角（度），试玩和编辑器共用；0 = 关闭。
+const MOUSE_TILT_DEGREES := 7.0
+const MOUSE_TILT_MAX_DEGREES := 15.0
 ## Path / Trace 的视觉尺寸：相对旧版 ×2。只放大笔画与头尾，不改轨迹几何与判定。
 const PATH_SIZE_SCALE := 2.0
 ## 金键（Bell）：环上一段白描边金键（圆头 + 金色核心 + 细金光环）。
@@ -57,6 +59,11 @@ var custom_cursor_visible: bool = true
 ## 光标大小倍率（1.0 = 默认）。
 var cursor_scale: float = 1.0
 var mouse_tilt: bool = true
+## 倾斜幅度（度）；由设置页写入，0 视为关闭。
+var mouse_tilt_degrees: float = MOUSE_TILT_DEGREES
+## 注入光标（回放/导出）是按哪个尺寸录的。导出视口固定 1280x720，
+## 而回放录的是 1600x900 的光标，不换算的话右侧的点会被判成「跑到画面外」。
+var auto_cursor_bounds: Vector2 = Vector2.ZERO
 var use_3d_ring: bool = true:
 	set(value):
 		if use_3d_ring == value:
@@ -825,18 +832,45 @@ func _update_3d_mode(animate: bool, changed: bool) -> void:
 
 
 func _update_mouse_tilt(delta: float) -> void:
-	if not mouse_tilt or not (mouse_inside or playtest_mode):
+	var amount := clampf(mouse_tilt_degrees, 0.0, MOUSE_TILT_MAX_DEGREES)
+	# 导出回放时没有真实鼠标：用注入的回放光标，否则会跟着窗口鼠标乱抖。
+	var from_auto := auto_cursor.is_finite()
+	var local := auto_cursor if from_auto else get_local_mouse_position()
+	var bounds := size
+	if from_auto and auto_cursor_bounds.x > 1.0 and auto_cursor_bounds.y > 1.0:
+		bounds = auto_cursor_bounds
+	var source_ok := (mouse_inside or playtest_mode) and Rect2(Vector2.ZERO, bounds).has_point(local)
+	# 无头/基准里 get_local_mouse_position() 恒为 (0,0)，不能把它当成「鼠标在左上角」。
+	if DisplayServer.get_name() == "headless" and not from_auto:
+		source_ok = false
+	if not mouse_tilt or amount <= 0.001 or not source_ok:
 		_tilt_target = Vector2.ZERO
-	elif size.x > 1.0 and size.y > 1.0:
-		var local := get_local_mouse_position()
-		var nx := clampf((local.x - size.x * 0.5) / (size.x * 0.5), -1.0, 1.0)
-		var ny := clampf((local.y - size.y * 0.5) / (size.y * 0.5), -1.0, 1.0)
-		var amount := 7.0 if playtest_mode else MOUSE_TILT_DEGREES
-		_tilt_target = Vector2(-ny * amount, nx * amount)
+	else:
+		_tilt_target = tilt_target_for(local, bounds, amount)
 	var weight := 1.0 - exp(-maxf(0.0, delta) * 10.0)
 	_tilt = _tilt.lerp(_tilt_target, weight)
 	if _tilt_target == Vector2.ZERO and _tilt.length() < 0.01:
 		_tilt = Vector2.ZERO
+
+
+## 环的最终变换：只绕环心（局部原点）旋转，origin 恒为 0。
+## 旧实现给 origin 加了 (-tilt.y*2.8, -tilt.x*2.8)，环心会跟着鼠标平移最多约 20 单位。
+static func ring_transform(rotation: float, tilt_x: float, tilt_y: float,
+		zoom: float, ellipse: float, tilt: Vector2) -> Transform3D:
+	var basis := Basis(Vector3(0, 0, 1), deg_to_rad(rotation))
+	basis = basis * Basis(Vector3(1, 0, 0), deg_to_rad(tilt_x + tilt.x))
+	basis = basis * Basis(Vector3(0, 1, 0), deg_to_rad(tilt_y + tilt.y))
+	return Transform3D(basis.scaled(Vector3(zoom * ellipse, zoom, zoom)), Vector3.ZERO)
+
+
+## 鼠标位置 → 两轴倾斜角。鼠标那一侧的环靠近镜头（近大远小）：
+## X 用 -ny 让上边靠近，Y 必须用 -nx 才是同一方向；用 +nx 会左右上下反着歪。
+static func tilt_target_for(local: Vector2, bounds: Vector2, degrees: float) -> Vector2:
+	if bounds.x <= 1.0 or bounds.y <= 1.0 or degrees <= 0.001:
+		return Vector2.ZERO
+	var nx := clampf((local.x - bounds.x * 0.5) / (bounds.x * 0.5), -1.0, 1.0)
+	var ny := clampf((local.y - bounds.y * 0.5) / (bounds.y * 0.5), -1.0, 1.0)
+	return Vector2(-ny * degrees, -nx * degrees)
 
 
 func _update_transform(beat: float) -> bool:
@@ -863,11 +897,9 @@ func _update_transform(beat: float) -> bool:
 	if key == _last_view_key:
 		return false
 	_last_view_key = key
-	var basis := Basis(Vector3(0, 0, 1), deg_to_rad(rotation))
-	basis = basis * Basis(Vector3(1, 0, 0), deg_to_rad(tilt_x + _tilt.x))
-	basis = basis * Basis(Vector3(0, 1, 0), deg_to_rad(tilt_y + _tilt.y))
-	_ring_root.transform = Transform3D(basis.scaled(Vector3(zoom * ellipse, zoom, zoom)), Vector3(-_tilt.y * 2.8, -_tilt.x * 2.8, 0.0))
-	var fit_key := "%.3f|%.3f|%d|%.0f|%.0f" % [zoom, ellipse, 1 if playtest_mode else 0, size.x, size.y]
+	_ring_root.transform = ring_transform(rotation, tilt_x, tilt_y, zoom, ellipse, _tilt)
+	var fit_key := "%.3f|%.3f|%d|%.0f|%.0f|%.1f" % [zoom, ellipse, 1 if playtest_mode else 0, size.x, size.y,
+		mouse_tilt_degrees if mouse_tilt else 0.0]
 	if fit_key != _last_fit_key:
 		_last_fit_key = fit_key
 		_update_camera_fit(chart, zoom, ellipse)
@@ -887,7 +919,9 @@ func _update_camera_fit(chart: Chart, zoom: float, ellipse: float) -> void:
 	var aspect := maxf(0.2, size.x / maxf(1.0, size.y))
 	# 试玩时把环放大到接近 Estella 的满屏比例；编辑器保持原来的留白。
 	var margin := 1.06 if playtest_mode else PREVIEW_MARGIN
-	var wanted := _max_design_radius * maxf(0.5, zoom) * maxf(0.5, ellipse) * margin
+	var active_degrees := clampf(mouse_tilt_degrees, 0.0, MOUSE_TILT_MAX_DEGREES) if mouse_tilt else 0.0
+	var tilt_pad := 1.0 / cos(deg_to_rad(active_degrees))
+	var wanted := _max_design_radius * maxf(0.5, zoom) * maxf(0.5, ellipse) * margin * tilt_pad
 	var distance := wanted / tan(deg_to_rad(_camera.fov * 0.5)) / minf(1.0, aspect)
 	distance = clampf(distance, 500.0, 6000.0)
 	_camera.position = Vector3(0, 0, distance)

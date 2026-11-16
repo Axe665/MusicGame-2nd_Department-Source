@@ -59,6 +59,8 @@ func _initialize() -> void:
 		"test_video_export_plan_hits",
 		"test_storyboard_clamps_first_command",
 		"test_storyboard_editor_fit_size",
+		"test_ring_tilt_target",
+		"test_ring_tilt_keeps_center",
 		"test_note_color_palette",
 		"test_note_color_contrast",
 		"test_note_color_round_trip",
@@ -1560,6 +1562,35 @@ func test_storyboard_clamps_first_command() -> bool:
 	eq(late.size(), 1, "sprite still visible at 900ms")
 	if late.size() == 1:
 		eq(int(round((late[0]["colour"] as Color).r * 255.0)), 0, "colour after C is black")
+	return true
+
+
+## 环随鼠标倾斜：鼠标那一侧靠近镜头（近大远小），0 度 = 关闭。
+func test_ring_tilt_target() -> bool:
+	var bounds := Vector2(1600, 900)
+	eq(Preview3D.tilt_target_for(Vector2(800, 450), bounds, 7.0), Vector2.ZERO, "tilt zero at centre")
+	eq(Preview3D.tilt_target_for(Vector2(800, 450), bounds, 0.0), Vector2.ZERO, "tilt zero at 0 degrees")
+	var right := Preview3D.tilt_target_for(Vector2(1600, 450), bounds, 7.0)
+	ok(right.y < -6.9 and absf(right.x) < 0.01, "mouse right tilts the right side near")
+	var top := Preview3D.tilt_target_for(Vector2(800, 0), bounds, 7.0)
+	ok(top.x > 6.9 and absf(top.y) < 0.01, "mouse top tilts the top side near")
+	var corner := Preview3D.tilt_target_for(Vector2(2400, -900), bounds, 7.0)
+	ok(corner.y < 0.0 and corner.y >= -7.0, "tilt clamps horizontally")
+	ok(corner.x > 0.0 and corner.x <= 7.0, "tilt clamps vertically")
+	return true
+
+
+## 倾斜只能绕环心旋转：_ring_root 的 origin 必须是 0（旧实现平移了最多 20 单位，
+## 这就是「环不在正中心」的来源）。
+func test_ring_tilt_keeps_center() -> bool:
+	var flat := Preview3D.ring_transform(0.0, 0.0, 0.0, 1.0, 1.0, Vector2.ZERO)
+	ok(flat.basis.y.normalized().dot(Vector3.UP) > 0.9999, "no tilt keeps the ring face on")
+	eq(flat.origin, Vector3.ZERO, "no tilt leaves the ring at the origin")
+	var tilted := Preview3D.ring_transform(0.0, 0.0, 0.0, 1.0, 1.0, Vector2(6.0, -5.0))
+	eq(tilted.origin, Vector3.ZERO, "tilt never translates the ring")
+	eq(tilted * Vector3.ZERO, Vector3.ZERO, "ring centre is the fixed point of the tilt")
+	ok(tilted.basis.y.normalized().dot(Vector3.UP) < 0.999, "tilt actually rotates the ring")
+	ok(absf(tilted.basis.x.length() - 1.0) < 0.001, "tilt keeps the basis length")
 	return true
 
 

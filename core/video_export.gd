@@ -14,6 +14,8 @@ const FPS := 60
 
 ## auto / nvenc / qsv / videotoolbox / vaapi / libx264。强制指定但跑不了时自动回退。
 var encoder_pref := "auto"
+## 环随回放光标倾斜的角度（0 = 关）。
+var tilt_degrees: float = 7.0
 var _running := false
 var _cancel := false
 var _chosen: Dictionary = {}
@@ -114,7 +116,7 @@ func _input_args(input_size: Vector2i = SIZE) -> Array:
 
 ## 渲染 [start_ms, end_ms] 到 out_path。events 是 .replay 的事件流（用来画光标）。
 func export_chart(chart: Chart, start_ms: float, end_ms: float, out_path: String,
-		events: Array = [], show_storyboard: bool = true) -> void:
+		events: Array = [], show_storyboard: bool = true, cursor_bounds: Vector2 = Vector2.ZERO) -> void:
 	if _running or chart == null:
 		return
 	var encoder: Dictionary = await pick_encoder()
@@ -148,7 +150,10 @@ func export_chart(chart: Chart, start_ms: float, end_ms: float, out_path: String
 	preview.hud_difficulty = String(chart.metadata.get("version", chart.difficulty))
 	preview.hud_total_ms = end_ms
 	preview.use_3d_ring = true
-	preview.mouse_tilt = false
+	# 导出沿用「环随鼠标倾斜」，但光源是回放里录下来的光标，不是窗口里的真实鼠标。
+	preview.mouse_tilt = true
+	preview.mouse_tilt_degrees = clampf(tilt_degrees, 0.0, 15.0)
+	preview.auto_cursor_bounds = cursor_bounds
 	preview.show_storyboard = show_storyboard
 	preview.show_storyboard_background = show_storyboard
 	preview.notice.connect(func(_m: String, _l: String) -> void: pass)

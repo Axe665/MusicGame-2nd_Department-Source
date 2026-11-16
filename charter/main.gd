@@ -164,6 +164,7 @@ var _playtest_dynamic: CheckBox = null
 var _playtest_auto: CheckBox = null
 ## 试玩设置里的「背景暗度」0-100。
 var _playtest_dim: SpinBox = null
+var _playtest_tilt: SpinBox = null
 var _playtest_mouse: CheckBox = null
 var _playtest_bias: Label = null
 ## 试玩设置底部的「从头开始玩」按钮（试玩中隐藏）。
@@ -1633,6 +1634,7 @@ func _sync_from_app() -> void:
 	_preview.show_hud = _app.hud_visible
 	_preview.use_3d_ring = _app.use_3d_ring
 	_preview.mouse_tilt = _app.mouse_tilt
+	_preview.mouse_tilt_degrees = _app.ring_tilt_degrees
 	_preview.show_debug = _app.debug_overlay
 	_preview.flow_scale = _app.flow_scale
 	_preview.star_speed = _app.star_speed
@@ -2050,6 +2052,7 @@ func _update_status() -> void:
 		return
 	_preview.use_3d_ring = _app.use_3d_ring
 	_preview.mouse_tilt = _app.mouse_tilt
+	_preview.mouse_tilt_degrees = _app.ring_tilt_degrees
 	if _status_u != null:
 		_status_u.text = "u %.1f°" % (_cursor_u * 360.0)
 		_status_beat.text = "bar " + _app.chart.timing.format_beat(_app.playhead_beat)
@@ -2739,6 +2742,8 @@ func _open_playtest_setup(from_start: bool) -> void:
 	_playtest_rate.value = _rate
 	if _playtest_dim != null:
 		_playtest_dim.value = float(_app.playtest_dim)
+	if _playtest_tilt != null:
+		_playtest_tilt.value = _app.ring_tilt_degrees
 	_playtest_flow.value = _app.flow_scale
 	_playtest_star.value = _app.star_speed
 	if _playtest_cursor != null:
@@ -2963,6 +2968,8 @@ func _build_playtest_dialog() -> void:
 	box.add_child(mirror_row)
 	_playtest_dim = _playtest_spin_row(box, "背景暗度", 0.0, 70.0, 1.0, 70.0, "%")
 	_playtest_dim.tooltip_text = "和 osu 的 Background dim 一样：0% 不遮，70% 压暗；只暗背景和故事板，不暗判定环和音符"
+	_playtest_tilt = _playtest_spin_row(box, "环倾斜", 0.0, 15.0, 1.0, 7.0, "°")
+	_playtest_tilt.tooltip_text = "环随鼠标倾斜的最大角度：鼠标那一侧靠近镜头，环心固定不动；0 = 关闭（容易晕车就调小）"
 	_playtest_offset = _playtest_spin_row(box, "判定偏移", -200.0, 200.0, 1.0, 0.0, "ms")
 	_playtest_latency = _playtest_spin_row(box, "输出延迟", 0.0, 250.0, 1.0, 0.0, "ms")
 	_playtest_latency.tooltip_text = "0 = 用驱动报告值；>0 = 强制覆盖（可升可降）。驱动明显不准时才手动填"
@@ -3069,6 +3076,11 @@ func _commit_playtest_settings() -> void:
 	_rate = _playtest_rate.value
 	if _playtest_dim != null:
 		_app.playtest_dim = clampi(int(_playtest_dim.value), 0, 70)
+	if _playtest_tilt != null:
+		_app.ring_tilt_degrees = clampf(_playtest_tilt.value, 0.0, 15.0)
+		_preview.mouse_tilt_degrees = _app.ring_tilt_degrees
+		if _playtest != null and _playtest._preview != null:
+			_playtest._preview.mouse_tilt_degrees = _app.ring_tilt_degrees
 		_preview.set_background_dim(_app.playtest_dim)
 		if _playtest != null and _playtest._preview != null:
 			_playtest._preview.set_background_dim(_app.playtest_dim)

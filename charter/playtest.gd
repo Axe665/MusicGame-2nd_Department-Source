@@ -307,9 +307,9 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	_preview.custom_cursor_visible = true
 	_preview.show_hud = true
 	_preview.use_3d_ring = true
-	# 试玩里环要正面朝玩家：鼠标视差会让环整体倾斜、环心还会跟着平移，
-	# 观感就是「环不在正中心、有点歪」。编辑器预览保留视差。
-	_preview.mouse_tilt = false
+	# 环随鼠标倾斜，但只绕环心旋转：环心投影不动，HUD 和判定都不漂。
+	_preview.mouse_tilt = true
+	_preview.mouse_tilt_degrees = float(_app.ring_tilt_degrees if _app != null else 7.0)
 	_preview.show_debug = false
 	_preview.flow_scale = flow
 	_preview.star_speed = float(_app.star_speed if _app != null else 1.0)
@@ -1161,6 +1161,8 @@ func _start_recording() -> void:
 		# 上游新加的「打击音色」：回放时沿用录制时的，声音才对得上。
 		"hit_sfx": String(_app.hit_sfx_style) if _app != null else "default",
 		"rate": 1.0,
+		# 光标坐标是相对试玩窗口记的；导出 1280x720 时要用它换算倾斜。
+		"cursor_size": [_preview.size.x, _preview.size.y],
 		# 报错/匹配时用：「这张回放是哪首曲子的哪个难度」。
 		"title": String(chart.metadata.get("title", "")) if chart != null else "",
 		"version": String(chart.metadata.get("version", "")) if chart != null else "",
@@ -3177,6 +3179,7 @@ func _start_video_export(path: String) -> void:
 	if _video_export == null:
 		_video_export = VideoExport.new()
 		_video_export.encoder_pref = String(_app.video_encoder if _app != null else "auto")
+		_video_export.tilt_degrees = float(_app.ring_tilt_degrees if _app != null else 7.0)
 		_video_export.finished.connect(_on_video_finished)
 		_video_export.progress.connect(func(done: int, total: int) -> void:
 			if _video_bar != null:
@@ -3189,7 +3192,11 @@ func _start_video_export(path: String) -> void:
 	var data := _current_replay()
 	var events: Array = data.events if data != null else []
 	var end_ms := maxf(1000.0, chart.timing.beat_to_chart_ms(chart.duration_beats()) + 2000.0)
-	_video_export.export_chart(chart, 0.0, end_ms, path, events, _app.show_storyboard if _app != null else true)
+	var cursor_size: Array = data.settings.get("cursor_size", []) if data != null else []
+	var cursor_bounds := Vector2.ZERO
+	if cursor_size.size() >= 2:
+		cursor_bounds = Vector2(float(cursor_size[0]), float(cursor_size[1]))
+	_video_export.export_chart(chart, 0.0, end_ms, path, events, _app.show_storyboard if _app != null else true, cursor_bounds)
 
 
 func _ensure_video_progress() -> void:
