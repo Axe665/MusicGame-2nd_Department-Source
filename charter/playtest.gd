@@ -287,7 +287,7 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	_close_path_input_log()
 	_source_chart = p_chart
 	# 回放自带录制时的镜像：不能沿用「当前设置」，否则镜像局回放/导出的音符和输入全对不上。
-	mirror_mode = replay_mirror(replay_source, mirror_mode)
+	mirror_mode = replay_mirror(replay_source, mirror_mode, p_chart)
 	chart = p_chart.mirrored_copy(mirror_mode) if p_chart != null else null
 	start_beat = p_start_beat
 	chart_path = p_chart_path
@@ -3335,6 +3335,7 @@ func _start_video_export(path: String) -> void:
 	_video_export.fps = _selected_video_fps()
 	# 自动演奏（AUTO）没有输入事件，仍然用同一套离线管线跑自动演奏。
 	_video_export.auto_play = auto_play
+	_video_export.mirror_mode = mirror_mode
 	_video_export._chosen = {}
 	_ensure_video_progress()
 	_video_bar.value = 0.0
@@ -3419,12 +3420,18 @@ func _mirror_label() -> String:
 	return "关闭"
 
 
-## 回放文件里记录的镜像；没有/不认识就沿用当前设置。
-static func replay_mirror(data: Replay, fallback: String = "off") -> String:
+## 回放文件里记录的镜像；没有/不认识就先用 hash 反推，再退回当前设置。
+static func replay_mirror(data: Replay, fallback: String = "off", chart: Chart = null) -> String:
 	if data == null:
 		return fallback
-	var saved := String(data.settings.get("mirror", fallback))
-	return saved if saved in ["off", "lr", "rot180"] else fallback
+	var saved := String(data.settings.get("mirror", ""))
+	if saved in ["off", "lr", "rot180"]:
+		return saved
+	if chart != null:
+		var inferred := Replay.infer_mirror(data, chart)
+		if not inferred.is_empty():
+			return inferred
+	return fallback
 
 
 func _retry() -> void:

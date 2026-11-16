@@ -3196,8 +3196,12 @@ func _open_replay_file(path: String) -> void:
 		_show_toast("回放对应的谱面读不出来：%s" % chart_path, "error")
 		return
 	if not data.chart_hash.is_empty() and data.chart_hash != Replay.hash_chart(chart):
-		_show_toast("谱面和录制时不一致（被改过或版本不同），无法回放", "error")
-		return
+		# 旧回放可能记的是镜像副本的 hash，先反推镜像；推不出来才拒绝。
+		var inferred := Replay.infer_mirror(data, chart)
+		if inferred.is_empty():
+			_show_toast("谱面和录制时不一致（被改过或版本不同），无法回放", "error")
+			return
+		data.settings["mirror"] = inferred
 	_app.set_chart(chart, chart_path, false)
 	_sync_from_app()
 	_start_replay(data)
@@ -3221,6 +3225,17 @@ func _open_replay_from_set(data: Replay, set_path: String) -> void:
 		names.append(String(chart.metadata.get("version", "?")))
 		if matched < 0 and data.chart_hash == Replay.hash_chart(chart):
 			matched = i
+	# 旧镜像回放的 hash 是按镜像副本算的：按原谱找不到时反推镜像再匹配一次。
+	if matched < 0:
+		for i in entries.size():
+			var chart: Chart = (entries[i] as Dictionary).get("chart", null)
+			if chart == null:
+				continue
+			var inferred := Replay.infer_mirror(data, chart)
+			if not inferred.is_empty():
+				matched = i
+				data.settings["mirror"] = inferred
+				break
 	if matched < 0:
 		var want_title := String(data.settings.get("title", ""))
 		var want_diff := String(data.settings.get("version", ""))
@@ -3280,7 +3295,12 @@ func _start_replay(data: Replay) -> void:
 	editor_root.process_mode = Node.PROCESS_MODE_DISABLED
 	_preview.set_suspended(true)
 	if not data.chart_hash.is_empty() and data.chart_hash != Replay.hash_chart(_app.chart):
-		_show_toast("谱面在录制之后被改过，回放结果可能和当时不同", "error")
+		# 旧镜像回放的 hash 记的是镜像副本；能反推就按那个镜像播，别弹「被改过」。
+		var inferred := Replay.infer_mirror(data, _app.chart)
+		if not inferred.is_empty():
+			data.settings["mirror"] = inferred
+		else:
+			_show_toast("谱面在录制之后被改过，回放结果可能和当时不同", "error")
 	_playtest = Playtest.new()
 	_playtest.replay_source = data
 	add_child(_playtest)

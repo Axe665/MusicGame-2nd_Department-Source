@@ -141,6 +141,19 @@ static func hash_chart(chart: Chart) -> String:
 	return JSON.stringify(gameplay).sha256_text()
 
 
+## 旧回放没有 settings.mirror：用录制时的谱面 hash 反推镜像模式。
+## 录制 hash 以前是按镜像副本算的，所以 lr/rot180 的旧文件能靠这个救回来。
+static func infer_mirror(data: Replay, chart: Chart) -> String:
+	if data == null or chart == null or data.chart_hash.is_empty():
+		return ""
+	if data.chart_hash == hash_chart(chart):
+		return "off"
+	for mode in ["lr", "rot180"]:
+		if data.chart_hash == hash_chart(chart.mirrored_copy(mode)):
+			return mode
+	return ""
+
+
 ## gzip 压缩的 JSON。2 分钟的谱面大约 50–80 KB。
 func save_to(path: String) -> Error:
 	var file := FileAccess.open_compressed(path, FileAccess.WRITE, FileAccess.COMPRESSION_GZIP)

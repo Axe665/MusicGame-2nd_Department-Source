@@ -21,6 +21,8 @@ var encoder_pref := "auto"
 var background_brightness: float = 1.0
 ## 谱面没有 replay 时（AUTO / 基准）用自动演奏跑同一套离线管线。
 var auto_play := false
+## 没有 replay 时跟随当前试玩镜像；有 replay 时由回放文件自己的 mirror 决定。
+var mirror_mode := "off"
 
 var _running := false
 var _cancel := false
@@ -184,7 +186,7 @@ func export_chart(chart: Chart, start_ms: float, end_ms: float, out_path: String
 	playtest.auto_play = auto_play and replay == null
 	playtest.replay_source = replay
 	playtest.next_playback_rate = 1.0
-	playtest.mirror_mode = ""
+	playtest.mirror_mode = mirror_mode
 	add_child(playtest)
 	# 引擎自己也会每帧调 _process；离线导出必须只由帧循环驱动，
 	# 否则真实帧率一变，特效和判定就多走几步。

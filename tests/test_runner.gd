@@ -72,6 +72,7 @@ func _initialize() -> void:
 		"test_storyboard_close_dialog_unique",
 		"test_storyboard_wide_detection",
 		"test_replay_mirror_restore",
+		"test_replay_infer_mirror",
 		"test_video_export_start_from_replay",
 		"test_ring_timeline_clock",
 		"test_background_brightness_applies",
@@ -1729,6 +1730,25 @@ func test_replay_mirror_restore() -> bool:
 		"mirrored chart has a different hash")
 	near(mirrored.notes[0].angle, fposmod(180.0 - chart.notes[0].angle, 360.0), 0.01,
 		"lr mirror flips note angles")
+	return true
+
+
+## 旧镜像回放没有 settings.mirror：靠 hash 反推。两种模式都要能认出来。
+func test_replay_infer_mirror() -> bool:
+	var chart := DemoChart.make_demo()
+	var replay := Replay.new()
+	replay.chart_hash = Replay.hash_chart(chart)
+	eq(Replay.infer_mirror(replay, chart), "off", "original hash infers off")
+	for mode in ["lr", "rot180"]:
+		replay.chart_hash = Replay.hash_chart(chart.mirrored_copy(mode))
+		eq(Replay.infer_mirror(replay, chart), mode, "mirrored hash infers %s" % mode)
+	replay.chart_hash = "not-a-chart"
+	eq(Replay.infer_mirror(replay, chart), "", "unknown hash does not guess")
+	var export := VideoExport.new()
+	eq(export.mirror_mode, "off", "AUTO export defaults to no mirror")
+	export.mirror_mode = "rot180"
+	eq(export.mirror_mode, "rot180", "AUTO export carries the current mirror")
+	export.free()
 	return true
 
 
