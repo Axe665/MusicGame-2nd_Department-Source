@@ -66,6 +66,7 @@ func _ready() -> void:
 	custom_minimum_size = Vector2(0, 250)
 	mouse_filter = Control.MOUSE_FILTER_STOP
 	clip_contents = true
+	tooltip_text = "点标尺/空白跳转播放头；拖命令条改时间；双击命令条跳到起点；眼睛=显隐，锁=只读，箭头=展开图层"
 	_menu = MenuButton.new()
 	_menu.text = "⋯"
 	_menu.tooltip_text = "时间轴选项"
@@ -312,6 +313,9 @@ func _draw() -> void:
 		draw_string(UITheme.FONT_REGULAR, Vector2(x + 3.0, HEADER_H + 15.0), _fmt_tick(t),
 			HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(0.62, 0.66, 0.7, 1.0))
 		t += step
+	# 左侧栏图标含义（标尺左侧的空白处）
+	draw_string(UITheme.FONT_REGULAR, Vector2(6.0, HEADER_H + 16.0), "显/隐   锁   展开",
+		HORIZONTAL_ALIGNMENT_LEFT, GUTTER - 12.0, 9, Color(0.5, 0.54, 0.6, 1.0))
 	# 行
 	draw_rect(Rect2(0.0, _rows_top(), GUTTER, _rows_bottom() - _rows_top()), Color(0.085, 0.095, 0.11, 1.0))
 	if _rows.is_empty():
@@ -500,16 +504,17 @@ static func _fmt_time(ms: float) -> String:
 
 
 func _ruler_text() -> String:
-	return "安全框外的元素也能看到；L 块只读"
+	return "点标尺/空白跳转 · L 块只读"
 
 
 func _footer_text() -> String:
 	var beat := 0.0
 	if chart != null:
 		beat = chart.ms_to_beat(maxf(0.0, playhead_ms + chart.offset_ms))
-	return "当前 %s  ·  %.2f 拍  ·  总长 %s  ·  %d FPS  ·  可见 %d 行" % [
+	var snap := "关" if snap_divisor <= 0.0 else "1/%d 拍" % int(snap_divisor)
+	return "当前 %s  ·  %.2f 拍  ·  总长 %s  ·  %d FPS  ·  吸附 %s  ·  可见 %d 行" % [
 		_fmt_time(playhead_ms), beat, _fmt_time(span_ms), int(Engine.get_frames_per_second()),
-		int(_visible_row_count())]
+		snap, int(_visible_row_count())]
 
 
 static func _kind_colour(kind: String) -> Color:
@@ -532,9 +537,9 @@ static func _kind_colour(kind: String) -> Color:
 func _gui_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton:
 		var button := event as InputEventMouseButton
-		if button.index == MOUSE_BUTTON_WHEEL_UP or button.index == MOUSE_BUTTON_WHEEL_DOWN:
+		if button.button_index == MOUSE_BUTTON_WHEEL_UP or button.button_index == MOUSE_BUTTON_WHEEL_DOWN:
 			if button.pressed:
-				var direction := -1.0 if button.index == MOUSE_BUTTON_WHEEL_UP else 1.0
+				var direction := -1.0 if button.button_index == MOUSE_BUTTON_WHEEL_UP else 1.0
 				if button.ctrl_pressed:
 					var center := _x_to_ms(button.position.x)
 					var span := visible_span()
@@ -562,7 +567,7 @@ func _gui_input(event: InputEvent) -> void:
 		if button.button_index != MOUSE_BUTTON_LEFT:
 			return
 		if button.pressed:
-			_begin_drag(button.position)
+			_begin_drag(button.position, button.double_click)
 		else:
 			if _drag_mode != 0:
 				_drag_mode = 0
@@ -579,7 +584,7 @@ func _gui_input(event: InputEvent) -> void:
 		accept_event()
 
 
-func _begin_drag(pos: Vector2) -> void:
+func _begin_drag(pos: Vector2, double_click: bool = false) -> void:
 	# 标尺 / 标尺以下的空白：跳播放头
 	if pos.y < _rows_top() or pos.y >= _rows_bottom():
 		if pos.y >= _rows_bottom() - 8.0:
@@ -605,16 +610,21 @@ func _begin_drag(pos: Vector2) -> void:
 	var data := _rows[row]
 	if String(data["type"]) == "layer":
 		var layer := String(data["layer"])
-		var hit := _layer_button_at(pos.x)
+		# 左侧栏：眼睛 / 锁 / 展开；右侧时间区：跳播放头。
+		var hit := _layer_button_at(pos.x) if pos.x < GUTTER else ""
 		if hit == "eye":
 			hidden_layers[layer] = not hidden_layers.has(layer)
 			layer_visibility_changed.emit(layer, not hidden_layers.has(layer))
 		elif hit == "lock":
 			locked_layers[layer] = not locked_layers.has(layer)
 			layer_lock_changed.emit(layer, locked_layers.has(layer))
-		else:
+		elif pos.x < GUTTER:
 			expanded[layer] = not bool(expanded.get(layer, false))
 			_rebuild_rows()
+		else:
+			_drag_mode = 1
+			playhead_ms = snap_ms(_x_to_ms(pos.x))
+			seek.emit(playhead_ms)
 		queue_redraw()
 		accept_event()
 		return
@@ -638,6 +648,13 @@ func _begin_drag(pos: Vector2) -> void:
 		command_picked.emit(index, c)
 		if c.in_block:
 			# L 块展开副本只读，不拖。
+			queue_redraw()
+			accept_event()
+			return
+		if double_click:
+			# 双击命令条：跳到这条命令的起点，而不是跟着拖动改时间。
+			playhead_ms = c.start
+			seek.emit(c.start)
 			queue_redraw()
 			accept_event()
 			return

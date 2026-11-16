@@ -963,32 +963,17 @@ func _ensure_design_radius(chart: Chart) -> float:
 	return _max_design_radius
 
 
-## 3D 画面实际占的矩形：编辑器/环编辑里要和故事板同一个安全框，环才不会被故事板切。
-## 试玩没有 storyboard_fit，返回整个预览（全屏），行为不变。
-func _content_rect() -> Rect2:
-	if not storyboard_fit:
-		return Rect2(Vector2.ZERO, size)
-	var chart := get_chart()
-	# 没有故事板的谱面保持原来的满面板取景，免得编辑器预览里的环凭空缩小一圈。
-	if chart == null or String(chart.metadata.get("storyboard", "")).is_empty():
-		return Rect2(Vector2.ZERO, size)
-	return _storyboard_field_rect()
-
-
 func _update_camera_fit(chart: Chart, zoom: float, ellipse: float) -> void:
 	# 环工作区开关会把预览在两个容器间搬动，搬家途中 resized 先到、节点还没入树。
 	if not is_inside_tree() or _camera == null or not _camera.is_inside_tree():
 		return
 	_ensure_design_radius(chart)
-	var content := _content_rect()
-	var aspect := maxf(0.2, content.size.x / maxf(1.0, content.size.y))
-	# 相机铺满整个 SubViewport，环要缩进安全框就得把距离按面板/安全框的高度比放大。
-	var height_ratio := size.y / maxf(1.0, content.size.y)
+	var aspect := maxf(0.2, size.x / maxf(1.0, size.y))
 	# 试玩时把环放大到接近 Estella 的满屏比例；编辑器保持原来的留白。
 	var margin := 1.06 if playtest_mode else PREVIEW_MARGIN
 	var wanted := _max_design_radius * maxf(0.5, zoom) * maxf(0.5, ellipse) * margin
-	var distance := wanted / tan(deg_to_rad(_camera.fov * 0.5)) / minf(1.0, aspect) * height_ratio
-	distance = clampf(distance, 500.0, 12000.0)
+	var distance := wanted / tan(deg_to_rad(_camera.fov * 0.5)) / minf(1.0, aspect)
+	distance = clampf(distance, 500.0, 6000.0)
 	_camera.position = Vector3(0, 0, distance)
 	_camera.look_at(Vector3.ZERO, Vector3.UP)
 
@@ -2234,6 +2219,7 @@ func set_storyboard_visible(on: bool) -> void:
 func refresh_storyboard_layers() -> void:
 	# 宽屏/普通场是解析完才确定的，安全框矩形要跟着重算，否则会停在 640×480。
 	_update_storyboard_clip_rects()
+	# 换谱/解析完成时相机取景半径可能还没算过，这里补一次（和故事板开关无关）。
 	var chart := get_chart()
 	if chart != null:
 		var view := current_view()

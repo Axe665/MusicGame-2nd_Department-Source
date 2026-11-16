@@ -529,6 +529,9 @@ func _gui_input(event: InputEvent) -> void:
 			_press_point = event.position as Vector2
 			_pressed_hit = _hit(_press_point)
 			_pressed_additive = bool(event.ctrl_pressed) or bool(event.shift_pressed)
+			# 按下就选中：否则拖动未选中的对象会去拖上一次选中的东西。
+			if _pressed_hit >= 0 and not _pressed_additive:
+				_toggle_or_select(_pressed_hit, false)
 			accept_event()
 			return
 		if _pending:

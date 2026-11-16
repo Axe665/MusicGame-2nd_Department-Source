@@ -286,6 +286,8 @@ func _sync_sfx_style() -> void:
 func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	_close_path_input_log()
 	_source_chart = p_chart
+	# 回放自带录制时的镜像：不能沿用「当前设置」，否则镜像局回放/导出的音符和输入全对不上。
+	mirror_mode = replay_mirror(replay_source, mirror_mode)
 	chart = p_chart.mirrored_copy(mirror_mode) if p_chart != null else null
 	start_beat = p_start_beat
 	chart_path = p_chart_path
@@ -841,7 +843,7 @@ func _build_ui() -> void:
 	action_row.add_child(_export_replay_button)
 	_export_video_button = Button.new()
 	_export_video_button.text = "导出视频"
-	_export_video_button.tooltip_text = "静默渲染 1280×720 mp4：不播声音、不带音轨；优先用 NVENC / QSV / VideoToolbox / VAAPI，找不到再退回 libx264（需要外部 ffmpeg）"
+	_export_video_button.tooltip_text = "逐帧渲染 mp4：按录制起点导出，完成后按谱面 offset 封入音乐音轨；优先用 NVENC / QSV / VideoToolbox / VAAPI，找不到再退回 libx264（需要外部 ffmpeg）"
 	_export_video_button.pressed.connect(_export_video)
 	_export_video_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_export_video_button.size_flags_stretch_ratio = 1.0
@@ -1171,10 +1173,13 @@ func _start_recording() -> void:
 	_record = Replay.new()
 	_record.coords = Replay.COORDS_UNIT
 	_record.chart_path = chart_path
-	_record.chart_hash = Replay.hash_chart(chart)
+	# hash 按原谱算：镜像只是本局的副本，拿镜像后的音符算会让回放永远匹配不上原谱。
+	_record.chart_hash = Replay.hash_chart(_source_chart if _source_chart != null else chart)
 	_record.start_beat = start_beat
 	_record.settings = {
 		"offset_ms": _active_offset(),
+		# 录制时的镜像，回放/导出时原样还原。
+		"mirror": mirror_mode,
 		"flow": _preview.flow_scale,
 		"star_speed": _preview.star_speed,
 		"cursor_scale": _preview.cursor_scale,
@@ -3255,7 +3260,7 @@ func _export_video() -> void:
 		_video_warning.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		box.add_child(_video_warning)
 		var hint := Label.new()
-		hint.text = "导出时整机静音，输出没有音轨；画面由真实回放判定驱动。"
+		hint.text = "导出时整机静音，完成后按谱面 offset 封入音乐音轨；画面由真实回放判定驱动。"
 		hint.add_theme_font_size_override("font_size", 11)
 		box.add_child(hint)
 		_video_options.add_child(box)
@@ -3338,7 +3343,13 @@ func _start_video_export(path: String) -> void:
 	# 到谱面内容结束（音符/区域/事件/音频长度取大）再多 2s：
 	# 只用 duration_beats 会把长尾歌曲和故事板收尾整段切掉，导出看起来「时长偏短」。
 	var end_ms := maxf(1000.0, chart.timing.beat_to_chart_ms(chart.content_end_beat()) + 2000.0)
-	_video_export.export_chart(chart, 0.0, end_ms, path, data,
+	# 本局从播放头起手时也从那里导出：从 0 重跑会把前面没玩到的段全判成 MISS，
+	# 导出的准确率/连击就和实际游玩对不上了。
+	var start_ms := VideoExport.start_ms_for(chart, data)
+	# 传原谱 + 回放自带的镜像，让导出内部的 Playtest 自己翻一次；
+	# 直接传镜像副本会被翻两次（镜像局的导出又变回原谱）。
+	var source_chart: Chart = _source_chart if _source_chart != null else chart
+	_video_export.export_chart(source_chart, start_ms, end_ms, path, data,
 		_app.show_storyboard if _app != null else true)
 
 
@@ -3406,6 +3417,14 @@ func _mirror_label() -> String:
 		"rot180":
 			return "旋转 180°"
 	return "关闭"
+
+
+## 回放文件里记录的镜像；没有/不认识就沿用当前设置。
+static func replay_mirror(data: Replay, fallback: String = "off") -> String:
+	if data == null:
+		return fallback
+	var saved := String(data.settings.get("mirror", fallback))
+	return saved if saved in ["off", "lr", "rot180"] else fallback
 
 
 func _retry() -> void:

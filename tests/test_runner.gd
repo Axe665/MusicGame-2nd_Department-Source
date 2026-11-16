@@ -65,7 +65,10 @@ func _initialize() -> void:
 		"test_storyboard_command_cursor",
 		"test_storyboard_timeline_rows",
 		"test_storyboard_timeline_snap_offset",
+		"test_storyboard_timeline_mouse",
 		"test_storyboard_wide_detection",
+		"test_replay_mirror_restore",
+		"test_video_export_start_from_replay",
 		"test_ring_timeline_clock",
 		"test_background_brightness_applies",
 		"test_storyboard_roundtrip_lossless",
@@ -1660,6 +1663,80 @@ func test_storyboard_timeline_snap_offset() -> bool:
 	timeline.set_chart(chart)
 	timeline.snap_divisor = 4.0
 	near(timeline.snap_ms(1000.0), 1008.0, 0.6, "snap converts osb ms through the chart offset")
+	return true
+
+
+## 时间轴鼠标：以前 `InputEventMouseButton.index` 写错，任何点击都在第一行抛错，
+## 标尺/眼睛/锁/展开/拖动全失效；这里直接喂一帧鼠标事件，回归到能跳转。
+func test_storyboard_timeline_mouse() -> bool:
+	var board := Storyboard.create_blank()
+	var sprite := board.add_sprite("a.png", "Background", 4, Vector2(320, 240))
+	board.add_command(sprite, "alpha", 0, 0.0, 1000.0, [0.0], [1.0])
+	var timeline := StoryboardTimeline.new()
+	timeline.size = Vector2(800, 250)
+	timeline.set_board(board)
+	var seeks: Array[float] = []
+	timeline.seek.connect(func(ms: float) -> void: seeks.append(ms))
+	var click := InputEventMouseButton.new()
+	click.button_index = MOUSE_BUTTON_LEFT
+	click.pressed = true
+	click.position = Vector2(timeline.GUTTER + 80.0, timeline.HEADER_H + 10.0)
+	timeline._gui_input(click)
+	eq(seeks.size(), 1, "clicking the ruler seeks")
+	ok(timeline.playhead_ms > 0.0, "ruler click moves the playhead")
+	click.position = Vector2(13.0, timeline._rows_top() + 9.0)
+	timeline._gui_input(click)
+	ok(timeline.hidden_layers.has("Video"), "clicking the eye hides that layer")
+	var release := InputEventMouseButton.new()
+	release.button_index = MOUSE_BUTTON_LEFT
+	release.pressed = false
+	release.position = click.position
+	timeline._gui_input(release)
+	# 点命令条只选中，不把播放头拽走；双击才跳到命令起点。
+	timeline.expanded["Background"] = true
+	timeline._rebuild_rows()
+	timeline.set_playhead(500.0)
+	seeks.clear()
+	var bar := click.duplicate() as InputEventMouseButton
+	bar.position = Vector2(timeline._ms_to_x(500.0), timeline._rows_top() + 2.0 * timeline.ROW_H + 9.0)
+	timeline._gui_input(bar)
+	eq(seeks.size(), 0, "clicking a command bar does not seek")
+	near(timeline.playhead_ms, 500.0, 0.01, "clicking a command bar keeps the playhead")
+	bar.double_click = true
+	timeline._gui_input(bar)
+	eq(seeks.size(), 1, "double-clicking a command bar seeks")
+	near(timeline.playhead_ms, 0.0, 0.01, "double-click jumps to the command start")
+	timeline.free()
+	return true
+
+
+## 回放自带录制镜像：加载/导出时按文件里的 mirror 翻，而不是当前设置。
+func test_replay_mirror_restore() -> bool:
+	var replay := Replay.new()
+	replay.settings = {"mirror": "lr"}
+	eq(Playtest.replay_mirror(replay, "rot180"), "lr", "replay mirror wins over the current setting")
+	replay.settings = {}
+	eq(Playtest.replay_mirror(replay, "rot180"), "rot180", "missing mirror falls back to the setting")
+	eq(Playtest.replay_mirror(null, "off"), "off", "no replay keeps the setting")
+	# 镜像只是本局副本：录制时的 hash 必须按原谱算，否则回放永远匹配不上。
+	var chart := DemoChart.make_demo()
+	var mirrored := chart.mirrored_copy("lr")
+	ok(Replay.hash_chart(chart) != Replay.hash_chart(mirrored),
+		"mirrored chart has a different hash")
+	near(mirrored.notes[0].angle, fposmod(180.0 - chart.notes[0].angle, 360.0), 0.01,
+		"lr mirror flips note angles")
+	return true
+
+
+## 导出从录制起点开始：从 0 重跑会把本局没玩到的段全判成 MISS。
+func test_video_export_start_from_replay() -> bool:
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	var replay := Replay.new()
+	replay.start_beat = 8.0
+	near(VideoExport.start_ms_for(chart, replay), chart.timing.beat_to_chart_ms(8.0), 0.01,
+		"export starts at the recorded beat")
+	eq(VideoExport.start_ms_for(chart, null), 0.0, "AUTO export still starts at zero")
 	return true
 
 

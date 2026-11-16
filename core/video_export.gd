@@ -140,6 +140,13 @@ static func frame_total(span_ms: float, frames_per_second: int) -> int:
 	return maxi(1, ceili(maxf(0.0, span_ms) / 1000.0 * float(frames_per_second)))
 
 
+## 回放从录制起点开始导出；AUTO/没有回放时才从 0 开始。
+static func start_ms_for(chart: Chart, replay: Replay) -> float:
+	if chart == null or replay == null:
+		return 0.0
+	return chart.timing.beat_to_chart_ms(maxf(0.0, replay.start_beat))
+
+
 ## 渲染 [start_ms, end_ms]。
 ## replay 为 null 时用自动演奏（AUTO）跑同一条管线。
 func export_chart(chart: Chart, start_ms: float, end_ms: float, out_path: String,
@@ -242,6 +249,12 @@ func export_chart(chart: Chart, start_ms: float, end_ms: float, out_path: String
 		var err_text := err_pipe.get_as_text().strip_edges()
 		if not err_text.is_empty():
 			print("[ve] ffmpeg stderr: ", err_text.substr(0, 600))
+	# 导出跑的是同一套判定；留一份结果，和录制时结算的成绩对一下。
+	var judged := {
+		"hit": playtest._hit_count,
+		"miss": playtest._miss_count,
+		"combo": playtest._max_combo,
+	}
 	playtest.queue_free()
 	viewport.queue_free()
 	_running = false
@@ -285,8 +298,19 @@ func export_chart(chart: Chart, start_ms: float, end_ms: float, out_path: String
 		finished.emit(out_path, "已导出 %s，但时长 %.2fs ≠ 预期 %.2fs（%s · %dx%d@%d%s）" % [
 			out_path.get_file(), actual, expected, String(encoder["name"]), size.x, size.y, fps, audio_note])
 		return
-	finished.emit(out_path, "已导出 %s（%s · %dx%d@%d · %.2fs%s）" % [
-		out_path.get_file(), String(encoder["name"]), size.x, size.y, fps, expected, audio_note])
+	# 成绩对不上说明这局回放没从录制起点/同一张谱面重跑，直接写进提示，别让人以为「导出的就是本局」。
+	var mismatch := ""
+	if replay != null and not replay.result.is_empty():
+		var want_hit := int(replay.result.get("hit", -1))
+		var want_miss := int(replay.result.get("miss", -1))
+		var want_combo := int(replay.result.get("max_combo", -1))
+		if want_hit >= 0 and (want_hit != int(judged["hit"]) or want_miss != int(judged["miss"])
+				or (want_combo >= 0 and want_combo != int(judged["combo"]))):
+			mismatch = " · ⚠ 判定与录制不一致（命中 %d/%d，失误 %d/%d，最大连击 %d/%d）" % [
+				int(judged["hit"]), want_hit, int(judged["miss"]), want_miss,
+				int(judged["combo"]), want_combo]
+	finished.emit(out_path, "已导出 %s（%s · %dx%d@%d · %.2fs%s%s）" % [
+		out_path.get_file(), String(encoder["name"]), size.x, size.y, fps, expected, audio_note, mismatch])
 
 
 ## 等一帧画完。窗口被遮挡/最小化时引擎可能不再发 frame_post_draw，

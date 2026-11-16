@@ -75,6 +75,7 @@ var _dirty := false
 
 var _status: Label = null
 var _export_dialog: FileDialog = null
+var _add_dialog: FileDialog = null
 const TimelineScript := preload("res://charter/storyboard_timeline.gd")
 const CanvasScript := preload("res://charter/storyboard_canvas.gd")
 var _timeline = null
@@ -195,16 +196,50 @@ func _input(event: InputEvent) -> void:
 
 
 ## 列表 / 时间轴 / 画布选中同一个 sprite 时走这里。
-func _select_sprite(index: int) -> void:
+## jump=true 只给对象列表用：点名字跳到对象出现的位置。
+func _select_sprite(index: int, jump: bool = false) -> void:
 	if _board == null or index < 0 or index >= _board.sprites.size():
 		return
+	_selected = index
 	var list_index := _obj_map.find(index)
 	if list_index >= 0:
 		_syncing_selection = true
 		_objects.deselect_all()
 		_objects.select(list_index, false)
 		_syncing_selection = false
-	_on_object_selected(list_index)
+	_fill_inspector(index)
+	_timeline.set_selected(index)
+	_timeline.queue_redraw()
+	if _canvas != null:
+		_canvas.ensure_selected(index)
+	_refresh_commands()
+	if jump:
+		_jump_to_sprite(index)
+	_update_readout()
+
+
+## 属性面板回填（选中对象时）。
+func _fill_inspector(index: int) -> void:
+	if index < 0 or index >= _board.sprites.size():
+		_inspector.visible = false
+		return
+	_inspector.visible = true
+	var sprite := _board.sprites[index] as Storyboard.Sprite
+	_path_edit.text = sprite.path
+	_layer_option.selected = maxi(0, LAYERS.find(sprite.layer))
+	_origin_option.selected = clampi(sprite.origin, 0, ORIGINS.size() - 1)
+	_pos_x.value = sprite.pos.x
+	_pos_y.value = sprite.pos.y
+
+
+## 对象被播放头甩出生命周期时跳到它出现的位置，否则画布一片空白。
+func _jump_to_sprite(index: int) -> void:
+	if index < 0 or index >= _board.sprites.size():
+		return
+	var sprite := _board.sprites[index] as Storyboard.Sprite
+	var ms := float(_timeline.playhead_ms)
+	if sprite.commands.size() > 0 and (ms < sprite.start_time - 1.0 or ms > sprite.end_time + 1.0):
+		_seek_to(sprite.start_time)
 
 
 func _on_timeline_command(index: int, command: Storyboard.Command) -> void:
@@ -254,65 +289,19 @@ func _build_ui() -> void:
 	column.add_child(header)
 	_title_label = Label.new()
 	_title_label.text = "故事板编辑器"
-	_title_label.add_theme_font_size_override("font_size", 15)
+	UITheme.style_section(_title_label)
 	header.add_child(_title_label)
-	_time_label = Label.new()
-	_time_label.add_theme_font_size_override("font_size", 11)
-	_time_label.text = "0:00.000 / 0:00.000"
-	header.add_child(_time_label)
 	var spacer := Control.new()
 	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	header.add_child(spacer)
-
-	_play_button = Button.new()
-	_play_button.text = "▶ 播放"
-	_play_button.tooltip_text = "从播放头开始播放（走主界面音频，时间轴和画布跟着动画走）"
-	_play_button.pressed.connect(_toggle_play)
-	header.add_child(_play_button)
-	header.add_child(_transport_button("⏮", "回到开头", func() -> void: _seek_to(0.0)))
-	header.add_child(_transport_button("◀ 关键帧", "跳到当前对象上一个关键帧", func() -> void: _jump_anchor(-1)))
-	header.add_child(_transport_button("关键帧 ▶", "跳到当前对象下一个关键帧", func() -> void: _jump_anchor(1)))
-	header.add_child(_transport_button("⏭", "跳到结尾", func() -> void: _seek_to(_timeline.span_ms if _timeline != null else 0.0)))
-	var loop_check := CheckBox.new()
-	loop_check.text = "循环"
-	loop_check.button_pressed = true
-	loop_check.tooltip_text = "播到故事板末尾自动回到开头"
-	loop_check.toggled.connect(func(on: bool) -> void: _loop = on)
-	header.add_child(loop_check)
-	var snap_label := Label.new()
-	snap_label.text = "吸附"
-	snap_label.add_theme_font_size_override("font_size", 10)
-	header.add_child(snap_label)
-	_snap_option = OptionButton.new()
-	_snap_option.add_item("关")
-	_snap_option.add_item("1/1 拍")
-	_snap_option.add_item("1/2 拍")
-	_snap_option.add_item("1/4 拍")
-	_snap_option.add_item("1/8 拍")
-	_snap_option.selected = 3
-	_snap_option.add_theme_font_size_override("font_size", 10)
-	_snap_option.item_selected.connect(func(index: int) -> void:
-		var divisors := [0.0, 1.0, 2.0, 4.0, 8.0]
-		if _timeline != null:
-			_timeline.snap_divisor = float(divisors[clampi(index, 0, divisors.size() - 1)]))
-	header.add_child(_snap_option)
-	var mute_check := CheckBox.new()
-	mute_check.text = "静音"
-	mute_check.tooltip_text = "只关预览音频，不动设置里的音量"
-	mute_check.toggled.connect(func(on: bool) -> void:
-		_silent = on
-		mute_changed.emit(on))
-	header.add_child(mute_check)
-	_fps_label = Label.new()
-	_fps_label.add_theme_font_size_override("font_size", 10)
-	header.add_child(_fps_label)
+	header.add_child(_transport_button("↶ 撤销", "Ctrl+Z", _on_undo))
+	header.add_child(_transport_button("↷ 重做", "Ctrl+Shift+Z", _on_redo))
 	header.add_child(_button("保存并应用", _on_save, 110))
 	header.add_child(_button("导出 .osb…", _on_export, 100))
 	header.add_child(_button("关闭", _request_close, 64))
 
 	_status = Label.new()
-	_status.add_theme_font_size_override("font_size", 10)
-	_status.modulate = Color(1, 1, 1, 0.75)
+	UITheme.style_mono(_status, 10, UITheme.MUTED)
 	column.add_child(_status)
 
 	# ── 主体：对象 / 预览 / 属性 ─────────────────────────────────────
@@ -327,6 +316,7 @@ func _build_ui() -> void:
 	body.add_child(left)
 	var left_title := Label.new()
 	left_title.text = "对象"
+	UITheme.style_section(left_title)
 	left.add_child(left_title)
 	_filter_edit = LineEdit.new()
 	_filter_edit.placeholder_text = "按文件名 / 图层筛选"
@@ -339,11 +329,21 @@ func _build_ui() -> void:
 	left.add_child(_objects)
 	var obj_row := HBoxContainer.new()
 	left.add_child(obj_row)
-	obj_row.add_child(_button("添加", _on_add_sprite, 0))
-	obj_row.add_child(_button("复制", _on_duplicate_sprite, 0))
-	obj_row.add_child(_button("删除", _on_remove_sprite, 0))
-	obj_row.add_child(_button("▲", func() -> void: _move_order(1), 30))
-	obj_row.add_child(_button("▼", func() -> void: _move_order(-1), 30))
+	var add_button := _button("添加图片…", _on_add_sprite, 0)
+	add_button.tooltip_text = "选一张图片，复制进故事板目录并在播放头处新建一个 Foreground 对象"
+	obj_row.add_child(add_button)
+	var copy_button := _button("复制", _on_duplicate_sprite, 0)
+	copy_button.tooltip_text = "复制选中对象（连同命令）"
+	obj_row.add_child(copy_button)
+	var remove_button := _button("删除", _on_remove_sprite, 0)
+	remove_button.tooltip_text = "删除选中对象（Delete）"
+	obj_row.add_child(remove_button)
+	var up_button := _button("▲", func() -> void: _move_order(1), 30)
+	up_button.tooltip_text = "在同图层里往前一层（更晚绘制，盖住别人）"
+	obj_row.add_child(up_button)
+	var down_button := _button("▼", func() -> void: _move_order(-1), 30)
+	down_button.tooltip_text = "在同图层里往后一层"
+	obj_row.add_child(down_button)
 	var library_title := Label.new()
 	library_title.text = "素材库（双击加到画布）"
 	library_title.add_theme_font_size_override("font_size", 10)
@@ -505,7 +505,63 @@ func _build_ui() -> void:
 	anchor_row.add_child(_button("− 锚点", _remove_anchor, 0))
 	anchor_row.add_child(_button("锚点 ▶", func() -> void: _jump_anchor(1), 0))
 
-	# ── 底部：时间轴 ────────────────────────────────────────────────
+	# ── 底部：播放条 + 时间轴 + 操作说明（和环编辑器同一套排布）─────────
+	var transport := HBoxContainer.new()
+	transport.add_theme_constant_override("separation", 6)
+	column.add_child(transport)
+	_play_button = Button.new()
+	_play_button.text = "▶ 播放"
+	_play_button.tooltip_text = "从播放头开始播放（走主界面音频，时间轴和画布跟着动画走）"
+	_play_button.pressed.connect(_toggle_play)
+	transport.add_child(_play_button)
+	transport.add_child(_transport_button("⏮", "回到开头", func() -> void: _seek_to(0.0)))
+	transport.add_child(_transport_button("◀ 关键帧", "跳到当前对象上一个关键帧", func() -> void: _jump_anchor(-1)))
+	transport.add_child(_transport_button("关键帧 ▶", "跳到当前对象下一个关键帧", func() -> void: _jump_anchor(1)))
+	transport.add_child(_transport_button("⏭", "跳到结尾", func() -> void: _seek_to(_timeline.span_ms if _timeline != null else 0.0)))
+	var loop_check := CheckBox.new()
+	loop_check.text = "循环"
+	loop_check.button_pressed = true
+	loop_check.tooltip_text = "播到故事板末尾自动回到开头"
+	loop_check.toggled.connect(func(on: bool) -> void: _loop = on)
+	transport.add_child(loop_check)
+	var snap_label := Label.new()
+	snap_label.text = "吸附"
+	UITheme.style_mono(snap_label, 10, UITheme.MUTED)
+	transport.add_child(snap_label)
+	_snap_option = OptionButton.new()
+	_snap_option.add_item("关")
+	_snap_option.add_item("1/1 拍")
+	_snap_option.add_item("1/2 拍")
+	_snap_option.add_item("1/4 拍")
+	_snap_option.add_item("1/8 拍")
+	_snap_option.selected = 3
+	_snap_option.add_theme_font_size_override("font_size", 10)
+	_snap_option.tooltip_text = "拖动命令条/播放头时吸附到拍点"
+	_snap_option.item_selected.connect(func(index: int) -> void:
+		var divisors := [0.0, 1.0, 2.0, 4.0, 8.0]
+		if _timeline != null:
+			_timeline.snap_divisor = float(divisors[clampi(index, 0, divisors.size() - 1)])
+			_timeline.queue_redraw())
+	transport.add_child(_snap_option)
+	var mute_check := CheckBox.new()
+	mute_check.text = "静音"
+	mute_check.tooltip_text = "只关预览音频，不动设置里的音量"
+	mute_check.toggled.connect(func(on: bool) -> void:
+		_silent = on
+		mute_changed.emit(on))
+	transport.add_child(mute_check)
+	_fps_label = Label.new()
+	UITheme.style_mono(_fps_label, 10, UITheme.MUTED)
+	_fps_label.tooltip_text = "编辑器帧率；故事板采样跟随「画质 → 帧率上限」"
+	transport.add_child(_fps_label)
+	var transport_spacer := Control.new()
+	transport_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	transport.add_child(transport_spacer)
+	_time_label = Label.new()
+	UITheme.style_mono(_time_label, 12, UITheme.CYAN)
+	_time_label.text = "0:00.000 / 0:00.000"
+	transport.add_child(_time_label)
+
 	_timeline = TimelineScript.new()
 	_timeline.custom_minimum_size = Vector2i(0, 250)
 	_timeline.size_flags_vertical = Control.SIZE_SHRINK_END
@@ -524,17 +580,23 @@ func _build_ui() -> void:
 	_timeline.drag_started.connect(func() -> void: _push_undo())
 	_timeline.drag_finished.connect(func() -> void:
 		_board.invalidate()
+		_refresh_command_text()
 		_set_dirty(true)
 		edited.emit())
 	_timeline.changed.connect(func() -> void:
 		if _board != null:
 			_board.invalidate()
-		_refresh_commands()
 		_canvas.queue_redraw()
 		_set_dirty(true)
 		edited.emit()
 		_update_readout())
 	column.add_child(_timeline)
+
+	var help := Label.new()
+	help.text = "点标尺/空白跳到该时间 · 单击对象条只选中 · 双击对象条跳到起点 · 拖条改时间 · 眼睛=显隐 · 锁=只读 · 箭头=展开图层 · 滚轮滚动 / Ctrl+滚轮缩放 / Shift+滚轮平移"
+	help.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	UITheme.style_mono(help, 10, UITheme.FAINT)
+	column.add_child(help)
 
 	_export_dialog = FileDialog.new()
 	_export_dialog.file_mode = FileDialog.FILE_MODE_SAVE_FILE
@@ -543,10 +605,19 @@ func _build_ui() -> void:
 	_export_dialog.file_selected.connect(_export_to)
 	add_child(_export_dialog)
 
+	_add_dialog = FileDialog.new()
+	_add_dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
+	_add_dialog.access = FileDialog.ACCESS_FILESYSTEM
+	_add_dialog.filters = PackedStringArray(["*.png, *.jpg, *.jpeg, *.webp ; 故事板图片"])
+	_add_dialog.title = "添加故事板图片"
+	_add_dialog.file_selected.connect(_add_image_file)
+	add_child(_add_dialog)
+
 
 func _button(text: String, target: Callable, width: int = 0) -> Button:
 	var button := Button.new()
 	button.text = text
+	button.add_theme_font_size_override("font_size", 12)
 	if width > 0:
 		button.custom_minimum_size = Vector2i(width, 0)
 	button.pressed.connect(target)
@@ -563,6 +634,7 @@ func _transport_button(text: String, tip: String, target: Callable) -> Button:
 func _label(text: String) -> Label:
 	var label := Label.new()
 	label.text = text
+	UITheme.style_mono(label, 11, UITheme.MUTED)
 	return label
 
 
@@ -609,6 +681,7 @@ func open_for(chart: Chart) -> void:
 	_timeline.set_playhead(osb_ms)
 	_canvas.set_playhead(osb_ms)
 	_canvas.fit_content()
+	_reset_command_fields()
 	# 打开时不要打断正在播放的音频；只有暂停时才让主预览跟过来。
 	if not _main_is_playing():
 		seek_requested.emit(osb_ms)
@@ -660,6 +733,7 @@ func _refresh_objects(rebuild_timeline: bool = true) -> void:
 		if list_index >= 0:
 			_objects.select(list_index, false)
 			_selected = keep
+			_fill_inspector(keep)
 			if _timeline != null:
 				_timeline.set_selected(keep)
 			if _canvas != null:
@@ -688,6 +762,7 @@ func _refresh_commands() -> void:
 	if _apply_button != null:
 		_apply_button.text = "添加命令"
 	if _selected < 0 or _selected >= _board.sprites.size():
+		_reset_command_fields()
 		return
 	var sprite := _board.sprites[_selected] as Storyboard.Sprite
 	for i in sprite.commands.size():
@@ -700,6 +775,30 @@ func _refresh_commands() -> void:
 	var blocks := sprite.loops.size()
 	if blocks > 0:
 		_status.text = "这个对象还有 %d 个 L 循环块（只读，原样保存）" % blocks
+	_reset_command_fields()
+
+
+## 拖动命令条时只改文字，不重建列表（否则每次鼠标移动都会清掉当前编辑项）。
+func _refresh_command_text() -> void:
+	if _selected < 0 or _selected >= _board.sprites.size():
+		return
+	var sprite := _board.sprites[_selected] as Storyboard.Sprite
+	for i in mini(_cmd_map.size(), _commands.item_count):
+		var real := _cmd_map[i]
+		if real >= 0 and real < sprite.commands.size():
+			_commands.set_item_text(i, _describe(sprite.commands[real] as Storyboard.Command))
+
+
+## 新增命令的默认区间：当前播放头 → +500ms（两者都按当前吸附走）。
+func _reset_command_fields() -> void:
+	if _start_spin == null or _timeline == null:
+		return
+	_cmd_editing = -1
+	if _apply_button != null:
+		_apply_button.text = "添加命令"
+	var ms := float(_timeline.playhead_ms)
+	_start_spin.value = _timeline.snap_ms(ms)
+	_end_spin.value = maxf(_start_spin.value, _timeline.snap_ms(ms + 500.0))
 
 static func _describe(command: Storyboard.Command) -> String:
 	var kind := command.kind_name
@@ -721,27 +820,7 @@ func _on_object_selected(index: int) -> void:
 		_selected = -1
 		_inspector.visible = false
 		return
-	_selected = int(_obj_map[index])
-	if _selected < 0 or _selected >= _board.sprites.size():
-		return
-	_inspector.visible = true
-	var sprite := _board.sprites[_selected] as Storyboard.Sprite
-	_path_edit.text = sprite.path
-	_layer_option.selected = maxi(0, LAYERS.find(sprite.layer))
-	_origin_option.selected = clampi(sprite.origin, 0, ORIGINS.size() - 1)
-	_pos_x.value = sprite.pos.x
-	_pos_y.value = sprite.pos.y
-	_timeline.set_selected(_selected)
-	_timeline.queue_redraw()
-	if _canvas != null:
-		_canvas.ensure_selected(_selected)
-	_refresh_commands()
-	# 官方编辑器点名字就跳到对象出现的位置；否则对象被播放头甩出生命周期时
-	# 画布一片空白，作者只会以为图丢了。
-	var ms := float(_timeline.playhead_ms)
-	if sprite.commands.size() > 0 and (ms < sprite.start_time - 1.0 or ms > sprite.end_time + 1.0):
-		_seek_to(sprite.start_time)
-	_update_readout()
+	_select_sprite(int(_obj_map[index]), true)
 
 
 func _seek_to(ms: float) -> void:
@@ -749,6 +828,8 @@ func _seek_to(ms: float) -> void:
 	_canvas.set_playhead(ms)
 	seek_requested.emit(ms)
 	_update_readout(ms)
+	if _cmd_editing < 0:
+		_reset_command_fields()
 	if _time_label != null:
 		_time_label.text = "%s / %s" % [_fmt_time_ms(ms), _fmt_time_ms(_timeline.span_ms)]
 
@@ -810,21 +891,61 @@ func _on_library_pick(index: int) -> void:
 	var file_name := String(_library.get_item_metadata(index))
 	if file_name.is_empty():
 		return
+	_add_sprite_from_asset(file_name, "Foreground")
+
+
+## 画布上新增一个可见对象：默认 Foreground、居中，并在播放头处淡入。
+func _add_sprite_from_asset(file_name: String, layer: String = "Foreground") -> void:
+	if _board == null or file_name.is_empty():
+		return
 	_push_undo()
 	var ms := float(_timeline.playhead_ms)
-	var sprite := _board.add_sprite(file_name, "Foreground", 4, Vector2(320, 240))
-	# 没有 alpha 命令的对象在 osu 和本编辑器里都不画；双击素材就该立刻看见。
+	var sprite := _board.add_sprite(file_name, layer, 4, Vector2(320, 240))
+	# 没有 alpha 命令的对象在 osu 和本编辑器里都不画；加进来就该立刻看见。
 	_board.add_command(sprite, "alpha", 0, ms, ms + 400.0, [0.0], [1.0])
+	_board.invalidate()
 	_refresh_objects()
-	var index_new := _board.sprites.size() - 1
-	var list_new := _obj_map.find(index_new)
-	if list_new >= 0:
-		_objects.select(list_new)
-		_on_object_selected(list_new)
+	_select_sprite(_board.sprites.size() - 1)
 	_canvas.queue_redraw()
-	_status.text = "已添加 %s（Foreground · 居中 · %s 起淡入）" % [file_name, _fmt_ms(ms)]
+	_status.text = "已添加 %s（%s · 居中 · %s 起淡入）" % [file_name, layer, _fmt_ms(ms)]
 	_set_dirty(true)
 	edited.emit()
+
+
+## 把外部图片复制进故事板目录（.osb 只认相对路径）。
+func _copy_asset(path: String) -> String:
+	var dir := _ensure_edit_dir()
+	if dir.is_empty():
+		return ""
+	var target := dir + "/" + path.get_file()
+	if ProjectSettings.globalize_path(target) == ProjectSettings.globalize_path(path):
+		return path.get_file()
+	if FileAccess.file_exists(target):
+		# 同名但内容不同：加个后缀，别覆盖别人的素材。
+		var stem := path.get_file().get_basename()
+		var ext := path.get_extension()
+		var index := 2
+		while FileAccess.file_exists(dir + "/%s_%d.%s" % [stem, index, ext]):
+			index += 1
+		target = dir + "/%s_%d.%s" % [stem, index, ext]
+	var out := FileAccess.open(target, FileAccess.WRITE)
+	if out == null:
+		return ""
+	out.store_buffer(FileAccess.get_file_as_bytes(path))
+	out.close()
+	return target.get_file()
+
+
+func _add_image_file(path: String) -> void:
+	if _board == null:
+		return
+	var file_name := _copy_asset(path)
+	if file_name.is_empty():
+		_status.text = "复制图片失败：%s" % path
+		return
+	_refresh_library()
+	_add_sprite_from_asset(file_name, "Foreground")
+	_canvas.fit_content()
 
 func _canvas_dir() -> String:
 	if not _dir.is_empty():
@@ -837,22 +958,20 @@ func _on_canvas_selection(indices: Array) -> void:
 	_syncing_selection = true
 	_objects.deselect_all()
 	_selected = -1
-	var first_list := -1
 	for sprite_index in indices:
 		var list_index := _obj_map.find(int(sprite_index))
-		if list_index < 0:
-			continue
-		_objects.select(list_index, false)
-		if first_list < 0:
-			first_list = list_index
+		if list_index >= 0:
+			_objects.select(list_index, false)
+		if _selected < 0:
 			_selected = int(sprite_index)
 	_syncing_selection = false
-	if first_list >= 0:
-		_on_object_selected(first_list)
+	if _selected >= 0:
+		_fill_inspector(_selected)
+		_timeline.set_selected(_selected)
+		_refresh_commands()
 	else:
 		_commands.clear()
 		_inspector.visible = false
-		_refresh_commands()
 	_status.text = "已选 %d 个对象" % indices.size()
 	_update_readout()
 
@@ -1055,20 +1174,19 @@ func _on_redo() -> void:
 
 
 func _on_add_sprite() -> void:
-	_push_undo()
-	_board.add_sprite("sb/new.png", "Background", 4, Vector2(320, 240))
-	_board.invalidate()
-	_selected = _board.sprites.size() - 1
-	_refresh_objects()
-	_select_sprite(_selected)
-	_set_dirty(true)
-	edited.emit()
+	if _board == null:
+		return
+	# 先复制进故事板目录再建对象：直接写一个不存在的路径，画布上什么都看不到。
+	var dir := _canvas_dir()
+	_add_dialog.current_dir = ProjectSettings.globalize_path(dir) if not dir.is_empty() else OS.get_system_dir(OS.SYSTEM_DIR_PICTURES)
+	_add_dialog.popup_centered(Vector2i(820, 560))
 
 
 func _on_duplicate_sprite() -> void:
-	_push_undo()
 	if _selected < 0 or _selected >= _board.sprites.size():
+		_status.text = "先选一个对象"
 		return
+	_push_undo()
 	var source := _board.sprites[_selected] as Storyboard.Sprite
 	var copy := _board.add_sprite(source.path, source.layer, source.origin, source.pos)
 	for command in source.commands:
@@ -1084,9 +1202,10 @@ func _on_duplicate_sprite() -> void:
 
 
 func _on_remove_sprite() -> void:
-	_push_undo()
 	if _selected < 0 or _selected >= _board.sprites.size():
+		_status.text = "先选一个对象"
 		return
+	_push_undo()
 	_board.sprites.remove_at(_selected)
 	for i in _board.sprites.size():
 		(_board.sprites[i] as Storyboard.Sprite).order = i
@@ -1100,9 +1219,10 @@ func _on_remove_sprite() -> void:
 
 
 func _on_apply_props() -> void:
-	_push_undo()
 	if _selected < 0 or _selected >= _board.sprites.size():
+		_status.text = "先选一个对象"
 		return
+	_push_undo()
 	var sprite := _board.sprites[_selected] as Storyboard.Sprite
 	sprite.path = _path_edit.text.strip_edges()
 	sprite.layer = LAYERS[clampi(_layer_option.selected, 0, LAYERS.size() - 1)]
@@ -1214,6 +1334,10 @@ func _on_apply_command() -> void:
 	var kind := _current_kind()
 	var start := _start_spin.value
 	var end := maxf(start, _end_spin.value)
+	if _cmd_editing < 0:
+		# 新命令按吸附落点；改旧命令时尊重用户手填的 ms。
+		start = _timeline.snap_ms(start)
+		end = maxf(start, _timeline.snap_ms(end))
 	var easing := clampi(_easing_option.selected, 0, 35)
 	var from_values: Array = [0.0]
 	var to_values: Array = [0.0]
@@ -1299,10 +1423,7 @@ func _move_order(direction: int) -> void:
 	_board.invalidate()
 	_selected = target
 	_refresh_objects()
-	var list_target := _obj_map.find(target)
-	if list_target >= 0:
-		_objects.select(list_target)
-		_on_object_selected(list_target)
+	_select_sprite(target)
 	_set_dirty(true)
 	_status.text = "已%s一层" % ("上移" if direction > 0 else "下移")
 	edited.emit()
@@ -1379,31 +1500,39 @@ func _process(_delta: float) -> void:
 		_fps_label.text = "%d FPS" % int(Engine.get_frames_per_second())
 
 
+## 导入目录只读：第一次保存/加图时把素材复制到我们自己的编辑目录，不动原谱。
+## 返回当前可写目录。
+func _ensure_edit_dir() -> String:
+	if not _dir.is_empty() and not _dir.begins_with("user://imports/"):
+		DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(_dir))
+		return _dir
+	var key := "untitled"
+	if _chart != null:
+		key = (String(_chart.metadata.get("title", "")) + "|" + String(_chart.metadata.get("version", ""))).md5_text().substr(0, 10)
+	var target := "user://storyboards/edit_%s" % key
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(target))
+	if not _dir.is_empty():
+		for file_name in DirAccess.get_files_at(_dir):
+			if file_name == "storyboard.osb":
+				continue
+			var destination := target + "/" + file_name
+			if FileAccess.file_exists(destination):
+				continue
+			var out := FileAccess.open(destination, FileAccess.WRITE)
+			if out != null:
+				out.store_buffer(FileAccess.get_file_as_bytes(_dir + "/" + file_name))
+				out.close()
+	_dir = target
+	if _canvas != null:
+		_canvas.set_board(_board, _canvas_dir())
+	return _dir
+
+
 func _on_save() -> void:
 	if _board == null or _board.sprites.is_empty():
 		_status.text = "还没有对象"
 		return
-	# 导入目录只读：第一次保存时把素材复制到我们自己的编辑目录，不动原谱
-	if _dir.is_empty() or _dir.begins_with("user://imports/"):
-		var key := "untitled"
-		if _chart != null:
-			key = (String(_chart.metadata.get("title", "")) + "|" + String(_chart.metadata.get("version", ""))).md5_text().substr(0, 10)
-		var target := "user://storyboards/edit_%s" % key
-		DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(target))
-		if not _dir.is_empty():
-			for file_name in DirAccess.get_files_at(_dir):
-				if file_name == "storyboard.osb":
-					continue
-				var source := _dir + "/" + file_name
-				var destination := target + "/" + file_name
-				if not FileAccess.file_exists(destination):
-					var content := FileAccess.get_file_as_bytes(source)
-					var out := FileAccess.open(destination, FileAccess.WRITE)
-					if out != null:
-						out.store_buffer(content)
-						out.close()
-		_dir = target
-	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(_dir))
+	_ensure_edit_dir()
 	var path := _dir + "/storyboard.osb"
 	var file := FileAccess.open(path, FileAccess.WRITE)
 	if file == null:
