@@ -2214,15 +2214,43 @@ func _open_storyboard_editor() -> void:
 		_sb_editor.saved.connect(_on_storyboard_saved)
 		_sb_editor.seek_requested.connect(_on_storyboard_seek)
 		_sb_editor.edited.connect(_on_storyboard_edited)
+		_sb_editor.play_requested.connect(_on_storyboard_play)
+		_sb_editor.pause_requested.connect(_on_storyboard_pause)
+		_sb_editor.mute_changed.connect(_set_sb_preview_silent)
 		add_child(_sb_editor)
 	_sb_editor.open_for(_app.chart)
+
+
+## 编辑器里按播放：用主界面同一条音频时间线，画布才跟得上动画。
+func _on_storyboard_play(ms: float, silent: bool) -> void:
+	if _app == null or _app.chart == null:
+		return
+	_set_sb_preview_silent(silent)
+	var beat: float = _app.chart.ms_to_beat(ms)
+	_app.set_playhead(beat)
+	_start_play(beat)
+
+
+func _on_storyboard_pause() -> void:
+	_stop_play()
+	_set_sb_preview_silent(false)
+
+
+## 只改播放器自己的音量，不动设置里的母线音量。
+func _set_sb_preview_silent(silent: bool) -> void:
+	if _audio != null:
+		_audio.volume_db = -80.0 if silent else 0.0
 
 
 ## 时间轴拖播放头：直接跳到该时刻，预览跟着动。
 func _on_storyboard_seek(ms: float) -> void:
 	if _app == null or _app.chart == null:
 		return
-	_app.playhead_beat = _app.chart.ms_to_beat(ms)
+	var beat: float = _app.chart.ms_to_beat(ms)
+	# 播放中拖播放头要把音频时钟一起挪，否则声音和画面对不上。
+	if _playing:
+		_rebase_playback(beat)
+	_app.playhead_beat = beat
 	_sync_from_app()
 	_preview.queue_redraw()
 	_preview._overlay.queue_redraw()
@@ -2968,8 +2996,8 @@ func _build_playtest_dialog() -> void:
 	box.add_child(mirror_row)
 	_playtest_dim = _playtest_spin_row(box, "背景暗度", 0.0, 70.0, 1.0, 70.0, "%")
 	_playtest_dim.tooltip_text = "和 osu 的 Background dim 一样：0% 不遮，70% 压暗；只暗背景和故事板，不暗判定环和音符"
-	_playtest_tilt = _playtest_spin_row(box, "环倾斜", 0.0, 15.0, 1.0, 7.0, "°")
-	_playtest_tilt.tooltip_text = "环随鼠标倾斜的最大角度：鼠标那一侧靠近镜头，环心固定不动；0 = 关闭（容易晕车就调小）"
+	_playtest_tilt = _playtest_spin_row(box, "环倾斜", 0.0, 20.0, 1.0, 10.0, "°")
+	_playtest_tilt.tooltip_text = "环随鼠标倾斜的最大角度：鼠标那一侧靠近镜头，环心固定不动，中心区域更敏感；0 = 关闭。超过 15° 时环的视觉重心会明显偏向鼠标一侧"
 	_playtest_offset = _playtest_spin_row(box, "判定偏移", -200.0, 200.0, 1.0, 0.0, "ms")
 	_playtest_latency = _playtest_spin_row(box, "输出延迟", 0.0, 250.0, 1.0, 0.0, "ms")
 	_playtest_latency.tooltip_text = "0 = 用驱动报告值；>0 = 强制覆盖（可升可降）。驱动明显不准时才手动填"
@@ -3077,7 +3105,7 @@ func _commit_playtest_settings() -> void:
 	if _playtest_dim != null:
 		_app.playtest_dim = clampi(int(_playtest_dim.value), 0, 70)
 	if _playtest_tilt != null:
-		_app.ring_tilt_degrees = clampf(_playtest_tilt.value, 0.0, 15.0)
+		_app.ring_tilt_degrees = clampf(_playtest_tilt.value, 0.0, 20.0)
 		_preview.mouse_tilt_degrees = _app.ring_tilt_degrees
 		if _playtest != null and _playtest._preview != null:
 			_playtest._preview.mouse_tilt_degrees = _app.ring_tilt_degrees

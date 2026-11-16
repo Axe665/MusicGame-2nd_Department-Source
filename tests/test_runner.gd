@@ -60,6 +60,7 @@ func _initialize() -> void:
 		"test_storyboard_clamps_first_command",
 		"test_storyboard_editor_fit_size",
 		"test_ring_tilt_target",
+		"test_storyboard_editor_transport",
 		"test_ring_tilt_keeps_center",
 		"test_note_color_palette",
 		"test_note_color_contrast",
@@ -1574,9 +1575,21 @@ func test_ring_tilt_target() -> bool:
 	ok(right.y < -6.9 and absf(right.x) < 0.01, "mouse right tilts the right side near")
 	var top := Preview3D.tilt_target_for(Vector2(800, 0), bounds, 7.0)
 	ok(top.x > 6.9 and absf(top.y) < 0.01, "mouse top tilts the top side near")
+	# 中心附近更敏感：半程位置要比线性映射大（曲线指数 0.6）。
+	var half := Preview3D.tilt_target_for(Vector2(1200, 450), bounds, 7.0)
+	ok(absf(half.y) > 4.2, "tilt curve is steeper near the centre")
 	var corner := Preview3D.tilt_target_for(Vector2(2400, -900), bounds, 7.0)
 	ok(corner.y < 0.0 and corner.y >= -7.0, "tilt clamps horizontally")
 	ok(corner.x > 0.0 and corner.x <= 7.0, "tilt clamps vertically")
+	return true
+
+
+## 故事板编辑器播放：播到末尾要么回到开头，要么停住，不能卡在末尾。
+func test_storyboard_editor_transport() -> bool:
+	eq(StoryboardEditor.transport_action(1000.0, 5000.0, true), StoryboardEditor.TRANSPORT_KEEP, "mid play keeps going")
+	eq(StoryboardEditor.transport_action(5000.0, 5000.0, true), StoryboardEditor.TRANSPORT_RESTART, "loop restarts at the end")
+	eq(StoryboardEditor.transport_action(5000.0, 5000.0, false), StoryboardEditor.TRANSPORT_STOP, "no loop stops at the end")
+	eq(StoryboardEditor.transport_action(6000.0, 5000.0, false), StoryboardEditor.TRANSPORT_STOP, "past the end still stops")
 	return true
 
 

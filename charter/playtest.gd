@@ -309,7 +309,7 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	_preview.use_3d_ring = true
 	# 环随鼠标倾斜，但只绕环心旋转：环心投影不动，HUD 和判定都不漂。
 	_preview.mouse_tilt = true
-	_preview.mouse_tilt_degrees = float(_app.ring_tilt_degrees if _app != null else 7.0)
+	_preview.mouse_tilt_degrees = float(_app.ring_tilt_degrees if _app != null else 10.0)
 	_preview.show_debug = false
 	_preview.flow_scale = flow
 	_preview.star_speed = float(_app.star_speed if _app != null else 1.0)
@@ -3179,7 +3179,7 @@ func _start_video_export(path: String) -> void:
 	if _video_export == null:
 		_video_export = VideoExport.new()
 		_video_export.encoder_pref = String(_app.video_encoder if _app != null else "auto")
-		_video_export.tilt_degrees = float(_app.ring_tilt_degrees if _app != null else 7.0)
+		_video_export.tilt_degrees = float(_app.ring_tilt_degrees if _app != null else 10.0)
 		_video_export.finished.connect(_on_video_finished)
 		_video_export.progress.connect(func(done: int, total: int) -> void:
 			if _video_bar != null:

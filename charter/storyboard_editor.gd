@@ -12,6 +12,16 @@ signal saved(path: String)
 signal seek_requested(ms: float)
 ## 编辑过程中（拖动时间轴、加删命令/对象）发出，主界面据此实时刷新预览。
 signal edited()
+## 播放/暂停：主界面负责起停音频。silent = 只在预览里放画面。
+signal play_requested(ms: float, silent: bool)
+signal pause_requested()
+## 播放中切换「静音」，主界面立刻改音量。
+signal mute_changed(silent: bool)
+
+## 播放到末尾时的动作。
+const TRANSPORT_KEEP := 0
+const TRANSPORT_RESTART := 1
+const TRANSPORT_STOP := 2
 
 const LAYERS := ["Background", "Fail", "Pass", "Foreground", "Overlay", "Video"]
 const ORIGINS := ["左上", "上中", "右上", "左中", "居中", "右中", "左下", "下中", "右下"]
@@ -63,6 +73,11 @@ var _redo: Array[String] = []
 var _snap_option: OptionButton = null
 ## 素材库：故事板目录里的图片，点两下加一个 Sprite。
 var _library: ItemList = null
+## 预览播放：播放头由主界面的音频时间驱动（不再自己数拍）。
+var _playing := false
+var _loop := true
+var _silent := false
+var _play_button: Button = null
 
 
 func _init() -> void:
@@ -269,6 +284,24 @@ func _build_ui() -> void:
 	anchor_row.add_child(next_anchor)
 	var tl_row := HBoxContainer.new()
 	right.add_child(tl_row)
+	_play_button = Button.new()
+	_play_button.text = "▶ 播放"
+	_play_button.tooltip_text = "从播放头开始播放（走主界面音频，编辑器画布跟着动画走）"
+	_play_button.pressed.connect(_toggle_play)
+	tl_row.add_child(_play_button)
+	var loop_check := CheckBox.new()
+	loop_check.text = "循环"
+	loop_check.button_pressed = true
+	loop_check.tooltip_text = "播到谱面末尾自动回到开头"
+	loop_check.toggled.connect(func(on: bool) -> void: _loop = on)
+	tl_row.add_child(loop_check)
+	var mute_check := CheckBox.new()
+	mute_check.text = "静音"
+	mute_check.tooltip_text = "只关预览音频，不动设置里的音量"
+	mute_check.toggled.connect(func(on: bool) -> void:
+		_silent = on
+		mute_changed.emit(on))
+	tl_row.add_child(mute_check)
 	var snap_label := Label.new()
 	snap_label.text = "吸附"
 	tl_row.add_child(snap_label)
@@ -784,6 +817,64 @@ func _on_remove_command() -> void:
 	if _timeline != null:
 		_timeline.queue_redraw()
 	edited.emit()
+
+
+## 播到末尾该干什么：继续 / 回到开头 / 停住。
+static func transport_action(ms: float, total_ms: float, loop: bool) -> int:
+	if ms < total_ms:
+		return TRANSPORT_KEEP
+	return TRANSPORT_RESTART if loop else TRANSPORT_STOP
+
+
+func _toggle_play() -> void:
+	if _playing:
+		_stop_playback()
+		return
+	if _chart == null:
+		return
+	_playing = true
+	if _play_button != null:
+		_play_button.text = "❚❚ 暂停"
+	play_requested.emit(float(_timeline.playhead_ms), _silent)
+
+
+func _stop_playback() -> void:
+	if not _playing:
+		return
+	_playing = false
+	if _play_button != null:
+		_play_button.text = "▶ 播放"
+	pause_requested.emit()
+
+
+## 播放中：播放头跟着主界面的谱面时间走，时间轴和画布一起动。
+## _init 里节点还没入树，/root/App 还没法解析；第一次用到时再取。
+func _app_node() -> Node:
+	if _app == null or not is_instance_valid(_app):
+		_app = get_node_or_null("/root/App")
+	return _app
+
+
+func _process(_delta: float) -> void:
+	if not _playing:
+		return
+	if _app_node() == null or _chart == null or not visible:
+		_stop_playback()
+		return
+	var total := _chart.timing.beat_to_chart_ms(_chart.duration_beats())
+	var ms := _chart.timing.beat_to_chart_ms(float(_app_node().playhead_beat))
+	match transport_action(ms, total, _loop):
+		TRANSPORT_RESTART:
+			_timeline.set_playhead(0.0)
+			_canvas.set_playhead(0.0)
+			play_requested.emit(0.0, _silent)
+		TRANSPORT_STOP:
+			_timeline.set_playhead(total)
+			_canvas.set_playhead(total)
+			_stop_playback()
+		_:
+			_timeline.set_playhead(ms)
+			_canvas.set_playhead(ms)
 
 
 func _on_save() -> void:

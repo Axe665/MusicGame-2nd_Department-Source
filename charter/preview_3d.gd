@@ -11,8 +11,11 @@ const RING_WIDTH := 4.0
 const GLOW_WIDTH := 18.0
 const PREVIEW_MARGIN := 1.24
 ## 鼠标视差的最大倾斜角（度），试玩和编辑器共用；0 = 关闭。
-const MOUSE_TILT_DEGREES := 7.0
-const MOUSE_TILT_MAX_DEGREES := 15.0
+const MOUSE_TILT_DEGREES := 10.0
+const MOUSE_TILT_MAX_DEGREES := 20.0
+## 鼠标距离 → 倾斜角的曲线指数：<1 让画面中心附近也更敏感。
+## 1.0 时中心 1/3 区域几乎看不出倾斜，0.6 在同样位置上倾斜是它的 1.38 倍。
+const MOUSE_TILT_CURVE := 0.6
 ## Path / Trace 的视觉尺寸：相对旧版 ×2。只放大笔画与头尾，不改轨迹几何与判定。
 const PATH_SIZE_SCALE := 2.0
 ## 金键（Bell）：环上一段白描边金键（圆头 + 金色核心 + 细金光环）。
@@ -870,6 +873,9 @@ static func tilt_target_for(local: Vector2, bounds: Vector2, degrees: float) -> 
 		return Vector2.ZERO
 	var nx := clampf((local.x - bounds.x * 0.5) / (bounds.x * 0.5), -1.0, 1.0)
 	var ny := clampf((local.y - bounds.y * 0.5) / (bounds.y * 0.5), -1.0, 1.0)
+	# 保留符号的幂曲线：边缘还是满幅度，中心附近更陡。
+	nx = signf(nx) * pow(absf(nx), MOUSE_TILT_CURVE)
+	ny = signf(ny) * pow(absf(ny), MOUSE_TILT_CURVE)
 	return Vector2(-ny * degrees, -nx * degrees)
 
 
@@ -906,16 +912,24 @@ func _update_transform(beat: float) -> bool:
 	return true
 
 
+## 谱面里最大的形状半径（舞台读数 / 相机取景共用）。
+## 换谱（重试会重建 chart）时会被置 -1；两个使用者都必须能自己补算，
+## 否则 HUD 会掉进另一条测量分支、两侧列突然往里缩。
+func _ensure_design_radius(chart: Chart) -> float:
+	if _max_design_radius > 0.0 or chart == null:
+		return _max_design_radius
+	_max_design_radius = 520.0
+	for shape in chart.sorted_shapes():
+		for data in shape.sample_points(32):
+			_max_design_radius = maxf(_max_design_radius, (data.point as Vector2).length())
+	return _max_design_radius
+
+
 func _update_camera_fit(chart: Chart, zoom: float, ellipse: float) -> void:
 	# 环工作区开关会把预览在两个容器间搬动，搬家途中 resized 先到、节点还没入树。
 	if not is_inside_tree() or _camera == null or not _camera.is_inside_tree():
 		return
-	if _max_design_radius < 0.0:
-		_max_design_radius = 520.0
-		for shape in chart.sorted_shapes():
-			for data in shape.sample_points(32):
-				var point: Vector2 = data.point
-				_max_design_radius = maxf(_max_design_radius, point.length())
+	_ensure_design_radius(chart)
 	var aspect := maxf(0.2, size.x / maxf(1.0, size.y))
 	# 试玩时把环放大到接近 Estella 的满屏比例；编辑器保持原来的留白。
 	var margin := 1.06 if playtest_mode else PREVIEW_MARGIN
@@ -1998,6 +2012,7 @@ func _frame_for(chart: Chart, beat: float) -> BoundaryFrame:
 	if _boundary_frame_cache == null or _boundary_frame_cache.chart != chart or _boundary_frame_cache.beat != beat:
 		if _boundary_frame_cache != null and _boundary_frame_cache.chart != chart:
 			_max_design_radius = -1.0
+			_last_fit_key = ""
 			_path_local_cache.clear()
 		_boundary_frame_cache = BoundaryFrame.new(chart, beat, _boundary_frame_cache)
 	return _boundary_frame_cache
@@ -4812,6 +4827,7 @@ func hud_metrics() -> Dictionary:
 
 
 func _hud_ring_radius(t: float) -> float:
+	_ensure_design_radius(get_chart())
 	if _max_design_radius > 0.0:
 		var affine := _screen_affine()
 		return _max_design_radius * (affine[1] as Vector2).length()
