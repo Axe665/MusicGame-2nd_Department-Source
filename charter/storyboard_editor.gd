@@ -65,6 +65,7 @@ var _easing: SpinBox = null
 var _easing_option: OptionButton = null
 var _easing_curve: Control = null
 var _apply_button: Button = null
+var _cancel_edit_button: Button = null
 var _value_row: Control = null
 var _readout: Label = null
 ## 命令列表显示下标 → sprite.commands 下标（块内命令不列出）。
@@ -76,6 +77,8 @@ var _dirty := false
 var _status: Label = null
 var _export_dialog: FileDialog = null
 var _add_dialog: FileDialog = null
+## 关闭提示只能有一个；再按 Esc/关闭不再叠对话框。
+var _close_dialog: ConfirmationDialog = null
 const TimelineScript := preload("res://charter/storyboard_timeline.gd")
 const CanvasScript := preload("res://charter/storyboard_canvas.gd")
 var _timeline = null
@@ -83,6 +86,10 @@ var _timeline = null
 var _canvas = null
 var _drag_undo_pushed := false
 var _drag_last_delta := Vector2.ZERO
+## Esc 取消拖拽时恢复到这里（拖动开始时/第一次移动前抓的快照）。
+var _drag_snapshot := ""
+var _drag_dirty_before := false
+var _redo_before_drag: Array[String] = []
 var _syncing_selection := false
 var _undo: Array[String] = []
 var _redo: Array[String] = []
@@ -123,26 +130,41 @@ func _set_dirty(on: bool) -> void:
 
 
 ## 有未保存改动时先问一句，别让人一键关掉半小时的活。
+## 提示只能有一个：Esc/关闭连按不会叠出第二层。
 func _request_close() -> void:
+	if is_instance_valid(_close_dialog):
+		return
 	if not _dirty:
 		_close()
 		return
 	var dialog := ConfirmationDialog.new()
+	_close_dialog = dialog
 	dialog.title = "还有未保存的改动"
 	dialog.dialog_text = "关闭会丢掉这次的修改。要保存吗？"
 	dialog.ok_button_text = "保存并关闭"
-	var discard := dialog.add_cancel_button("放弃修改")
-	discard.pressed.connect(func() -> void:
+	dialog.cancel_button_text = "继续编辑"
+	dialog.add_button("不保存并关闭", true, "discard")
+	add_child(dialog)
+	dialog.tree_exited.connect(func() -> void:
+		if _close_dialog == dialog:
+			_close_dialog = null)
+	dialog.confirmed.connect(func() -> void:
+		_on_save()
+		if _dirty:
+			# 保存失败：提示留在屏幕上，别把编辑器也关掉。
+			dialog.dialog_text = "保存失败：%s\n可以重试，或选择不保存并关闭。" % _status.text
+			dialog.popup_centered()
+			return
+		dialog.queue_free()
+		_close())
+	dialog.custom_action.connect(func(action: StringName) -> void:
+		if String(action) != "discard":
+			return
 		_set_dirty(false)
 		dialog.queue_free()
 		_close())
-	add_child(dialog)
-	dialog.confirmed.connect(func() -> void:
-		_on_save()
-		dialog.queue_free()
-		if not _dirty:
-			_close())
 	dialog.canceled.connect(func() -> void: dialog.queue_free())
+	dialog.close_requested.connect(func() -> void: dialog.queue_free())
 	dialog.popup_centered()
 
 
@@ -152,6 +174,16 @@ func _close() -> void:
 	_stop_playback()
 	hide()
 	closed.emit()
+
+
+## Esc 先关未保存提示（等于“继续编辑”），再按层级取消，最后才退出编辑器。
+func _handle_escape() -> void:
+	if is_instance_valid(_close_dialog):
+		_close_dialog.hide()
+		_close_dialog.queue_free()
+		return
+	if not _cancel_current():
+		_request_close()
 
 
 func _input(event: InputEvent) -> void:
@@ -175,7 +207,7 @@ func _input(event: InputEvent) -> void:
 		get_viewport().set_input_as_handled()
 		return
 	if key.keycode == KEY_ESCAPE:
-		_request_close()
+		_handle_escape()
 		get_viewport().set_input_as_handled()
 		return
 	if typing:
@@ -193,6 +225,74 @@ func _input(event: InputEvent) -> void:
 		var step := 1000.0 / maxf(1.0, Engine.get_frames_per_second())
 		_seek_to(maxf(0.0, _timeline.playhead_ms + (-step if key.keycode == KEY_LEFT else step)))
 		get_viewport().set_input_as_handled()
+
+
+## Esc 的取消层级：拖拽/框选 → 命令编辑 → 选中 → 交给关闭提示。
+func _cancel_current() -> bool:
+	if _timeline != null and _timeline.cancel_drag():
+		_finish_drag_cancel()
+		return true
+	if _canvas != null and _canvas.cancel_interaction():
+		_finish_drag_cancel()
+		return true
+	if _cmd_editing >= 0:
+		_cancel_command_edit()
+		return true
+	if _selected >= 0 or (_canvas != null and not _canvas.selected_items.is_empty()):
+		_clear_selection()
+		return true
+	return false
+
+
+func _clear_selection() -> void:
+	_selected = -1
+	if _objects != null:
+		_objects.deselect_all()
+	if _canvas != null:
+		_canvas.selected = -1
+		_canvas.selected_items.clear()
+		_canvas.queue_redraw()
+	if _timeline != null:
+		_timeline.selected_index = -1
+		_timeline.queue_redraw()
+	_commands.clear()
+	_cmd_map.clear()
+	_inspector.visible = false
+	_reset_command_fields()
+	_status.text = "已取消选择"
+
+
+## 第一次真正拖动时抓快照并压 undo；单纯按下/单击不产生撤销记录。
+func _begin_drag_snapshot() -> void:
+	if _drag_undo_pushed or _board == null:
+		return
+	_drag_snapshot = _board.to_osb_text()
+	_drag_dirty_before = _dirty
+	_redo_before_drag = _redo.duplicate()
+	_push_undo()
+	_drag_undo_pushed = true
+
+
+func _end_drag_snapshot() -> void:
+	_drag_undo_pushed = false
+	_drag_last_delta = Vector2.ZERO
+	_drag_snapshot = ""
+	_redo_before_drag.clear()
+
+
+## Esc 取消拖动：撤销刚才压进去的快照，把数据和脏标记都恢复到拖动前。
+func _finish_drag_cancel() -> void:
+	if _drag_undo_pushed:
+		if not _undo.is_empty():
+			_undo.pop_back()
+		_redo = _redo_before_drag.duplicate()
+		if not _drag_snapshot.is_empty():
+			_board = Storyboard.parse(_drag_snapshot, "cancel.osb")
+			_refresh_objects()
+			_set_dirty(_drag_dirty_before)
+		_status.text = "已取消拖动"
+	_end_drag_snapshot()
+	_update_readout()
 
 
 ## 列表 / 时间轴 / 画布选中同一个 sprite 时走这里。
@@ -385,9 +485,7 @@ func _build_ui() -> void:
 	_canvas.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_canvas.selection_changed.connect(_on_canvas_selection)
 	_canvas.dragged.connect(_on_canvas_drag)
-	_canvas.released.connect(func() -> void:
-		_drag_undo_pushed = false
-		_drag_last_delta = Vector2.ZERO)
+	_canvas.released.connect(func() -> void: _end_drag_snapshot())
 	_canvas._on_hover_changed = func() -> void: _update_readout()
 	center.add_child(_canvas)
 
@@ -497,6 +595,10 @@ func _build_ui() -> void:
 	_apply_button.text = "添加命令"
 	_apply_button.pressed.connect(_on_apply_command)
 	cmd_buttons.add_child(_apply_button)
+	_cancel_edit_button = _button("取消编辑 / 新建", _cancel_command_edit, 0)
+	_cancel_edit_button.tooltip_text = "退出“更新命令”模式，回到从播放头添加新命令"
+	_cancel_edit_button.visible = false
+	cmd_buttons.add_child(_cancel_edit_button)
 	cmd_buttons.add_child(_button("删除命令", _on_remove_command, 0))
 	var anchor_row := HBoxContainer.new()
 	props.add_child(anchor_row)
@@ -577,11 +679,12 @@ func _build_ui() -> void:
 	_timeline.layer_lock_changed.connect(func(layer: String, locked: bool) -> void:
 		_canvas.set_layer_locked(layer, locked)
 		_update_readout())
-	_timeline.drag_started.connect(func() -> void: _push_undo())
+	_timeline.drag_started.connect(func() -> void: _end_drag_snapshot())
+	_timeline.drag_moved.connect(_begin_drag_snapshot)
 	_timeline.drag_finished.connect(func() -> void:
 		_board.invalidate()
 		_refresh_command_text()
-		_set_dirty(true)
+		_end_drag_snapshot()
 		edited.emit())
 	_timeline.changed.connect(func() -> void:
 		if _board != null:
@@ -789,6 +892,14 @@ func _refresh_command_text() -> void:
 			_commands.set_item_text(i, _describe(sprite.commands[real] as Storyboard.Command))
 
 
+func _cancel_command_edit() -> void:
+	_cmd_editing = -1
+	if _commands != null:
+		_commands.deselect_all()
+	_reset_command_fields()
+	_status.text = "已退出命令编辑（回到添加命令）"
+
+
 ## 新增命令的默认区间：当前播放头 → +500ms（两者都按当前吸附走）。
 func _reset_command_fields() -> void:
 	if _start_spin == null or _timeline == null:
@@ -796,6 +907,8 @@ func _reset_command_fields() -> void:
 	_cmd_editing = -1
 	if _apply_button != null:
 		_apply_button.text = "添加命令"
+	if _cancel_edit_button != null:
+		_cancel_edit_button.visible = false
 	var ms := float(_timeline.playhead_ms)
 	_start_spin.value = _timeline.snap_ms(ms)
 	_end_spin.value = maxf(_start_spin.value, _timeline.snap_ms(ms + 500.0))
@@ -982,8 +1095,7 @@ func _on_canvas_drag(indices: Array, _bases: Array, delta: Vector2) -> void:
 	if _board == null or indices.is_empty():
 		return
 	if not _drag_undo_pushed:
-		_push_undo()
-		_drag_undo_pushed = true
+		_begin_drag_snapshot()
 	var step := delta - _drag_last_delta
 	_drag_last_delta = delta
 	if step == Vector2.ZERO:
@@ -1322,8 +1434,10 @@ func _on_command_selected(display_index: int) -> void:
 				_to_a.value = float(to[0])
 	_update_value_fields(kind)
 	_apply_button.text = "更新命令"
+	if _cancel_edit_button != null:
+		_cancel_edit_button.visible = true
 	_easing_curve.queue_redraw()
-	_status.text = "正在编辑：%s（改完点「更新命令」）" % kind
+	_status.text = "正在编辑：%s（改完点「更新命令」，或点「取消编辑 / 新建」）" % kind
 
 
 func _on_apply_command() -> void:

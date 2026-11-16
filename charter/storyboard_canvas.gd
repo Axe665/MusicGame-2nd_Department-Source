@@ -596,6 +596,20 @@ func _gui_input(event: InputEvent) -> void:
 			accept_event()
 
 
+## Esc 取消当前的按下/拖动/框选/平移。返回 true 表示有交互被取消。
+func cancel_interaction() -> bool:
+	var active := _pending or _dragging or _marquee_active or _panning
+	_pending = false
+	_dragging = false
+	_marquee_active = false
+	_panning = false
+	_drag_indices.clear()
+	_drag_bases.clear()
+	_marquee = Rect2()
+	queue_redraw()
+	return active
+
+
 func _toggle_or_select(hit: int, additive: bool) -> void:
 	if additive:
 		if selected_items.has(hit):

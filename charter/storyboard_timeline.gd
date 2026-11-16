@@ -16,6 +16,8 @@ signal layer_visibility_changed(layer: String, visible: bool)
 signal layer_lock_changed(layer: String, locked: bool)
 ## 开始拖命令条（编辑器在这里压一次 undo 快照）。
 signal drag_started()
+## 命令条第一次真正移动（编辑器在这里压 undo，单纯按下不压）。
+signal drag_moved()
 signal drag_finished()
 
 const HEADER_H := 24.0
@@ -575,7 +577,6 @@ func _gui_input(event: InputEvent) -> void:
 				_drag_sprite = null
 				_recompute_span()
 				drag_finished.emit()
-				changed.emit()
 				queue_redraw()
 				accept_event()
 		return
@@ -613,10 +614,18 @@ func _begin_drag(pos: Vector2, double_click: bool = false) -> void:
 		# 左侧栏：眼睛 / 锁 / 展开；右侧时间区：跳播放头。
 		var hit := _layer_button_at(pos.x) if pos.x < GUTTER else ""
 		if hit == "eye":
-			hidden_layers[layer] = not hidden_layers.has(layer)
+			# 用 erase 表示“关”：留一个 false 值进去后 has() 仍然为真，
+			# 第二次点眼睛就永远取消不掉隐藏。
+			if hidden_layers.has(layer):
+				hidden_layers.erase(layer)
+			else:
+				hidden_layers[layer] = true
 			layer_visibility_changed.emit(layer, not hidden_layers.has(layer))
 		elif hit == "lock":
-			locked_layers[layer] = not locked_layers.has(layer)
+			if locked_layers.has(layer):
+				locked_layers.erase(layer)
+			else:
+				locked_layers[layer] = true
 			layer_lock_changed.emit(layer, locked_layers.has(layer))
 		elif pos.x < GUTTER:
 			expanded[layer] = not bool(expanded.get(layer, false))
@@ -682,6 +691,22 @@ func _begin_drag(pos: Vector2, double_click: bool = false) -> void:
 	accept_event()
 
 
+## Esc 取消当前拖动：把命令条恢复到按下时的起止时间。
+## 返回 true 表示确实有东西被取消（编辑器据此决定要不要回滚快照）。
+func cancel_drag() -> bool:
+	if _drag_mode == 0:
+		return false
+	if _drag_mode >= 2 and _drag_mode <= 4 and _drag_command != null and _drag_sprite != null:
+		_drag_command.start = _drag_origin_start
+		_drag_command.end = _drag_origin_end
+		_drag_sprite.build()
+	_drag_mode = 0
+	_drag_command = null
+	_drag_sprite = null
+	queue_redraw()
+	return true
+
+
 func _drag_to(pos: Vector2) -> void:
 	if _drag_mode == 5:
 		view_from_ms = clampf(_drag_origin_view - (pos.x - _drag_origin_x) / maxf(1.0, size.x - GUTTER) * visible_span(),
@@ -705,6 +730,8 @@ func _drag_to(pos: Vector2) -> void:
 	if _drag_command == null or _drag_sprite == null:
 		return
 	var delta := ms - _drag_start_ms
+	if _drag_mode >= 2 and _drag_mode <= 4:
+		drag_moved.emit()
 	match _drag_mode:
 		2:
 			var length := _drag_origin_end - _drag_origin_start

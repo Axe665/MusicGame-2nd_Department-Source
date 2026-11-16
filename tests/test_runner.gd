@@ -66,6 +66,10 @@ func _initialize() -> void:
 		"test_storyboard_timeline_rows",
 		"test_storyboard_timeline_snap_offset",
 		"test_storyboard_timeline_mouse",
+		"test_storyboard_layer_toggle_reversible",
+		"test_storyboard_escape_cancels",
+		"test_storyboard_drag_cancel_restores",
+		"test_storyboard_close_dialog_unique",
 		"test_storyboard_wide_detection",
 		"test_replay_mirror_restore",
 		"test_video_export_start_from_replay",
@@ -1737,6 +1741,176 @@ func test_video_export_start_from_replay() -> bool:
 	near(VideoExport.start_ms_for(chart, replay), chart.timing.beat_to_chart_ms(8.0), 0.01,
 		"export starts at the recorded beat")
 	eq(VideoExport.start_ms_for(chart, null), 0.0, "AUTO export still starts at zero")
+	return true
+
+
+## 故事板编辑器测试夹具：建一个带单个 sprite/命令的编辑器（不依赖主界面）。
+func _storyboard_editor_for_test() -> StoryboardEditor:
+	var editor := StoryboardEditor.new()
+	root.add_child(editor)
+	editor.open_for(DemoChart.make_empty({"title": "sb"}))
+	editor._timeline.size = Vector2(800, 250)
+	var sprite := editor._board.add_sprite("a.png", "Background", 4, Vector2(320, 240))
+	editor._board.add_command(sprite, "alpha", 0, 0.0, 1000.0, [0.0], [1.0])
+	editor._refresh_objects()
+	editor._timeline.set_board(editor._board)
+	editor._timeline.expanded["Background"] = true
+	editor._timeline._rebuild_rows()
+	editor._timeline.set_zoom(0.0, 2000.0)
+	editor._seek_to(500.0)
+	editor._select_sprite(0)
+	return editor
+
+
+static func _storyboard_click(timeline, pos: Vector2) -> void:
+	var press := InputEventMouseButton.new()
+	press.button_index = MOUSE_BUTTON_LEFT
+	press.pressed = true
+	press.position = pos
+	timeline._gui_input(press)
+	var release := InputEventMouseButton.new()
+	release.button_index = MOUSE_BUTTON_LEFT
+	release.pressed = false
+	release.position = pos
+	timeline._gui_input(release)
+
+
+static func _storyboard_escape(editor: StoryboardEditor) -> void:
+	editor._handle_escape()
+
+
+static func _storyboard_close_dialogs(editor: StoryboardEditor) -> Array:
+	var found: Array = []
+	for child in editor.get_children():
+		if child is ConfirmationDialog and not (child is FileDialog):
+			found.append(child)
+	return found
+
+
+## 眼睛/锁必须可逆：第二次点击要恢复。旧实现写入 false 但 has() 仍为真，永远取消不掉。
+func test_storyboard_layer_toggle_reversible() -> bool:
+	var editor := _storyboard_editor_for_test()
+	var timeline = editor._timeline
+	var y: float = timeline._rows_top() + 9.0
+	_storyboard_click(timeline, Vector2(13.0, y))
+	ok(timeline.hidden_layers.has("Video"), "first eye click hides the layer")
+	_storyboard_click(timeline, Vector2(13.0, y))
+	ok(not timeline.hidden_layers.has("Video"), "second eye click shows it again")
+	ok(not editor._canvas.hidden_layers.has("Video"), "canvas follows the un-hide")
+	var lock_y: float = timeline._rows_top() + timeline.ROW_H + 9.0
+	_storyboard_click(timeline, Vector2(33.0, lock_y))
+	ok(timeline.locked_layers.has("Background"), "first lock click locks the layer")
+	_storyboard_click(timeline, Vector2(33.0, lock_y))
+	ok(not timeline.locked_layers.has("Background"), "second lock click unlocks it")
+	ok(not editor._canvas.locked_layers.has("Background"), "canvas follows the unlock")
+	eq(editor._undo.size(), 0, "view toggles do not create undo entries")
+	editor.free()
+	return true
+
+
+## Esc 先取消命令编辑/选中，最后才关闭；关闭提示不能叠。
+func test_storyboard_escape_cancels() -> bool:
+	var editor := _storyboard_editor_for_test()
+	editor._on_command_selected(0)
+	eq(editor._cmd_editing, 0, "command is in edit mode")
+	ok(editor._cancel_edit_button.visible, "cancel-edit button is visible")
+	_storyboard_escape(editor)
+	eq(editor._cmd_editing, -1, "Esc exits command editing first")
+	ok(editor.visible, "Esc does not close the editor while editing")
+	eq(editor._selected, 0, "Esc keeps the object selected after leaving command editing")
+	ok(not editor._cancel_edit_button.visible, "cancel-edit button hides after leaving edit mode")
+	_storyboard_escape(editor)
+	eq(editor._selected, -1, "next Esc clears the selection")
+	ok(editor.visible, "selection cancel does not close the editor")
+	ok(not editor._inspector.visible, "selection cancel hides the inspector")
+	_storyboard_escape(editor)
+	ok(not editor.visible, "third Esc closes an unmodified editor")
+	editor.free()
+	return true
+
+
+## 拖命令条后 Esc：时间回滚、dirty 回滚、undo 不留下半截记录。
+func test_storyboard_drag_cancel_restores() -> bool:
+	var editor := _storyboard_editor_for_test()
+	var timeline = editor._timeline
+	editor._undo.clear()
+	editor._set_dirty(false)
+	var y: float = timeline._rows_top() + 2.0 * timeline.ROW_H + 9.0
+	var x: float = timeline._ms_to_x(500.0)
+	var press := InputEventMouseButton.new()
+	press.button_index = MOUSE_BUTTON_LEFT
+	press.pressed = true
+	press.position = Vector2(x, y)
+	timeline._gui_input(press)
+	var motion := InputEventMouseMotion.new()
+	motion.position = Vector2(x + 100.0, y)
+	motion.relative = Vector2(100.0, 0.0)
+	timeline._gui_input(motion)
+	var command := editor._board.sprites[0].commands[0] as Storyboard.Command
+	ok(absf(command.start) > 1.0, "drag moved the command start")
+	ok(editor._dirty, "drag marks the editor dirty")
+	eq(editor._undo.size(), 1, "first drag movement pushes one undo snapshot")
+	ok(editor._cancel_current(), "Esc finds an active drag to cancel")
+	eq(timeline._drag_mode, 0, "drag mode is reset")
+	var restored := editor._board.sprites[0].commands[0] as Storyboard.Command
+	near(restored.start, 0.0, 0.01, "cancelled drag restores the command start")
+	near(restored.end, 1000.0, 0.01, "cancelled drag restores the command end")
+	ok(not editor._dirty, "cancelled drag restores the dirty flag")
+	eq(editor._undo.size(), 0, "cancelled drag removes its undo snapshot")
+	# 正常拖动仍要留下 undo，并能撤销回去。
+	var release := InputEventMouseButton.new()
+	release.button_index = MOUSE_BUTTON_LEFT
+	release.pressed = false
+	release.position = Vector2(x, y)
+	timeline._gui_input(release)
+	var press2 := InputEventMouseButton.new()
+	press2.button_index = MOUSE_BUTTON_LEFT
+	press2.pressed = true
+	press2.position = Vector2(x, y)
+	timeline._gui_input(press2)
+	var motion2 := InputEventMouseMotion.new()
+	motion2.position = Vector2(x + 100.0, y)
+	motion2.relative = Vector2(100.0, 0.0)
+	timeline._gui_input(motion2)
+	release.position = Vector2(x + 100.0, y)
+	timeline._gui_input(release)
+	ok(absf((editor._board.sprites[0].commands[0] as Storyboard.Command).start) > 1.0,
+		"normal drag still moves the command")
+	eq(editor._undo.size(), 1, "normal drag keeps its undo snapshot")
+	editor._on_undo()
+	near((editor._board.sprites[0].commands[0] as Storyboard.Command).start, 0.0, 0.01,
+		"undo restores a normal drag")
+	editor.free()
+	return true
+
+
+## 关闭提示只有一个；取消=继续编辑；不保存立即关闭。
+func test_storyboard_close_dialog_unique() -> bool:
+	var editor := _storyboard_editor_for_test()
+	editor._set_dirty(true)
+	editor._request_close()
+	editor._request_close()
+	var dialogs := _storyboard_close_dialogs(editor)
+	eq(dialogs.size(), 1, "repeated close requests keep one dialog")
+	if not dialogs.is_empty():
+		var dialog := dialogs[0] as ConfirmationDialog
+		eq(dialog.get_cancel_button().text, "继续编辑", "cancel button says continue editing")
+		dialog.get_cancel_button().pressed.emit()
+		ok(editor.visible, "continue editing keeps the editor open")
+	editor.free()
+
+	var discard_editor := _storyboard_editor_for_test()
+	discard_editor._set_dirty(true)
+	discard_editor._request_close()
+	var discard_dialogs := _storyboard_close_dialogs(discard_editor)
+	if not discard_dialogs.is_empty():
+		var discard_dialog := discard_dialogs[0] as ConfirmationDialog
+		for button in discard_dialog.get_ok_button().get_parent().get_children():
+			if button is Button and button.text == "不保存并关闭":
+				button.pressed.emit()
+				break
+	ok(not discard_editor.visible, "discard closes the editor immediately")
+	discard_editor.free()
 	return true
 
 
