@@ -61,7 +61,7 @@ func _initialize() -> void:
 		"test_storyboard_editor_fit_size",
 		"test_ring_tilt_target",
 		"test_storyboard_editor_transport",
-		"test_background_dim_applies",
+		"test_background_brightness_applies",
 		"test_storyboard_roundtrip_lossless",
 		"test_storyboard_loop_indent_scope",
 		"test_replay_normalized_coords",
@@ -1577,14 +1577,14 @@ func test_ring_tilt_target() -> bool:
 	eq(Preview3D.tilt_target_for(Vector2(800, 450), bounds, 7.0), Vector2.ZERO, "tilt zero at centre")
 	eq(Preview3D.tilt_target_for(Vector2(800, 450), bounds, 0.0), Vector2.ZERO, "tilt zero at 0 degrees")
 	var right := Preview3D.tilt_target_for(Vector2(1600, 450), bounds, 7.0)
-	ok(right.y < -6.9 and absf(right.x) < 0.01, "mouse right tilts the right side near")
+	ok(right.y > 6.9 and absf(right.x) < 0.01, "mouse right tilts the right side (remote sign)")
 	var top := Preview3D.tilt_target_for(Vector2(800, 0), bounds, 7.0)
 	ok(top.x > 6.9 and absf(top.y) < 0.01, "mouse top tilts the top side near")
-	# 中心附近更敏感：半程位置要比线性映射大（曲线指数 0.6）。
+	# 线性映射：半程就是半幅度（远端口径，没有曲线）
 	var half := Preview3D.tilt_target_for(Vector2(1200, 450), bounds, 7.0)
-	ok(absf(half.y) > 4.2, "tilt curve is steeper near the centre")
+	near(half.y, 3.5, 0.01, "tilt is linear across the screen")
 	var corner := Preview3D.tilt_target_for(Vector2(2400, -900), bounds, 7.0)
-	ok(corner.y < 0.0 and corner.y >= -7.0, "tilt clamps horizontally")
+	ok(corner.y <= 7.0 and corner.y >= -7.0, "tilt clamps horizontally")
 	ok(corner.x > 0.0 and corner.x <= 7.0, "tilt clamps vertically")
 	return true
 
@@ -1598,20 +1598,20 @@ func test_storyboard_editor_transport() -> bool:
 	return true
 
 
-## 背景暗度：0–100 可调，且预览的遮罩层真的跟着变（回放/导出以前根本没接这个值）。
-func test_background_dim_applies() -> bool:
-	eq(Preview3D.clamp_dim(85), 85, "dim keeps the value")
-	eq(Preview3D.clamp_dim(150), 100, "dim clamps at 100")
-	eq(Preview3D.clamp_dim(-5), 0, "dim clamps at 0")
-	# 前景层在判定环上面，只能乘暗自身；0 = 原样，100 = 全黑
-	near(Preview3D.foreground_dim_keep(0), 1.0, 0.001, "dim 0 keeps foreground untouched")
-	near(Preview3D.foreground_dim_keep(70), 0.30, 0.001, "dim 70 multiplies foreground by 0.3")
-	near(Preview3D.foreground_dim_keep(100), 0.0, 0.001, "dim 100 blacks out foreground")
-	near(Preview3D.foreground_dim_keep(150), 0.0, 0.001, "foreground dim clamps at 100")
+## 背景明暗：画质页 5 档，曲绘 / BGA / 故事板共用同一个系数。
+func test_background_brightness_applies() -> bool:
+	# 画质页 5 档：关 / 25 / 50 / 75 / 100
+	var steps := [0, 25, 50, 75, 100]
+	for value in steps:
+		var keep := float(value) / 100.0
+		near(Preview3D.background_alpha(keep), Preview3D.BACKGROUND_ALPHA * keep, 0.0001,
+			"background alpha follows brightness %d" % value)
+	# BGA 用同一个系数
+	near(Preview3D.video_alpha(0.8, 0.5), 0.4, 0.0001, "bga alpha follows brightness")
 	var export := VideoExport.new()
-	eq(export.background_dim, 0, "export defaults to no dim")
-	export.background_dim = 70
-	eq(export.background_dim, 70, "export carries the dim into the rendered frame")
+	eq(export.background_brightness, 1.0, "export defaults to full brightness")
+	export.background_brightness = 0.5
+	eq(export.background_brightness, 0.5, "export carries brightness into the frame")
 	return true
 
 
@@ -1726,8 +1726,9 @@ func test_ring_tilt_keeps_center() -> bool:
 	ok(flat.basis.y.normalized().dot(Vector3.UP) > 0.9999, "no tilt keeps the ring face on")
 	eq(flat.origin, Vector3.ZERO, "no tilt leaves the ring at the origin")
 	var tilted := Preview3D.ring_transform(0.0, 0.0, 0.0, 1.0, 1.0, Vector2(6.0, -5.0))
-	eq(tilted.origin, Vector3.ZERO, "tilt never translates the ring")
-	eq(tilted * Vector3.ZERO, Vector3.ZERO, "ring centre is the fixed point of the tilt")
+	# 远端原版：倾斜时环心会跟着轻轻推一点（每度 2.8 设计单位），不是严格不动。
+	near(tilted.origin.x, 5.0 * 2.8, 0.001, "tilt nudges the ring horizontally")
+	near(tilted.origin.y, -6.0 * 2.8, 0.001, "tilt nudges the ring vertically")
 	ok(tilted.basis.y.normalized().dot(Vector3.UP) < 0.999, "tilt actually rotates the ring")
 	ok(absf(tilted.basis.x.length() - 1.0) < 0.001, "tilt keeps the basis length")
 	return true

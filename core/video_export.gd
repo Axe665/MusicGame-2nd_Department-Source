@@ -17,10 +17,8 @@ var size := Vector2i(1920, 1080)
 var fps := 60
 ## auto / nvenc / qsv / videotoolbox / vaapi / libx264。强制指定但跑不了时自动回退。
 var encoder_pref := "auto"
-## 环随回放光标倾斜的角度（0 = 关）。
-var tilt_degrees: float = 10.0
-## 背景暗度（osu Background dim，0–100）。导出画面必须和试玩一致。
-var background_dim: int = 0
+## 背景明暗（0–1）：曲绘 / BGA / 故事板，和游戏里同一个系数。
+var background_brightness: float = 1.0
 ## 谱面没有 replay 时（AUTO / 基准）用自动演奏跑同一套离线管线。
 var auto_play := false
 
@@ -194,8 +192,7 @@ func export_chart(chart: Chart, start_ms: float, end_ms: float, out_path: String
 		return
 	preview.reparent(viewport)
 	preview.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	preview.mouse_tilt_degrees = clampf(tilt_degrees, 0.0, 20.0)
-	preview.set_background_dim(background_dim)
+	preview.set_background_brightness(background_brightness)
 	preview.show_storyboard = show_storyboard
 	preview.show_storyboard_background = show_storyboard
 	preview.set_process(false)

@@ -317,9 +317,8 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	_preview.custom_cursor_visible = true
 	_preview.show_hud = true
 	_preview.use_3d_ring = true
-	# 环随鼠标倾斜，但只绕环心旋转：环心投影不动，HUD 和判定都不漂。
+	# 环随鼠标倾斜（远端原版：绕 X/Y 旋转 + 环心轻微平移）。
 	_preview.mouse_tilt = true
-	_preview.mouse_tilt_degrees = float(_app.ring_tilt_degrees if _app != null else 10.0)
 	_preview.show_debug = false
 	_preview.flow_scale = flow
 	_preview.star_speed = float(_app.star_speed if _app != null else 1.0)
@@ -3326,8 +3325,7 @@ func _start_video_export(path: String) -> void:
 		)
 		add_child(_video_export)
 	_video_export.encoder_pref = String(_app.video_encoder if _app != null else "auto")
-	_video_export.tilt_degrees = float(_app.ring_tilt_degrees if _app != null else 10.0)
-	_video_export.background_dim = int(_app.playtest_dim if _app != null else 0)
+	_video_export.background_brightness = float(_app.background_brightness) / 100.0 if _app != null else 1.0
 	_video_export.size = _selected_video_size()
 	_video_export.fps = _selected_video_fps()
 	# 自动演奏（AUTO）没有输入事件，仍然用同一套离线管线跑自动演奏。

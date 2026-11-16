@@ -39,6 +39,7 @@ const QUALITY_OPTIONS := [
 	{"key": "ring_3d_scale", "label": "3D 环分辨率", "choices": [["原生", 160], ["超采样 1.25×", 161], ["超采样 1.5×", 162], ["高 0.85", 163], ["中 0.65", 164], ["低 0.5", 165]]},
 	{"key": "ring_3d_hz", "label": "3D 环刷新", "choices": [["60Hz", 76], ["30Hz", 77]]},
 	{"key": "bar_lines", "label": "小节线", "choices": [["开", 78], ["关", 79]]},
+	{"key": "background_brightness", "label": "背景明暗", "choices": [["关", 96], ["25%", 97], ["50%", 98], ["75%", 99], ["100%（默认）", 100]]},
 	{"key": "show_storyboard", "label": "故事板", "choices": [["开", 166], ["关", 167]]},
 	{"key": "show_storyboard_background", "label": "故事板背景层", "choices": [["开", 168], ["关", 169]]},
 	{"key": "video_encoder", "label": "视频导出编码器", "choices": [["自动（优先硬件）", 170], ["NVENC", 171], ["QSV", 172], ["VideoToolbox", 173], ["VAAPI（Linux）", 174], ["libx264（软件）", 175]]},
@@ -161,9 +162,6 @@ var _playtest_sfx: OptionButton = null
 var _playtest_mirror: OptionButton = null
 var _playtest_dynamic: CheckBox = null
 var _playtest_auto: CheckBox = null
-## 试玩设置里的「背景暗度」0-100。
-var _playtest_dim: SpinBox = null
-var _playtest_tilt: SpinBox = null
 var _playtest_mouse: CheckBox = null
 var _playtest_bias: Label = null
 ## 试玩设置底部的「从头开始玩」按钮（试玩中隐藏）。
@@ -662,7 +660,7 @@ func _build_ui() -> void:
 	preview_header.add_child(_preview_gear)
 	_preview = Preview3D.new()
 	_preview.show_storyboard = _app.show_storyboard if _app != null else true
-	_preview.set_background_dim(_app.playtest_dim if _app != null else 0)
+	_preview.set_background_brightness(float(_app.background_brightness) / 100.0 if _app != null else 1.0)
 	_preview.storyboard_fit = true
 	_preview.show_storyboard_background = _app.show_storyboard_background if _app != null else true
 	_preview.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -1145,6 +1143,8 @@ func _quality_index(key: String) -> int:
 			return 0 if _app.ring_3d_hz >= 60 else 1
 		"bar_lines":
 			return 0 if _app.bar_lines else 1
+		"background_brightness":
+			return [0, 25, 50, 75, 100].find(_app.background_brightness)
 		"show_storyboard":
 			return 0 if _app.show_storyboard else 1
 		"show_storyboard_background":
@@ -1183,6 +1183,13 @@ func _set_quality_index(key: String, index: int) -> void:
 			_app.ring_3d_hz = 60 if index == 0 else 30
 		"bar_lines":
 			_app.bar_lines = index == 0
+		"background_brightness":
+			_app.background_brightness = [0, 25, 50, 75, 100][clampi(index, 0, 4)]
+			_preview.set_background_brightness(float(_app.background_brightness) / 100.0)
+			if _playtest != null and _playtest._preview != null:
+				_playtest._preview.set_background_brightness(float(_app.background_brightness) / 100.0)
+			# 背景明暗不是画质参数，别把预设打成「自定义」。
+			return
 		"show_storyboard":
 			_app.show_storyboard = index == 0
 			# 故事板开关也不是画质参数，不参与预设。
@@ -1625,7 +1632,6 @@ func _sync_from_app() -> void:
 	_preview.show_hud = _app.hud_visible
 	_preview.use_3d_ring = _app.use_3d_ring
 	_preview.mouse_tilt = _app.mouse_tilt
-	_preview.mouse_tilt_degrees = _app.ring_tilt_degrees
 	_preview.show_debug = _app.debug_overlay
 	_preview.flow_scale = _app.flow_scale
 	_preview.star_speed = _app.star_speed
@@ -2043,7 +2049,6 @@ func _update_status() -> void:
 		return
 	_preview.use_3d_ring = _app.use_3d_ring
 	_preview.mouse_tilt = _app.mouse_tilt
-	_preview.mouse_tilt_degrees = _app.ring_tilt_degrees
 	if _status_u != null:
 		_status_u.text = "u %.1f°" % (_cursor_u * 360.0)
 		_status_beat.text = "bar " + _app.chart.timing.format_beat(_app.playhead_beat)
@@ -2762,10 +2767,6 @@ func _open_playtest_setup(from_start: bool) -> void:
 		if _playtest_start_button != null:
 			_playtest_start_button.visible = true
 	_playtest_rate.value = _rate
-	if _playtest_dim != null:
-		_playtest_dim.value = float(_app.playtest_dim)
-	if _playtest_tilt != null:
-		_playtest_tilt.value = _app.ring_tilt_degrees
 	_playtest_flow.value = _app.flow_scale
 	_playtest_star.value = _app.star_speed
 	if _playtest_cursor != null:
@@ -2988,10 +2989,6 @@ func _build_playtest_dialog() -> void:
 	_playtest_mirror.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	mirror_row.add_child(_playtest_mirror)
 	box.add_child(mirror_row)
-	_playtest_dim = _playtest_spin_row(box, "背景暗度", 0.0, 100.0, 1.0, 70.0, "%")
-	_playtest_dim.tooltip_text = "0% 不遮，100% 全黑。压曲绘 / BGA / 故事板全部图层（含前景与覆盖层），不压判定环和音符；编辑器预览也用这个值"
-	_playtest_tilt = _playtest_spin_row(box, "环倾斜", 0.0, 20.0, 1.0, 10.0, "°")
-	_playtest_tilt.tooltip_text = "环随鼠标倾斜的最大角度：鼠标那一侧靠近镜头，环心固定不动，中心区域更敏感；0 = 关闭。超过 15° 时环的视觉重心会明显偏向鼠标一侧"
 	_playtest_offset = _playtest_spin_row(box, "判定偏移", -200.0, 200.0, 1.0, 0.0, "ms")
 	_playtest_latency = _playtest_spin_row(box, "输出延迟", 0.0, 250.0, 1.0, 0.0, "ms")
 	_playtest_latency.tooltip_text = "0 = 用驱动报告值；>0 = 强制覆盖（可升可降）。驱动明显不准时才手动填"
@@ -3096,17 +3093,9 @@ func _commit_playtest_settings() -> void:
 	if _app == null:
 		return
 	_rate = _playtest_rate.value
-	if _playtest_dim != null:
-		_app.playtest_dim = clampi(int(_playtest_dim.value), 0, 100)
-	if _playtest_tilt != null:
-		_app.ring_tilt_degrees = clampf(_playtest_tilt.value, 0.0, 20.0)
-		_preview.mouse_tilt_degrees = _app.ring_tilt_degrees
-		if _playtest != null and _playtest._preview != null:
-			_playtest._preview.mouse_tilt_degrees = _app.ring_tilt_degrees
-	# 暗度必须单独应用：之前这段嵌在倾斜的 if 里，倾斜控件不存在时整段不执行。
-	_preview.set_background_dim(_app.playtest_dim)
+	_preview.set_background_brightness(float(_app.background_brightness) / 100.0)
 	if _playtest != null and _playtest._preview != null:
-		_playtest._preview.set_background_dim(_app.playtest_dim)
+		_playtest._preview.set_background_brightness(float(_app.background_brightness) / 100.0)
 	if _playtest_latency != null:
 		_app.audio_latency_ms = clampf(_playtest_latency.value, 0.0, 250.0)
 	_app.flow_scale = _playtest_flow.value
@@ -3241,7 +3230,7 @@ func _start_playtest(from_start: bool) -> void:
 	add_child(_playtest)
 	_playtest._preview.show_storyboard = _app.show_storyboard
 	_playtest._preview.show_storyboard_background = _app.show_storyboard_background
-	_playtest._preview.set_background_dim(_app.playtest_dim)
+	_playtest._preview.set_background_brightness(float(_app.background_brightness) / 100.0)
 	_playtest.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_playtest.setup(_app.chart, 0.0 if from_start else _app.playhead_beat, _app.chart_path)
 	_playtest.exit_requested.connect(_end_playtest)
@@ -3268,8 +3257,7 @@ func _start_replay(data: Replay) -> void:
 	# 回放以前漏了这三项：故事板恒开、暗度恒 0，和首次试玩的画面不一致。
 	_playtest._preview.show_storyboard = _app.show_storyboard
 	_playtest._preview.show_storyboard_background = _app.show_storyboard_background
-	_playtest._preview.set_background_dim(_app.playtest_dim)
-	_playtest._preview.mouse_tilt_degrees = _app.ring_tilt_degrees
+	_playtest._preview.set_background_brightness(float(_app.background_brightness) / 100.0)
 	_playtest.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_playtest.setup(_app.chart, data.start_beat, _app.chart_path)
 	_playtest.exit_requested.connect(_end_playtest)

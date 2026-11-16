@@ -10,12 +10,8 @@ signal ring_rotate(degrees: float)
 const RING_WIDTH := 4.0
 const GLOW_WIDTH := 18.0
 const PREVIEW_MARGIN := 1.24
-## 鼠标视差的最大倾斜角（度），试玩和编辑器共用；0 = 关闭。
-const MOUSE_TILT_DEGREES := 10.0
-const MOUSE_TILT_MAX_DEGREES := 20.0
-## 鼠标距离 → 倾斜角的曲线指数：<1 让画面中心附近也更敏感。
-## 1.0 时中心 1/3 区域几乎看不出倾斜，0.6 在同样位置上倾斜是它的 1.38 倍。
-const MOUSE_TILT_CURVE := 0.6
+## 鼠标视差的最大倾斜角（度）。试玩固定 7°，编辑器预览用这个值。
+const MOUSE_TILT_DEGREES := 11.0
 ## Path / Trace 的视觉尺寸：相对旧版 ×2。只放大笔画与头尾，不改轨迹几何与判定。
 const PATH_SIZE_SCALE := 2.0
 ## 金键（Bell）：环上一段白描边金键（圆头 + 金色核心 + 细金光环）。
@@ -63,7 +59,6 @@ var custom_cursor_visible: bool = true
 var cursor_scale: float = 1.0
 var mouse_tilt: bool = true
 ## 倾斜幅度（度）；由设置页写入，0 视为关闭。
-var mouse_tilt_degrees: float = MOUSE_TILT_DEGREES
 ## 注入光标（回放/导出）是按哪个尺寸录的。导出视口固定 1280x720，
 ## 而回放录的是 1600x900 的光标，不换算的话右侧的点会被判成「跑到画面外」。
 var auto_cursor_bounds: Vector2 = Vector2.ZERO
@@ -157,8 +152,6 @@ var _storyboard_add_fg: Control = null
 var _storyboard_fg: Control = null
 var _storyboard_top: Control = null
 ## 背景调暗层：盖住背景和 storyboard，但压在 3D 判定环下面（osu 的 Background dim）。
-var _dim_layer: ColorRect = null
-var background_dim: int = 0
 var _video: VideoStreamPlayer
 var _viewport_container: SubViewportContainer
 var _subviewport: SubViewport
@@ -515,13 +508,6 @@ func _build_layers() -> void:
 	add_child(_storyboard_add_bg)
 	_storyboard_add_bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	move_child(_storyboard_add_bg, _viewport_container.get_index())
-	_dim_layer = ColorRect.new()
-	_dim_layer.name = "BackgroundDim"
-	_dim_layer.color = Color(0.0, 0.0, 0.0, 0.0)
-	_dim_layer.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	add_child(_dim_layer)
-	_dim_layer.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	move_child(_dim_layer, _viewport_container.get_index())
 	var add_fg_material := CanvasItemMaterial.new()
 	add_fg_material.blend_mode = CanvasItemMaterial.BLEND_MODE_ADD
 	_storyboard_add_fg = Control.new()
@@ -554,6 +540,8 @@ func _build_layers() -> void:
 	add_child(_storyboard_top)
 	_storyboard_top.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	move_child(_storyboard_top, _cursor_layer.get_index())
+	# 图层是在 _ready 里建的，构造期间可能已经设过明暗，这里补一次。
+	set_background_brightness(background_brightness)
 
 
 func _build_3d() -> void:
@@ -832,7 +820,7 @@ func _update_3d_mode(animate: bool, changed: bool) -> void:
 
 
 func _update_mouse_tilt(delta: float) -> void:
-	var amount := clampf(mouse_tilt_degrees, 0.0, MOUSE_TILT_MAX_DEGREES)
+	var amount := 7.0 if playtest_mode else MOUSE_TILT_DEGREES
 	# 导出回放时没有真实鼠标：用注入的回放光标，否则会跟着窗口鼠标乱抖。
 	var from_auto := auto_cursor.is_finite()
 	var local := auto_cursor if from_auto else get_local_mouse_position()
@@ -853,14 +841,16 @@ func _update_mouse_tilt(delta: float) -> void:
 		_tilt = Vector2.ZERO
 
 
-## 环的最终变换：只绕环心（局部原点）旋转，origin 恒为 0。
-## 旧实现给 origin 加了 (-tilt.y*2.8, -tilt.x*2.8)，环心会跟着鼠标平移最多约 20 单位。
+## 环的最终变换：绕 X/Y 旋转，并按倾斜量轻微平移环心（每度 2.8 设计单位）。
 static func ring_transform(rotation: float, tilt_x: float, tilt_y: float,
 		zoom: float, ellipse: float, tilt: Vector2) -> Transform3D:
 	var basis := Basis(Vector3(0, 0, 1), deg_to_rad(rotation))
 	basis = basis * Basis(Vector3(1, 0, 0), deg_to_rad(tilt_x + tilt.x))
 	basis = basis * Basis(Vector3(0, 1, 0), deg_to_rad(tilt_y + tilt.y))
-	return Transform3D(basis.scaled(Vector3(zoom * ellipse, zoom, zoom)), Vector3.ZERO)
+	# 远端那版会随倾斜把环心轻轻推一点（每度 2.8 设计单位），
+	# 「只绕环心转」看起来反而平；这里按原样保留。
+	return Transform3D(basis.scaled(Vector3(zoom * ellipse, zoom, zoom)),
+		Vector3(-tilt.y * 2.8, -tilt.x * 2.8, 0.0))
 
 
 ## 鼠标位置 → 两轴倾斜角。鼠标那一侧的环靠近镜头（近大远小）：
@@ -870,10 +860,7 @@ static func tilt_target_for(local: Vector2, bounds: Vector2, degrees: float) -> 
 		return Vector2.ZERO
 	var nx := clampf((local.x - bounds.x * 0.5) / (bounds.x * 0.5), -1.0, 1.0)
 	var ny := clampf((local.y - bounds.y * 0.5) / (bounds.y * 0.5), -1.0, 1.0)
-	# 保留符号的幂曲线：边缘还是满幅度，中心附近更陡。
-	nx = signf(nx) * pow(absf(nx), MOUSE_TILT_CURVE)
-	ny = signf(ny) * pow(absf(ny), MOUSE_TILT_CURVE)
-	return Vector2(-ny * degrees, -nx * degrees)
+	return Vector2(-ny * degrees, nx * degrees)
 
 
 func _update_transform(beat: float) -> bool:
@@ -902,7 +889,7 @@ func _update_transform(beat: float) -> bool:
 	_last_view_key = key
 	_ring_root.transform = ring_transform(rotation, tilt_x, tilt_y, zoom, ellipse, _tilt)
 	var fit_key := "%.3f|%.3f|%d|%.0f|%.0f|%.1f" % [zoom, ellipse, 1 if playtest_mode else 0, size.x, size.y,
-		mouse_tilt_degrees if mouse_tilt else 0.0]
+		0.0]
 	if fit_key != _last_fit_key:
 		_last_fit_key = fit_key
 		_update_camera_fit(chart, zoom, ellipse)
@@ -930,9 +917,7 @@ func _update_camera_fit(chart: Chart, zoom: float, ellipse: float) -> void:
 	var aspect := maxf(0.2, size.x / maxf(1.0, size.y))
 	# 试玩时把环放大到接近 Estella 的满屏比例；编辑器保持原来的留白。
 	var margin := 1.06 if playtest_mode else PREVIEW_MARGIN
-	var active_degrees := clampf(mouse_tilt_degrees, 0.0, MOUSE_TILT_MAX_DEGREES) if mouse_tilt else 0.0
-	var tilt_pad := 1.0 / cos(deg_to_rad(active_degrees))
-	var wanted := _max_design_radius * maxf(0.5, zoom) * maxf(0.5, ellipse) * margin * tilt_pad
+	var wanted := _max_design_radius * maxf(0.5, zoom) * maxf(0.5, ellipse) * margin
 	var distance := wanted / tan(deg_to_rad(_camera.fov * 0.5)) / minf(1.0, aspect)
 	distance = clampf(distance, 500.0, 6000.0)
 	_camera.position = Vector3(0, 0, distance)
@@ -1159,12 +1144,20 @@ static func video_alpha(chart_opacity: float, brightness: float) -> float:
 	return clampf(chart_opacity, 0.0, 1.0) * maxf(0.0, brightness)
 
 
-## 已废弃：背景明暗改由 background_dim 一个滑杆统一处理。
+## 背景明暗（0–1）：曲绘 / BGA / 整张故事板共用一个系数。
 func set_background_brightness(value: float) -> void:
 	# 设置项封顶 100%；这里再钳一次，防止别处直接赋值绕过上限。
 	background_brightness = clampf(value, 0.0, 1.0)
 	if _background_image != null:
 		_background_image.modulate = Color(1, 1, 1, background_alpha(background_brightness))
+	# 故事板当作一个整体压暗：同一个系数乘到全部图层上。
+	# 前景/覆盖层画在判定环上面，不能盖黑遮罩（会把环和音符一起压掉），
+	# 所以统一用 self_modulate 乘自身像素，环和 HUD 亮度不变。
+	var keep := background_brightness
+	var tint := Color(keep, keep, keep, 1.0)
+	for layer in [_storyboard_bg, _storyboard_add_bg, _storyboard_fg, _storyboard_top, _storyboard_add_fg]:
+		if layer != null:
+			(layer as CanvasItem).self_modulate = tint
 
 
 ## 暂停时连 BGA 一起停；恢复后 _update_video 会把播放位置重新对齐。
@@ -2398,31 +2391,10 @@ static func _detect_wide(board: Storyboard) -> bool:
 	return false
 
 
-## 背景暗度：0 = 不遮，100 = 全黑。压曲绘 / BGA / 故事板全部图层，不压判定环和音符。
 ##
 ## Background/Fail/Pass 在判定环下面，用一层黑色遮罩；
 ## Foreground/Overlay 在判定环上面，加黑色遮罩会把环也一起压掉，
 ## 所以这三层改成把自身颜色乘暗（self_modulate），只影响故事板自己的像素。
-static func clamp_dim(value: int) -> int:
-	return clampi(value, 0, 100)
-
-
-## 前景 / 覆盖层 / 前瞻加色层的乘暗系数（1 = 不变暗）。
-## 这几层在判定环上面，不能盖黑遮罩（会把环和音符一起压掉），只能乘暗自身像素。
-static func foreground_dim_keep(value: int) -> float:
-	return 1.0 - float(clamp_dim(value)) / 100.0
-
-
-func set_background_dim(value: int) -> void:
-	background_dim = clamp_dim(value)
-	if _dim_layer != null:
-		_dim_layer.color = Color(0.0, 0.0, 0.0, float(background_dim) / 100.0)
-	var keep := foreground_dim_keep(background_dim)
-	for layer in [_storyboard_fg, _storyboard_top, _storyboard_add_fg]:
-		if layer != null:
-			(layer as CanvasItem).self_modulate = Color(keep, keep, keep, 1.0)
-
-
 func draw_storyboard_background(canvas: Control) -> void:
 	var chart := get_chart()
 	if chart == null:

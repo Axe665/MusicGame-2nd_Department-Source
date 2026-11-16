@@ -103,10 +103,9 @@ var dynamic_offset: bool = false
 var playtest_auto: bool = false
 ## 试玩镜像：off / lr（左右翻转）/ rot180（旋转 180°），只影响试玩，不改谱面。
 var playtest_mirror: String = "off"
-## 试玩背景暗度（0 = 原样，100 = 全黑），和 osu 的 Background dim 一样。
-var playtest_dim: int = 70
+## 背景明暗（0/25/50/75/100）：曲绘、BGA、整张故事板共用一个系数。
+var background_brightness: int = 100
 ## 环随鼠标倾斜的最大角度（0–20 度，0 = 关闭）。
-var ring_tilt_degrees: float = 10.0
 ## 启动时默认打开的标签页（set.json 绝对/用户路径列表）。
 var startup_tabs: Array[String] = []
 ## 上一局的平均判定偏差，供试玩设置显示。
@@ -624,12 +623,7 @@ func _load_settings() -> void:
 				time_flows_down = true
 			else:
 				playback_scroll = scroll_mode if scroll_mode in ["page", "pin"] else "pin"
-			playtest_dim = clampi(int(data.get("playtest_dim", playtest_dim)), 0, 100)
-			ring_tilt_degrees = clampf(float(data.get("ring_tilt_degrees", ring_tilt_degrees)), 0.0, 20.0)
-			# 旧设置文件没有版本号：上一版默认 7° 被反馈「太含蓄」，一次性抬到 10°。
-			# 用户自己改过别的值就不动。
-			if int(data.get("settings_version", 0)) < 1 and absf(ring_tilt_degrees - 7.0) < 0.01:
-				ring_tilt_degrees = 10.0
+			background_brightness = clampi(int(data.get("background_brightness", background_brightness)), 0, 100)
 			mouse_tilt = bool(data.get("mouse_tilt", mouse_tilt))
 			startup_tabs.clear()
 			for item in data.get("startup_tabs", []):
@@ -787,7 +781,7 @@ func effective_latency_sec() -> float:
 
 
 func save_settings() -> void:
-	var data := {"settings_version": 1, "path_wait_indicator": path_wait_indicator, "note_skin": note_skin, "hit_fx_style": hit_fx_style, "hit_sfx_style": hit_sfx_style, "ffmpeg": ffmpeg_path, "frame_cap": frame_cap, "video_encoder": video_encoder, "audio_buffer_ms": audio_buffer_ms, "playtest_offset_ms": playtest_offset_ms, "audio_latency_ms": audio_latency_ms, "music_volume": music_volume, "sfx_volume": sfx_volume, "dynamic_offset": dynamic_offset, "playtest_auto": playtest_auto, "playtest_mirror": playtest_mirror, "playback_scroll": playback_scroll, "playtest_dim": playtest_dim, "ring_tilt_degrees": ring_tilt_degrees, "mouse_tilt": mouse_tilt, "startup_tabs": startup_tabs, "osu_favorites": osu_favorites, "last_bias_ms": last_bias_ms, "cursor_scale": cursor_scale, "flow_scale": flow_scale, "star_speed": star_speed, "aa_2d_level": aa_2d_level, "msaa_3d_level": msaa_3d_level, "ring_pad_rect": ring_pad_rect, "note_detail_fine": note_detail_fine, "note_glow": note_glow, "cursor_trail": cursor_trail, "fx_budget": fx_budget, "ring_3d_scale": ring_3d_scale, "ring_3d_hz": ring_3d_hz, "bar_lines": bar_lines, "quality_preset": quality_preset,
+	var data := {"settings_version": 1, "path_wait_indicator": path_wait_indicator, "note_skin": note_skin, "hit_fx_style": hit_fx_style, "hit_sfx_style": hit_sfx_style, "ffmpeg": ffmpeg_path, "frame_cap": frame_cap, "video_encoder": video_encoder, "audio_buffer_ms": audio_buffer_ms, "playtest_offset_ms": playtest_offset_ms, "audio_latency_ms": audio_latency_ms, "music_volume": music_volume, "sfx_volume": sfx_volume, "dynamic_offset": dynamic_offset, "playtest_auto": playtest_auto, "playtest_mirror": playtest_mirror, "playback_scroll": playback_scroll, "background_brightness": background_brightness, "mouse_tilt": mouse_tilt, "startup_tabs": startup_tabs, "osu_favorites": osu_favorites, "last_bias_ms": last_bias_ms, "cursor_scale": cursor_scale, "flow_scale": flow_scale, "star_speed": star_speed, "aa_2d_level": aa_2d_level, "msaa_3d_level": msaa_3d_level, "ring_pad_rect": ring_pad_rect, "note_detail_fine": note_detail_fine, "note_glow": note_glow, "cursor_trail": cursor_trail, "fx_budget": fx_budget, "ring_3d_scale": ring_3d_scale, "ring_3d_hz": ring_3d_hz, "bar_lines": bar_lines, "quality_preset": quality_preset,
 		"hud_scale": hud_scale, "hud_combo_mode": hud_combo_mode, "hud_progress_style": hud_progress_style,
 		"hud_judge_position": hud_judge_position, "hud_opacity": hud_opacity,
 		"hud_show_title": hud_show_title, "hud_show_difficulty": hud_show_difficulty,
