@@ -2220,14 +2220,19 @@ func _open_storyboard_editor() -> void:
 	_sb_editor.open_for(_app.chart)
 
 
-## 全屏工作区：把主编辑区藏起来，省得每帧在背后再画一遍。
+## 全屏工作区：把主编辑区藏起来，并停掉 3D 预览的逐帧重绘/采样。
+## 编辑器自己画故事板，隐藏的预览再跑一遍纯属白烧 CPU（实测占掉一截帧时间）。
 func _on_storyboard_opened() -> void:
 	if _main_row != null:
 		_main_row.visible = false
+	if _preview != null:
+		_preview.set_suspended(true)
 
 
 func _on_storyboard_closed() -> void:
 	_stop_play()
+	if _preview != null:
+		_preview.set_suspended(false)
 	if _main_row != null:
 		_main_row.visible = true
 	_sync_from_app()

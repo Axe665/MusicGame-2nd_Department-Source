@@ -3335,7 +3335,9 @@ func _start_video_export(path: String) -> void:
 	_video_bar.value = 0.0
 	_video_progress.popup_centered()
 	var data := _current_replay()
-	var end_ms := maxf(1000.0, chart.timing.beat_to_chart_ms(chart.duration_beats()) + 2000.0)
+	# 到谱面内容结束（音符/区域/事件/音频长度取大）再多 2s：
+	# 只用 duration_beats 会把长尾歌曲和故事板收尾整段切掉，导出看起来「时长偏短」。
+	var end_ms := maxf(1000.0, chart.timing.beat_to_chart_ms(chart.content_end_beat()) + 2000.0)
 	_video_export.export_chart(chart, 0.0, end_ms, path, data,
 		_app.show_storyboard if _app != null else true)
 
@@ -3353,7 +3355,7 @@ func _ensure_video_progress() -> void:
 	_video_bar.max_value = 100.0
 	box.add_child(_video_bar)
 	var hint := Label.new()
-	hint.text = "静默导出中：不播放声音，输出无音轨。"
+	hint.text = "导出时不播放声音；完成后会按谱面 offset 封入音轨。"
 	hint.add_theme_font_size_override("font_size", 11)
 	box.add_child(hint)
 	_video_progress.add_child(box)

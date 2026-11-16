@@ -331,8 +331,9 @@ func _draw() -> void:
 			while y <= offset.y + 480.0 * scale + 0.5:
 				draw_line(Vector2(offset.x, y), Vector2(offset.x + field * scale, y), grid_colour, 1.0)
 				y += step
-	_items = board.sample(playhead_ms).duplicate()
-	_items.sort_custom(_sort_by_layer)
+	# 不排序、不复制：sample() 的缓存数组归 Storyboard 所有，
+	# 绘制按图层顺序分组遍历（比每帧 sort_custom 285 项便宜，也不会改到别人的数组）。
+	_items = board.sample(playhead_ms)
 	_draw_items(self, false)
 	if _add_layer != null:
 		(_add_layer as AdditiveLayer).queue_redraw()
@@ -342,45 +343,34 @@ func _draw() -> void:
 		_ui_layer.queue_redraw()
 
 
-## 图层顺序（先画的在下），同图层内按文件顺序。
-static func _layer_rank(layer: String) -> int:
-	var index := Storyboard.LAYERS.find(layer)
-	return index if index >= 0 else 0
-
-
-static func _sort_by_layer(a: Dictionary, b: Dictionary) -> bool:
-	var la := _layer_rank(String(a["layer"]))
-	var lb := _layer_rank(String(b["layer"]))
-	if la != lb:
-		return la < lb
-	return int((a["sprite"] as Storyboard.Sprite).order) < int((b["sprite"] as Storyboard.Sprite).order)
-
-
 ## 一遍只画一种混合：加色元素交给 ADD 子节点（和 Preview3D 的分层方式一致）。
 func _draw_items(ci: Control, additive_only: bool) -> void:
 	var layout := _layout()
 	var view := ci.size
-	for item in _items:
-		if hidden_layers.has(String(item["layer"])):
+	# 先画的在下：Video → Background → Fail → Pass → Foreground → Overlay。
+	for layer in Storyboard.LAYERS:
+		if hidden_layers.has(layer):
 			continue
-		if bool(item.get("additive", false)) != additive_only:
-			continue
-		var geo := _item_geometry(item, layout)
-		if geo.is_empty():
-			continue
-		var pos: Vector2 = geo["pos"]
-		var sprite_size: Vector2 = geo["size"]
-		var sprite_scale: Vector2 = geo["scale"]
-		var rot: float = geo["rotation"]
-		var anchor: Vector2 = geo["anchor"]
-		var radius := (sprite_size * 0.5 - anchor).length() * maxf(sprite_scale.x, sprite_scale.y) + 4.0
-		if pos.x + radius < 0.0 or pos.y + radius < 0.0 \
-				or pos.x - radius > view.x or pos.y - radius > view.y:
-			continue
-		var colour := Preview3D.storyboard_item_colour(item, sprite_size, sprite_scale, view)
-		ci.draw_set_transform(pos, rot, sprite_scale)
-		ci.draw_texture(geo["texture"], -anchor, colour)
-		# 选中框在蒙版之后单独画，避免框外的选中框被蒙版盖住看不见。
+		for item in _items:
+			if String(item["layer"]) != layer:
+				continue
+			if bool(item.get("additive", false)) != additive_only:
+				continue
+			var geo := _item_geometry(item, layout)
+			if geo.is_empty():
+				continue
+			var pos: Vector2 = geo["pos"]
+			var sprite_size: Vector2 = geo["size"]
+			var sprite_scale: Vector2 = geo["scale"]
+			var rot: float = geo["rotation"]
+			var anchor: Vector2 = geo["anchor"]
+			var radius := (sprite_size * 0.5 - anchor).length() * maxf(sprite_scale.x, sprite_scale.y) + 4.0
+			if pos.x + radius < 0.0 or pos.y + radius < 0.0 \
+					or pos.x - radius > view.x or pos.y - radius > view.y:
+				continue
+			var colour := Preview3D.storyboard_item_colour(item, sprite_size, sprite_scale, view)
+			ci.draw_set_transform(pos, rot, sprite_scale)
+			ci.draw_texture(geo["texture"], -anchor, colour)
 	ci.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
 
@@ -429,22 +419,34 @@ func _hit(point: Vector2) -> int:
 	if _items.is_empty() and board != null:
 		_items = board.sample(playhead_ms)
 	var layout := _layout()
-	for i in range(_items.size() - 1, -1, -1):
-		var item: Dictionary = _items[i]
-		if hidden_layers.has(String(item["layer"])) or locked_layers.has(String(item["layer"])):
+	# 从最上层往下找；同层里 order 最大的压在最上面，先命中它。
+	for layer_index in range(Storyboard.LAYERS.size() - 1, -1, -1):
+		var layer: String = Storyboard.LAYERS[layer_index]
+		if hidden_layers.has(layer) or locked_layers.has(layer):
 			continue
-		var sprite = item.get("sprite")
-		if sprite == null:
-			continue
-		var geo := _item_geometry(item, layout)
-		if geo.is_empty():
-			continue
-		var local := (point - (geo["pos"] as Vector2)).rotated(-float(geo["rotation"]))
-		var sprite_scale: Vector2 = geo["scale"]
-		local.x /= maxf(0.001, sprite_scale.x)
-		local.y /= maxf(0.001, sprite_scale.y)
-		if Rect2(-(geo["anchor"] as Vector2), geo["size"]).has_point(local):
-			return int(_index_of.get(sprite, -1))
+		var best := -1
+		var best_order := -1
+		for item in _items:
+			if String(item["layer"]) != layer:
+				continue
+			var sprite = item.get("sprite")
+			if sprite == null:
+				continue
+			var geo := _item_geometry(item, layout)
+			if geo.is_empty():
+				continue
+			var local := (point - (geo["pos"] as Vector2)).rotated(-float(geo["rotation"]))
+			var sprite_scale: Vector2 = geo["scale"]
+			local.x /= maxf(0.001, sprite_scale.x)
+			local.y /= maxf(0.001, sprite_scale.y)
+			if not Rect2(-(geo["anchor"] as Vector2), geo["size"]).has_point(local):
+				continue
+			var order := int((sprite as Storyboard.Sprite).order)
+			if order >= best_order:
+				best_order = order
+				best = int(_index_of.get(sprite, -1))
+		if best >= 0:
+			return best
 	return -1
 
 

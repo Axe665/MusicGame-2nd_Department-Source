@@ -298,9 +298,9 @@ func _draw() -> void:
 	draw_rect(Rect2(Vector2.ZERO, size), Color(0.07, 0.08, 0.095, 1.0))
 	# 顶部标题栏
 	draw_rect(Rect2(0.0, 0.0, size.x, HEADER_H), Color(0.10, 0.11, 0.13, 1.0))
-	draw_string(ThemeDB.fallback_font, Vector2(8.0, 16.0), "时间轴", HORIZONTAL_ALIGNMENT_LEFT, -1, 11,
+	draw_string(UITheme.FONT_REGULAR, Vector2(8.0, 16.0), "时间轴", HORIZONTAL_ALIGNMENT_LEFT, -1, 11,
 		Color(0.82, 0.86, 0.9, 1.0))
-	draw_string(ThemeDB.fallback_font, Vector2(GUTTER + 8.0, 16.0), _ruler_text(),
+	draw_string(UITheme.FONT_REGULAR, Vector2(GUTTER + 8.0, 16.0), _ruler_text(),
 		HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(0.55, 0.6, 0.66, 1.0))
 	# 标尺
 	draw_rect(Rect2(0.0, HEADER_H, size.x, RULER_H), Color(0.10, 0.11, 0.13, 1.0))
@@ -309,13 +309,13 @@ func _draw() -> void:
 	while t <= view_from_ms + visible_span():
 		var x := _ms_to_x(t)
 		draw_line(Vector2(x, HEADER_H), Vector2(x, HEADER_H + RULER_H), Color(0.3, 0.32, 0.36, 1.0), 1.0)
-		draw_string(ThemeDB.fallback_font, Vector2(x + 3.0, HEADER_H + 15.0), _fmt_tick(t),
+		draw_string(UITheme.FONT_REGULAR, Vector2(x + 3.0, HEADER_H + 15.0), _fmt_tick(t),
 			HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(0.62, 0.66, 0.7, 1.0))
 		t += step
 	# 行
 	draw_rect(Rect2(0.0, _rows_top(), GUTTER, _rows_bottom() - _rows_top()), Color(0.085, 0.095, 0.11, 1.0))
 	if _rows.is_empty():
-		draw_string(ThemeDB.fallback_font, Vector2(10.0, _rows_top() + 20.0), "（还没有对象）",
+		draw_string(UITheme.FONT_REGULAR, Vector2(10.0, _rows_top() + 20.0), "（还没有对象）",
 			HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color(0.5, 0.53, 0.56, 1.0))
 	else:
 		var first := int(floor(_scroll))
@@ -339,9 +339,9 @@ func _draw() -> void:
 	_draw_scrollbar()
 	# 底部信息
 	draw_rect(Rect2(0.0, _rows_bottom(), size.x, FOOTER_H), Color(0.10, 0.11, 0.13, 1.0))
-	draw_string(ThemeDB.fallback_font, Vector2(8.0, _rows_bottom() + 16.0), _footer_text(),
+	draw_string(UITheme.FONT_REGULAR, Vector2(8.0, _rows_bottom() + 16.0), _footer_text(),
 		HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(0.66, 0.7, 0.75, 1.0))
-	draw_string(ThemeDB.fallback_font, Vector2(size.x - 250.0, _rows_bottom() + 16.0),
+	draw_string(UITheme.FONT_REGULAR, Vector2(size.x - 250.0, _rows_bottom() + 16.0),
 		"滚轮滚动 · Ctrl+滚轮缩放 · Shift+滚轮平移", HORIZONTAL_ALIGNMENT_LEFT, -1, 9,
 		Color(0.45, 0.49, 0.54, 1.0))
 
@@ -363,7 +363,7 @@ func _draw_layer_row(data: Dictionary, row: int, y: float) -> void:
 	_draw_arrow(Vector2(52.0, y + ROW_H * 0.5), open)
 	# 图层名 + 数量
 	var label := "%s  %d" % [LayerName.zh(layer), int(_layer_counts.get(layer, 0))]
-	draw_string(ThemeDB.fallback_font, Vector2(66.0, y + 12.5), label,
+	draw_string(UITheme.FONT_REGULAR, Vector2(66.0, y + 12.5), label,
 		HORIZONTAL_ALIGNMENT_LEFT, 124.0, 10,
 		Color(0.5, 0.54, 0.6, 1.0) if (hidden or locked) else Color(0.86, 0.89, 0.93, 1.0))
 	# 整层覆盖范围：细条 + 命令起点刻度
@@ -395,7 +395,7 @@ func _draw_sprite_row(data: Dictionary, row: int, y: float) -> void:
 	var label := sprite.path.get_file() if not sprite.path.is_empty() else "(未填路径)"
 	if sprite.commands.is_empty():
 		label += "  ⚠"
-	draw_string(ThemeDB.fallback_font, Vector2(66.0, y + 12.5), label, HORIZONTAL_ALIGNMENT_LEFT, 122.0, 9,
+	draw_string(UITheme.FONT_REGULAR, Vector2(66.0, y + 12.5), label, HORIZONTAL_ALIGNMENT_LEFT, 122.0, 9,
 		Color(0.48, 0.52, 0.57, 1.0) if locked else (Color(0.96, 0.98, 1.0, 1.0) if selected else Color(0.7, 0.74, 0.79, 1.0)))
 	# 命令条
 	for command in sprite.commands:

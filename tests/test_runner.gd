@@ -65,6 +65,7 @@ func _initialize() -> void:
 		"test_storyboard_command_cursor",
 		"test_storyboard_timeline_rows",
 		"test_storyboard_timeline_snap_offset",
+		"test_storyboard_wide_detection",
 		"test_ring_timeline_clock",
 		"test_background_brightness_applies",
 		"test_storyboard_roundtrip_lossless",
@@ -1659,6 +1660,18 @@ func test_storyboard_timeline_snap_offset() -> bool:
 	timeline.set_chart(chart)
 	timeline.snap_divisor = 4.0
 	near(timeline.snap_ms(1000.0), 1008.0, 0.6, "snap converts osb ms through the chart offset")
+	return true
+
+
+## 宽屏判定：解析后的命令名是 move/x（不是文件里的 M/MX），
+## 只查大写字母会把宽屏故事板判成 4:3、试玩按 640 裁掉两侧。
+func test_storyboard_wide_detection() -> bool:
+	var narrow := Storyboard.parse("[Events]\nSprite,Background,Centre,\"a.png\",320,240\n F,0,0,1000,,1\n", "t.osb")
+	ok(not Preview3D._detect_wide(narrow), "4:3 storyboard is not wide")
+	var moved := Storyboard.parse("[Events]\nSprite,Background,Centre,\"a.png\",320,240\n M,0,0,1000,320,240,700,240\n", "t.osb")
+	ok(Preview3D._detect_wide(moved), "a move command reaching x > 641 marks it wide")
+	var vectored := Storyboard.parse("[Events]\nSprite,Foreground,Centre,\"a.png\",320,240\n V,0,0,,427,240\n", "t.osb")
+	ok(Preview3D._detect_wide(vectored), "vector scale 427 is the 854-wide letterbox trick")
 	return true
 
 

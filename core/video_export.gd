@@ -209,8 +209,8 @@ func export_chart(chart: Chart, start_ms: float, end_ms: float, out_path: String
 	var written := 0
 
 	# SubViewport 要渲染过一帧才会分配贴图。
-	await RenderingServer.frame_post_draw
-	await RenderingServer.frame_post_draw
+	await _await_draw()
+	await _await_draw()
 
 	for frame in total:
 		if _cancel or stdin == null:
@@ -219,7 +219,7 @@ func export_chart(chart: Chart, start_ms: float, end_ms: float, out_path: String
 		var ms := start_ms + float(frame) * step_ms
 		playtest.offline_ms = ms
 		playtest._process(1.0 / float(fps))
-		await RenderingServer.frame_post_draw
+		await _await_draw()
 		var image := viewport.get_texture().get_image()
 		if image != null and not image.is_empty():
 			if image.get_format() != Image.FORMAT_RGB8:
@@ -258,14 +258,93 @@ func export_chart(chart: Chart, start_ms: float, end_ms: float, out_path: String
 	if not FileAccess.file_exists(temp) or FileAccess.get_file_as_bytes(temp).size() < 1024:
 		finished.emit("", "ffmpeg 没有产出视频（编码器：%s）" % String(encoder["name"]))
 		return
+	# 音轨：和 danser 一样分两步 —— 先出无声视频，再和音源封装成成片。
+	# 直接把音源塞进录制管道会和逐帧写 rawvideo 抢节奏，失败时整段都没了。
+	var audio_note := ""
+	var muxed := ""
+	var audio := _audio_source(chart)
+	if not audio.is_empty():
+		muxed = out_path.get_basename() + ".mux.mp4"
+		if _mux_audio(temp, audio, muxed, start_ms, span, chart.offset_ms):
+			audio_note = " · 含音轨"
+		else:
+			_remove_quietly(muxed)
+			audio_note = " · 音轨封装失败（仅视频）"
+	var source := muxed if not muxed.is_empty() and FileAccess.file_exists(muxed) else temp
 	_remove_quietly(out_path)
-	var err := DirAccess.rename_absolute(ProjectSettings.globalize_path(temp),
+	var err := DirAccess.rename_absolute(ProjectSettings.globalize_path(source),
 		ProjectSettings.globalize_path(out_path))
 	if err != OK:
 		finished.emit("", "无法写入 %s" % out_path)
 		return
-	finished.emit(out_path, "已导出 %s（%s · %dx%d@%d）" % [
-		out_path.get_file(), String(encoder["name"]), size.x, size.y, fps])
+	_remove_quietly(temp)
+	# 时长对不上就是编码器/管道丢了帧：宁可报出来，也不要给一个「提示已导出」的短片。
+	var expected := span / 1000.0
+	var actual := _probe_duration(out_path)
+	if actual > 0.0 and absf(actual - expected) > maxf(0.12, 2.0 / float(fps)):
+		finished.emit(out_path, "已导出 %s，但时长 %.2fs ≠ 预期 %.2fs（%s · %dx%d@%d%s）" % [
+			out_path.get_file(), actual, expected, String(encoder["name"]), size.x, size.y, fps, audio_note])
+		return
+	finished.emit(out_path, "已导出 %s（%s · %dx%d@%d · %.2fs%s）" % [
+		out_path.get_file(), String(encoder["name"]), size.x, size.y, fps, expected, audio_note])
+
+
+## 等一帧画完。窗口被遮挡/最小化时引擎可能不再发 frame_post_draw，
+## 没有兜底就会永远卡在导出第 N 帧。超时后用上一帧继续，至少把片子写完。
+func _await_draw(timeout_ms: int = 3000) -> void:
+	var seen := [false]
+	var callback := func() -> void: seen[0] = true
+	RenderingServer.frame_post_draw.connect(callback, CONNECT_ONE_SHOT)
+	var deadline := Time.get_ticks_msec() + timeout_ms
+	while not seen[0] and Time.get_ticks_msec() < deadline:
+		await get_tree().process_frame
+	if RenderingServer.frame_post_draw.is_connected(callback):
+		RenderingServer.frame_post_draw.disconnect(callback)
+
+
+## 音源文件：优先用播放器已经在用的那份（原生格式或转码缓存）。
+func _audio_source(chart: Chart) -> String:
+	if chart == null:
+		return ""
+	var path := chart.audio_path
+	if path.is_empty():
+		return ""
+	if not (path.begins_with("res://") or path.begins_with("user://") or path.is_absolute_path()):
+		path = ProjectSettings.globalize_path(path)
+	var prepared := MediaIO.prepare_audio(path)
+	if prepared.is_empty() or not FileAccess.file_exists(ProjectSettings.globalize_path(prepared)):
+		return ""
+	return ProjectSettings.globalize_path(prepared)
+
+
+## 把音源按谱面 offset 对齐后封进视频。时间基准和预览一致：
+## chart_ms = audio_ms + offset_ms，所以音频起点 = start_ms - offset_ms。
+func _mux_audio(video: String, audio: String, out: String, start_ms: float, span_ms: float,
+		offset_ms: float) -> bool:
+	var ffmpeg := _ffmpeg()
+	if ffmpeg.is_empty():
+		return false
+	var audio_start := maxf(0.0, (start_ms - offset_ms) / 1000.0)
+	var span_s := maxf(0.05, span_ms / 1000.0)
+	# 不要 -shortest：音源比故事板短时会连带把视频截短，正是「提示已导出但时长偏短」的来源。
+	var args: Array = ["-hide_banner", "-loglevel", "error", "-y",
+		"-i", ProjectSettings.globalize_path(video),
+		"-ss", "%.3f" % audio_start, "-t", "%.3f" % span_s, "-i", audio,
+		"-map", "0:v:0", "-map", "1:a:0",
+		"-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+		"-movflags", "+faststart", ProjectSettings.globalize_path(out)]
+	return OS.execute(ffmpeg, args, [], true, false) == 0 and FileAccess.file_exists(out)
+
+
+## 成片时长（秒）。ffprobe 不在就返回 0，跳过校验。
+func _probe_duration(path: String) -> float:
+	var probe := "ffprobe"
+	var out: Array = []
+	var code := OS.execute(probe, ["-v", "error", "-show_entries", "format=duration",
+		"-of", "csv=p=0", ProjectSettings.globalize_path(path)], out, true, false)
+	if code != 0 or out.is_empty():
+		return 0.0
+	return String(out[0]).strip_edges().to_float()
 
 
 func _smoke_device(encoder_name: String) -> String:

@@ -581,7 +581,7 @@ func _build_layers() -> void:
 	_storyboard_fg_clip.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_storyboard_fg_clip.clip_contents = true
 	add_child(_storyboard_fg_clip)
-	move_child(_storyboard_fg_clip, _overlay.get_index())
+	move_child(_storyboard_fg_clip, _viewport_container.get_index())
 	_storyboard_fg = _make_storyboard_draw(_storyboard_fg_clip, "StoryboardForeground", "storyboard_front", null)
 
 	# Overlay：压在音符上面，光标层下面。
@@ -590,7 +590,7 @@ func _build_layers() -> void:
 	_storyboard_top_clip.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_storyboard_top_clip.clip_contents = true
 	add_child(_storyboard_top_clip)
-	move_child(_storyboard_top_clip, _cursor_layer.get_index())
+	move_child(_storyboard_top_clip, _viewport_container.get_index())
 	_storyboard_top = _make_storyboard_draw(_storyboard_top_clip, "StoryboardOverlay", "storyboard_overlay", null)
 
 	_update_storyboard_clip_rects()
@@ -963,17 +963,32 @@ func _ensure_design_radius(chart: Chart) -> float:
 	return _max_design_radius
 
 
+## 3D 画面实际占的矩形：编辑器/环编辑里要和故事板同一个安全框，环才不会被故事板切。
+## 试玩没有 storyboard_fit，返回整个预览（全屏），行为不变。
+func _content_rect() -> Rect2:
+	if not storyboard_fit:
+		return Rect2(Vector2.ZERO, size)
+	var chart := get_chart()
+	# 没有故事板的谱面保持原来的满面板取景，免得编辑器预览里的环凭空缩小一圈。
+	if chart == null or String(chart.metadata.get("storyboard", "")).is_empty():
+		return Rect2(Vector2.ZERO, size)
+	return _storyboard_field_rect()
+
+
 func _update_camera_fit(chart: Chart, zoom: float, ellipse: float) -> void:
 	# 环工作区开关会把预览在两个容器间搬动，搬家途中 resized 先到、节点还没入树。
 	if not is_inside_tree() or _camera == null or not _camera.is_inside_tree():
 		return
 	_ensure_design_radius(chart)
-	var aspect := maxf(0.2, size.x / maxf(1.0, size.y))
+	var content := _content_rect()
+	var aspect := maxf(0.2, content.size.x / maxf(1.0, content.size.y))
+	# 相机铺满整个 SubViewport，环要缩进安全框就得把距离按面板/安全框的高度比放大。
+	var height_ratio := size.y / maxf(1.0, content.size.y)
 	# 试玩时把环放大到接近 Estella 的满屏比例；编辑器保持原来的留白。
 	var margin := 1.06 if playtest_mode else PREVIEW_MARGIN
 	var wanted := _max_design_radius * maxf(0.5, zoom) * maxf(0.5, ellipse) * margin
-	var distance := wanted / tan(deg_to_rad(_camera.fov * 0.5)) / minf(1.0, aspect)
-	distance = clampf(distance, 500.0, 6000.0)
+	var distance := wanted / tan(deg_to_rad(_camera.fov * 0.5)) / minf(1.0, aspect) * height_ratio
+	distance = clampf(distance, 500.0, 12000.0)
 	_camera.position = Vector3(0, 0, distance)
 	_camera.look_at(Vector3.ZERO, Vector3.UP)
 
@@ -2219,6 +2234,10 @@ func set_storyboard_visible(on: bool) -> void:
 func refresh_storyboard_layers() -> void:
 	# 宽屏/普通场是解析完才确定的，安全框矩形要跟着重算，否则会停在 640×480。
 	_update_storyboard_clip_rects()
+	var chart := get_chart()
+	if chart != null:
+		var view := current_view()
+		_update_camera_fit(chart, float(view.get("zoom", 1.0)), float(view.get("ellipse", 1.0)))
 	for layer in [_storyboard_bg, _storyboard_add_bg, _storyboard_fg, _storyboard_top, _storyboard_add_fg]:
 		if layer != null:
 			layer.queue_redraw()
@@ -2348,12 +2367,17 @@ static func _parse_board(dir: String) -> void:
 func _take_parsed_board() -> void:
 	if _sb_waiting_dir.is_empty():
 		return
-	_parse_mutex.lock()
-	var has: bool = _parse_done.has(_sb_waiting_dir)
-	var board: Storyboard = _parse_done.get(_sb_waiting_dir) if has else null
-	if has:
-		_parse_done.erase(_sb_waiting_dir)
-	_parse_mutex.unlock()
+	# 解析结果在静态表里只留一份：另一个预览（主界面/试玩）先拿走时，
+	# 这边 _parse_done 永远是空的，只看它就会一直等不到故事板。
+	var board: Storyboard = _board_cache.get(_sb_waiting_dir)
+	var has := board != null
+	if not has:
+		_parse_mutex.lock()
+		has = _parse_done.has(_sb_waiting_dir)
+		board = _parse_done.get(_sb_waiting_dir) if has else null
+		if has:
+			_parse_done.erase(_sb_waiting_dir)
+		_parse_mutex.unlock()
 	if not has:
 		return
 	var dir := _sb_waiting_dir
@@ -2446,13 +2470,24 @@ func _storyboard_field_width() -> float:
 
 ## 老谱面导入时没存 WidescreenStoryboard：按内容猜一次。
 ## 854 场的故事板一定有 x > 640 的元素（4:3 的不会超过 640）。
+## 老谱面导入时没存 WidescreenStoryboard：按内容猜一次。
+## 注意解析后的命令名是 move/x，不是文件里的 M/MX；只查大写字母会永远判成 4:3，
+## 结果试玩按 640×480 裁、把宽屏故事板两侧切掉。
 static func _detect_wide(board: Storyboard) -> bool:
 	for sprite in board.sprites:
-		if sprite.pos.x > 641.0:
+		if sprite.pos.x > 641.0 or sprite.pos.x < -1.0:
 			return true
 		for command in sprite.commands:
-			if command.kind_name in ["M", "MX"] and command.to.size() > 0 and float(command.to[0]) > 641.0:
-				return true
+			if command.kind_name in ["move", "x"]:
+				for side in [command.from, command.to]:
+					if side.size() > 0 and (float(side[0]) > 641.0 or float(side[0]) < -1.0):
+						return true
+			# shortcut: 没有 WidescreenStoryboard 的旧谱只能猜。
+			# 宽屏故事板用 2×2 白点 + V 拉到 427（=854 设计宽）；4:3 的会拉 320。
+			if command.kind_name == "vector":
+				for side in [command.from, command.to]:
+					if side.size() > 0 and float(side[0]) > 400.0:
+						return true
 	return false
 
 
