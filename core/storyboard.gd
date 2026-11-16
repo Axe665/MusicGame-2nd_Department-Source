@@ -22,6 +22,8 @@ class Command:
 	var easing: int = 0
 	var from: Array = []
 	var to: Array = []
+	## 来自 L/T 块（或由它展开）：编辑器不单独列出，保存时也不重复写。
+	var in_block := false
 
 	func progress(ms: float) -> float:
 		var span := end - start
@@ -39,9 +41,14 @@ class Sprite:
 	var frames := 0
 	var frame_delay := 0.0
 	var loop_type := 0
+	## Animation 与 Sprite 的区别只在文件写法，渲染都按帧序列画。
+	var animation := false
 	var commands: Array = []
 	## 未展开的 loop 块：[{start, count, commands}]
 	var loops: Array = []
+	## 保存用的原始顺序：cmd / loop / trigger / raw。
+	## 编辑器的结构化模型是 source of truth，但 L/T 只读，必须原样回写。
+	var blocks: Array = []
 	## kind_name -> Array[Command]，解析结束时构建。
 	var timeline: Dictionary = {}
 	var first_ms := INF
@@ -56,7 +63,13 @@ class Sprite:
 	var first_alpha := 1.0
 	var last_alpha := 1.0
 
+	## 编辑器加命令：同时记进 blocks，保存时不会丢。
 	func add(command: Command) -> void:
+		add_render_only(command)
+		blocks.append({"kind": "cmd", "command": command})
+
+	## 只进渲染时间轴（loop 展开的副本、T 块里的命令）。
+	func add_render_only(command: Command) -> void:
 		commands.append(command)
 		first_ms = minf(first_ms, command.start)
 		last_ms = maxf(last_ms, command.end)
@@ -169,6 +182,22 @@ class Sprite:
 			return b
 		return lerpf(a, b, Easing.apply(command.easing, progress))
 
+	## 开关型参数（P,A / P,H / P,V）：只在命令区间内为真，区间外回到 false。
+	## sample_float 会把终值一直带下去，加色/翻转就会变成永久生效。
+	func sample_flag(kind: String, ms: float) -> bool:
+		var list: Array = timeline.get(kind, [])
+		if list.is_empty():
+			return false
+		var active: Command = null
+		for entry in list:
+			if (entry as Command).start <= ms:
+				active = entry
+			else:
+				break
+		if active == null:
+			return false
+		return ms <= active.end
+
 	## 双分量命令插值（M / V）。
 	func sample_vec2(kind: String, ms: float, fallback: Vector2) -> Vector2:
 		var command := command_at(kind, ms)
@@ -231,6 +260,10 @@ class Sprite:
 
 ## osu! 的缓动函数（移植自 osu-framework DefaultEasingFunction）。
 class Easing:
+	## 编辑器下拉用：只有编号是协议的一部分，名字仅作提示。
+	static func name_of(id: int) -> String:
+		return "线性" if id == 0 else "缓动 #%d" % id
+
 	const ELASTIC_CONST := 2.0 * PI / 0.3
 	const ELASTIC_CONST2 := 0.3 / 4.0
 	const BACK_CONST := 1.70158
@@ -376,6 +409,10 @@ var widescreen := true
 var source_name := ""
 var referenced_files: Array[String] = []
 var last_error := ""
+## 不属于 Sprite/Animation 的 depth-0 行（背景 0,0、"视频 1,0"、采样 2,0 …）原样保留。
+var event_lines: Array[String] = []
+## [Events] 以外的段（目前见到的只有 [Variables]）原样保留。
+var extra_sections: Array = []
 
 ## ── 运行时索引（性能） ────────────────────────────────────────────
 ## 3936 个 sprite 每帧全量求值太重：按 500ms 分桶，只查当前桶 + 常驻列表。
@@ -444,13 +481,16 @@ func replaces_background(background_file: String) -> bool:
 
 
 ## 从文本解析（.osb 或 .osu 的 [Events] 段都可）。
+## 无损原则：Sprite/Animation 类型、L/T 块、P,* 参数、背景/视频事件行、[Variables]
+## 都要能原样写回；渲染用的 commands 是展开后的副本（in_block = true）。
 static func parse(text: String, source_name_in: String = "") -> Storyboard:
 	var sb := Storyboard.new()
 	sb.source_name = source_name_in
 	var clean := text.replace("\r\n", "\n").replace("\r", "\n")
 	var lines := clean.split("\n")
 	var current: Sprite = null
-	var loop_stack: Array = []
+	var loop: Dictionary = {}
+	var trigger: Dictionary = {}
 	var in_events := false
 	var has_sections := false
 	for line in lines:
@@ -459,12 +499,17 @@ static func parse(text: String, source_name_in: String = "") -> Storyboard:
 			continue
 		if raw.begins_with("[") and raw.ends_with("]"):
 			has_sections = true
-			var section := raw.substr(1, raw.length() - 2).to_lower()
-			in_events = section == "events"
+			var section := raw.substr(1, raw.length() - 2)
+			in_events = section.to_lower() == "events"
+			current = null
+			loop = {}
+			trigger = {}
 			if not in_events:
-				current = null
+				sb.extra_sections.append({"name": section, "lines": []})
 			continue
 		if has_sections and not in_events:
+			if not sb.extra_sections.is_empty():
+				(sb.extra_sections[-1]["lines"] as Array).append(raw)
 			continue
 		var depth := 0
 		for ch in line:
@@ -474,7 +519,8 @@ static func parse(text: String, source_name_in: String = "") -> Storyboard:
 				break
 		var parts := raw.split(",")
 		if depth == 0:
-			loop_stack.clear()
+			loop = {}
+			trigger = {}
 			current = null
 			var type := String(parts[0]).strip_edges()
 			if type == "Sprite" and parts.size() >= 6:
@@ -488,6 +534,7 @@ static func parse(text: String, source_name_in: String = "") -> Storyboard:
 				sb._note_reference(current.path)
 			elif type == "Animation" and parts.size() >= 8:
 				current = Sprite.new()
+				current.animation = true
 				current.layer = _clean_layer(parts[1])
 				current.origin = _clean_origin(parts[2])
 				current.path = _clean_path(parts[3])
@@ -500,27 +547,44 @@ static func parse(text: String, source_name_in: String = "") -> Storyboard:
 				sb._note_reference(current.path)
 			elif type == "0" and parts.size() > 4:
 				sb.background_offset = Vector2(_float(parts[3]), _float(parts[4]))
+				sb.event_lines.append(raw)
+			else:
+				sb.event_lines.append(raw)
 			continue
 		if current == null:
 			continue
-		if depth == 1:
-			var kind := String(parts[0]).strip_edges()
-			if kind == "L" and parts.size() >= 3:
-				var loop := {"start": _float(parts[1]), "count": maxi(0, int(_float(parts[2]))), "commands": []}
-				current.loops.append(loop)
-				loop_stack = [loop]
-				continue
-			if kind == "T":
-				# trigger 组：忽略组内命令（大多只影响 Passing/Failing 演出）
-				loop_stack.clear()
-				continue
+		# 深度 1 = sprite 级命令；更深 = L/T 块的子命令。
+		# 关键：sprite 级命令必须结束当前 L/T 块，否则同缩进的后续命令会被吞进循环。
+		if depth <= 1:
+			loop = {}
+		var kind := String(parts[0]).strip_edges()
+		if depth == 1 and kind == "L" and parts.size() >= 3:
+			loop = {"start": _float(parts[1]), "count": maxi(0, int(_float(parts[2]))), "commands": []}
+			current.loops.append(loop)
+			trigger = {}
+			current.blocks.append({"kind": "loop", "loop": loop})
+			continue
+		if depth == 1 and kind == "T":
+			trigger = {"header": raw, "commands": []}
+			loop = {}
+			current.blocks.append({"kind": "trigger", "trigger": trigger})
+			continue
+		if depth >= 2 and (kind == "L" or kind == "T"):
+			# 嵌套块：记成原文，不参与渲染。
+			current.blocks.append({"kind": "raw", "text": raw})
+			continue
 		var command := _parse_command(parts)
 		if command == null:
+			current.blocks.append({"kind": "raw", "text": raw})
 			continue
-		if loop_stack.is_empty():
-			current.add(command)
+		if not trigger.is_empty():
+			# T 块只在 Passing/Failing 演出里生效；编辑器和试玩都不该全程播放。
+			(trigger["commands"] as Array).append(command)
+		elif not loop.is_empty():
+			command.in_block = true
+			(loop["commands"] as Array).append(command)
 		else:
-			((loop_stack[0] as Dictionary)["commands"] as Array).append(command)
+			current.add(command)
 	for sprite in sb.sprites:
 		_expand_loops(sprite)
 		(sprite as Sprite).build()
@@ -549,7 +613,8 @@ static func _expand_loops(sprite: Sprite) -> void:
 				copy.easing = (command as Command).easing
 				copy.from = (command as Command).from
 				copy.to = (command as Command).to
-				sprite.add(copy)
+				copy.in_block = true
+				sprite.add_render_only(copy)
 
 
 static func _parse_command(parts: PackedStringArray) -> Command:
@@ -612,16 +677,17 @@ static func _parse_command(parts: PackedStringArray) -> Command:
 			match flag:
 				"A":
 					command.kind_name = "additive"
+					# osu 语义：参数出现即在这个区间生效，不是淡出。
 					command.from = [1.0]
-					command.to = [1.0 if start == end else 0.0]
+					command.to = [1.0]
 				"H":
 					command.kind_name = "flip_h"
 					command.from = [1.0]
-					command.to = [1.0 if start == end else 0.0]
+					command.to = [1.0]
 				"V":
 					command.kind_name = "flip_v"
 					command.from = [1.0]
-					command.to = [1.0 if start == end else 0.0]
+					command.to = [1.0]
 				_:
 					return null
 		_:
@@ -686,24 +752,53 @@ func _note_reference(path: String) -> void:
 
 
 ## 写回 .osb 文本（供故事板编辑器保存 / 导出）。
+## 必须无损：对象类型、L/T 块、P,* 参数、背景/视频事件行、[Variables] 全部保留。
 func to_osb_text() -> String:
 	var lines: Array[String] = ["[Events]"]
+	for raw in event_lines:
+		lines.append(raw)
 	for sprite in sprites:
 		var s := sprite as Sprite
-		lines.append('Sprite,%s,%s,"%s",%s,%s' % [
-			s.layer, _origin_name(s.origin), s.path, _fmt(s.pos.x), _fmt(s.pos.y)])
-		var ordered: Array = s.commands.duplicate()
-		ordered.sort_custom(func(a: Command, b: Command) -> bool: return a.start < b.start)
-		for command in ordered:
-			var text := _command_text(command as Command)
-			if not text.is_empty():
-				lines.append(" " + text)
+		if s.animation:
+			lines.append('Animation,%s,%s,"%s",%s,%s,%d,%s,%d' % [
+				s.layer, _origin_name(s.origin), s.path, _fmt(s.pos.x), _fmt(s.pos.y),
+				maxi(1, s.frames), _fmt(s.frame_delay), s.loop_type])
+		else:
+			lines.append('Sprite,%s,%s,"%s",%s,%s' % [
+				s.layer, _origin_name(s.origin), s.path, _fmt(s.pos.x), _fmt(s.pos.y)])
+		for block in s.blocks:
+			match String(block.get("kind", "")):
+				"cmd":
+					var text := _command_text(block["command"] as Command)
+					if not text.is_empty():
+						lines.append(" " + text)
+				"loop":
+					var loop: Dictionary = block["loop"]
+					lines.append(" L,%s,%d" % [_fmt(float(loop["start"])), int(loop["count"])])
+					for command in loop["commands"]:
+						lines.append("  " + _command_text(command as Command))
+				"trigger":
+					var trigger: Dictionary = block["trigger"]
+					lines.append(" " + String(trigger["header"]))
+					for command in trigger["commands"]:
+						lines.append("  " + _command_text(command as Command))
+				"raw":
+					lines.append(" " + String(block["text"]))
+	for extra in extra_sections:
+		# 独立 .osb 只允许 [Variables]；把 .osu 的 [General]/[Editor] 抄进去会污染文件。
+		if String((extra as Dictionary)["name"]).to_lower() != "variables":
+			continue
+		lines.append("")
+		lines.append("[%s]" % String((extra as Dictionary)["name"]))
+		for raw in (extra as Dictionary)["lines"]:
+			lines.append(String(raw))
 	return "\n".join(lines) + "\n"
 
 
 static func _command_text(command: Command) -> String:
 	var kind := command.kind_name
 	var letter := ""
+	var flag := ""
 	match kind:
 		"alpha":
 			letter = "F"
@@ -722,17 +817,24 @@ static func _command_text(command: Command) -> String:
 		"colour":
 			letter = "C"
 		"additive":
-			letter = "P,A"
+			letter = "P"
+			flag = "A"
 		"flip_h":
-			letter = "P,H"
+			letter = "P"
+			flag = "H"
 		"flip_v":
-			letter = "P,V"
+			letter = "P"
+			flag = "V"
 		_:
 			return ""
 	var head := "%s,%d,%s,%s" % [letter, command.easing, _fmt(command.start), _fmt(command.end)]
+	if not flag.is_empty():
+		# osu 的写法是 P,<easing>,<start>,<end>,<A|H|V>；参数在最后一位，
+		# 之前把 A 拼进包头会让重解析读到 parts[4]="1000" 而整条命令消失。
+		return "%s,%s" % [head, flag]
 	match kind:
 		"rotation":
-			return "%s,%s,%s" % [head, _fmt(rad_to_deg(float(command.from[0])) * 0.0 + float(command.from[0]) * PI / 180.0), _fmt(float(command.to[0]) * PI / 180.0)]
+			return "%s,%s,%s" % [head, _fmt(float(command.from[0]) * PI / 180.0), _fmt(float(command.to[0]) * PI / 180.0)]
 		"alpha", "scale", "x", "y":
 			return "%s,%s,%s" % [head, _fmt(float(command.from[0])), _fmt(float(command.to[0]))]
 		"move", "vector":
@@ -877,7 +979,11 @@ static func object_state(sprite: Sprite, ms: float, alpha: float) -> Dictionary:
 		colour = sprite.sample_colour(ms)
 	var additive := false
 	if sprite.timeline.has("additive"):
-		additive = sprite.sample_float("additive", ms, 0.0) > 0.5
+		additive = sprite.sample_flag("additive", ms)
+	if sprite.timeline.has("flip_h") and sprite.sample_flag("flip_h", ms):
+		scale.x = -scale.x
+	if sprite.timeline.has("flip_v") and sprite.sample_flag("flip_v", ms):
+		scale.y = -scale.y
 	var frame := 0
 	if sprite.frames > 1 and sprite.frame_delay > 0.0:
 		var elapsed := maxf(0.0, ms - sprite.first_ms)

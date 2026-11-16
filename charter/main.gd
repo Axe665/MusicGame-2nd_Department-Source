@@ -39,7 +39,6 @@ const QUALITY_OPTIONS := [
 	{"key": "ring_3d_scale", "label": "3D 环分辨率", "choices": [["原生", 160], ["超采样 1.25×", 161], ["超采样 1.5×", 162], ["高 0.85", 163], ["中 0.65", 164], ["低 0.5", 165]]},
 	{"key": "ring_3d_hz", "label": "3D 环刷新", "choices": [["60Hz", 76], ["30Hz", 77]]},
 	{"key": "bar_lines", "label": "小节线", "choices": [["开", 78], ["关", 79]]},
-	{"key": "background_brightness", "label": "背景明暗", "choices": [["关", 96], ["25%", 97], ["50%", 98], ["75%", 99], ["100%（默认）", 100]]},
 	{"key": "show_storyboard", "label": "故事板", "choices": [["开", 166], ["关", 167]]},
 	{"key": "show_storyboard_background", "label": "故事板背景层", "choices": [["开", 168], ["关", 169]]},
 	{"key": "video_encoder", "label": "视频导出编码器", "choices": [["自动（优先硬件）", 170], ["NVENC", 171], ["QSV", 172], ["VideoToolbox", 173], ["VAAPI（Linux）", 174], ["libx264（软件）", 175]]},
@@ -1146,8 +1145,6 @@ func _quality_index(key: String) -> int:
 			return 0 if _app.ring_3d_hz >= 60 else 1
 		"bar_lines":
 			return 0 if _app.bar_lines else 1
-		"background_brightness":
-			return [0, 25, 50, 75, 100].find(_app.background_brightness)
 		"show_storyboard":
 			return 0 if _app.show_storyboard else 1
 		"show_storyboard_background":
@@ -1186,10 +1183,6 @@ func _set_quality_index(key: String, index: int) -> void:
 			_app.ring_3d_hz = 60 if index == 0 else 30
 		"bar_lines":
 			_app.bar_lines = index == 0
-		"background_brightness":
-			_app.background_brightness = [0, 25, 50, 75, 100][clampi(index, 0, 4)]
-			# 背景明暗不是画质参数，别把预设打成「自定义」。
-			return
 		"show_storyboard":
 			_app.show_storyboard = index == 0
 			# 故事板开关也不是画质参数，不参与预设。
@@ -1219,7 +1212,6 @@ func _apply_visual_options() -> void:
 	_preview.msaa_3d_level = _app.msaa_3d_level
 	_preview.ring_3d_hz = _app.ring_3d_hz
 	_preview.bar_lines_visible = _app.bar_lines
-	_preview.set_background_brightness(float(_app.background_brightness) / 100.0)
 	_preview.hud_options = _app.hud_options()
 	_preview.show_storyboard = _app.show_storyboard
 	_preview.show_storyboard_background = _app.show_storyboard_background
@@ -1237,7 +1229,6 @@ func _apply_visual_options() -> void:
 		inner.ring_3d_scale = _app.ring_3d_scale
 		inner.ring_3d_hz = _app.ring_3d_hz
 		inner.bar_lines_visible = _app.bar_lines
-		inner.set_background_brightness(float(_app.background_brightness) / 100.0)
 		inner.hud_options = _app.hud_options()
 		inner.show_storyboard = _app.show_storyboard
 		inner.show_storyboard_background = _app.show_storyboard_background
@@ -2285,6 +2276,9 @@ func _on_storyboard_saved(path: String) -> void:
 	_app.begin_edit()
 	_app.chart.metadata["storyboard"] = path.get_base_dir()
 	_app.finish_edit()
+	# 第二次保存到同一目录时，缓存里还是上一版解析结果，预览会停在旧画面。
+	_preview._board_cache.erase(path.get_base_dir())
+	_preview._storyboard = null
 	_preview._storyboard_chart = null
 	_preview._ensure_storyboard(_app.chart)
 	_preview._refresh_background_layering()
@@ -2994,8 +2988,8 @@ func _build_playtest_dialog() -> void:
 	_playtest_mirror.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	mirror_row.add_child(_playtest_mirror)
 	box.add_child(mirror_row)
-	_playtest_dim = _playtest_spin_row(box, "背景暗度", 0.0, 70.0, 1.0, 70.0, "%")
-	_playtest_dim.tooltip_text = "和 osu 的 Background dim 一样：0% 不遮，70% 压暗；只暗背景和故事板，不暗判定环和音符"
+	_playtest_dim = _playtest_spin_row(box, "背景暗度", 0.0, 100.0, 1.0, 70.0, "%")
+	_playtest_dim.tooltip_text = "和 osu 的 Background dim 一样：0% 不遮，100% 全黑。只暗曲绘/BGA/故事板背景层，不暗判定环和音符；编辑器预览也用这个值"
 	_playtest_tilt = _playtest_spin_row(box, "环倾斜", 0.0, 20.0, 1.0, 10.0, "°")
 	_playtest_tilt.tooltip_text = "环随鼠标倾斜的最大角度：鼠标那一侧靠近镜头，环心固定不动，中心区域更敏感；0 = 关闭。超过 15° 时环的视觉重心会明显偏向鼠标一侧"
 	_playtest_offset = _playtest_spin_row(box, "判定偏移", -200.0, 200.0, 1.0, 0.0, "ms")
@@ -3103,7 +3097,7 @@ func _commit_playtest_settings() -> void:
 		return
 	_rate = _playtest_rate.value
 	if _playtest_dim != null:
-		_app.playtest_dim = clampi(int(_playtest_dim.value), 0, 70)
+		_app.playtest_dim = clampi(int(_playtest_dim.value), 0, 100)
 	if _playtest_tilt != null:
 		_app.ring_tilt_degrees = clampf(_playtest_tilt.value, 0.0, 20.0)
 		_preview.mouse_tilt_degrees = _app.ring_tilt_degrees

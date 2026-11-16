@@ -134,9 +134,6 @@ const STORYBOARD_TEX_MAX := 1024
 var show_storyboard := true
 ## 只画 Foreground/Overlay 层（关掉 storyboard 的背景层，让谱面背景图露出来）。
 var show_storyboard_background := true
-## 纯白铺满全屏的 storyboard 图（px.png 这种 2x2 白点放大）在 osu 里是黑幕，
-## 直接按白色画会在开场/转场出现一片刺眼的白，这里统一当黑色处理。
-var storyboard_white_is_black := true
 ## 编辑器的窄预览里把整块 storyboard 等比缩到装得下（试玩保持按高度铺满）。
 var storyboard_fit := false
 ## storyboard 采样按 30Hz 走（60fps 下每帧重算 700+ 对象太贵），中间帧复用同一份结果。
@@ -1162,7 +1159,7 @@ static func video_alpha(chart_opacity: float, brightness: float) -> float:
 	return clampf(chart_opacity, 0.0, 1.0) * maxf(0.0, brightness)
 
 
-## 背景明暗：静图和 BGA 共用一个系数（1.0 = 默认观感）。
+## 已废弃：背景明暗改由 background_dim 一个滑杆统一处理。
 func set_background_brightness(value: float) -> void:
 	# 设置项封顶 100%；这里再钳一次，防止别处直接赋值绕过上限。
 	background_brightness = clampf(value, 0.0, 1.0)
@@ -2404,7 +2401,7 @@ static func _detect_wide(board: Storyboard) -> bool:
 ## 背景层（Background / Video）：垫在 3D 判定环下面。
 ## osu 的 Background dim：0 = 不遮，100 = 全黑。只压背景/storyboard，不压判定环和音符。
 func set_background_dim(value: int) -> void:
-	background_dim = clampi(value, 0, 70)
+	background_dim = clampi(value, 0, 100)
 	if _dim_layer != null:
 		_dim_layer.color = Color(0.0, 0.0, 0.0, float(background_dim) / 100.0)
 
@@ -2493,18 +2490,25 @@ func _draw_storyboard_layers(canvas: Control, chart: Chart, t: float, layers: Ar
 		if world_center.x + radius < 0.0 or world_center.y + radius < 0.0 \
 				or world_center.x - radius > size.x or world_center.y - radius > size.y:
 			continue
-		var colour: Color = item["colour"]
-		if storyboard_white_is_black and colour.r > 0.94 and colour.g > 0.94 and colour.b > 0.94:
-			# 铺满屏幕的纯白 fill → 黑幕（osu 里这些是黑色遮罩 / 淡出层）
-			if sprite_size.x * sprite_size.y <= 16.0 and sprite_scale.x * 1.0 > size.x * 0.5:
-				colour = Color(0.0, 0.0, 0.0, colour.a)
-		colour.a *= clampf(float(item["alpha"]), 0.0, 1.0)
-		if additive_only:
-			# 加色层里几百张全屏图叠加会把画面直接刷白，压到 35% 更接近 osu 的光晕观感。
-			colour.a *= 0.35
+		var colour := storyboard_item_colour(item, sprite_size, sprite_scale, size)
 		canvas.draw_set_transform(pos, rotation, sprite_scale)
 		canvas.draw_texture(texture, -anchor, colour)
 		canvas.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+
+
+## 故事板对象的最终颜色（画布和预览必须共用这一份，否则两边观感对不上）。
+## osu 里 P,A 是真正的加色；这里统一压到 35%，否则几百张全屏图叠加会把画面刷白。
+## shortcut: 加色统一 0.35 增益，osu 精确混合后再调；等有人反馈“闪光不够亮”再改。
+static func storyboard_item_colour(item: Dictionary, sprite_size: Vector2, sprite_scale: Vector2, canvas_size: Vector2) -> Color:
+	var colour: Color = item["colour"]
+	if colour.r > 0.94 and colour.g > 0.94 and colour.b > 0.94:
+		# 2x2 的白点放大铺满屏幕：原本是纯白遮罩，按纯白画会在转场时刺眼。
+		if sprite_size.x * sprite_size.y <= 16.0 and sprite_scale.x > canvas_size.x * 0.5:
+			colour = Color(0.0, 0.0, 0.0, colour.a)
+	colour.a = clampf(float(item["alpha"]), 0.0, 1.0) * colour.a
+	if bool(item.get("additive", false)):
+		colour.a *= 0.35
+	return colour
 
 
 static func _storyboard_anchor(origin: int, sprite_size: Vector2) -> Vector2:
@@ -4043,7 +4047,7 @@ func _draw_player_cursor(canvas: Control) -> void:
 		canvas.draw_circle(point, radius, Color(accent.r, accent.g, accent.b, 0.26 * life))
 		canvas.draw_circle(point, radius * 0.45, Color(1, 1, 1, 0.16 * life))
 	var m := mouse_screen
-	var spin := Time.get_ticks_msec() / 1000.0 * 2.2
+	var spin := _anim_ms() / 1000.0 * 2.2
 	canvas.draw_circle(m, 27.0 * cs, Color(accent.r, accent.g, accent.b, 0.035))
 	canvas.draw_circle(m, 20.0 * cs, Color(accent.r, accent.g, accent.b, 0.06))
 	canvas.draw_arc(m, 19.5 * cs, spin, spin + PI * 0.85, 22, Color(accent.r, accent.g, accent.b, 0.72), 1.7 * cs, false)
@@ -4060,6 +4064,14 @@ func _draw_player_cursor(canvas: Control) -> void:
 		canvas.draw_string(UITheme.mono_font(), m + Vector2(18, -16), "环外", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, UITheme.MUTED)
 
 
+## 装饰动画的时钟：用谱面时间而不是墙钟，否则同一份 replay 两次导出像素不同。
+func _anim_ms() -> float:
+	var chart := get_chart()
+	if chart == null:
+		return 0.0
+	return chart.timing.beat_to_chart_ms(get_time_beat())
+
+
 func request_redraw() -> void:
 	_mesh_dirty = true
 	if _overlay != null:
@@ -4070,8 +4082,9 @@ func add_hit_pulse(point: Vector2, color: Color, label: String = "HIT", kind: St
 	if not _valid_point(point):
 		return
 	var sparks: Array[float] = []
+	# 固定螺旋角：导出要逐帧可复现，不能用全局随机源。
 	for i in 6:
-		sparks.append(randf_range(0.0, TAU))
+		sparks.append(fposmod(float(i) * 2.399963 + point.x * 0.017 + point.y * 0.031, TAU))
 	# 同一位置连续判定时把文字错开，避免完全叠在一起。
 	var stack := 0
 	for other in _pulses:
@@ -4909,7 +4922,7 @@ func _draw_rank_chip(canvas: Control, right_x: float, top_y: float, rank: String
 
 ## 连击：≥2 才出现；命中轻微放大，断连变红、下沉、淡出。
 func _draw_combo(canvas: Control, font: Font, anchor: Vector2, s: float, base_px: float, align: int, op: float) -> void:
-	var now := Time.get_ticks_msec()
+	var now := int(_anim_ms())
 	if hud_combo > _hud_combo_prev:
 		_hud_combo_pop_at = now
 	elif hud_combo < _hud_combo_prev and _hud_combo_prev >= 2:
@@ -5204,7 +5217,7 @@ func _draw_diamond(canvas: Control, point: Vector2, radius: float, color: Color)
 func _draw_bell(canvas: Control, chart: Chart, note: Note, t: float) -> void:
 	var q := lerpf(Note.SPAWN_LENGTH_RATIO, 1.0, _approach(chart, note.beat, t))
 	var half := BELL_BAND_HALF * _note_scale() * float(_skin()["scale"])
-	var breathe := 0.5 + 0.5 * sin(float(Time.get_ticks_msec()) / 1000.0 * 2.4)
+	var breathe := 0.5 + 0.5 * sin(_anim_ms() / 1000.0 * 2.4)
 	# 和 Tap / Hold 同一套语言：白色外壳 + 彩色核心，两端圆头。
 	_bell_capsule(canvas, note, t, q, -half - 5.0, half + 5.0,
 		Color(UITheme.KEY_YELLOW.r, UITheme.KEY_YELLOW.g, UITheme.KEY_YELLOW.b, 0.07 + 0.05 * breathe))

@@ -8,15 +8,20 @@ extends RefCounted
 ##（和 osu!lazer / danser 的思路一致）。
 ##
 ## 事件种类：
-##   move    {t, x, y}                     光标位置（预览区局部坐标）
+##   move    {t, x, y}                     光标位置（v2 = 0..1 归一化，v1 = 录制窗口像素）
 ##   press   {t, key, lo, hi, x, y, a, u, v}  按键按下（带一帧区间与当时光标）
 ##   release {t, key}                      按键松开
 ##   seek    {t, lo, hi, dir}              滚轮 / Sweep
 ##   offset  {t, v}                        判定偏移发生变化（动态校准、手动微调）
 
 const FORMAT := "tamaki-replay"
-const VERSION := 1
+const VERSION := 2
+## v1 存的是录制窗口的像素坐标；v2 归一化到 0..1，换分辨率/换机器都对得上。
+const COORDS_UNIT := "unit"
+const COORDS_PIXELS := "px"
 
+## 新建的 Replay 默认按像素解释（老用法/老文件）；录制器显式切成 unit。
+var coords: String = COORDS_PIXELS
 var chart_path: String = ""
 var chart_hash: String = ""
 var start_beat: float = 0.0
@@ -25,25 +30,34 @@ var events: Array[Dictionary] = []
 var result: Dictionary = {}
 
 
+## 同一帧里的多次鼠标事件合并成一条（取最后一个位置），否则 1000Hz 鼠标
+## 会让 2 分钟的谱写出几万条几乎重复的移动事件。
 func add_move(time_ms: float, point: Vector2) -> void:
+	var stamp := snappedf(time_ms, 1.0)
+	if not events.is_empty():
+		var last: Dictionary = events[events.size() - 1]
+		if String(last.get("k", "")) == "move" and absf(float(last.get("t", 0.0)) - stamp) <= 1.0:
+			last["x"] = snappedf(point.x, 0.0001)
+			last["y"] = snappedf(point.y, 0.0001)
+			return
 	events.append({
-		"t": snappedf(time_ms, 0.01),
+		"t": stamp,
 		"k": "move",
-		"x": snappedf(point.x, 0.01),
-		"y": snappedf(point.y, 0.01),
+		"x": snappedf(point.x, 0.0001),
+		"y": snappedf(point.y, 0.0001),
 	})
 
 
 func add_press(time_ms: float, lo_ms: float, hi_ms: float, key: int, cursor: Vector2,
 		angle: float, u: float, valid: bool) -> void:
 	events.append({
-		"t": snappedf(time_ms, 0.01),
+		"t": snappedf(time_ms, 1.0),
 		"k": "press",
 		"key": key,
 		"lo": snappedf(lo_ms, 0.01),
 		"hi": snappedf(hi_ms, 0.01),
-		"x": snappedf(cursor.x, 0.01),
-		"y": snappedf(cursor.y, 0.01),
+		"x": snappedf(cursor.x, 0.0001),
+		"y": snappedf(cursor.y, 0.0001),
 		"a": snappedf(angle, 0.01),
 		"u": snappedf(u, 0.0001),
 		"v": valid,
@@ -51,12 +65,12 @@ func add_press(time_ms: float, lo_ms: float, hi_ms: float, key: int, cursor: Vec
 
 
 func add_release(time_ms: float, key: int) -> void:
-	events.append({"t": snappedf(time_ms, 0.01), "k": "release", "key": key})
+	events.append({"t": snappedf(time_ms, 1.0), "k": "release", "key": key})
 
 
 func add_seek(time_ms: float, lo_ms: float, hi_ms: float, direction: int) -> void:
 	events.append({
-		"t": snappedf(time_ms, 0.01),
+		"t": snappedf(time_ms, 1.0),
 		"k": "seek",
 		"lo": snappedf(lo_ms, 0.01),
 		"hi": snappedf(hi_ms, 0.01),
@@ -65,7 +79,7 @@ func add_seek(time_ms: float, lo_ms: float, hi_ms: float, direction: int) -> voi
 
 
 func add_offset(time_ms: float, value_ms: float) -> void:
-	events.append({"t": snappedf(time_ms, 0.01), "k": "offset", "v": snappedf(value_ms, 0.01)})
+	events.append({"t": snappedf(time_ms, 1.0), "k": "offset", "v": snappedf(value_ms, 0.01)})
 
 
 func event_count() -> int:
@@ -78,6 +92,7 @@ func to_dict() -> Dictionary:
 		"format": FORMAT,
 		"version": VERSION,
 		"chart": {"path": chart_path, "hash": chart_hash},
+		"coords": coords,
 		"start_beat": start_beat,
 		"settings": settings.duplicate(true),
 		"result": result.duplicate(true),
@@ -92,6 +107,8 @@ static func from_dict(data: Dictionary) -> Replay:
 	if version < 1 or version > VERSION:
 		return null
 	var replay := Replay.new()
+	# 旧文件没有 coords 字段：里面是录制窗口的像素坐标，读的时候按 cursor_size 缩放。
+	replay.coords = String(data.get("coords", COORDS_PIXELS if version < 2 else COORDS_UNIT))
 	var chart: Dictionary = data.get("chart", {})
 	replay.chart_path = String(chart.get("path", ""))
 	replay.chart_hash = String(chart.get("hash", ""))

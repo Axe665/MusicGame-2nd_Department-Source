@@ -61,6 +61,10 @@ func _initialize() -> void:
 		"test_storyboard_editor_fit_size",
 		"test_ring_tilt_target",
 		"test_storyboard_editor_transport",
+		"test_storyboard_roundtrip_lossless",
+		"test_storyboard_loop_indent_scope",
+		"test_replay_normalized_coords",
+		"test_video_export_frame_total",
 		"test_ring_tilt_keeps_center",
 		"test_note_color_palette",
 		"test_note_color_contrast",
@@ -1590,6 +1594,110 @@ func test_storyboard_editor_transport() -> bool:
 	eq(StoryboardEditor.transport_action(5000.0, 5000.0, true), StoryboardEditor.TRANSPORT_RESTART, "loop restarts at the end")
 	eq(StoryboardEditor.transport_action(5000.0, 5000.0, false), StoryboardEditor.TRANSPORT_STOP, "no loop stops at the end")
 	eq(StoryboardEditor.transport_action(6000.0, 5000.0, false), StoryboardEditor.TRANSPORT_STOP, "past the end still stops")
+	return true
+
+
+## 故事板保存必须无损：P,* / L / T / Animation / 背景行 / [Variables] 原样回写。
+func test_storyboard_roundtrip_lossless() -> bool:
+	var text := """[Events]
+0,0,"bg.jpg",0,0
+1,0,"v.mp4"
+Sprite,Background,Centre,"s0.png",320,240
+ P,0,0,1000,A
+ F,0,0,1000,0,1
+ L,0,2
+  M,0,0,500,0,0,100,100
+  C,0,0,100,255,0,0,0,255,0
+ F,0,5000,6000,1,0
+ T,BlueSky,0,1000
+  F,0,0,500,1,0
+Animation,Foreground,Centre,"a0.png",320,240,2,2,1
+ F,0,0,100,1,0
+
+[Variables]
+$x=1
+"""
+	var board := Storyboard.parse(text)
+	eq(board.sprites.size(), 2, "roundtrip: both objects parsed")
+	var anim: Storyboard.Sprite = board.sprites[1]
+	eq(anim.frames, 2, "roundtrip: animation frame count kept")
+	ok(anim.animation, "roundtrip: Animation stays Animation")
+	eq((board.sprites[0] as Storyboard.Sprite).loops.size(), 1, "roundtrip: loop block kept")
+	eq(board.event_lines.size(), 2, "roundtrip: background/video event lines kept")
+	# T 块内容不能当普通命令播放，否则触发效果会变成全程
+	var t_alpha := 0
+	for command in (board.sprites[0] as Storyboard.Sprite).commands:
+		if (command as Storyboard.Command).kind_name == "alpha" and absf((command as Storyboard.Command).end - 500.0) < 0.01:
+			t_alpha += 1
+	eq(t_alpha, 0, "roundtrip: trigger commands are not rendered unconditionally")
+
+	var out := board.to_osb_text()
+	ok(out.contains("P,0,0,1000,A"), "roundtrip: additive parameter is the last field")
+	ok(out.contains("Animation,Foreground"), "roundtrip: Animation written back as Animation")
+	ok(out.contains(" L,0,2"), "roundtrip: loop header kept")
+	ok(out.contains(" T,BlueSky,0,1000"), "roundtrip: trigger header kept")
+	ok(out.contains("0,0," + char(34) + "bg.jpg" + char(34) + ",0,0"), "roundtrip: background line kept")
+	ok(out.contains("[Variables]"), "roundtrip: variables section kept")
+
+	var again := Storyboard.parse(out)
+	eq(again.sprites.size(), board.sprites.size(), "roundtrip: object count stable")
+	eq((again.sprites[1] as Storyboard.Sprite).frames, 2, "roundtrip: animation survives reparse")
+	eq((again.sprites[0] as Storyboard.Sprite).loops.size(), 1, "roundtrip: loop survives reparse")
+	eq(again.to_osb_text(), out, "roundtrip: writing is idempotent")
+	return true
+
+
+## L 块只吃到同缩进为止：sprite 级命令不能被吞进循环。
+func test_storyboard_loop_indent_scope() -> bool:
+	var text := """[Events]
+Sprite,Foreground,TopLeft,"p.png",0,0
+ L,0,2
+  F,0,0,100,1,0
+ F,0,5000,6000,1,0
+"""
+	var board := Storyboard.parse(text)
+	var sprite: Storyboard.Sprite = board.sprites[0]
+	# 循环体只有一条 F，展开 2 份；外面那条 F 只算一条
+	eq(sprite.commands.size(), 3, "loop only swallows indented commands")
+	eq((sprite.timeline.get("alpha", []) as Array).size(), 3, "timeline has loop copies + one normal")
+	ok(absf(sprite.sample_float("alpha", 5500.0, -1.0) - 0.5) < 0.01, "command after the loop still animates")
+	# 编辑器不该把循环展开出的副本当成独立命令列出来
+	var visible := 0
+	for command in sprite.commands:
+		if not (command as Storyboard.Command).in_block:
+			visible += 1
+	eq(visible, 1, "editor only lists commands outside loop blocks")
+	return true
+
+
+## replay v2：坐标归一化到 0..1，换分辨率不改变光标相对位置。
+func test_replay_normalized_coords() -> bool:
+	var replay := Replay.new()
+	replay.coords = Replay.COORDS_UNIT
+	replay.add_move(100.0, Vector2(0.25, 0.5))
+	replay.add_move(100.4, Vector2(0.30, 0.5))
+	replay.add_press(120.0, 116.0, 124.0, 65, Vector2(0.75, 0.5), 90.0, 0.25, true)
+	# 同一毫秒内的移动合并成一条（高回报率鼠标不会把文件撑爆）
+	eq(replay.events.size(), 2, "moves within the same ms collapse")
+	near(float(replay.events[0]["x"]), 0.30, 0.0001, "collapsed move keeps the last position")
+	var restored := Replay.from_dict(replay.to_dict())
+	eq(restored.coords, Replay.COORDS_UNIT, "coords survive the file roundtrip")
+	near(float(restored.events[1]["x"]), 0.75, 0.0001, "press cursor stays normalized")
+	# 旧文件（v1、没有 coords 字段）仍按像素读
+	var legacy := replay.to_dict()
+	legacy.erase("coords")
+	legacy["version"] = 1
+	eq(Replay.from_dict(legacy).coords, Replay.COORDS_PIXELS, "v1 replay still reads as pixels")
+	return true
+
+
+## 导出帧数是硬约定：nb_frames == ceil(span/1000*fps)。
+func test_video_export_frame_total() -> bool:
+	eq(VideoExport.frame_total(3000.0, 60), 180, "3s @60 = 180 frames")
+	eq(VideoExport.frame_total(3000.0, 120), 360, "3s @120 = 360 frames")
+	eq(VideoExport.frame_total(1000.0, 30), 30, "1s @30 = 30 frames")
+	eq(VideoExport.frame_total(1.0, 60), 1, "tiny span still produces one frame")
+	eq(VideoExport.frame_total(0.0, 60), 1, "empty span still produces one frame")
 	return true
 
 
@@ -4265,7 +4373,7 @@ func test_storyboard_loops_and_easing() -> bool:
 Sprite,Foreground,TopLeft,"p.png",0,0
  L,1000,2
   F,0,0,500,1,0
- S,0,0,500,2,1
+  S,0,0,500,2,1
 """
 	var board := Storyboard.parse(text)
 	eq(board.sprites.size(), 1, "sprite parsed")

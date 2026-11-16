@@ -995,19 +995,22 @@ static func _extract_assets(zip: ZIPReader, files: PackedStringArray, chart: Cha
 	return report
 
 
-## 从 .osu 的内联 [Events] 抽出 storyboard 行（Sprite / Animation）。
+## 从 .osu 的内联 [Events] 抽出整个故事板块（声明 + 命令 + 背景行）。
+## 只挑 Sprite/Animation 行会丢掉所有命令，导入后对象就永远不可见。
 static func _inline_storyboard(text: String) -> String:
 	var lines: Array[String] = []
 	var section := ""
 	for raw_line in text.split("\n"):
-		var line := raw_line.strip_edges()
-		if line.begins_with("[") and line.ends_with("]"):
-			section = line.substr(1, line.length() - 2).to_lower()
+		var line := raw_line.rstrip("\r")
+		var stripped := line.strip_edges()
+		if stripped.begins_with("[") and stripped.ends_with("]"):
+			section = stripped.substr(1, stripped.length() - 2).to_lower()
 			continue
 		if section != "events":
 			continue
-		if line.begins_with("Sprite") or line.begins_with("Animation"):
-			lines.append(line)
+		if stripped.is_empty():
+			continue
+		lines.append(line)
 	return "\n".join(lines)
 
 

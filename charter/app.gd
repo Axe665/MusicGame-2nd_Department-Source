@@ -76,7 +76,7 @@ var hud_show_percent: bool = false
 var hud_show_time: bool = false
 var hud_show_watermark: bool = false
 ## 背景明暗（百分比，100 = 默认观感）：静图和 BGA 共用。
-var background_brightness: int = 100
+
 ## 试玩时鼠标左右键是否算 Tap（关掉后移动/滚轮照常）。
 var mouse_keys: bool = true
 ## 试玩/预览里是否绘制 osu! storyboard。
@@ -595,7 +595,6 @@ func _load_settings() -> void:
 			hud_show_percent = bool(data.get("hud_show_percent", hud_show_percent))
 			hud_show_time = bool(data.get("hud_show_time", hud_show_time))
 			hud_show_watermark = bool(data.get("hud_show_watermark", hud_show_watermark))
-			background_brightness = clampi(int(data.get("background_brightness", background_brightness)), 0, 100)
 			mouse_keys = bool(data.get("mouse_keys", mouse_keys))
 			show_storyboard = bool(data.get("show_storyboard", show_storyboard))
 			show_storyboard_background = bool(data.get("show_storyboard_background", show_storyboard_background))
@@ -625,7 +624,7 @@ func _load_settings() -> void:
 				time_flows_down = true
 			else:
 				playback_scroll = scroll_mode if scroll_mode in ["page", "pin"] else "pin"
-			playtest_dim = clampi(int(data.get("playtest_dim", playtest_dim)), 0, 70)
+			playtest_dim = clampi(int(data.get("playtest_dim", playtest_dim)), 0, 100)
 			ring_tilt_degrees = clampf(float(data.get("ring_tilt_degrees", ring_tilt_degrees)), 0.0, 20.0)
 			# 旧设置文件没有版本号：上一版默认 7° 被反馈「太含蓄」，一次性抬到 10°。
 			# 用户自己改过别的值就不动。
@@ -794,7 +793,7 @@ func save_settings() -> void:
 		"hud_show_title": hud_show_title, "hud_show_difficulty": hud_show_difficulty,
 		"hud_show_percent": hud_show_percent, "hud_show_time": hud_show_time,
 		"hud_show_watermark": hud_show_watermark,
-		"background_brightness": clampi(background_brightness, 0, 100), "mouse_keys": mouse_keys, "show_storyboard": show_storyboard, "show_storyboard_background": show_storyboard_background,
+		"mouse_keys": mouse_keys, "show_storyboard": show_storyboard, "show_storyboard_background": show_storyboard_background,
 		"preview_width": preview_width, "preview_collapsed": preview_collapsed}
 	var file := FileAccess.open(SETTINGS_PATH, FileAccess.WRITE)
 	if file != null:

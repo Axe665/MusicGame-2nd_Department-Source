@@ -1,27 +1,33 @@
 class_name VideoExport
 extends Node
 
-## 静默导出：固定帧率渲染到 SubViewport，逐帧 rawvideo 从 stdin 管道喂给外部 ffmpeg。
-## 导出过程中不启动任何音频播放器，输出也没有音轨（-an）。
-## 编码器按 nvenc → qsv → videotoolbox → vaapi → libx264 的顺序挑，每个先用一帧试编码，
-## 避免“列表里有但机器上跑不了”（例如没有 N 卡却装了带 nvenc 的 ffmpeg）。
+## 回放视频导出：用真正的 Playtest 在离线固定步长下跑一遍 replay，静音渲染到
+## SubViewport，逐帧 rgb24 从 stdin 喂给外部 ffmpeg。
+##
+## 关键点（对照 danser-go 的 mainLoopRecord）：
+##   · 第 k 帧的谱面时间恒为 start + k*1000/fps，绝不读墙钟 —— 帧数确定、两次导出逐帧一致。
+##   · 判定/特效/连击全部来自 Playtest，不再是「按时间猜命中」的重建画面。
+##   · 写管道失败必须报错，禁止「丢了一半帧还改名成功」。
 
 signal progress(done: int, total: int)
 signal finished(path: String, message: String)
 
-const SIZE := Vector2i(1280, 720)
-const FPS := 60
-
+## 导出的分辨率与帧率（UI 里选）。
+var size := Vector2i(1920, 1080)
+var fps := 60
 ## auto / nvenc / qsv / videotoolbox / vaapi / libx264。强制指定但跑不了时自动回退。
 var encoder_pref := "auto"
 ## 环随回放光标倾斜的角度（0 = 关）。
 var tilt_degrees: float = 10.0
+## 谱面没有 replay 时（AUTO / 基准）用自动演奏跑同一套离线管线。
+var auto_play := false
+
 var _running := false
 var _cancel := false
 var _chosen: Dictionary = {}
 
 
-## 当前机器上能用的编码器（先试一帧，结果缓存）。
+## 当前机器上能用的编码器（先真编码一帧，结果缓存）。
 func pick_encoder() -> Dictionary:
 	if not _chosen.is_empty():
 		return _chosen
@@ -32,18 +38,19 @@ func pick_encoder() -> Dictionary:
 	var wanted := _pref_name()
 	if not wanted.is_empty():
 		for cand in _candidates():
-			if String(cand["name"]) == wanted and listed.has(wanted) and await _smoke(ffmpeg, cand):
+			if String(cand["name"]) == wanted and listed.has(wanted) and _smoke(ffmpeg, cand):
 				_chosen = cand
 				return _chosen
 	for cand in _candidates():
 		if not listed.has(String(cand["name"])):
 			continue
-		if await _smoke(ffmpeg, cand):
+		if _smoke(ffmpeg, cand):
 			_chosen = cand
 			return _chosen
 	return {}
 
 
+## auto 时按「硬件优先」的顺序挑；UI 里也能强制指定。
 func _pref_name() -> String:
 	match encoder_pref:
 		"nvenc":
@@ -61,12 +68,16 @@ func _pref_name() -> String:
 
 static func _candidates() -> Array:
 	return [
-		{"name": "h264_nvenc", "args": ["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr", "-cq", "23", "-pix_fmt", "yuv420p"]},
-		{"name": "h264_qsv", "args": ["-c:v", "h264_qsv", "-global_quality", "23", "-pix_fmt", "nv12"]},
+		{"name": "h264_nvenc", "args": ["-c:v", "h264_nvenc", "-preset", "p5", "-tune", "hq",
+			"-rc", "vbr", "-cq", "23", "-b:v", "0", "-pix_fmt", "yuv420p"]},
+		{"name": "h264_qsv", "args": ["-init_hw_device", "qsv=hw", "-filter_hw_device", "hw",
+			"-vf", "format=nv12,hwupload", "-c:v", "h264_qsv", "-global_quality", "23", "-preset", "veryfast"]},
 		{"name": "h264_videotoolbox", "args": ["-c:v", "h264_videotoolbox", "-q:v", "60", "-pix_fmt", "yuv420p"]},
-		{"name": "h264_vaapi", "args": ["-vaapi_device", "/dev/dri/renderD128", "-vf", "format=nv12,hwupload",
-			"-c:v", "h264_vaapi", "-qp", "23"]},
-		{"name": "libx264", "args": ["-c:v", "libx264", "-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p"]},
+		{"name": "h264_amf", "args": ["-c:v", "h264_amf", "-quality", "quality", "-rc", "cqp",
+			"-qp_i", "20", "-qp_p", "22", "-pix_fmt", "yuv420p"]},
+		{"name": "h264_vaapi", "args": []},
+		{"name": "libx264", "args": ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+			"-pix_fmt", "yuv420p", "-movflags", "+faststart"]},
 	]
 
 
@@ -84,185 +95,216 @@ func _list_encoders(ffmpeg: String) -> Dictionary:
 	return names
 
 
-## 用一帧黑图试编码，确认这个编码器在这台机器上真的能出文件。
+## VAAPI 的设备名各机器不同，逐个 renderD* 试一遍。
+static func _vaapi_devices() -> Array:
+	var devices: Array = []
+	var dir := DirAccess.open("/dev/dri")
+	if dir == null:
+		return ["/dev/dri/renderD128"]
+	for file_name in dir.get_files():
+		if file_name.begins_with("renderD"):
+			devices.append("/dev/dri/" + file_name)
+	devices.sort()
+	if devices.is_empty():
+		devices.append("/dev/dri/renderD128")
+	return devices
+
+
+func _probe_args(cand: Dictionary, device: String) -> Array:
+	if String(cand["name"]) == "h264_vaapi":
+		return ["-vaapi_device", device, "-vf", "format=nv12,hwupload", "-c:v", "h264_vaapi", "-qp", "23"]
+	return cand["args"]
+
+
+## 真编码一帧到 null（不落盘、能拿退出码）。只写文件再看大小会把
+## 「ffmpeg 装坏了」和「这台机器没这个硬件」混在一起。
 func _smoke(ffmpeg: String, cand: Dictionary) -> bool:
-	var temp := ProjectSettings.globalize_path("user://.encoder_probe.mp4")
-	var args: Array = _input_args(Vector2i(256, 256)) + cand["args"] + ["-frames:v", "1", "-y", temp]
-	var pipe := OS.execute_with_pipe(ffmpeg, args, false)
-	if pipe.is_empty():
-		return false
-	var stdin: FileAccess = pipe.get("stdio")
-	if stdin == null:
-		return false
-	# 256x256：VAAPI 要求至少 128x128，用小图探测会把它误判成不可用。
-	var image := Image.create(256, 256, false, Image.FORMAT_RGBA8)
-	image.fill(Color.BLACK)
-	await _write_frame(stdin, image.get_data())
-	stdin.close()
-	var pid := int(pipe.get("pid", -1))
-	var deadline := Time.get_ticks_msec() + 6000
-	while pid > 0 and OS.is_process_running(pid) and Time.get_ticks_msec() < deadline:
-		OS.delay_msec(10)
-	var size := FileAccess.get_file_as_bytes(temp).size() if FileAccess.file_exists(temp) else 0
-	if FileAccess.file_exists(temp):
-		DirAccess.remove_absolute(temp)
-	return size > 1024
+	var devices := _vaapi_devices() if String(cand["name"]) == "h264_vaapi" else [""]
+	for device in devices:
+		var args: Array = ["-hide_banner", "-loglevel", "error",
+			"-f", "lavfi", "-i", "color=c=black:s=256x256:d=0.1:r=10",
+			"-frames:v", "1"] + _probe_args(cand, String(device)) + ["-f", "null", "-"]
+		var code := OS.execute(ffmpeg, args, [], true, false)
+		if code == 0:
+			return true
+	return false
 
 
-func _input_args(input_size: Vector2i = SIZE) -> Array:
-	return ["-hide_banner", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgba",
-		"-s", "%dx%d" % [input_size.x, input_size.y], "-r", str(FPS), "-i", "-"]
+func _input_args(input_size: Vector2i) -> Array:
+	return ["-hide_banner", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24",
+		"-s", "%dx%d" % [input_size.x, input_size.y], "-r", str(fps), "-i", "-"]
 
 
-## 渲染 [start_ms, end_ms] 到 out_path。events 是 .replay 的事件流（用来画光标）。
+## 帧数是硬约定：给定跨度与帧率，导出的 nb_frames 必须等于它。
+static func frame_total(span_ms: float, frames_per_second: int) -> int:
+	return maxi(1, ceili(maxf(0.0, span_ms) / 1000.0 * float(frames_per_second)))
+
+
+## 渲染 [start_ms, end_ms]。
+## replay 为 null 时用自动演奏（AUTO）跑同一条管线。
 func export_chart(chart: Chart, start_ms: float, end_ms: float, out_path: String,
-		events: Array = [], show_storyboard: bool = true, cursor_bounds: Vector2 = Vector2.ZERO) -> void:
+		replay: Replay = null, show_storyboard: bool = true) -> void:
 	if _running or chart == null:
-		return
-	var encoder: Dictionary = await pick_encoder()
-	if encoder.is_empty():
-		finished.emit("", "找不到可用的 H.264 编码器（需要外部 ffmpeg）")
 		return
 	_running = true
 	_cancel = false
+	var encoder: Dictionary = await pick_encoder()
+	if encoder.is_empty():
+		_running = false
+		finished.emit("", "找不到可用的 H.264 编码器（需要外部 ffmpeg）")
+		return
+	var device := ""
+	if String(encoder["name"]) == "h264_vaapi":
+		device = String(_smoke_device(String(encoder["name"])))
 	var temp := out_path.get_basename() + ".part.mp4"
-	var args: Array = _input_args() + encoder["args"] + ["-an", "-y", temp]
+	var args: Array = _input_args(size) + _probe_args(encoder, device) + ["-an", "-y", temp]
 	var pipe := OS.execute_with_pipe(_ffmpeg(), args, false)
 	if pipe.is_empty():
 		_running = false
 		finished.emit("", "启动 ffmpeg 失败")
 		return
 	var stdin: FileAccess = pipe.get("stdio")
+	var pid := int(pipe.get("pid", -1))
 
 	var viewport := SubViewport.new()
-	viewport.size = SIZE
+	viewport.size = size
 	viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	viewport.disable_3d = false
 	add_child(viewport)
-	var preview := Preview3D.new()
-	viewport.add_child(preview)
+
+	var playtest := PlaytestScript.new()
+	playtest.offline_mode = true
+	playtest.auto_play = auto_play and replay == null
+	playtest.replay_source = replay
+	playtest.next_playback_rate = 1.0
+	playtest.mirror_mode = ""
+	add_child(playtest)
+	# 引擎自己也会每帧调 _process；离线导出必须只由帧循环驱动，
+	# 否则真实帧率一变，特效和判定就多走几步。
+	playtest.set_process(false)
+	playtest.set_physics_process(false)
+	playtest.setup(chart, chart.ms_to_beat(maxf(0.0, start_ms)), "")
+	# 把预览搬进 SubViewport：判定/特效仍由 Playtest 驱动，画面只留预览与 HUD。
+	var preview = playtest._preview
+	if preview == null:
+		_fail(stdin, viewport, playtest, temp, "预览节点初始化失败")
+		_running = false
+		return
+	preview.reparent(viewport)
 	preview.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	preview.chart_override = chart
-	preview.follow_app = false
-	preview.playtest_mode = true
-	# 导出的是回放视频：HUD（连击/准度）要进画面，命中特效才有成绩可看。
-	preview.show_hud = true
-	preview.hud_title = String(chart.metadata.get("title", ""))
-	preview.hud_difficulty = String(chart.metadata.get("version", chart.difficulty))
-	preview.hud_total_ms = end_ms
-	preview.use_3d_ring = true
-	# 导出沿用「环随鼠标倾斜」，但光源是回放里录下来的光标，不是窗口里的真实鼠标。
-	preview.mouse_tilt = true
 	preview.mouse_tilt_degrees = clampf(tilt_degrees, 0.0, 20.0)
-	preview.auto_cursor_bounds = cursor_bounds
 	preview.show_storyboard = show_storyboard
 	preview.show_storyboard_background = show_storyboard
-	preview.notice.connect(func(_m: String, _l: String) -> void: pass)
+	preview.set_process(false)
+
+	# 导出期间整台机器彻底静音（音效、音乐都不要漏出来）。
+	var previous_mute := AudioServer.is_bus_mute(AudioServer.get_bus_index("Master"))
+	AudioServer.set_bus_mute(AudioServer.get_bus_index("Master"), true)
 
 	var span := maxf(1.0, end_ms - start_ms)
-	var total := maxi(1, int(round(span / 1000.0 * float(FPS))))
+	var total := frame_total(span, fps)
+	var step_ms := 1000.0 / float(fps)
 	var written := 0
-	var empty := 0
-	var moves := _move_events(events)
-	# 没有移动事件时别画光标：SubViewport 里的“真实鼠标位置”是窗口坐标，会乱飘。
-	preview.custom_cursor_visible = not moves.is_empty()
-	var hits := plan_hits(chart, events)
-	var hit_index := 0
-	var combo := 0
-	var judged := 0
-	var score_sum := 0.0
-	preview.hud_combo = 0
-	preview.hud_accuracy = -1.0
-	var cursor := Vector2.INF
-	var move_index := 0
-	# 先空转两帧：SubViewport 要渲染过才会分配贴图。
+
+	# SubViewport 要渲染过一帧才会分配贴图。
 	await RenderingServer.frame_post_draw
 	await RenderingServer.frame_post_draw
+
 	for frame in total:
 		if _cancel or stdin == null:
 			break
-		var ms := start_ms + span * float(frame) / float(total)
-		cursor = _cursor_at(moves, ms)
-		while move_index < moves.size() and float(moves[move_index]["t"]) <= ms:
-			move_index += 1
-		preview.auto_cursor = cursor if cursor.is_finite() else Vector2.INF
-		var beat: float = chart.timing.chart_ms_to_beat(ms + chart.offset_ms)
-		# 回放里的按键到点就放命中反馈：爆点 + 环绕闪光 + 连击/准度。
-		while hit_index < hits.size() and float(hits[hit_index]["ms"]) <= ms:
-			var hit: Dictionary = hits[hit_index]
-			preview.set_note_state(hit["note"].id, "hit", beat)
-			# 爆点用音符的目标拍：用当前拍会把特效画到环外（音符已经过了落点）。
-			preview.add_note_pop(String(hit["kind"]), hit["note"], float(hit["note"].beat))
-			preview.add_arc_flash(float(hit["note"].angle), float(hit["note"].arc_width()),
-				float(hit["note"].beat), _tier_colour(int(hit["tier"])))
-			if int(hit["tier"]) >= 3:
-				combo = 0
-			else:
-				combo += 1
-				judged += 1
-				score_sum += [1.0, 0.6667, 0.3333, 0.0][clampi(int(hit["tier"]), 0, 3)]
-			preview.hud_combo = combo
-			preview.hud_accuracy = 100.0 * score_sum / float(maxi(1, judged)) if judged > 0 else -1.0
-			preview.hud_ms = ms
-			hit_index += 1
-		preview.time_beat = beat
-		preview.prepare_playtest_frame(beat, 1.0 / float(FPS))
+		# 帧号决定时间：同一份 replay 在任何机器、任何速度下都得到同一批时间点。
+		var ms := start_ms + float(frame) * step_ms
+		playtest.offline_ms = ms
+		playtest._process(1.0 / float(fps))
 		await RenderingServer.frame_post_draw
 		var image := viewport.get_texture().get_image()
-		if image == null or image.is_empty():
-			empty += 1
-			continue
-		if image.get_format() != Image.FORMAT_RGBA8:
-			image.convert(Image.FORMAT_RGBA8)
-		if not await _write_frame(stdin, image.get_data()):
-			break
-		written += 1
-		if frame % 30 == 0:
+		if image != null and not image.is_empty():
+			if image.get_format() != Image.FORMAT_RGB8:
+				image.convert(Image.FORMAT_RGB8)
+			if not await _write_frame(stdin, image.get_data()):
+				break
+			written += 1
+		if frame % 10 == 0:
 			progress.emit(frame, total)
+
+	AudioServer.set_bus_mute(AudioServer.get_bus_index("Master"), previous_mute)
 	stdin.close()
-	print("[ve] frames total=%d written=%d empty=%d" % [total, written, empty])
-	var pid := int(pipe.get("pid", -1))
+	print("[ve] %dx%d@%d total=%d written=%d device=%s" % [size.x, size.y, fps, total, written, device])
+
 	var deadline := Time.get_ticks_msec() + 120000
 	while pid > 0 and OS.is_process_running(pid) and Time.get_ticks_msec() < deadline:
 		await get_tree().create_timer(0.05).timeout
-	viewport.queue_free()
 	var err_pipe: FileAccess = pipe.get("stderr")
 	if err_pipe != null:
 		var err_text := err_pipe.get_as_text().strip_edges()
 		if not err_text.is_empty():
 			print("[ve] ffmpeg stderr: ", err_text.substr(0, 600))
+	playtest.queue_free()
+	viewport.queue_free()
 	_running = false
+
 	if _cancel:
-		if FileAccess.file_exists(temp):
-			DirAccess.remove_absolute(temp)
+		_remove_quietly(temp)
 		finished.emit("", "已取消")
+		return
+	# 帧数对不上就是丢了帧：绝不改名成功，否则会出现「后半段没了但提示已导出」。
+	if written != total:
+		_remove_quietly(temp)
+		finished.emit("", "导出中断：只写入 %d/%d 帧（编码器 %s）" % [written, total, String(encoder["name"])])
 		return
 	if not FileAccess.file_exists(temp) or FileAccess.get_file_as_bytes(temp).size() < 1024:
 		finished.emit("", "ffmpeg 没有产出视频（编码器：%s）" % String(encoder["name"]))
 		return
-	if FileAccess.file_exists(out_path):
-		DirAccess.remove_absolute(ProjectSettings.globalize_path(out_path))
+	_remove_quietly(out_path)
 	var err := DirAccess.rename_absolute(ProjectSettings.globalize_path(temp),
 		ProjectSettings.globalize_path(out_path))
 	if err != OK:
 		finished.emit("", "无法写入 %s" % out_path)
 		return
-	finished.emit(out_path, "已导出 %s（%s）" % [out_path.get_file(), String(encoder["name"])])
+	finished.emit(out_path, "已导出 %s（%s · %dx%d@%d）" % [
+		out_path.get_file(), String(encoder["name"]), size.x, size.y, fps])
 
 
-## Godot 的管道写入是非阻塞的：一次丢 3.6MB 会直接失败（EAGAIN）。
-## 拆成 4KB 小块、失败就让出一帧等 ffmpeg 抽空，实测 720p60 可以稳定灌满。
-## shortcut: 极端满载时仍有极小概率写进半块，靠帧数校验兜底（升级可换 mkfifo）。
+func _smoke_device(encoder_name: String) -> String:
+	var ffmpeg := _ffmpeg()
+	for device in _vaapi_devices():
+		var args: Array = ["-hide_banner", "-loglevel", "error",
+			"-f", "lavfi", "-i", "color=c=black:s=256x256:d=0.1:r=10", "-frames:v", "1",
+			"-vaapi_device", device, "-vf", "format=nv12,hwupload", "-c:v", encoder_name,
+			"-qp", "23", "-f", "null", "-"]
+		if OS.execute(ffmpeg, args, [], true, false) == 0:
+			return device
+	return ""
+
+
+func _remove_quietly(path: String) -> void:
+	if FileAccess.file_exists(path):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+
+
+func _fail(stdin: FileAccess, viewport: SubViewport, playtest: Node, temp: String, message: String) -> void:
+	if stdin != null:
+		stdin.close()
+	if playtest != null:
+		playtest.queue_free()
+	if viewport != null:
+		viewport.queue_free()
+	_remove_quietly(temp)
+	finished.emit("", message)
+
+
+## Godot 的管道写入是非阻塞的：一次丢几 MB 会直接失败（EAGAIN）。
+## 拆成 4KB 小块重试；只有超过墙钟期限才认定 ffmpeg 死了。
 func _write_frame(stdin: FileAccess, data: PackedByteArray) -> bool:
 	var offset := 0
-	var stalls := 0
+	var start := Time.get_ticks_msec()
 	while offset < data.size():
 		var chunk := data.slice(offset, mini(offset + 4096, data.size()))
 		if stdin.store_buffer(chunk):
 			offset += chunk.size()
-			stalls = 0
 			continue
-		stalls += 1
-		if stalls > 3000:
+		if Time.get_ticks_msec() - start > 30000:
 			return false
 		await get_tree().process_frame
 	return true
@@ -272,8 +314,8 @@ func cancel() -> void:
 	_cancel = true
 
 
-## 把 .replay 里的 press 事件配到谱面音符上（只用于画面反馈，不改成绩文件）。
-## 规则和试玩一致：时间在 ±HIT_WINDOW_MS 内、角度落在音符弧宽 + 容差里，先到先得。
+## 把 .replay 里的 press 事件配到谱面音符上（只给旧测试与预览用）。
+## 导出现在走真 Playtest 判定，不再用这份近似。
 func plan_hits(chart: Chart, events: Array) -> Array:
 	var notes: Array[Dictionary] = []
 	for note in chart.notes:
@@ -372,3 +414,6 @@ static func _cursor_at(moves: Array, ms: float) -> Vector2:
 	var span := maxf(0.001, float(b["t"]) - float(a["t"]))
 	var w := clampf((ms - float(a["t"])) / span, 0.0, 1.0)
 	return Vector2(float(a["x"]), float(a["y"])).lerp(Vector2(float(b["x"]), float(b["y"])), w)
+
+
+const PlaytestScript := preload("res://charter/playtest.gd")

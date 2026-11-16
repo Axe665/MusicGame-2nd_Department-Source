@@ -174,6 +174,9 @@ var _replay_events: Array = []
 var _replay_index: int = 0
 var _replay_ms: float = 0.0
 var _replay_cursor: Vector2 = Vector2.INF
+## replay 里的光标坐标系：v2 = 0..1 归一化，v1 = 录制窗口像素。
+var _replay_coords := Replay.COORDS_PIXELS
+var _replay_recorded_size := Vector2.ZERO
 var _record_offset: float = 0.0
 ## 回放用录制里的 offset 序列，不去动用户的设置。
 var _offset_override: float = NAN
@@ -187,6 +190,9 @@ var _replay_start_offset: float = 0.0
 var _replay_total_ms: float = 0.0
 ## seek 会重跑几千步判定，期间静音。
 var _sim_silent: bool = false
+## 离线导出：时间由导出器按帧号推进，不读音频时钟、不放声音、不结算。
+var offline_mode: bool = false
+var offline_ms: float = 0.0
 var _replay_seeking: bool = false
 var _replay_bar: Control = null
 var _replay_slider: HSlider = null
@@ -237,6 +243,10 @@ var _export_replay_button: Button
 ## 静默视频导出（SubViewport 逐帧 → ffmpeg 管道，无音轨、优先硬件编码）。
 var _export_video_button: Button = null
 var _video_dialog: FileDialog = null
+var _video_options: AcceptDialog = null
+var _video_size_option: OptionButton = null
+var _video_fps_option: OptionButton = null
+var _video_warning: Label = null
 var _video_export: VideoExport = null
 var _video_progress: AcceptDialog = null
 var _video_bar: ProgressBar = null
@@ -332,14 +342,18 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 		_preview.ring_3d_scale = String(_app.ring_3d_scale)
 		_preview.ring_3d_hz = int(_app.ring_3d_hz)
 		_preview.bar_lines_visible = bool(_app.bar_lines)
-		_preview.set_background_brightness(float(_app.background_brightness) / 100.0)
 		_preview.apply_ring_quality()
 	_preview.auto_cursor = Vector2.INF
 	if auto_play:
 		_preview.auto_cursor = _preview.project_design(Vector2.ZERO)
 	if replay_source != null:
 		_enter_replay(replay_source)
-	elif _app != null:
+	elif auto_play and offline_mode:
+		# 离线 AUTO 也把合成输入记下来，让「自动演奏」和「回放」走同一套画面。
+		_record = Replay.new()
+		_record.coords = Replay.COORDS_UNIT
+		_record.chart_path = chart_path
+	elif _app != null and not offline_mode:
 		_start_recording()
 	Input.set_use_accumulated_input(false)
 	# 关键：先把 3D 环/音符画在时间轴起点并显示准备层，让玩家看到加载/READY，
@@ -352,6 +366,9 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	modulate.a = 1.0
 	# 无头测试/无头基准直接开打：没有屏幕可看，倒计时只会拖慢用例。
 	# 回放同样不倒计时：没有「准备」这回事，点了就直接开演。
+	if offline_mode:
+		_start_play()
+		return
 	if DisplayServer.get_name() == "headless" or replay_mode:
 		await _prepare_audio()
 		_open_path_input_log()
@@ -403,6 +420,9 @@ func _start_play() -> void:
 	_ready_phase = "done"
 	_ready_layer.visible = false
 	_running = true
+	if offline_mode:
+		_sim_silent = true
+		return
 	_start_audio()
 	Input.set_mouse_mode(Input.MOUSE_MODE_HIDDEN)
 
@@ -1116,7 +1136,9 @@ func _process(delta: float) -> void:
 		if "--bench-tilt" in OS.get_cmdline_user_args():
 			# 模拟鼠标持续移动带来的镜头视差（get_local_mouse_position 无法在基准里伪造）。
 			_preview._tilt_target = Vector2(sin(beat * 3.0), cos(beat * 2.3)) * 7.0
-	_probe_frame_time()
+	# 离线导出时不能按墙钟降画质：两次导出会因为机器忙闲得到不同画面。
+	if not offline_mode:
+		_probe_frame_time()
 	if _frame_last_beat >= 0.0:
 		if absf(beat - _frame_last_beat) < 0.000001:
 			_beat_stalls += 1
@@ -1126,7 +1148,7 @@ func _process(delta: float) -> void:
 		_ui_accum = 0.0
 		_update_hud_state()
 		_update_replay_bar()
-	if beat > chart.duration_beats() + 2.0:
+	if beat > chart.duration_beats() + 2.0 and not offline_mode:
 		# osu 口径：对局和回放都在「最后一颗 +2 拍」结束，结果页立刻出来；
 		# 音乐不在这里停，继续放到尾（见 _finish），离开时淡出。
 		if replay_mode:
@@ -1148,6 +1170,7 @@ func _start_recording() -> void:
 		_record = null
 		return
 	_record = Replay.new()
+	_record.coords = Replay.COORDS_UNIT
 	_record.chart_path = chart_path
 	_record.chart_hash = Replay.hash_chart(chart)
 	_record.start_beat = start_beat
@@ -1185,6 +1208,10 @@ func _enter_replay(data: Replay) -> void:
 	_last_seek_orien = -1
 	_last_seek_ms = -INF
 	_replay_events = data.events
+	_replay_coords = data.coords
+	var recorded_size: Array = data.settings.get("cursor_size", [])
+	if recorded_size.size() >= 2:
+		_replay_recorded_size = Vector2(float(recorded_size[0]), float(recorded_size[1]))
 	_replay_index = 0
 	_replay_ms = chart.timing.beat_to_chart_ms(start_beat)
 	_replay_start_ms = _replay_ms
@@ -1205,7 +1232,7 @@ func _enter_replay(data: Replay) -> void:
 		_sfx.set_style(String(data.settings["hit_sfx"]))
 	for event in _replay_events:
 		if String(event.get("k", "")) == "move":
-			_replay_cursor = Vector2(float(event.get("x", 0.0)), float(event.get("y", 0.0)))
+			_replay_cursor = _replay_point(float(event.get("x", 0.0)), float(event.get("y", 0.0)))
 			break
 	# 关键：回放时让 preview 用「录制里的光标」。auto_cursor 是 INF 时，
 	# _draw 会退回 get_local_mouse_position()，玩家的真实鼠标会顶掉回放光标，
@@ -1234,7 +1261,7 @@ func _apply_replay_event(event: Dictionary) -> void:
 	var stamp := float(event.get("t", 0.0))
 	match String(event.get("k", "")):
 		"move":
-			var point := Vector2(float(event.get("x", 0.0)), float(event.get("y", 0.0)))
+			var point := _replay_point(float(event.get("x", 0.0)), float(event.get("y", 0.0)))
 			_replay_cursor = point
 			if _preview != null:
 				_preview.auto_cursor = point
@@ -1245,7 +1272,7 @@ func _apply_replay_event(event: Dictionary) -> void:
 				"time": stamp,
 				"lo": float(event.get("lo", stamp)),
 				"hi": float(event.get("hi", stamp)),
-				"mouse": Vector2(float(event.get("x", 0.0)), float(event.get("y", 0.0))),
+				"mouse": _replay_point(float(event.get("x", 0.0)), float(event.get("y", 0.0))),
 				"angle": float(event.get("a", 0.0)),
 				"u": float(event.get("u", 0.0)),
 				"valid": bool(event.get("v", false)),
@@ -1477,6 +1504,11 @@ func _chart_ms() -> float:
 
 
 func _chart_ms_inner() -> float:
+	# 离线导出：第 k 帧的时间由导出器给定，和机器快慢、音频时钟都无关。
+	if offline_mode:
+		_last_chart_ms = offline_ms
+		_replay_ms = offline_ms
+		return offline_ms
 	if _paused:
 		return _last_chart_ms
 	var now_usec := Time.get_ticks_usec()
@@ -1539,6 +1571,8 @@ func _auto_step(ms: float, beat: float, _delta: float) -> void:
 		return
 	_auto_cursor = _auto_cursor_target(ms, beat)
 	_preview.auto_cursor = _auto_cursor
+	if _record != null:
+		_record.add_move(ms, _unit_point(_auto_cursor))
 	while _auto_index < _ordered_notes.size():
 		var note := _ordered_notes[_auto_index]
 		var state: Dictionary = _states[note.id]
@@ -1565,6 +1599,12 @@ func _auto_press_note(note: Note, state: Dictionary, beat: float) -> void:
 	if not point.is_finite():
 		point = _auto_cursor
 	_key_presses.append(auto_press_payload(float(state["target_ms"]), point, note.angle, key))
+	if _record != null:
+		var target := float(state["target_ms"])
+		var unit := _unit_point(point)
+		_record.add_move(target, unit)
+		_record.add_press(target, target, target, key, unit, note.angle,
+			fposmod(note.angle, 360.0) / 360.0, true)
 	if note.type == "hold":
 		_keys_held[key] = true
 		_auto_hold_keys[note.id] = {"key": key, "end_ms": float(state["end_ms"])}
@@ -1576,6 +1616,8 @@ func _auto_release_holds(ms: float) -> void:
 		if ms < float(info["end_ms"]) + AUTO_RELEASE_MS:
 			continue
 		_keys_held.erase(int(info["key"]))
+		if _record != null:
+			_record.add_release(ms, int(info["key"]))
 		_auto_hold_keys.erase(note_id)
 
 
@@ -2856,6 +2898,26 @@ func _input_interval(now_ms: float) -> Vector2:
 	return Vector2(now_ms - span, now_ms)
 
 
+## 屏幕像素 → 0..1 归一化坐标（v2 replay 用，和窗口大小无关）。
+func _unit_point(point: Vector2) -> Vector2:
+	var size := _preview.size
+	if size.x <= 1.0 or size.y <= 1.0:
+		return point
+	return Vector2(point.x / size.x, point.y / size.y)
+
+
+## replay 里的坐标 → 当前窗口像素。v1 按录制时的窗口尺寸缩放。
+func _replay_point(x: float, y: float) -> Vector2:
+	if _preview == null:
+		return Vector2(x, y)
+	if _replay_coords == Replay.COORDS_UNIT:
+		return Vector2(x * _preview.size.x, y * _preview.size.y)
+	if _replay_recorded_size.x > 1.0 and _replay_recorded_size.y > 1.0:
+		return Vector2(x / _replay_recorded_size.x * _preview.size.x,
+			y / _replay_recorded_size.y * _preview.size.y)
+	return Vector2(x, y)
+
+
 ## 鼠标按钮 → 合成键位；不是左右键返回 0。
 static func mouse_button_key(button_index: int) -> int:
 	match button_index:
@@ -2888,7 +2950,7 @@ func _register_press(key: int, point: Vector2 = Vector2.INF) -> void:
 			"key": key,
 		})
 		if _recording and _record != null:
-			_record.add_press(stamp, span.x, span.y, key, at, _preview.screen_angle_deg(at),
+			_record.add_press(stamp, span.x, span.y, key, _unit_point(at), _preview.screen_angle_deg(at),
 				_preview.cursor_u, _preview.cursor_valid)
 	_keys_held[key] = true
 
@@ -2906,7 +2968,7 @@ func _input(event: InputEvent) -> void:
 			var move_ms := _chart_ms() + _active_offset()
 			_queue_path_motion(point, move_ms)
 			if _recording and _record != null:
-				_record.add_move(move_ms, point)
+				_record.add_move(move_ms, _unit_point(point))
 		return
 	if event is InputEventMouseButton and event.pressed and (event.button_index == MOUSE_BUTTON_WHEEL_UP or event.button_index == MOUSE_BUTTON_WHEEL_DOWN):
 		var now_ms := _chart_ms() + float(_app.playtest_offset_ms if _app != null else 0.0)
@@ -3156,14 +3218,93 @@ static func chart_offset_for_bias(current_offset_ms: float, bias_ms: float) -> f
 	return clampf(current_offset_ms - bias_ms, -10000.0, 10000.0)
 
 
-## ── 静默视频导出 ────────────────────────────────────────────────
+## ── 回放视频导出 ────────────────────────────────────────────────
+## 分辨率与帧率先选，再选保存路径；导出走 Playtest 离线固定步长 + ffmpeg 硬件编码。
+const VIDEO_SIZES := [["1280×720", Vector2i(1280, 720)], ["1920×1080", Vector2i(1920, 1080)],
+	["2560×1440", Vector2i(2560, 1440)], ["3840×2160", Vector2i(3840, 2160)]]
+const VIDEO_FPS := [30, 60, 120, 240]
+## 实测 get_image() 回读上限（帧/秒）；超过它就会慢于实时。
+const VIDEO_READBACK_FPS := [[1280, 720, 186], [1920, 1080, 130], [2560, 1440, 95], [3840, 2160, 55]]
+
+
 func _export_video() -> void:
+	if _video_options == null:
+		_video_options = AcceptDialog.new()
+		_video_options.title = "导出设置"
+		_video_options.ok_button_text = "选保存位置…"
+		var box := VBoxContainer.new()
+		box.custom_minimum_size = Vector2(360, 0)
+		box.add_theme_constant_override("separation", 6)
+		var size_row := HBoxContainer.new()
+		size_row.add_child(_video_label("分辨率"))
+		_video_size_option = OptionButton.new()
+		for entry in VIDEO_SIZES:
+			_video_size_option.add_item(String(entry[0]))
+		_video_size_option.selected = 1
+		size_row.add_child(_video_size_option)
+		box.add_child(size_row)
+		var fps_row := HBoxContainer.new()
+		fps_row.add_child(_video_label("帧率"))
+		_video_fps_option = OptionButton.new()
+		for value in VIDEO_FPS:
+			_video_fps_option.add_item("%d fps" % int(value))
+		_video_fps_option.selected = 1
+		fps_row.add_child(_video_fps_option)
+		box.add_child(fps_row)
+		_video_warning = Label.new()
+		_video_warning.add_theme_font_size_override("font_size", 11)
+		_video_warning.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		box.add_child(_video_warning)
+		var hint := Label.new()
+		hint.text = "导出时整机静音，输出没有音轨；画面由真实回放判定驱动。"
+		hint.add_theme_font_size_override("font_size", 11)
+		box.add_child(hint)
+		_video_options.add_child(box)
+		_video_options.confirmed.connect(_open_video_dialog)
+		_video_size_option.item_selected.connect(func(_i: int) -> void: _update_video_warning())
+		_video_fps_option.item_selected.connect(func(_i: int) -> void: _update_video_warning())
+		add_child(_video_options)
+	_update_video_warning()
+	_video_options.popup_centered()
+
+
+func _video_label(text: String) -> Label:
+	var label := Label.new()
+	label.text = text
+	return label
+
+
+func _selected_video_size() -> Vector2i:
+	return VIDEO_SIZES[clampi(_video_size_option.selected, 0, VIDEO_SIZES.size() - 1)][1]
+
+
+func _selected_video_fps() -> int:
+	return int(VIDEO_FPS[clampi(_video_fps_option.selected, 0, VIDEO_FPS.size() - 1)])
+
+
+func _update_video_warning() -> void:
+	if _video_warning == null:
+		return
+	var chosen := _selected_video_size()
+	var limit := 60
+	for entry in VIDEO_READBACK_FPS:
+		if int(entry[0]) == chosen.x and int(entry[1]) == chosen.y:
+			limit = int(entry[2])
+	if _selected_video_fps() > limit:
+		_video_warning.text = "注意：%d×%d 的回读上限约 %d fps，%d fps 导出会比实时慢（帧数仍然准确）。" % [
+			chosen.x, chosen.y, limit, _selected_video_fps()]
+		_video_warning.add_theme_color_override("font_color", UITheme.CORAL)
+	else:
+		_video_warning.text = ""
+
+
+func _open_video_dialog() -> void:
 	if _video_dialog == null:
 		_video_dialog = FileDialog.new()
 		_video_dialog.file_mode = FileDialog.FILE_MODE_SAVE_FILE
 		_video_dialog.access = FileDialog.ACCESS_FILESYSTEM
 		_video_dialog.filters = PackedStringArray(["*.mp4 ; MP4 视频"])
-		_video_dialog.title = "导出回放视频（静默）"
+		_video_dialog.title = "导出回放视频"
 		_video_dialog.file_selected.connect(_start_video_export)
 		add_child(_video_dialog)
 	_video_dialog.current_dir = OS.get_system_dir(OS.SYSTEM_DIR_DOWNLOADS)
@@ -3178,25 +3319,26 @@ func _start_video_export(path: String) -> void:
 		path += ".mp4"
 	if _video_export == null:
 		_video_export = VideoExport.new()
-		_video_export.encoder_pref = String(_app.video_encoder if _app != null else "auto")
-		_video_export.tilt_degrees = float(_app.ring_tilt_degrees if _app != null else 10.0)
 		_video_export.finished.connect(_on_video_finished)
 		_video_export.progress.connect(func(done: int, total: int) -> void:
 			if _video_bar != null:
 				_video_bar.value = 100.0 * float(done) / float(maxi(1, total))
 		)
 		add_child(_video_export)
+	_video_export.encoder_pref = String(_app.video_encoder if _app != null else "auto")
+	_video_export.tilt_degrees = float(_app.ring_tilt_degrees if _app != null else 10.0)
+	_video_export.size = _selected_video_size()
+	_video_export.fps = _selected_video_fps()
+	# 自动演奏（AUTO）没有输入事件，仍然用同一套离线管线跑自动演奏。
+	_video_export.auto_play = auto_play
+	_video_export._chosen = {}
 	_ensure_video_progress()
 	_video_bar.value = 0.0
 	_video_progress.popup_centered()
 	var data := _current_replay()
-	var events: Array = data.events if data != null else []
 	var end_ms := maxf(1000.0, chart.timing.beat_to_chart_ms(chart.duration_beats()) + 2000.0)
-	var cursor_size: Array = data.settings.get("cursor_size", []) if data != null else []
-	var cursor_bounds := Vector2.ZERO
-	if cursor_size.size() >= 2:
-		cursor_bounds = Vector2(float(cursor_size[0]), float(cursor_size[1]))
-	_video_export.export_chart(chart, 0.0, end_ms, path, events, _app.show_storyboard if _app != null else true, cursor_bounds)
+	_video_export.export_chart(chart, 0.0, end_ms, path, data,
+		_app.show_storyboard if _app != null else true)
 
 
 func _ensure_video_progress() -> void:
