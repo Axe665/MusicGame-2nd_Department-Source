@@ -67,16 +67,26 @@ var _library: ItemList = null
 
 func _init() -> void:
 	title = "故事板编辑器"
-	min_size = Vector2i(980, 640)
+	# 小屏（1366x768 / 1280x720）也要放得下：窗口本身可以缩到 640x420，
+	# 内容超出时由 ScrollContainer 滚动，不再把底部按钮顶到屏幕外。
+	min_size = Vector2i(640, 420)
 	_app = get_node_or_null("/root/App")
 	_build_ui()
+	get_ok_button().hide()
 
 
 func _build_ui() -> void:
+	var scroll := ScrollContainer.new()
+	scroll.name = "EditorScroll"
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	add_child(scroll)
 	var column := VBoxContainer.new()
-	column.custom_minimum_size = Vector2i(1000, 620)
+	column.custom_minimum_size = Vector2i(940, 460)
+	column.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	column.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	column.add_theme_constant_override("separation", 8)
-	add_child(column)
+	scroll.add_child(column)
 	var root := HSplitContainer.new()
 	root.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	column.add_child(root)
@@ -113,7 +123,7 @@ func _build_ui() -> void:
 	library_title.add_theme_font_size_override("font_size", 11)
 	left.add_child(library_title)
 	_library = ItemList.new()
-	_library.custom_minimum_size = Vector2i(0, 150)
+	_library.custom_minimum_size = Vector2i(0, 80)
 	_library.item_activated.connect(_on_library_pick)
 	left.add_child(_library)
 	var library_row := HBoxContainer.new()
@@ -287,7 +297,7 @@ func _build_ui() -> void:
 	tl_row.add_child(hint)
 	_timeline = TimelineScript.new()
 	_timeline.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	_timeline.custom_minimum_size = Vector2i(0, 170)
+	_timeline.custom_minimum_size = Vector2i(0, 90)
 	_timeline.seek.connect(func(ms: float) -> void:
 		_canvas.set_playhead(ms)
 		seek_requested.emit(ms)
@@ -371,8 +381,15 @@ func open_for(chart: Chart) -> void:
 	_refresh_library()
 	_undo.clear()
 	_redo.clear()
-	popup_centered(Vector2i(1040, 760))
-	position = Vector2i(60, 40)
+	popup_centered(fit_size(get_tree().root.get_visible_rect().size))
+
+
+## 对话框尺寸：不超出窗口，也不超出屏幕可用区域（含标题栏/面板余量）。
+static func fit_size(viewport: Vector2) -> Vector2i:
+	var usable := DisplayServer.screen_get_usable_rect().size
+	var width := mini(int(viewport.x), usable.x)
+	var height := mini(int(viewport.y), usable.y)
+	return Vector2i(clampi(width - 60, 640, 1100), clampi(height - 90, 420, 900))
 
 
 func _refresh_objects() -> void:

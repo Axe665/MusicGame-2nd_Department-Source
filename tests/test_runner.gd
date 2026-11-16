@@ -57,6 +57,8 @@ func _initialize() -> void:
 		"test_lbp_package",
 		"test_video_export_cursor",
 		"test_video_export_plan_hits",
+		"test_storyboard_clamps_first_command",
+		"test_storyboard_editor_fit_size",
 		"test_note_color_palette",
 		"test_note_color_contrast",
 		"test_note_color_round_trip",
@@ -1532,6 +1534,43 @@ func test_video_export_cursor() -> bool:
 	eq(int(mid.y), 25, "cursor interpolation y")
 	var after := VideoExport._cursor_at(moves, 500.0)
 	eq(int(after.x), 100, "cursor clamps to last point")
+	return true
+
+
+## 早于第一条命令时取第一条的值（osu 的「夹到第一关键帧」规则）。
+## 白 px.png 遮幅先 F 后 C 变黑的写法，在 C 之前必须是黑的，不能先刷白。
+func test_storyboard_clamps_first_command() -> bool:
+	var text := "\n".join([
+		"[Events]",
+		"Sprite,Foreground,TopCentre,\"px.png\",320,0",
+		" F,0,0,,1",
+		" C,0,876,,0,0,0",
+		" F,0,2000,,0",
+	])
+	var board := Storyboard.parse(text, "test.osb")
+	eq(board.sprites.size(), 1, "clamp test sprite parsed")
+	var items := board.sample(0.0)
+	eq(items.size(), 1, "sprite visible at 0ms")
+	if items.size() == 1:
+		var colour: Color = items[0]["colour"]
+		eq(int(round(colour.r * 255.0)), 0, "colour before first C is the first keyframe, not white")
+		eq(int(round(colour.g * 255.0)), 0, "green clamped")
+		eq(int(round(colour.b * 255.0)), 0, "blue clamped")
+	var late := board.sample(900.0)
+	eq(late.size(), 1, "sprite still visible at 900ms")
+	if late.size() == 1:
+		eq(int(round((late[0]["colour"] as Color).r * 255.0)), 0, "colour after C is black")
+	return true
+
+
+## 故事板编辑器窗口不能超出窗口/屏幕：小屏要缩到 720 内并且仍可滚动到全部元素。
+func test_storyboard_editor_fit_size() -> bool:
+	var small := StoryboardEditor.fit_size(Vector2(1280, 720))
+	ok(small.x <= 1220, "editor width fits 1280 window")
+	ok(small.y <= 640, "editor height fits 720 window")
+	ok(small.x >= 640 and small.y >= 420, "editor keeps a usable minimum size")
+	var large := StoryboardEditor.fit_size(Vector2(1920, 1080))
+	ok(large.y >= small.y, "bigger screen gets a taller dialog")
 	return true
 
 

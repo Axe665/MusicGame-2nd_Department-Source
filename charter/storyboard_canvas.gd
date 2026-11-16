@@ -45,7 +45,7 @@ var _pressed_additive := false
 func _init() -> void:
 	mouse_filter = Control.MOUSE_FILTER_STOP
 	clip_contents = true
-	custom_minimum_size = Vector2(440, 300)
+	custom_minimum_size = Vector2(320, 160)
 	tooltip_text = "点选 / Ctrl 点加选 / 空白处拖框选；拖动写进当前时刻的移动关键帧"
 
 

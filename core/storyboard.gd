@@ -138,7 +138,9 @@ class Sprite:
 			return _initial_state
 		return Storyboard.object_state(self, ms, alpha)
 
-	## 找到 ms 时刻生效的命令（二分），没有则返回 null。
+	## 找到 ms 时刻生效的命令（二分）。
+	## ms 早于第一条命令时必须返回第一条：osu 的取值规则是「夹到第一关键帧」，
+	## 否则 sprite 会先按默认值画（例如纯白 px.png 遮幅在 C 命令之前是白条）。
 	func command_at(kind: String, ms: float) -> Command:
 		var list: Array = timeline.get(kind, [])
 		if list.is_empty():
@@ -153,7 +155,7 @@ class Sprite:
 				lo = mid + 1
 			else:
 				hi = mid - 1
-		return list[found] if found >= 0 else null
+		return list[found] if found >= 0 else list[0]
 
 	## 单分量命令插值（不分配数组）。
 	func sample_float(kind: String, ms: float, fallback: float) -> float:
