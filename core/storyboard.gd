@@ -62,6 +62,18 @@ class Sprite:
 	## 第一个 alpha 命令的起始值 / 最后一个 alpha 命令的终值（窗口外快速剔除用）。
 	var first_alpha := 1.0
 	var last_alpha := 1.0
+	## 每帧热路径用的预计算：只有一条命令的属性可以完全跳过二分查找。
+	var _single: Dictionary = {}
+	var _has_move := false
+	var _has_x := false
+	var _has_y := false
+	var _has_scale := false
+	var _has_vector := false
+	var _has_rotation := false
+	var _has_colour := false
+	var _has_additive := false
+	var _has_flip_h := false
+	var _has_flip_v := false
 
 	## 编辑器加命令：同时记进 blocks，保存时不会丢。
 	func add(command: Command) -> void:
@@ -78,6 +90,13 @@ class Sprite:
 		# 命令改了以后终态/初态缓存必须重算，否则拖完对象还停在旧位置。
 		_final_ready = false
 		_initial_ready = false
+		_cursor.clear()
+		# first_ms/last_ms 是分桶和快速路径的边界，命令改时间/删除后必须一起重算。
+		first_ms = INF
+		last_ms = -INF
+		for command in commands:
+			first_ms = minf(first_ms, (command as Command).start)
+			last_ms = maxf(last_ms, (command as Command).end)
 		timeline.clear()
 		for command in commands:
 			if not timeline.has(command.kind_name):
@@ -88,6 +107,21 @@ class Sprite:
 			list.sort_custom(func(a: Command, b: Command) -> bool: return a.start < b.start)
 			if list.size() > MAX_SEGMENTS_PER_KIND:
 				list.resize(MAX_SEGMENTS_PER_KIND)
+		_single.clear()
+		for key in timeline.keys():
+			var list: Array = timeline[key]
+			if list.size() == 1:
+				_single[key] = list[0]
+		_has_move = timeline.has("move")
+		_has_x = timeline.has("x")
+		_has_y = timeline.has("y")
+		_has_scale = timeline.has("scale")
+		_has_vector = timeline.has("vector")
+		_has_rotation = timeline.has("rotation")
+		_has_colour = timeline.has("colour")
+		_has_additive = timeline.has("additive")
+		_has_flip_h = timeline.has("flip_h")
+		_has_flip_v = timeline.has("flip_v")
 		first_alpha = 1.0
 		last_alpha = 1.0
 		var alpha_list: Array = timeline.get("alpha", [])
@@ -151,24 +185,58 @@ class Sprite:
 			return _initial_state
 		return Storyboard.object_state(self, ms, alpha)
 
-	## 找到 ms 时刻生效的命令（二分）。
+	## 每个属性的上一条命令下标：播放时时间单调前进，绝大多数帧都停在同一段里，
+	## 命中缓存就是 O(1)，不用每帧二分。seek / 倒放时回退到二分。
+	var _cursor: Dictionary = {}
+
+	## 找到 ms 时刻生效的命令（带上一条命中缓存）。
 	## ms 早于第一条命令时必须返回第一条：osu 的取值规则是「夹到第一关键帧」，
 	## 否则 sprite 会先按默认值画（例如纯白 px.png 遮幅在 C 命令之前是白条）。
 	func command_at(kind: String, ms: float) -> Command:
 		var list: Array = timeline.get(kind, [])
-		if list.is_empty():
+		var count := list.size()
+		if count == 0:
 			return null
+		var cached := int(_cursor.get(kind, -1))
+		if cached >= 0 and cached < count:
+			var c := list[cached] as Command
+			if c.start <= ms and (cached + 1 >= count or (list[cached + 1] as Command).start > ms):
+				return c
+			# 只跳了一两条（60/120Hz 播放、或两个视图差几 ms）就顺着走，别二分。
+			for step in range(1, 4):
+				var forward := cached + step
+				if forward < count:
+					var f := list[forward] as Command
+					if f.start <= ms and (forward + 1 >= count or (list[forward + 1] as Command).start > ms):
+						_cursor[kind] = forward
+						return f
+				var backward := cached - step
+				if backward >= 0:
+					var b := list[backward] as Command
+					if b.start <= ms and (backward + 1 >= count or (list[backward + 1] as Command).start > ms):
+						_cursor[kind] = backward
+						return b
 		var lo := 0
-		var hi := list.size() - 1
+		var hi := count - 1
 		var found := -1
-		while lo <= hi:
-			var mid := (lo + hi) / 2
-			if (list[mid] as Command).start <= ms:
-				found = mid
-				lo = mid + 1
-			else:
-				hi = mid - 1
-		return list[found] if found >= 0 else list[0]
+		# 小表直接线性（比二分少几次分支）。
+		if count <= 6:
+			for i in count:
+				if (list[i] as Command).start <= ms:
+					found = i
+				else:
+					break
+		else:
+			while lo <= hi:
+				var mid := (lo + hi) / 2
+				if (list[mid] as Command).start <= ms:
+					found = mid
+					lo = mid + 1
+				else:
+					hi = mid - 1
+		var result := found if found >= 0 else 0
+		_cursor[kind] = result
+		return list[result]
 
 	## 单分量命令插值（不分配数组）。
 	func sample_float(kind: String, ms: float, fallback: float) -> float:
@@ -180,7 +248,7 @@ class Sprite:
 		var progress := command.progress(ms)
 		if progress >= 1.0:
 			return b
-		return lerpf(a, b, Easing.apply(command.easing, progress))
+		return lerpf(a, b, progress if command.easing == 0 else Easing.apply(command.easing, progress))
 
 	## 开关型参数（P,A / P,H / P,V）：只在命令区间内为真，区间外回到 false。
 	## sample_float 会把终值一直带下去，加色/翻转就会变成永久生效。
@@ -210,7 +278,7 @@ class Sprite:
 		var progress := command.progress(ms)
 		if progress >= 1.0:
 			return b
-		return a.lerp(b, Easing.apply(command.easing, progress))
+		return a.lerp(b, progress if command.easing == 0 else Easing.apply(command.easing, progress))
 
 	## 颜色命令插值（C 的 RGB 三段）。
 	func sample_colour(ms: float) -> Color:
@@ -224,7 +292,7 @@ class Sprite:
 		var progress := command.progress(ms)
 		if progress >= 1.0:
 			return b
-		return a.lerp(b, Easing.apply(command.easing, progress))
+		return a.lerp(b, progress if command.easing == 0 else Easing.apply(command.easing, progress))
 
 	## 某一类命令在 ms 时刻的插值结果（各分量分别插值）。
 	func sample(kind: String, ms: float) -> Array:
@@ -249,7 +317,7 @@ class Sprite:
 		var t := current.progress(ms)
 		if t >= 1.0:
 			return current.to
-		var eased := Easing.apply(current.easing, t)
+		var eased := t if current.easing == 0 else Easing.apply(current.easing, t)
 		var out: Array = []
 		for i in current.from.size():
 			var a := float(current.from[i])
@@ -283,6 +351,8 @@ class Easing:
 	static func apply(id: int, t: float) -> float:
 		t = clampf(t, 0.0, 1.0)
 		match id:
+			0:
+				return t
 			1, 4:
 				return t * (2.0 - t)
 			2, 3:
@@ -947,8 +1017,8 @@ func _collect(s: Sprite, ms: float, out: Array[Dictionary]) -> void:
 	elif ms <= s.first_ms:
 		alpha = s.first_alpha
 	else:
-		var alpha_values: Array = s.sample("alpha", ms)
-		alpha = float(alpha_values[0]) if not alpha_values.is_empty() else 1.0
+		# 不要用 sample()：每帧几百个对象，每次返回一个 Array 光分配就够呛。
+		alpha = s.sample_float("alpha", ms, 1.0)
 	if alpha <= 0.004:
 		return
 	var state := s.state_at(ms, alpha)
@@ -957,32 +1027,100 @@ func _collect(s: Sprite, ms: float, out: Array[Dictionary]) -> void:
 	out.append(state)
 
 
+## 只有一条命令时的插值：跳过分组查找，直接算 from→to。
+static func sample_float_command(command: Command, ms: float, fallback: float) -> float:
+	if command.from.is_empty():
+		return fallback
+	var a := float(command.from[0])
+	var b := float(command.to[0]) if not command.to.is_empty() else a
+	var progress := command.progress(ms)
+	if progress >= 1.0:
+		return b
+	return lerpf(a, b, progress if command.easing == 0 else Easing.apply(command.easing, progress))
+
+
+static func sample_vec2_command(command: Command, ms: float, fallback: Vector2) -> Vector2:
+	if command.from.is_empty():
+		return fallback
+	var a := Vector2(float(command.from[0]), float(command.from[1]) if command.from.size() > 1 else float(command.from[0]))
+	var b := a
+	if command.to.size() > 0:
+		b = Vector2(float(command.to[0]), float(command.to[1]) if command.to.size() > 1 else float(command.to[0]))
+	var progress := command.progress(ms)
+	if progress >= 1.0:
+		return b
+	return a.lerp(b, progress if command.easing == 0 else Easing.apply(command.easing, progress))
+
+
+static func sample_colour_command(command: Command, ms: float) -> Color:
+	if command.from.size() < 3:
+		return Color.WHITE
+	var a := Color(float(command.from[0]), float(command.from[1]), float(command.from[2]))
+	var b := a
+	if command.to.size() >= 3:
+		b = Color(float(command.to[0]), float(command.to[1]), float(command.to[2]))
+	var progress := command.progress(ms)
+	if progress >= 1.0:
+		return b
+	return a.lerp(b, progress if command.easing == 0 else Easing.apply(command.easing, progress))
+
+
 ## 单个对象在 ms 时刻的状态（测试直接用它）。
 static func object_state(sprite: Sprite, ms: float, alpha: float) -> Dictionary:
 	var pos := sprite.pos
-	if sprite.timeline.has("move"):
+	var one: Command = sprite._single.get("move", null)
+	if one != null:
+		pos = sample_vec2_command(one, ms, pos)
+	elif sprite._has_move:
 		pos = sprite.sample_vec2("move", ms, pos)
-	if sprite.timeline.has("x"):
+	one = sprite._single.get("x", null)
+	if one != null:
+		pos.x = sample_float_command(one, ms, pos.x)
+	elif sprite._has_x:
 		pos.x = sprite.sample_float("x", ms, pos.x)
-	if sprite.timeline.has("y"):
+	one = sprite._single.get("y", null)
+	if one != null:
+		pos.y = sample_float_command(one, ms, pos.y)
+	elif sprite._has_y:
 		pos.y = sprite.sample_float("y", ms, pos.y)
 	var scale := Vector2.ONE
-	if sprite.timeline.has("scale"):
+	one = sprite._single.get("scale", null)
+	if one != null:
+		scale = Vector2.ONE * sample_float_command(one, ms, 1.0)
+	elif sprite._has_scale:
 		scale = Vector2.ONE * sprite.sample_float("scale", ms, 1.0)
-	if sprite.timeline.has("vector"):
+	one = sprite._single.get("vector", null)
+	if one != null:
+		scale = sample_vec2_command(one, ms, scale)
+	elif sprite._has_vector:
 		scale = sprite.sample_vec2("vector", ms, scale)
 	var rotation := 0.0
-	if sprite.timeline.has("rotation"):
+	one = sprite._single.get("rotation", null)
+	if one != null:
+		rotation = sample_float_command(one, ms, 0.0)
+	elif sprite._has_rotation:
 		rotation = sprite.sample_float("rotation", ms, 0.0)
 	var colour := Color.WHITE
-	if sprite.timeline.has("colour"):
+	one = sprite._single.get("colour", null)
+	if one != null:
+		colour = sample_colour_command(one, ms)
+	elif sprite._has_colour:
 		colour = sprite.sample_colour(ms)
 	var additive := false
-	if sprite.timeline.has("additive"):
+	one = sprite._single.get("additive", null)
+	if one != null:
+		additive = ms >= one.start and ms <= one.end
+	elif sprite._has_additive:
 		additive = sprite.sample_flag("additive", ms)
-	if sprite.timeline.has("flip_h") and sprite.sample_flag("flip_h", ms):
+	one = sprite._single.get("flip_h", null)
+	if one != null:
+		if ms >= one.start and ms <= one.end: scale.x = -scale.x
+	elif sprite._has_flip_h and sprite.sample_flag("flip_h", ms):
 		scale.x = -scale.x
-	if sprite.timeline.has("flip_v") and sprite.sample_flag("flip_v", ms):
+	one = sprite._single.get("flip_v", null)
+	if one != null:
+		if ms >= one.start and ms <= one.end: scale.y = -scale.y
+	elif sprite._has_flip_v and sprite.sample_flag("flip_v", ms):
 		scale.y = -scale.y
 	var frame := 0
 	if sprite.frames > 1 and sprite.frame_delay > 0.0:

@@ -140,7 +140,7 @@ var _chart_browser: ChartBrowser
 var _sb_dialog: FileDialog = null
 ## 故事板编辑器（新建/编辑 .osb）。
 const StoryboardEditorScript := preload("res://charter/storyboard_editor.gd")
-var _sb_editor: AcceptDialog = null
+var _sb_editor: Control = null
 ## 独立的“在线 osu! 谱面”窗口（卡片式，只列 osu!std）。
 var _osu_browser: OsuBrowser
 ## 设置里「转码缓存」体积显示。
@@ -2006,7 +2006,8 @@ func _process(_delta: float) -> void:
 					_beat_label.add_theme_color_override("font_color", UITheme.GOLD)
 			)
 		var audio_playing := _audio.stream != null and _audio.playing
-		if beat >= _app.chart_content_end_beats() + 2.0 and not audio_playing:
+		var storyboard_editor_open := _sb_editor != null and _sb_editor.visible
+		if beat >= _app.chart_content_end_beats() + 2.0 and not audio_playing and not storyboard_editor_open:
 			_stop_play()
 
 
@@ -2213,8 +2214,28 @@ func _open_storyboard_editor() -> void:
 		_sb_editor.play_requested.connect(_on_storyboard_play)
 		_sb_editor.pause_requested.connect(_on_storyboard_pause)
 		_sb_editor.mute_changed.connect(_set_sb_preview_silent)
+		_sb_editor.opened.connect(_on_storyboard_opened)
+		_sb_editor.closed.connect(_on_storyboard_closed)
 		add_child(_sb_editor)
 	_sb_editor.open_for(_app.chart)
+
+
+## 全屏工作区：把主编辑区藏起来，省得每帧在背后再画一遍。
+func _on_storyboard_opened() -> void:
+	if _main_row != null:
+		_main_row.visible = false
+
+
+func _on_storyboard_closed() -> void:
+	_stop_play()
+	if _main_row != null:
+		_main_row.visible = true
+	_sync_from_app()
+
+
+## 故事板编辑器用它判断主界面是不是正在播放（双向联动）。
+func is_playing() -> bool:
+	return _playing
 
 
 ## 编辑器里按播放：用主界面同一条音频时间线，画布才跟得上动画。
@@ -2222,7 +2243,7 @@ func _on_storyboard_play(ms: float, silent: bool) -> void:
 	if _app == null or _app.chart == null:
 		return
 	_set_sb_preview_silent(silent)
-	var beat: float = _app.chart.ms_to_beat(ms)
+	var beat: float = _app.chart.timing.chart_ms_to_beat(maxf(0.0, ms + _app.chart.offset_ms))
 	_app.set_playhead(beat)
 	_start_play(beat)
 
@@ -2242,16 +2263,17 @@ func _set_sb_preview_silent(silent: bool) -> void:
 func _on_storyboard_seek(ms: float) -> void:
 	if _app == null or _app.chart == null:
 		return
-	var beat: float = _app.chart.ms_to_beat(ms)
+	# 时间轴是 osb 时间，谱面是 chart 时间：ReDIVE 的 offset 是 -8ms，不能直接当 beat。
+	var beat: float = _app.chart.timing.chart_ms_to_beat(maxf(0.0, ms + _app.chart.offset_ms))
 	# 播放中拖播放头要把音频时钟一起挪，否则声音和画面对不上。
 	if _playing:
 		_rebase_playback(beat)
-	_app.playhead_beat = beat
+	_app.set_playhead(beat)
 	_sync_from_app()
-	_preview.queue_redraw()
+	_preview._sb_sample_ms = -1.0e9
+	_preview._sb_queued_ms = -1.0e9
+	_preview.refresh_storyboard_layers()
 	_preview._overlay.queue_redraw()
-	if _preview._storyboard_bg != null:
-		_preview._storyboard_bg.queue_redraw()
 
 
 ## 编辑器里改了东西（还没存盘）：把编辑中的 board 直接塞给预览，边拖边看。
@@ -2267,11 +2289,14 @@ func _on_storyboard_edited() -> void:
 	_preview._storyboard = board
 	_preview._storyboard_chart = _app.chart
 	_preview._storyboard_dir = dir
+	_preview._sb_wide_detected = Preview3D._detect_wide(board)
 	_preview._storyboard_textures.clear()
+	board.invalidate()
 	_preview._sb_sample_ms = -1.0e9
+	_preview._sb_queued_ms = -1.0e9
 	_preview._sb_render_items = []
 	_preview._refresh_background_layering()
-	_preview.queue_redraw()
+	_preview._update_storyboard_clip_rects()
 	_preview.refresh_storyboard_layers()
 
 

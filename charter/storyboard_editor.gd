@@ -1,8 +1,7 @@
 class_name StoryboardEditor
-extends AcceptDialog
+extends Control
 
-## 故事板编辑器：在制谱器里直接编辑 osu! storyboard（移植自 osu!lazer 的 Storyboard 数据模型）。
-##
+## 故事板编辑器：全屏工作区（预览 / 对象 / 属性 / 时间轴），不再用受限的弹窗。
 ## 支持：新建 / 编辑对象（Sprite、Layer、Origin、位置）、给对象加命令
 ## （F 淡入淡出 / M 移动 / MX / MY / S 缩放 / V 矢量缩放 / R 旋转 / C 颜色 / P,A 加色），
 ## 保存成 .osb 并挂到当前谱面，或导出到任意路径。
@@ -17,6 +16,9 @@ signal play_requested(ms: float, silent: bool)
 signal pause_requested()
 ## 播放中切换「静音」，主界面立刻改音量。
 signal mute_changed(silent: bool)
+## 打开/关闭（主界面据此隐藏/恢复主编辑区）。
+signal opened()
+signal closed()
 
 ## 播放到末尾时的动作。
 const TRANSPORT_KEEP := 0
@@ -71,16 +73,58 @@ var _cmd_map: Array[int] = []
 var _cmd_editing := -1
 var _dirty := false
 
+var _status: Label = null
+var _export_dialog: FileDialog = null
+const TimelineScript := preload("res://charter/storyboard_timeline.gd")
+const CanvasScript := preload("res://charter/storyboard_canvas.gd")
+var _timeline = null
+## 可视化画布：点选 / 拖动 sprite。
+var _canvas = null
+var _drag_undo_pushed := false
+var _drag_last_delta := Vector2.ZERO
+var _syncing_selection := false
+var _undo: Array[String] = []
+var _redo: Array[String] = []
+var _snap_option: OptionButton = null
+## 素材库：故事板目录里的图片，点两下加一个 Sprite。
+var _library: ItemList = null
+## 预览播放：播放头由主界面的音频时间驱动（不再自己数拍）。
+var _playing := false
+var _loop := true
+var _silent := false
+var _play_button: Button = null
+
+var _title_label: Label = null
+var _time_label: Label = null
+var _fps_label: Label = null
+var _inspector: Control = null
+var _filter_edit: LineEdit = null
+## 对象列表显示下标 → sprite 下标（有筛选时两者不同）。
+var _obj_map: Array[int] = []
+var _thumb_cache: Dictionary = {}
+var _last_readout_msec := 0
+
+
+func _init() -> void:
+	_app = null
+	_build_ui()
+
+
+func _ready() -> void:
+	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	hide()
+
 
 func _set_dirty(on: bool) -> void:
 	_dirty = on
-	title = "故事板编辑器 *" if on else "故事板编辑器"
+	if _title_label != null:
+		_title_label.text = "故事板编辑器 *" if on else "故事板编辑器"
 
 
 ## 有未保存改动时先问一句，别让人一键关掉半小时的活。
 func _request_close() -> void:
 	if not _dirty:
-		hide()
+		_close()
 		return
 	var dialog := ConfirmationDialog.new()
 	dialog.title = "还有未保存的改动"
@@ -90,14 +134,23 @@ func _request_close() -> void:
 	discard.pressed.connect(func() -> void:
 		_set_dirty(false)
 		dialog.queue_free()
-		hide())
+		_close())
 	add_child(dialog)
 	dialog.confirmed.connect(func() -> void:
 		_on_save()
 		dialog.queue_free()
 		if not _dirty:
-			hide())
+			_close())
+	dialog.canceled.connect(func() -> void: dialog.queue_free())
 	dialog.popup_centered()
+
+
+func _close() -> void:
+	if not visible:
+		return
+	_stop_playback()
+	hide()
+	closed.emit()
 
 
 func _input(event: InputEvent) -> void:
@@ -120,6 +173,10 @@ func _input(event: InputEvent) -> void:
 			_on_undo()
 		get_viewport().set_input_as_handled()
 		return
+	if key.keycode == KEY_ESCAPE:
+		_request_close()
+		get_viewport().set_input_as_handled()
+		return
 	if typing:
 		return
 	if key.keycode == KEY_SPACE:
@@ -131,205 +188,277 @@ func _input(event: InputEvent) -> void:
 		else:
 			_on_remove_sprite()
 		get_viewport().set_input_as_handled()
-var _status: Label = null
-var _export_dialog: FileDialog = null
-const TimelineScript := preload("res://charter/storyboard_timeline.gd")
-const CanvasScript := preload("res://charter/storyboard_canvas.gd")
-var _timeline = null
-## 可视化画布：点选 / 拖动 sprite。
-var _canvas = null
-var _drag_undo_pushed := false
-var _drag_last_delta := Vector2.ZERO
-var _syncing_selection := false
-var _undo: Array[String] = []
-var _redo: Array[String] = []
-var _snap_option: OptionButton = null
-## 素材库：故事板目录里的图片，点两下加一个 Sprite。
-var _library: ItemList = null
-## 预览播放：播放头由主界面的音频时间驱动（不再自己数拍）。
-var _playing := false
-var _loop := true
-var _silent := false
-var _play_button: Button = null
+	elif key.keycode == KEY_LEFT or key.keycode == KEY_RIGHT:
+		var step := 1000.0 / maxf(1.0, Engine.get_frames_per_second())
+		_seek_to(maxf(0.0, _timeline.playhead_ms + (-step if key.keycode == KEY_LEFT else step)))
+		get_viewport().set_input_as_handled()
 
 
-func _init() -> void:
-	title = "故事板编辑器"
-	# 小屏（1366x768 / 1280x720）也要放得下：窗口本身可以缩到 640x420，
-	# 内容超出时由 ScrollContainer 滚动，不再把底部按钮顶到屏幕外。
-	min_size = Vector2i(640, 420)
-	_app = get_node_or_null("/root/App")
-	_build_ui()
-	get_ok_button().hide()
+## 列表 / 时间轴 / 画布选中同一个 sprite 时走这里。
+func _select_sprite(index: int) -> void:
+	if _board == null or index < 0 or index >= _board.sprites.size():
+		return
+	var list_index := _obj_map.find(index)
+	if list_index >= 0:
+		_syncing_selection = true
+		_objects.deselect_all()
+		_objects.select(list_index, false)
+		_syncing_selection = false
+	_on_object_selected(list_index)
+
+
+func _on_timeline_command(index: int, command: Storyboard.Command) -> void:
+	_select_sprite(index)
+	if _selected < 0 or _selected >= _board.sprites.size():
+		return
+	var sprite := _board.sprites[_selected] as Storyboard.Sprite
+	var command_index := sprite.commands.find(command)
+	var display_index := _cmd_map.find(command_index)
+	if display_index >= 0:
+		_commands.select(display_index)
+		_on_command_selected(display_index)
+
+
+func _main_node() -> Node:
+	var parent := get_parent()
+	return parent if parent != null and parent.has_method("is_playing") else null
+
+
+func _main_is_playing() -> bool:
+	var main := _main_node()
+	return main != null and bool(main.is_playing())
 
 
 func _build_ui() -> void:
-	var scroll := ScrollContainer.new()
-	scroll.name = "EditorScroll"
-	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	add_child(scroll)
-	var column := VBoxContainer.new()
-	column.custom_minimum_size = Vector2i(960, 640)
-	column.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	column.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	column.add_theme_constant_override("separation", 8)
-	scroll.add_child(column)
-	var root := HSplitContainer.new()
-	root.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	column.add_child(root)
+	var background := ColorRect.new()
+	background.color = Color(0.045, 0.05, 0.065, 1.0)
+	background.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(background)
+	background.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 
-	# ── 左：对象列表 ────────────────────────────────────────────────
+	var margin := MarginContainer.new()
+	margin.add_theme_constant_override("margin_left", 8)
+	margin.add_theme_constant_override("margin_right", 8)
+	margin.add_theme_constant_override("margin_top", 6)
+	margin.add_theme_constant_override("margin_bottom", 6)
+	add_child(margin)
+	margin.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+
+	var column := VBoxContainer.new()
+	column.add_theme_constant_override("separation", 6)
+	margin.add_child(column)
+
+	# ── 顶部：标题 / 传送 / 保存 ─────────────────────────────────────
+	var header := HBoxContainer.new()
+	header.add_theme_constant_override("separation", 6)
+	column.add_child(header)
+	_title_label = Label.new()
+	_title_label.text = "故事板编辑器"
+	_title_label.add_theme_font_size_override("font_size", 15)
+	header.add_child(_title_label)
+	_time_label = Label.new()
+	_time_label.add_theme_font_size_override("font_size", 11)
+	_time_label.text = "0:00.000 / 0:00.000"
+	header.add_child(_time_label)
+	var spacer := Control.new()
+	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	header.add_child(spacer)
+
+	_play_button = Button.new()
+	_play_button.text = "▶ 播放"
+	_play_button.tooltip_text = "从播放头开始播放（走主界面音频，时间轴和画布跟着动画走）"
+	_play_button.pressed.connect(_toggle_play)
+	header.add_child(_play_button)
+	header.add_child(_transport_button("⏮", "回到开头", func() -> void: _seek_to(0.0)))
+	header.add_child(_transport_button("◀ 关键帧", "跳到当前对象上一个关键帧", func() -> void: _jump_anchor(-1)))
+	header.add_child(_transport_button("关键帧 ▶", "跳到当前对象下一个关键帧", func() -> void: _jump_anchor(1)))
+	header.add_child(_transport_button("⏭", "跳到结尾", func() -> void: _seek_to(_timeline.span_ms if _timeline != null else 0.0)))
+	var loop_check := CheckBox.new()
+	loop_check.text = "循环"
+	loop_check.button_pressed = true
+	loop_check.tooltip_text = "播到故事板末尾自动回到开头"
+	loop_check.toggled.connect(func(on: bool) -> void: _loop = on)
+	header.add_child(loop_check)
+	var snap_label := Label.new()
+	snap_label.text = "吸附"
+	snap_label.add_theme_font_size_override("font_size", 10)
+	header.add_child(snap_label)
+	_snap_option = OptionButton.new()
+	_snap_option.add_item("关")
+	_snap_option.add_item("1/1 拍")
+	_snap_option.add_item("1/2 拍")
+	_snap_option.add_item("1/4 拍")
+	_snap_option.add_item("1/8 拍")
+	_snap_option.selected = 3
+	_snap_option.add_theme_font_size_override("font_size", 10)
+	_snap_option.item_selected.connect(func(index: int) -> void:
+		var divisors := [0.0, 1.0, 2.0, 4.0, 8.0]
+		if _timeline != null:
+			_timeline.snap_divisor = float(divisors[clampi(index, 0, divisors.size() - 1)]))
+	header.add_child(_snap_option)
+	var mute_check := CheckBox.new()
+	mute_check.text = "静音"
+	mute_check.tooltip_text = "只关预览音频，不动设置里的音量"
+	mute_check.toggled.connect(func(on: bool) -> void:
+		_silent = on
+		mute_changed.emit(on))
+	header.add_child(mute_check)
+	_fps_label = Label.new()
+	_fps_label.add_theme_font_size_override("font_size", 10)
+	header.add_child(_fps_label)
+	header.add_child(_button("保存并应用", _on_save, 110))
+	header.add_child(_button("导出 .osb…", _on_export, 100))
+	header.add_child(_button("关闭", _request_close, 64))
+
+	_status = Label.new()
+	_status.add_theme_font_size_override("font_size", 10)
+	_status.modulate = Color(1, 1, 1, 0.75)
+	column.add_child(_status)
+
+	# ── 主体：对象 / 预览 / 属性 ─────────────────────────────────────
+	var body := HSplitContainer.new()
+	body.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	column.add_child(body)
+
+	# 左：对象列表 + 素材库
 	var left := VBoxContainer.new()
-	left.custom_minimum_size = Vector2i(360, 0)
-	left.add_theme_constant_override("separation", 8)
-	root.add_child(left)
+	left.custom_minimum_size = Vector2i(330, 0)
+	left.add_theme_constant_override("separation", 4)
+	body.add_child(left)
 	var left_title := Label.new()
-	left_title.text = "对象（同图层里越靠下越晚画 = 越在上层）"
+	left_title.text = "对象"
 	left.add_child(left_title)
-	var order_row := HBoxContainer.new()
-	left.add_child(order_row)
-	var raise_button := Button.new()
-	raise_button.text = "▲ 上移"
-	raise_button.tooltip_text = "同图层里往前挪一层（更晚画 = 盖住后面的）"
-	raise_button.pressed.connect(func() -> void: _move_order(1))
-	order_row.add_child(raise_button)
-	var lower_button := Button.new()
-	lower_button.text = "▼ 下移"
-	lower_button.tooltip_text = "同图层里往后挪一层"
-	lower_button.pressed.connect(func() -> void: _move_order(-1))
-	order_row.add_child(lower_button)
+	_filter_edit = LineEdit.new()
+	_filter_edit.placeholder_text = "按文件名 / 图层筛选"
+	_filter_edit.text_changed.connect(func(_text: String) -> void: _refresh_objects())
+	left.add_child(_filter_edit)
 	_objects = ItemList.new()
 	_objects.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_objects.select_mode = ItemList.SELECT_MULTI
 	_objects.item_selected.connect(_on_object_selected)
 	left.add_child(_objects)
-	var row := HBoxContainer.new()
-	left.add_child(row)
-	var add := Button.new()
-	add.text = "添加 Sprite"
-	add.pressed.connect(_on_add_sprite)
-	row.add_child(add)
-	var duplicate := Button.new()
-	duplicate.text = "复制"
-	duplicate.pressed.connect(_on_duplicate_sprite)
-	row.add_child(duplicate)
-	var remove := Button.new()
-	remove.text = "删除"
-	remove.pressed.connect(_on_remove_sprite)
-	row.add_child(remove)
+	var obj_row := HBoxContainer.new()
+	left.add_child(obj_row)
+	obj_row.add_child(_button("添加", _on_add_sprite, 0))
+	obj_row.add_child(_button("复制", _on_duplicate_sprite, 0))
+	obj_row.add_child(_button("删除", _on_remove_sprite, 0))
+	obj_row.add_child(_button("▲", func() -> void: _move_order(1), 30))
+	obj_row.add_child(_button("▼", func() -> void: _move_order(-1), 30))
 	var library_title := Label.new()
-	library_title.text = "素材库（点两下加到画布）"
-	library_title.add_theme_font_size_override("font_size", 11)
+	library_title.text = "素材库（双击加到画布）"
+	library_title.add_theme_font_size_override("font_size", 10)
 	left.add_child(library_title)
 	_library = ItemList.new()
-	_library.custom_minimum_size = Vector2i(0, 80)
+	_library.custom_minimum_size = Vector2i(0, 92)
+	_library.size_flags_vertical = Control.SIZE_SHRINK_END
 	_library.item_activated.connect(_on_library_pick)
 	left.add_child(_library)
 	var library_row := HBoxContainer.new()
 	left.add_child(library_row)
-	var library_refresh := Button.new()
-	library_refresh.text = "刷新素材"
-	library_refresh.pressed.connect(_refresh_library)
-	library_row.add_child(library_refresh)
+	library_row.add_child(_button("刷新素材", _refresh_library, 0))
 
-	# ── 右：选中对象的属性 + 命令 ───────────────────────────────────
-	var right := VBoxContainer.new()
-	right.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	right.add_theme_constant_override("separation", 8)
-	root.add_child(right)
-
-	# ── 图层显隐（照 osu Design 的 Layer Toggles，纯显示过滤）─────────
-	var layer_row := HBoxContainer.new()
-	layer_row.add_theme_constant_override("separation", 4)
-	right.add_child(layer_row)
-	var layer_label := Label.new()
-	layer_label.text = "图层"
-	layer_label.add_theme_font_size_override("font_size", 11)
-	layer_row.add_child(layer_label)
-	var layer_titles := {"Background": "背景", "Fail": "Fail", "Pass": "Pass",
-		"Foreground": "前景", "Overlay": "覆盖", "Video": "Video"}
-	for layer_name in LAYERS:
-		var toggle := CheckBox.new()
-		toggle.text = String(layer_titles.get(layer_name, layer_name))
-		toggle.button_pressed = true
-		toggle.add_theme_font_size_override("font_size", 11)
-		toggle.toggled.connect(func(on: bool) -> void: _canvas.set_layer_visible(layer_name, on))
-		layer_row.add_child(toggle)
-
-	# ── 画布：点选 / 拖动（osu Design 页的画布位）────────────────────
+	# 中：画布
+	var center := VBoxContainer.new()
+	center.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	center.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	center.add_theme_constant_override("separation", 4)
+	body.add_child(center)
+	var canvas_tools := HBoxContainer.new()
+	center.add_child(canvas_tools)
+	canvas_tools.add_child(_button("适配安全框", func() -> void: _canvas.fit_field(), 0))
+	canvas_tools.add_child(_button("适配内容", func() -> void: _canvas.fit_content(), 0))
+	var grid_check := CheckBox.new()
+	grid_check.text = "网格"
+	grid_check.button_pressed = true
+	grid_check.tooltip_text = "安全框内每 32 设计像素一条细线"
+	grid_check.toggled.connect(func(on: bool) -> void:
+		if _canvas != null:
+			_canvas.show_grid = on
+			_canvas.queue_redraw())
+	canvas_tools.add_child(grid_check)
+	_readout = Label.new()
+	_readout.add_theme_font_size_override("font_size", 10)
+	_readout.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	canvas_tools.add_child(_readout)
 	_canvas = CanvasScript.new()
-	_canvas.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_canvas.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	# 画布至少 320 高：之前被上下两个列表挤到 160，场只有 285×160，像一条缝。
-	_canvas.custom_minimum_size = Vector2i(0, 320)
+	_canvas.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_canvas.selection_changed.connect(_on_canvas_selection)
 	_canvas.dragged.connect(_on_canvas_drag)
-	_canvas._on_hover_changed = func() -> void: _update_readout()
 	_canvas.released.connect(func() -> void:
 		_drag_undo_pushed = false
-		_drag_last_delta = Vector2.ZERO
-		_refresh_commands()
-	)
-	right.add_child(_canvas)
-	var props := GridContainer.new()
-	props.columns = 4
-	right.add_child(props)
-	props.add_child(_label("图片路径"))
+		_drag_last_delta = Vector2.ZERO)
+	_canvas._on_hover_changed = func() -> void: _update_readout()
+	center.add_child(_canvas)
+
+	# 右：属性（选中才显示）
+	_inspector = VBoxContainer.new()
+	_inspector.custom_minimum_size = Vector2i(360, 0)
+	_inspector.visible = false
+	body.add_child(_inspector)
+	var inspector_scroll := ScrollContainer.new()
+	inspector_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_inspector.add_child(inspector_scroll)
+	var props := VBoxContainer.new()
+	props.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	props.add_theme_constant_override("separation", 4)
+	inspector_scroll.add_child(props)
+	var prop_title := Label.new()
+	prop_title.text = "属性"
+	props.add_child(prop_title)
+	var grid := GridContainer.new()
+	grid.columns = 2
+	props.add_child(grid)
+	grid.add_child(_label("图片路径"))
 	_path_edit = LineEdit.new()
-	_path_edit.custom_minimum_size = Vector2i(240, 0)
-	props.add_child(_path_edit)
-	props.add_child(_label("图层"))
+	_path_edit.custom_minimum_size = Vector2i(220, 0)
+	grid.add_child(_path_edit)
+	grid.add_child(_label("图层"))
 	_layer_option = OptionButton.new()
-	for name in LAYERS:
-		_layer_option.add_item(name)
-	props.add_child(_layer_option)
-	props.add_child(_label("原点"))
+	for layer in LAYERS:
+		_layer_option.add_item(layer)
+	grid.add_child(_layer_option)
+	grid.add_child(_label("原点"))
 	_origin_option = OptionButton.new()
-	for name in ORIGINS:
-		_origin_option.add_item(name)
-	props.add_child(_origin_option)
-	props.add_child(_label("位置 X / Y"))
+	for origin in ORIGINS:
+		_origin_option.add_item(origin)
+	grid.add_child(_origin_option)
+	grid.add_child(_label("位置 X / Y"))
 	var pos_row := HBoxContainer.new()
-	_pos_x = _spin(-2000.0, 4000.0, 1.0, 320.0)
-	_pos_y = _spin(-2000.0, 4000.0, 1.0, 240.0)
+	_pos_x = _spin(-4000.0, 4000.0, 1.0, 320.0)
+	_pos_y = _spin(-4000.0, 4000.0, 1.0, 240.0)
 	pos_row.add_child(_pos_x)
 	pos_row.add_child(_pos_y)
-	props.add_child(pos_row)
-	var apply := Button.new()
-	apply.text = "应用属性"
-	apply.pressed.connect(_on_apply_props)
-	props.add_child(apply)
+	grid.add_child(pos_row)
+	grid.add_child(_button("应用属性", _on_apply_props, 0))
 
 	var cmd_title := Label.new()
 	cmd_title.text = "命令（时间 ms；L/T 块只读）"
-	right.add_child(cmd_title)
+	props.add_child(cmd_title)
 	_commands = ItemList.new()
+	_commands.custom_minimum_size = Vector2i(0, 120)
 	_commands.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	_commands.custom_minimum_size = Vector2i(0, 64)
 	_commands.item_selected.connect(_on_command_selected)
-	right.add_child(_commands)
-	_cmd_map.clear()
-	_cmd_editing = -1
+	props.add_child(_commands)
 
-	var cmd_row := GridContainer.new()
-	cmd_row.columns = 6
-	right.add_child(cmd_row)
-	cmd_row.add_child(_label("类型"))
+	var cmd_grid := GridContainer.new()
+	cmd_grid.columns = 4
+	props.add_child(cmd_grid)
+	cmd_grid.add_child(_label("类型"))
 	_kind_option = OptionButton.new()
 	for pair in COMMANDS:
 		_kind_option.add_item(String(pair[0]))
 	_kind_option.item_selected.connect(func(_i: int) -> void: _update_value_fields(_current_kind()))
-	cmd_row.add_child(_kind_option)
-	cmd_row.add_child(_label("开始 ms"))
+	cmd_grid.add_child(_kind_option)
+	cmd_grid.add_child(_label("开始 ms"))
 	_start_spin = _spin(0.0, 600000.0, 10.0, 0.0)
-	cmd_row.add_child(_start_spin)
-	cmd_row.add_child(_label("结束 ms"))
+	cmd_grid.add_child(_start_spin)
+	cmd_grid.add_child(_label("结束 ms"))
 	_end_spin = _spin(0.0, 600000.0, 10.0, 1000.0)
-	cmd_row.add_child(_end_spin)
+	cmd_grid.add_child(_end_spin)
 
 	var ease_row := HBoxContainer.new()
-	right.add_child(ease_row)
+	props.add_child(ease_row)
 	ease_row.add_child(_label("缓动"))
 	_easing_option = OptionButton.new()
 	for id in 36:
@@ -337,13 +466,13 @@ func _build_ui() -> void:
 	_easing_option.item_selected.connect(func(_i: int) -> void: _easing_curve.queue_redraw())
 	ease_row.add_child(_easing_option)
 	_easing_curve = Control.new()
-	_easing_curve.custom_minimum_size = Vector2i(140, 26)
+	_easing_curve.custom_minimum_size = Vector2i(120, 24)
 	_easing_curve.tooltip_text = "这条曲线就是 0→1 的缓动形状"
 	_easing_curve.draw.connect(_draw_easing_curve)
 	ease_row.add_child(_easing_curve)
 
 	var from_row := HBoxContainer.new()
-	right.add_child(from_row)
+	props.add_child(from_row)
 	from_row.add_child(_label("from"))
 	_from_a = _spin(-4000.0, 4000.0, 1.0, 0.0)
 	_from_b = _spin(-4000.0, 4000.0, 1.0, 0.0)
@@ -352,7 +481,7 @@ func _build_ui() -> void:
 	from_row.add_child(_from_b)
 	from_row.add_child(_from_c)
 	var to_row := HBoxContainer.new()
-	right.add_child(to_row)
+	props.add_child(to_row)
 	to_row.add_child(_label("to  "))
 	_to_a = _spin(-4000.0, 4000.0, 1.0, 0.0)
 	_to_b = _spin(-4000.0, 4000.0, 1.0, 0.0)
@@ -363,146 +492,72 @@ func _build_ui() -> void:
 	_value_row = from_row
 
 	var cmd_buttons := HBoxContainer.new()
-	right.add_child(cmd_buttons)
+	props.add_child(cmd_buttons)
 	_apply_button = Button.new()
 	_apply_button.text = "添加命令"
 	_apply_button.pressed.connect(_on_apply_command)
 	cmd_buttons.add_child(_apply_button)
-	var del_cmd := Button.new()
-	del_cmd.text = "删除命令"
-	del_cmd.pressed.connect(_on_remove_command)
-	cmd_buttons.add_child(del_cmd)
+	cmd_buttons.add_child(_button("删除命令", _on_remove_command, 0))
 	var anchor_row := HBoxContainer.new()
-	right.add_child(anchor_row)
-	var prev_anchor := Button.new()
-	prev_anchor.text = "◀ 锚点"
-	prev_anchor.tooltip_text = "跳到当前对象上一个关键帧"
-	prev_anchor.pressed.connect(func() -> void: _jump_anchor(-1))
-	anchor_row.add_child(prev_anchor)
-	var add_anchor := Button.new()
-	add_anchor.text = "+ 锚点"
-	add_anchor.tooltip_text = "在播放头处给当前类型加一个关键帧（取当前值）"
-	add_anchor.pressed.connect(_add_anchor)
-	anchor_row.add_child(add_anchor)
-	var del_anchor := Button.new()
-	del_anchor.text = "− 锚点"
-	del_anchor.tooltip_text = "删掉播放头处、当前类型的那个关键帧"
-	del_anchor.pressed.connect(_remove_anchor)
-	anchor_row.add_child(del_anchor)
-	var next_anchor := Button.new()
-	next_anchor.text = "锚点 ▶"
-	next_anchor.tooltip_text = "跳到当前对象下一个关键帧"
-	next_anchor.pressed.connect(func() -> void: _jump_anchor(1))
-	anchor_row.add_child(next_anchor)
-	var readout := Label.new()
-	readout.add_theme_font_size_override("font_size", 11)
-	anchor_row.add_child(readout)
-	_readout = readout
+	props.add_child(anchor_row)
+	anchor_row.add_child(_button("◀ 锚点", func() -> void: _jump_anchor(-1), 0))
+	anchor_row.add_child(_button("+ 锚点", _add_anchor, 0))
+	anchor_row.add_child(_button("− 锚点", _remove_anchor, 0))
+	anchor_row.add_child(_button("锚点 ▶", func() -> void: _jump_anchor(1), 0))
 
-	var tl_row := HBoxContainer.new()
-	right.add_child(tl_row)
-	_play_button = Button.new()
-	_play_button.text = "▶ 播放"
-	_play_button.tooltip_text = "从播放头开始播放（走主界面音频，编辑器画布跟着动画走）"
-	_play_button.pressed.connect(_toggle_play)
-	tl_row.add_child(_play_button)
-	var loop_check := CheckBox.new()
-	loop_check.text = "循环"
-	loop_check.button_pressed = true
-	loop_check.tooltip_text = "播到谱面末尾自动回到开头"
-	loop_check.toggled.connect(func(on: bool) -> void: _loop = on)
-	tl_row.add_child(loop_check)
-	var mute_check := CheckBox.new()
-	mute_check.text = "静音"
-	mute_check.tooltip_text = "只关预览音频，不动设置里的音量"
-	mute_check.toggled.connect(func(on: bool) -> void:
-		_silent = on
-		mute_changed.emit(on))
-	tl_row.add_child(mute_check)
-	var snap_label := Label.new()
-	snap_label.text = "吸附"
-	tl_row.add_child(snap_label)
-	_snap_option = OptionButton.new()
-	_snap_option.add_item("关")
-	_snap_option.add_item("1/1 拍")
-	_snap_option.add_item("1/2 拍")
-	_snap_option.add_item("1/4 拍")
-	_snap_option.add_item("1/8 拍")
-	_snap_option.selected = 3
-	_snap_option.item_selected.connect(func(index: int) -> void:
-		var divisors := [0.0, 1.0, 2.0, 4.0, 8.0]
-		_timeline.snap_divisor = float(divisors[clampi(index, 0, divisors.size() - 1)]))
-	tl_row.add_child(_snap_option)
-	var grid_check := CheckBox.new()
-	grid_check.text = "网格"
-	grid_check.button_pressed = true
-	grid_check.tooltip_text = "画布上每 32 设计像素一条细线"
-	grid_check.toggled.connect(func(on: bool) -> void:
-		if _canvas != null:
-			_canvas.show_grid = on
-			_canvas.queue_redraw())
-	tl_row.add_child(grid_check)
-	var undo_button := Button.new()
-	undo_button.text = "撤销"
-	undo_button.pressed.connect(_on_undo)
-	tl_row.add_child(undo_button)
-	var redo_button := Button.new()
-	redo_button.text = "重做"
-	redo_button.pressed.connect(_on_redo)
-	tl_row.add_child(redo_button)
-	var hint := Label.new()
-	hint.text = "画布：滚轮缩放 / 中键平移 · Ctrl+S 保存"
-	hint.add_theme_font_size_override("font_size", 10)
-	tl_row.add_child(hint)
+	# ── 底部：时间轴 ────────────────────────────────────────────────
 	_timeline = TimelineScript.new()
-	_timeline.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	_timeline.custom_minimum_size = Vector2i(0, 80)
+	_timeline.custom_minimum_size = Vector2i(0, 250)
+	_timeline.size_flags_vertical = Control.SIZE_SHRINK_END
 	_timeline.seek.connect(func(ms: float) -> void:
 		_canvas.set_playhead(ms)
 		seek_requested.emit(ms)
-		_update_readout(ms)
-	)
-	_timeline.sprite_picked.connect(func(index: int) -> void:
-		_selected = index
-		_objects.select(index)
-		_on_object_selected(index))
+		_update_readout(ms))
+	_timeline.sprite_picked.connect(func(index: int) -> void: _select_sprite(index))
+	_timeline.command_picked.connect(_on_timeline_command)
+	_timeline.layer_visibility_changed.connect(func(layer: String, visible: bool) -> void:
+		_canvas.set_layer_visible(layer, visible)
+		_update_readout())
+	_timeline.layer_lock_changed.connect(func(layer: String, locked: bool) -> void:
+		_canvas.set_layer_locked(layer, locked)
+		_update_readout())
+	_timeline.drag_started.connect(func() -> void: _push_undo())
+	_timeline.drag_finished.connect(func() -> void:
+		_board.invalidate()
+		_set_dirty(true)
+		edited.emit())
 	_timeline.changed.connect(func() -> void:
+		if _board != null:
+			_board.invalidate()
 		_refresh_commands()
 		_canvas.queue_redraw()
-		edited.emit())
-	right.add_child(_timeline)
-	_status = Label.new()
-	_status.add_theme_font_size_override("font_size", 11)
-	cmd_buttons.add_child(_status)
+		_set_dirty(true)
+		edited.emit()
+		_update_readout())
+	column.add_child(_timeline)
 
-	# ── 底部按钮 ────────────────────────────────────────────────────
-	var buttons := HBoxContainer.new()
-	buttons.alignment = BoxContainer.ALIGNMENT_END
-	column.add_child(buttons)
-	var save := Button.new()
-	save.text = "保存并应用"
-	save.custom_minimum_size = Vector2i(120, 32)
-	save.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	save.pressed.connect(_on_save)
-	buttons.add_child(save)
-	var export := Button.new()
-	export.text = "导出 .osb…"
-	export.custom_minimum_size = Vector2i(110, 32)
-	export.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	export.pressed.connect(_on_export)
-	buttons.add_child(export)
-	var close := Button.new()
-	close.text = "关闭"
-	close.custom_minimum_size = Vector2i(80, 32)
-	close.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	close.pressed.connect(_request_close)
-	buttons.add_child(close)
 	_export_dialog = FileDialog.new()
 	_export_dialog.file_mode = FileDialog.FILE_MODE_SAVE_FILE
 	_export_dialog.access = FileDialog.ACCESS_FILESYSTEM
 	_export_dialog.filters = PackedStringArray(["*.osb ; osu! storyboard"])
 	_export_dialog.file_selected.connect(_export_to)
 	add_child(_export_dialog)
+
+
+func _button(text: String, target: Callable, width: int = 0) -> Button:
+	var button := Button.new()
+	button.text = text
+	if width > 0:
+		button.custom_minimum_size = Vector2i(width, 0)
+	button.pressed.connect(target)
+	return button
+
+
+func _transport_button(text: String, tip: String, target: Callable) -> Button:
+	var button := _button(text, target)
+	button.tooltip_text = tip
+	button.add_theme_font_size_override("font_size", 10)
+	return button
 
 
 func _label(text: String) -> Label:
@@ -520,8 +575,6 @@ func _spin(low: float, high: float, step: float, value: float) -> SpinBox:
 	spin.custom_minimum_size = Vector2i(96, 0)
 	return spin
 
-
-## 打开某个谱面的故事板（没有就新建一个空的）。
 func open_for(chart: Chart) -> void:
 	_chart = chart
 	_dir = String(chart.metadata.get("storyboard", ""))
@@ -532,16 +585,38 @@ func open_for(chart: Chart) -> void:
 			_board = Storyboard.parse(text, "storyboard.osb")
 	if _board == null:
 		_board = Storyboard.create_blank()
+	_selected = -1
+	_timeline.hidden_layers.clear()
+	_timeline.locked_layers.clear()
+	_timeline.expanded.clear()
+	_canvas.hidden_layers.clear()
+	_canvas.locked_layers.clear()
 	_refresh_objects()
 	_timeline.set_chart(chart)
 	_timeline.set_board(_board)
 	_timeline.set_zoom(0.0, 0.0)
 	_canvas.set_board(_board, _canvas_dir())
-	_canvas.set_playhead(float(_timeline.playhead_ms))
-	_refresh_library()
+	_inspector.visible = false
 	_undo.clear()
 	_redo.clear()
-	popup_centered(fit_size(get_tree().root.get_visible_rect().size))
+	_set_dirty(false)
+	show()
+	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	var osb_ms := 0.0
+	var app := _app_node()
+	if app != null:
+		osb_ms = chart.beat_to_ms(float(app.playhead_beat)) - chart.offset_ms
+	_timeline.set_playhead(osb_ms)
+	_canvas.set_playhead(osb_ms)
+	_canvas.fit_content()
+	# 打开时不要打断正在播放的音频；只有暂停时才让主预览跟过来。
+	if not _main_is_playing():
+		seek_requested.emit(osb_ms)
+	_update_readout(osb_ms)
+	if _time_label != null:
+		_time_label.text = "%s / %s" % [_fmt_time_ms(osb_ms), _fmt_time_ms(_timeline.span_ms)]
+	call_deferred("_refresh_library")
+	opened.emit()
 
 
 ## 对话框尺寸：不超出窗口，也不超出屏幕可用区域（含标题栏/面板余量）。
@@ -552,10 +627,15 @@ static func fit_size(viewport: Vector2) -> Vector2i:
 	return Vector2i(clampi(width - 60, 640, 1100), clampi(height - 90, 420, 900))
 
 
-func _refresh_objects() -> void:
+func _refresh_objects(rebuild_timeline: bool = true) -> void:
+	var keep := _selected
+	var filter := _filter_edit.text.strip_edges().to_lower() if _filter_edit != null else ""
 	_objects.clear()
-	for sprite in _board.sprites:
-		var s := sprite as Storyboard.Sprite
+	_obj_map.clear()
+	for i in _board.sprites.size():
+		var s := _board.sprites[i] as Storyboard.Sprite
+		if not filter.is_empty() and not ("%s %s" % [s.path, s.layer]).to_lower().contains(filter):
+			continue
 		var visible_commands := 0
 		for command in s.commands:
 			if not (command as Storyboard.Command).in_block:
@@ -566,17 +646,34 @@ func _refresh_objects() -> void:
 		if s.commands.is_empty():
 			line += "  ⚠ 无命令（不会显示）"
 		_objects.add_item(line)
+		_obj_map.append(i)
+	if rebuild_timeline:
+		if _timeline != null:
+			_timeline.set_board(_board)
+			_timeline.set_selected(-1)
+		if _canvas != null:
+			_canvas.set_board(_board, _canvas_dir())
+			_canvas.set_selected(-1)
 	_selected = -1
-	_commands.clear()
-	_cmd_map.clear()
-	_cmd_editing = -1
-	if _timeline != null:
-		_timeline.set_board(_board)
-		_timeline.set_selected(-1)
-	if _canvas != null:
-		_canvas.set_board(_board, _canvas_dir())
-		_canvas.set_selected(-1)
+	if keep >= 0:
+		var list_index := _obj_map.find(keep)
+		if list_index >= 0:
+			_objects.select(list_index, false)
+			_selected = keep
+			if _timeline != null:
+				_timeline.set_selected(keep)
+			if _canvas != null:
+				_canvas.ensure_selected(keep)
 	_refresh_commands()
+	_inspector.visible = _selected >= 0
+
+
+static func _fmt_time_ms(ms: float) -> String:
+	var total := maxf(0.0, ms)
+	var minutes := int(total / 60000.0)
+	var seconds := int(fmod(total, 60000.0) / 1000.0)
+	var millis := int(fmod(total, 1000.0))
+	return "%d:%02d.%03d" % [minutes, seconds, millis]
 
 
 static func _fmt_ms(ms: float) -> String:
@@ -618,19 +715,26 @@ static func _fmt_values(values: Array) -> String:
 
 
 func _on_object_selected(index: int) -> void:
-	_selected = index
-	if index < 0 or index >= _board.sprites.size():
+	if _syncing_selection:
 		return
-	var sprite := _board.sprites[index] as Storyboard.Sprite
+	if index < 0 or index >= _obj_map.size():
+		_selected = -1
+		_inspector.visible = false
+		return
+	_selected = int(_obj_map[index])
+	if _selected < 0 or _selected >= _board.sprites.size():
+		return
+	_inspector.visible = true
+	var sprite := _board.sprites[_selected] as Storyboard.Sprite
 	_path_edit.text = sprite.path
 	_layer_option.selected = maxi(0, LAYERS.find(sprite.layer))
 	_origin_option.selected = clampi(sprite.origin, 0, ORIGINS.size() - 1)
 	_pos_x.value = sprite.pos.x
 	_pos_y.value = sprite.pos.y
-	_timeline.set_selected(index)
+	_timeline.set_selected(_selected)
 	_timeline.queue_redraw()
 	if _canvas != null:
-		_canvas.ensure_selected(index)
+		_canvas.ensure_selected(_selected)
 	_refresh_commands()
 	# 官方编辑器点名字就跳到对象出现的位置；否则对象被播放头甩出生命周期时
 	# 画布一片空白，作者只会以为图丢了。
@@ -644,7 +748,9 @@ func _seek_to(ms: float) -> void:
 	_timeline.set_playhead(ms)
 	_canvas.set_playhead(ms)
 	seek_requested.emit(ms)
-	_update_readout()
+	_update_readout(ms)
+	if _time_label != null:
+		_time_label.text = "%s / %s" % [_fmt_time_ms(ms), _fmt_time_ms(_timeline.span_ms)]
 
 
 func _update_readout(ms: float = -1.0) -> void:
@@ -684,7 +790,6 @@ func _refresh_library() -> void:
 
 
 ## 素材缩略图（官方 Sprite Library 也是带图的）。32px 足够认图。
-var _thumb_cache: Dictionary = {}
 
 func _thumb(path: String) -> Texture2D:
 	if _thumb_cache.has(path):
@@ -712,11 +817,13 @@ func _on_library_pick(index: int) -> void:
 	_board.add_command(sprite, "alpha", 0, ms, ms + 400.0, [0.0], [1.0])
 	_refresh_objects()
 	var index_new := _board.sprites.size() - 1
-	_objects.select(index_new)
-	_on_object_selected(index_new)
+	var list_new := _obj_map.find(index_new)
+	if list_new >= 0:
+		_objects.select(list_new)
+		_on_object_selected(list_new)
 	_canvas.queue_redraw()
 	_status.text = "已添加 %s（Foreground · 居中 · %s 起淡入）" % [file_name, _fmt_ms(ms)]
-	_dirty = true
+	_set_dirty(true)
 	edited.emit()
 
 func _canvas_dir() -> String:
@@ -730,15 +837,21 @@ func _on_canvas_selection(indices: Array) -> void:
 	_syncing_selection = true
 	_objects.deselect_all()
 	_selected = -1
-	for index in indices:
-		_objects.select(int(index), false)
-		if _selected < 0:
-			_selected = int(index)
+	var first_list := -1
+	for sprite_index in indices:
+		var list_index := _obj_map.find(int(sprite_index))
+		if list_index < 0:
+			continue
+		_objects.select(list_index, false)
+		if first_list < 0:
+			first_list = list_index
+			_selected = int(sprite_index)
 	_syncing_selection = false
-	if _selected >= 0:
-		_on_object_selected(_selected)
+	if first_list >= 0:
+		_on_object_selected(first_list)
 	else:
 		_commands.clear()
+		_inspector.visible = false
 		_refresh_commands()
 	_status.text = "已选 %d 个对象" % indices.size()
 	_update_readout()
@@ -803,9 +916,11 @@ func _add_anchor() -> void:
 	var values := _kind_values(sprite, kind, ms)
 	_push_undo()
 	_board.add_command(sprite, kind, 0, ms, ms, values, values)
+	_board.invalidate()
 	_refresh_commands()
 	_timeline.queue_redraw()
 	_canvas.queue_redraw()
+	_set_dirty(true)
 	edited.emit()
 	_status.text = "%.0fms 加了 %s 锚点" % [ms, kind]
 
@@ -837,7 +952,7 @@ func _remove_anchor() -> void:
 	_refresh_commands()
 	_timeline.queue_redraw()
 	_canvas.queue_redraw()
-	_dirty = true
+	_set_dirty(true)
 	edited.emit()
 	_status.text = "删掉了 %.0fms 的 %s 锚点" % [ms, kind]
 
@@ -942,9 +1057,12 @@ func _on_redo() -> void:
 func _on_add_sprite() -> void:
 	_push_undo()
 	_board.add_sprite("sb/new.png", "Background", 4, Vector2(320, 240))
+	_board.invalidate()
+	_selected = _board.sprites.size() - 1
 	_refresh_objects()
-	_objects.select(_board.sprites.size() - 1)
-	_on_object_selected(_board.sprites.size() - 1)
+	_select_sprite(_selected)
+	_set_dirty(true)
+	edited.emit()
 
 
 func _on_duplicate_sprite() -> void:
@@ -957,9 +1075,12 @@ func _on_duplicate_sprite() -> void:
 		var c := command as Storyboard.Command
 		copy.add(c.duplicate())
 	copy.build()
+	_board.invalidate()
+	_selected = _board.sprites.size() - 1
 	_refresh_objects()
-	_objects.select(_board.sprites.size() - 1)
-	_on_object_selected(_board.sprites.size() - 1)
+	_select_sprite(_selected)
+	_set_dirty(true)
+	edited.emit()
 
 
 func _on_remove_sprite() -> void:
@@ -967,7 +1088,15 @@ func _on_remove_sprite() -> void:
 	if _selected < 0 or _selected >= _board.sprites.size():
 		return
 	_board.sprites.remove_at(_selected)
+	for i in _board.sprites.size():
+		(_board.sprites[i] as Storyboard.Sprite).order = i
+	_board.invalidate()
+	_selected = -1
 	_refresh_objects()
+	_canvas.queue_redraw()
+	_set_dirty(true)
+	edited.emit()
+	_status.text = "已删除对象"
 
 
 func _on_apply_props() -> void:
@@ -980,10 +1109,13 @@ func _on_apply_props() -> void:
 	sprite.origin = clampi(_origin_option.selected, 0, ORIGINS.size() - 1)
 	sprite.pos = Vector2(_pos_x.value, _pos_y.value)
 	sprite.build()
+	_board.invalidate()
 	_refresh_objects()
-	_objects.select(_selected)
 	_timeline.queue_redraw()
+	_canvas.queue_redraw()
+	_set_dirty(true)
 	edited.emit()
+	_update_readout()
 	_status.text = "属性已更新"
 
 
@@ -1112,11 +1244,12 @@ func _on_apply_command() -> void:
 		_status.text = "已更新 %s" % kind
 	else:
 		_board.add_command(sprite, kind, easing, start, end, from_values, to_values)
+		_board.invalidate()
 		_status.text = "已添加 %s" % kind
 	_refresh_commands()
 	_timeline.queue_redraw()
 	_canvas.queue_redraw()
-	_dirty = true
+	_set_dirty(true)
 	edited.emit()
 
 func _on_remove_command() -> void:
@@ -1134,7 +1267,7 @@ func _on_remove_command() -> void:
 	if _timeline != null:
 		_timeline.queue_redraw()
 	_canvas.queue_redraw()
-	_dirty = true
+	_set_dirty(true)
 	edited.emit()
 
 
@@ -1164,10 +1297,13 @@ func _move_order(direction: int) -> void:
 	for i in _board.sprites.size():
 		(_board.sprites[i] as Storyboard.Sprite).order = i
 	_board.invalidate()
+	_selected = target
 	_refresh_objects()
-	_objects.select(target)
-	_on_object_selected(target)
-	_dirty = true
+	var list_target := _obj_map.find(target)
+	if list_target >= 0:
+		_objects.select(list_target)
+		_on_object_selected(list_target)
+	_set_dirty(true)
 	_status.text = "已%s一层" % ("上移" if direction > 0 else "下移")
 	edited.emit()
 
@@ -1178,24 +1314,21 @@ static func transport_action(ms: float, total_ms: float, loop: bool) -> int:
 
 
 func _toggle_play() -> void:
-	if _playing:
-		_stop_playback()
+	if _main_is_playing():
+		pause_requested.emit()
 		return
 	if _chart == null:
 		return
-	_playing = true
-	if _play_button != null:
-		_play_button.text = "❚❚ 暂停"
+	# 状态由主界面回传，按钮文字在 _process 里改；这里只负责发请求。
 	play_requested.emit(float(_timeline.playhead_ms), _silent)
 
 
 func _stop_playback() -> void:
-	if not _playing:
-		return
+	if _main_is_playing():
+		pause_requested.emit()
 	_playing = false
 	if _play_button != null:
 		_play_button.text = "▶ 播放"
-	pause_requested.emit()
 
 
 ## 播放中：播放头跟着主界面的谱面时间走，时间轴和画布一起动。
@@ -1207,25 +1340,43 @@ func _app_node() -> Node:
 
 
 func _process(_delta: float) -> void:
-	if not _playing:
+	if not visible or _chart == null or _app_node() == null:
 		return
-	if _app_node() == null or _chart == null or not visible:
-		_stop_playback()
+	var playing := _main_is_playing()
+	if _play_button != null:
+		_play_button.text = "❚❚ 暂停" if playing else "▶ 播放"
+	if not playing:
+		_playing = false
+		if _fps_label != null:
+			_fps_label.text = "%d FPS" % int(Engine.get_frames_per_second())
 		return
-	var total := _chart.timing.beat_to_chart_ms(_chart.duration_beats())
-	var ms := _chart.timing.beat_to_chart_ms(float(_app_node().playhead_beat))
-	match transport_action(ms, total, _loop):
+	_playing = true
+	# osb 时间和 chart 时间差一个 offset；主界面播放时 playhead_beat 是 chart 拍。
+	var osb_ms := _chart.beat_to_ms(float(_app_node().playhead_beat)) - _chart.offset_ms
+	var total := _chart.beat_to_ms(_chart.content_end_beat()) - _chart.offset_ms
+	if _timeline != null and _timeline.span_ms > total:
+		total = _timeline.span_ms
+	match transport_action(osb_ms, total, _loop):
 		TRANSPORT_RESTART:
-			_timeline.set_playhead(0.0)
-			_canvas.set_playhead(0.0)
+			_seek_to(0.0)
 			play_requested.emit(0.0, _silent)
 		TRANSPORT_STOP:
 			_timeline.set_playhead(total)
 			_canvas.set_playhead(total)
-			_stop_playback()
+			pause_requested.emit()
+			_playing = false
 		_:
-			_timeline.set_playhead(ms)
-			_canvas.set_playhead(ms)
+			_timeline.set_playhead(osb_ms)
+			_canvas.set_playhead(osb_ms)
+			# 读数里要 sample 一次整张故事板，别每帧都做。
+			var now := Time.get_ticks_msec()
+			if now - _last_readout_msec >= 100:
+				_last_readout_msec = now
+				_update_readout(osb_ms)
+	if _time_label != null:
+		_time_label.text = "%s / %s" % [_fmt_time_ms(osb_ms), _fmt_time_ms(total)]
+	if _fps_label != null:
+		_fps_label.text = "%d FPS" % int(Engine.get_frames_per_second())
 
 
 func _on_save() -> void:

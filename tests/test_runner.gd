@@ -61,6 +61,11 @@ func _initialize() -> void:
 		"test_storyboard_editor_fit_size",
 		"test_ring_tilt_target",
 		"test_storyboard_editor_transport",
+		"test_storyboard_build_recomputes_bounds",
+		"test_storyboard_command_cursor",
+		"test_storyboard_timeline_rows",
+		"test_storyboard_timeline_snap_offset",
+		"test_ring_timeline_clock",
 		"test_background_brightness_applies",
 		"test_storyboard_roundtrip_lossless",
 		"test_storyboard_loop_indent_scope",
@@ -1595,6 +1600,73 @@ func test_storyboard_editor_transport() -> bool:
 	eq(StoryboardEditor.transport_action(5000.0, 5000.0, true), StoryboardEditor.TRANSPORT_RESTART, "loop restarts at the end")
 	eq(StoryboardEditor.transport_action(5000.0, 5000.0, false), StoryboardEditor.TRANSPORT_STOP, "no loop stops at the end")
 	eq(StoryboardEditor.transport_action(6000.0, 5000.0, false), StoryboardEditor.TRANSPORT_STOP, "past the end still stops")
+	return true
+
+
+## 拖时间轴/改命令后必须重算 first_ms/last_ms（否则分桶和快速路径用旧边界）。
+func test_storyboard_build_recomputes_bounds() -> bool:
+	var text := "[Events]\nSprite,Background,Centre,\"a.png\",320,240\n F,0,0,1000,,1\n M,0,1000,2000,0,0,100,100\n"
+	var board := Storyboard.parse(text, "t.osb")
+	eq(board.sprites.size(), 1, "one sprite")
+	var sprite := board.sprites[0] as Storyboard.Sprite
+	eq(sprite.first_ms, 0.0, "first command starts at 0")
+	eq(sprite.last_ms, 2000.0, "last command ends at 2000")
+	sprite.commands[1].end = 5000.0
+	sprite.build()
+	eq(sprite.last_ms, 5000.0, "moving a command updates the last bound")
+	sprite.commands[0].start = 200.0
+	sprite.build()
+	eq(sprite.first_ms, 200.0, "moving the first command updates the first bound")
+	return true
+
+
+## 命令查找的游标：前进、后退、跳转都要落到正确的关键帧。
+func test_storyboard_command_cursor() -> bool:
+	var text := "[Events]\nSprite,Background,Centre,\"a.png\",320,240\n F,0,0,1000,,1\n F,0,1000,2000,,0\n F,0,2000,3000,,1\n"
+	var board := Storyboard.parse(text, "t.osb")
+	var sprite := board.sprites[0] as Storyboard.Sprite
+	eq((sprite.command_at("alpha", 500.0) as Storyboard.Command).start, 0.0, "cursor starts at the first")
+	eq((sprite.command_at("alpha", 1500.0) as Storyboard.Command).start, 1000.0, "cursor moves forward")
+	eq((sprite.command_at("alpha", 2500.0) as Storyboard.Command).start, 2000.0, "cursor moves forward again")
+	eq((sprite.command_at("alpha", 900.0) as Storyboard.Command).start, 0.0, "seek backward leaves the cursor")
+	eq((sprite.command_at("alpha", 9000.0) as Storyboard.Command).start, 2000.0, "past the end clamps to the last")
+	return true
+
+
+## 时间轴：默认一层一行；展开后追加这一层的 sprite 行。
+func test_storyboard_timeline_rows() -> bool:
+	var board := Storyboard.create_blank()
+	var sprite := board.add_sprite("a.png", "Background", 4, Vector2(320, 240))
+	board.add_command(sprite, "alpha", 0, 0.0, 1000.0, [0.0], [1.0])
+	var timeline := StoryboardTimeline.new()
+	timeline.set_board(board)
+	eq(timeline._rows.size(), 6, "six layer rows by default")
+	timeline.expanded["Background"] = true
+	timeline._rebuild_rows()
+	eq(timeline._rows.size(), 7, "expanding a layer adds its sprite rows")
+	timeline.expanded["Background"] = false
+	timeline._rebuild_rows()
+	eq(timeline._rows.size(), 6, "collapsing removes them again")
+	return true
+
+
+## 时间轴是 osb 时间，吸附要先把 offset 加回谱面时间。
+func test_storyboard_timeline_snap_offset() -> bool:
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	chart.offset_ms = -8.0
+	var timeline := StoryboardTimeline.new()
+	timeline.set_chart(chart)
+	timeline.snap_divisor = 4.0
+	near(timeline.snap_ms(1000.0), 1008.0, 0.6, "snap converts osb ms through the chart offset")
+	return true
+
+
+## 环编辑时间轴页脚：拍/ms/总长/帧率。
+func test_ring_timeline_clock() -> bool:
+	eq(RingWorkspace._fmt_clock(120657.7), "2:00.657", "ring footer minutes and millis")
+	eq(RingWorkspace._fmt_clock(0.0), "0:00.000", "ring footer zero")
+	eq(RingWorkspace._fmt_clock(657.7), "0:00.657", "ring footer sub-minute")
 	return true
 
 

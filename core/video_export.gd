@@ -196,6 +196,8 @@ func export_chart(chart: Chart, start_ms: float, end_ms: float, out_path: String
 	preview.show_storyboard = show_storyboard
 	preview.show_storyboard_background = show_storyboard
 	preview.set_process(false)
+	# 导出按目标 fps 逐帧采样，不要被主界面的帧率上限节流。
+	preview.storyboard_sample_hz = fps
 
 	# 导出期间整台机器彻底静音（音效、音乐都不要漏出来）。
 	var previous_mute := AudioServer.is_bus_mute(AudioServer.get_bus_index("Master"))

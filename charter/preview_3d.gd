@@ -132,18 +132,31 @@ var show_storyboard_background := true
 ## 编辑器的窄预览里把整块 storyboard 等比缩到装得下（试玩保持按高度铺满）。
 var storyboard_fit := false
 ## storyboard 采样按 30Hz 走（60fps 下每帧重算 700+ 对象太贵），中间帧复用同一份结果。
-const STORYBOARD_SAMPLE_MS := 33.0
+## 故事板每帧都重采样，间隔跟「画质 → 帧率上限」：60/120 跟满，144/240/vsync/不限封顶 120。
+var _sb_sample_interval := 1000.0 / 60.0
+## 0 = 跟随帧率上限；视频导出设成导出 fps，保证每一帧都重采样。
+var storyboard_sample_hz := 0
 var _sb_sample_ms := -1.0e9
 var _sb_queued_ms := -1.0e9
 var _sb_waiting_dir := ""
 var _sb_wide_detected := false
 var _sb_render_items: Array[Dictionary] = []
+## 采样后按图层分桶：每层只遍历自己的对象，不用 7 个层各扫一遍全部 items。
+var _sb_layer_items: Dictionary = {}
+var _sb_additive_layer_items: Dictionary = {}
 ## 贴图预取队列：storyboard 一次几百张图，全在用到的那一帧读会卡一下，
 ## 改成每帧后台预取几张。
 var _sb_prefetch: Array[String] = []
 ## storyboard 的 Background 层里有谱面背景图时，静态背景层要关掉（对照 lazer ReplacesBackground）。
 var _storyboard_replaces_background := false
 ## 背景层（Background/Video）单独一层，垫在 3D 判定环下面。
+## 每个故事板绘制层外面套一个裁剪容器：只显示 854×480 / 640×480 安全框，
+## 超宽背景不再从左右两侧漏出来。绘制节点仍是 _storyboard_bg 等。
+var _storyboard_bg_clip: Control = null
+var _storyboard_add_bg_clip: Control = null
+var _storyboard_fg_clip: Control = null
+var _storyboard_top_clip: Control = null
+var _storyboard_add_fg_clip: Control = null
 var _storyboard_bg: Control = null
 ## 加色（P,A）元素单独一层：粒子/光晕走 BLEND_MODE_ADD，叠在普通层上面。
 var _storyboard_add_bg: Control = null
@@ -412,6 +425,50 @@ func current_view() -> Dictionary:
 	return BoundaryRuntime.eval_view(chart, get_time_beat())
 
 
+## 建一个故事板绘制节点：外层裁剪容器由调用方建，这里只负责铺满 + 脚本。
+func _make_storyboard_draw(clip: Control, node_name: String, flag: String, material: Material) -> Control:
+	var draw := Control.new()
+	draw.name = node_name
+	draw.set_script(load("res://charter/preview_overlay.gd"))
+	draw.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	draw.set("preview", self)
+	draw.set(flag, true)
+	if material != null:
+		draw.material = material
+	clip.add_child(draw)
+	draw.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	return draw
+
+
+## 安全框（854×480 或 640×480）在预览里的矩形：宽屏场按高度铺满，编辑器预览用 contain。
+func _storyboard_field_rect() -> Rect2:
+	var field := _storyboard_field_width()
+	var scale := size.y / Storyboard.FIELD_HEIGHT
+	if storyboard_fit:
+		scale = minf(size.x / field, size.y / Storyboard.FIELD_HEIGHT)
+	var field_size := Vector2(field, Storyboard.FIELD_HEIGHT) * scale
+	return Rect2((size - field_size) * 0.5, field_size)
+
+
+## 把 5 个裁剪容器摆到安全框上；绘制子节点铺满容器（坐标从安全框左上角算）。
+func _update_storyboard_clip_rects() -> void:
+	var rect := _storyboard_field_rect()
+	for clip in [_storyboard_bg_clip, _storyboard_add_bg_clip, _storyboard_fg_clip,
+			_storyboard_top_clip, _storyboard_add_fg_clip]:
+		if clip == null:
+			continue
+		clip.set_anchors_preset(Control.PRESET_TOP_LEFT)
+		clip.position = rect.position
+		clip.size = rect.size
+		for child in clip.get_children():
+			(child as Control).set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_RESIZED and is_node_ready():
+		_update_storyboard_clip_rects()
+
+
 func _build_layers() -> void:
 	_bg = TextureRect.new()
 	_bg.name = "StageBackground"
@@ -487,59 +544,56 @@ func _build_layers() -> void:
 	_cursor_layer.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_viewport_container.visible = use_3d_ring
 	# storyboard 的 Background 层要垫在 3D 判定环下面，Foreground/Overlay 走 _overlay。
-	_storyboard_bg = Control.new()
-	_storyboard_bg.set_script(load("res://charter/preview_overlay.gd"))
-	_storyboard_bg.name = "StoryboardBackground"
-	_storyboard_bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_storyboard_bg.set("preview", self)
-	_storyboard_bg.set("storyboard_background", true)
-	add_child(_storyboard_bg)
-	_storyboard_bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	move_child(_storyboard_bg, _viewport_container.get_index())
+	# 故事板统一裁到安全框：裁剪容器 = 安全框，绘制子节点铺满它。
+	# 背景/加色背景在 3D 判定环下面；Foreground 在环上面、音符下面；
+	# Overlay 在音符上面、光标下面；加色前景沿用原来的最上层。
+	_storyboard_bg_clip = Control.new()
+	_storyboard_bg_clip.name = "StoryboardBackgroundClip"
+	_storyboard_bg_clip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_storyboard_bg_clip.clip_contents = true
+	add_child(_storyboard_bg_clip)
+	move_child(_storyboard_bg_clip, _viewport_container.get_index())
+	_storyboard_bg = _make_storyboard_draw(_storyboard_bg_clip, "StoryboardBackground", "storyboard_background", null)
+
 	var add_material := CanvasItemMaterial.new()
 	add_material.blend_mode = CanvasItemMaterial.BLEND_MODE_ADD
-	_storyboard_add_bg = Control.new()
-	_storyboard_add_bg.set_script(load("res://charter/preview_overlay.gd"))
-	_storyboard_add_bg.name = "StoryboardAdditive"
-	_storyboard_add_bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_storyboard_add_bg.material = add_material
-	_storyboard_add_bg.set("preview", self)
-	_storyboard_add_bg.set("storyboard_additive", true)
-	add_child(_storyboard_add_bg)
-	_storyboard_add_bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	move_child(_storyboard_add_bg, _viewport_container.get_index())
+	_storyboard_add_bg_clip = Control.new()
+	_storyboard_add_bg_clip.name = "StoryboardAdditiveClip"
+	_storyboard_add_bg_clip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_storyboard_add_bg_clip.clip_contents = true
+	add_child(_storyboard_add_bg_clip)
+	move_child(_storyboard_add_bg_clip, _viewport_container.get_index())
+	_storyboard_add_bg = _make_storyboard_draw(_storyboard_add_bg_clip, "StoryboardAdditive", "storyboard_additive", add_material)
+
 	var add_fg_material := CanvasItemMaterial.new()
 	add_fg_material.blend_mode = CanvasItemMaterial.BLEND_MODE_ADD
-	_storyboard_add_fg = Control.new()
-	_storyboard_add_fg.set_script(load("res://charter/preview_overlay.gd"))
-	_storyboard_add_fg.name = "StoryboardAdditiveFront"
-	_storyboard_add_fg.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_storyboard_add_fg.material = add_fg_material
-	_storyboard_add_fg.set("preview", self)
-	_storyboard_add_fg.set("storyboard_additive", true)
+	_storyboard_add_fg_clip = Control.new()
+	_storyboard_add_fg_clip.name = "StoryboardAdditiveFrontClip"
+	_storyboard_add_fg_clip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_storyboard_add_fg_clip.clip_contents = true
+	add_child(_storyboard_add_fg_clip)
+	_storyboard_add_fg = _make_storyboard_draw(_storyboard_add_fg_clip, "StoryboardAdditiveFront", "storyboard_additive", add_fg_material)
 	_storyboard_add_fg.set("additive_front", true)
-	add_child(_storyboard_add_fg)
-	_storyboard_add_fg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+
 	# Foreground：盖住判定环，但在音符下面。
-	_storyboard_fg = Control.new()
-	_storyboard_fg.set_script(load("res://charter/preview_overlay.gd"))
-	_storyboard_fg.name = "StoryboardForeground"
-	_storyboard_fg.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_storyboard_fg.set("preview", self)
-	_storyboard_fg.set("storyboard_front", true)
-	add_child(_storyboard_fg)
-	_storyboard_fg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	move_child(_storyboard_fg, _overlay.get_index())
+	_storyboard_fg_clip = Control.new()
+	_storyboard_fg_clip.name = "StoryboardForegroundClip"
+	_storyboard_fg_clip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_storyboard_fg_clip.clip_contents = true
+	add_child(_storyboard_fg_clip)
+	move_child(_storyboard_fg_clip, _overlay.get_index())
+	_storyboard_fg = _make_storyboard_draw(_storyboard_fg_clip, "StoryboardForeground", "storyboard_front", null)
+
 	# Overlay：压在音符上面，光标层下面。
-	_storyboard_top = Control.new()
-	_storyboard_top.set_script(load("res://charter/preview_overlay.gd"))
-	_storyboard_top.name = "StoryboardOverlay"
-	_storyboard_top.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_storyboard_top.set("preview", self)
-	_storyboard_top.set("storyboard_overlay", true)
-	add_child(_storyboard_top)
-	_storyboard_top.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	move_child(_storyboard_top, _cursor_layer.get_index())
+	_storyboard_top_clip = Control.new()
+	_storyboard_top_clip.name = "StoryboardOverlayClip"
+	_storyboard_top_clip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_storyboard_top_clip.clip_contents = true
+	add_child(_storyboard_top_clip)
+	move_child(_storyboard_top_clip, _cursor_layer.get_index())
+	_storyboard_top = _make_storyboard_draw(_storyboard_top_clip, "StoryboardOverlay", "storyboard_overlay", null)
+
+	_update_storyboard_clip_rects()
 	# 图层是在 _ready 里建的，构造期间可能已经设过明暗，这里补一次。
 	set_background_brightness(background_brightness)
 
@@ -765,10 +819,10 @@ func _process(_delta: float) -> void:
 	var needs_overlay := time_changed or view_changed or flat_dirty or not _pulses.is_empty() or not _arc_flashes.is_empty() or not _note_pops.is_empty()
 	if needs_overlay:
 		_overlay.queue_redraw()
-		# 故事板本身只有 30Hz 采样，60/120fps 下每帧重画等于白画一遍；
-		# 只有采样桶变化（或几何/尺寸变了）才重绘这两层。
+		# 采样间隔跟帧率上限/导出 fps；只有采样时刻变化（或几何/尺寸变了）才重绘。
 		var sb_ms := chart.timing.beat_to_chart_ms(t) - chart.offset_ms
-		if view_changed or flat_dirty or absf(sb_ms - _sb_queued_ms) >= STORYBOARD_SAMPLE_MS:
+		_sb_sample_interval = _storyboard_sample_interval()
+		if view_changed or flat_dirty or absf(sb_ms - _sb_queued_ms) >= maxf(0.0001, _sb_sample_interval):
 			_sb_queued_ms = sb_ms
 			if _storyboard_bg != null:
 				_storyboard_bg.queue_redraw()
@@ -2163,6 +2217,8 @@ func set_storyboard_visible(on: bool) -> void:
 
 ## 编辑 / 换谱后重画所有故事板层（暂停时没有 time_changed，不会自动重绘）。
 func refresh_storyboard_layers() -> void:
+	# 宽屏/普通场是解析完才确定的，安全框矩形要跟着重算，否则会停在 640×480。
+	_update_storyboard_clip_rects()
 	for layer in [_storyboard_bg, _storyboard_add_bg, _storyboard_fg, _storyboard_top, _storyboard_add_fg]:
 		if layer != null:
 			layer.queue_redraw()
@@ -2180,6 +2236,7 @@ func invalidate_storyboard() -> void:
 	_sb_sample_ms = -1.0e9
 	_sb_render_items = []
 	_refresh_background_layering()
+	_update_storyboard_clip_rects()
 	if _storyboard_bg != null:
 		_storyboard_bg.queue_redraw()
 	if _storyboard_add_bg != null:
@@ -2221,6 +2278,7 @@ func _ensure_storyboard(chart: Chart) -> void:
 	_storyboard = board
 	_storyboard_dir = dir
 	_sb_wide_detected = _detect_wide(board)
+	_update_storyboard_clip_rects()
 	_storyboard_replaces_background = _storyboard.replaces_background(String(chart.metadata.get("background", "")))
 	if _sb_prefetch.is_empty():
 		for ref in _storyboard.referenced_files:
@@ -2359,15 +2417,22 @@ func _storyboard_texture(path: String) -> Texture2D:
 ## 把 storyboard 的 640x480 坐标场映射到预览区域：
 ## osu 是按 **高度** 缩放、场中心对齐屏幕中心（宽屏只是左右多露出来），
 ## 不是 cover——之前用 max() 会把 1920x540 这种横条撑满整屏，把背景图盖死。
-func _storyboard_layout() -> Dictionary:
+func _storyboard_sample_interval() -> float:
+	if storyboard_sample_hz > 0:
+		return 1000.0 / float(storyboard_sample_hz)
+	var cap := int(Engine.max_fps)
+	if cap <= 0:
+		cap = 60
+	cap = clampi(cap, 30, 120)
+	return 1000.0 / float(cap)
+
+
+func _storyboard_layout(view_size: Vector2) -> Dictionary:
 	var field := _storyboard_field_width()
-	var scale := size.y / Storyboard.FIELD_HEIGHT
-	if storyboard_fit:
-		scale = minf(size.x / field, size.y / Storyboard.FIELD_HEIGHT)
-	# osu 的宽屏只是左右多露 107 单位，场心永远是 640x480 的中心 (320,240)；
-	# 之前用 (854/2,240) 会把整张故事板左移 107×scale（1600x900 下约 200px）。
+	# 绘制节点就是安全框：按高度缩放，场心 320,240 对齐自己的中心。
+	var scale := view_size.y / Storyboard.FIELD_HEIGHT
 	var field_center := Vector2(Storyboard.FIELD_WIDTH, Storyboard.FIELD_HEIGHT) * 0.5
-	var offset := size * 0.5 - field_center * scale
+	var offset := view_size * 0.5 - field_center * scale
 	return {"scale": scale, "offset": offset}
 
 
@@ -2443,47 +2508,50 @@ func _draw_storyboard_layers(canvas: Control, chart: Chart, t: float, layers: Ar
 		return
 	var skip_background := not show_storyboard_background
 	var ms := chart.timing.beat_to_chart_ms(t) - chart.offset_ms
-	if absf(ms - _sb_sample_ms) >= STORYBOARD_SAMPLE_MS:
+	if absf(ms - _sb_sample_ms) >= maxf(0.0001, _sb_sample_interval):
 		_sb_sample_ms = ms
 		_sb_render_items = _storyboard.sample(ms)
-	var items := _sb_render_items
-	if items.is_empty():
-		return
-	var layout := _storyboard_layout()
+		_sb_layer_items.clear()
+		_sb_additive_layer_items.clear()
+		for entry in _sb_render_items:
+			var key := String(entry["layer"])
+			var target := _sb_additive_layer_items if bool(entry.get("additive", false)) else _sb_layer_items
+			if not target.has(key):
+				target[key] = []
+			(target[key] as Array).append(entry)
+	var view_size := canvas.size
+	var layout := _storyboard_layout(view_size)
 	var scale: float = layout["scale"]
 	var offset: Vector2 = layout["offset"]
-	for item in items:
-		var item_layer := String(item["layer"])
-		if not (item_layer in layers):
+	var source: Dictionary = _sb_additive_layer_items if additive_only else _sb_layer_items
+	for layer_name in layers:
+		var group: Array = source.get(layer_name, [])
+		if skip_background and (layer_name == "Background" or layer_name == "Video"):
 			continue
-		if skip_background and (item_layer == "Background" or item_layer == "Video"):
-			continue
-		if bool(item["additive"]) != additive_only:
-			continue
-		var tex_path := String(item["path"])
-		var full := _storyboard_dir + "/" + tex_path.get_file()
-		var texture: Texture2D = _tex_cache.get(full)
-		if texture == null:
-			_request_texture(full)
-			continue
-		var sprite_size := Vector2(texture.get_width(), texture.get_height())
-		var anchor := _storyboard_anchor(int(item["origin"]), sprite_size)
-		var pos: Vector2 = offset + (item["pos"] as Vector2) * scale
-		var sprite_scale: Vector2 = item["scale"] * scale * float(_tex_boost.get(full, 1.0))
-		var rotation := deg_to_rad(float(item["rotation"]))
-		# 屏幕外的 sprite 直接丢掉：storyboard 里数百张图会一直“可见”，
-		# 大部分已经被 M 命令挪出画面，不剔除的话每帧白画几百次。
-		var local_center := sprite_size * 0.5 - anchor
-		var world_center := pos + local_center.rotated(rotation) * sprite_scale
-		var radius := local_center.length() * maxf(sprite_scale.x, sprite_scale.y) + 4.0
-		if world_center.x + radius < 0.0 or world_center.y + radius < 0.0 \
-				or world_center.x - radius > size.x or world_center.y - radius > size.y:
-			continue
-		var colour := storyboard_item_colour(item, sprite_size, sprite_scale, size)
-		canvas.draw_set_transform(pos, rotation, sprite_scale)
-		canvas.draw_texture(texture, -anchor, colour)
-		canvas.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
-
+		for item in group:
+			var tex_path := String(item["path"])
+			var full := _storyboard_dir + "/" + tex_path.get_file()
+			var texture: Texture2D = _tex_cache.get(full)
+			if texture == null:
+				_request_texture(full)
+				continue
+			var sprite_size := Vector2(texture.get_width(), texture.get_height())
+			var anchor := _storyboard_anchor(int(item["origin"]), sprite_size)
+			var pos: Vector2 = offset + (item["pos"] as Vector2) * scale
+			var sprite_scale: Vector2 = item["scale"] * scale * float(_tex_boost.get(full, 1.0))
+			var rotation := deg_to_rad(float(item["rotation"]))
+			# 屏幕外的 sprite 直接丢掉：storyboard 里数百张图会一直“可见”，
+			# 大部分已经被 M 命令挪出画面，不剔除的话每帧白画几百次。
+			var local_center := sprite_size * 0.5 - anchor
+			var world_center := pos + local_center.rotated(rotation) * sprite_scale
+			var radius := local_center.length() * maxf(sprite_scale.x, sprite_scale.y) + 4.0
+			if world_center.x + radius < 0.0 or world_center.y + radius < 0.0 \
+					or world_center.x - radius > view_size.x or world_center.y - radius > view_size.y:
+				continue
+			var colour := storyboard_item_colour(item, sprite_size, sprite_scale, view_size)
+			canvas.draw_set_transform(pos, rotation, sprite_scale)
+			canvas.draw_texture(texture, -anchor, colour)
+			canvas.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
 ## 故事板对象的最终颜色（画布和预览必须共用这一份，否则两边观感对不上）。
 ## osu 里 P,A 是真正的加色；这里统一压到 35%，否则几百张全屏图叠加会把画面刷白。

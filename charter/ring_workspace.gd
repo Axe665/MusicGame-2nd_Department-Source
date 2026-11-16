@@ -26,6 +26,15 @@ static func span_label(beats: float, bpb: float) -> String:
 	return "%d 小节 %s 拍" % [bars, _beat_num(rest)]
 
 
+## 页脚用的 m:ss.mmm。ring 时间轴是拍，这里是谱面毫秒。
+static func _fmt_clock(ms: float) -> String:
+	var total := maxf(0.0, ms)
+	var minutes := int(total / 60000.0)
+	var seconds := int(fmod(total, 60000.0) / 1000.0)
+	var millis := int(fmod(total, 1000.0))
+	return "%d:%02d.%03d" % [minutes, seconds, millis]
+
+
 static func _beat_num(value: float) -> String:
 	var snapped := snappedf(value, 0.01)
 	if absf(snapped - round(snapped)) < 0.001:
@@ -68,6 +77,8 @@ var _time_label: Label = null
 var _fps_label: Label = null
 var _fps_accum := 0.0
 var _zoom_index := 1
+## 播放时时间轴是否跟着播放头滚（时间轴选项里可关）。
+var follow_playhead_view := true
 var _view_start := 0.0
 var onion_skin := false
 var _fold_open: Dictionary = {}
@@ -127,14 +138,17 @@ class ShapeThumb:
 
 class Timeline:
 	extends Control
-	## 与 Animate / AE 一致：关键帧之间的「保持段」画成连续块，长度就是拍数。
-	const GUTTER := 84.0
-	const RULER_H := 26.0
-	const LANE_TOP := 30.0
-	const LANE_H := 44.0
-	const LANE_GAP := 6.0
-	const BAR_H := 24.0
-	const KEY_SIZE := 10.0
+	## 参考 Flash/Animate 的 Timeline：顶部标题 + 标尺，中间四行（形状/镜头/边界事件/BPM），
+	## 底部页脚显示拍、ms、总长、帧率。每行有显隐/锁定。
+	const GUTTER := 168.0
+	const HEADER_H := 24.0
+	const RULER_H := 48.0
+	const LANE_TOP := 50.0
+	const LANE_H := 34.0
+	const LANE_GAP := 4.0
+	const FOOTER_H := 24.0
+	const BAR_H := 18.0
+	const KEY_SIZE := 9.0
 	const LABEL_MIN := 42.0
 	const EDGE_HIT := 5.0
 	const KEY_HIT := 8.0
@@ -144,11 +158,81 @@ class Timeline:
 	var _hover_lane := -1
 	var _hover_index := -1
 	var _hover_pos := Vector2(-9999, -9999)
+	var hidden_lanes: Dictionary = {}
+	var locked_lanes: Dictionary = {}
+	var show_grid := true
+	var follow_playhead := true
+	var _new_button: Button = null
+	var _delete_button: Button = null
+	var _menu: MenuButton = null
 
 	func _init(p_workspace: RingWorkspace) -> void:
 		workspace = p_workspace
-		custom_minimum_size = Vector2(0, 150)
+		custom_minimum_size = Vector2(0, 224)
 		mouse_filter = Control.MOUSE_FILTER_STOP
+		clip_contents = true
+		_new_button = Button.new()
+		_new_button.custom_minimum_size = Vector2(66, 20)
+		_new_button.text = "+ 形状"
+		_new_button.add_theme_font_size_override("font_size", 10)
+		_new_button.tooltip_text = "新建一个形状（等于新建一层）"
+		_new_button.pressed.connect(func() -> void: workspace._new_shape())
+		add_child(_new_button)
+		_delete_button = Button.new()
+		_delete_button.custom_minimum_size = Vector2(66, 20)
+		_delete_button.text = "− 形状"
+		_delete_button.add_theme_font_size_override("font_size", 10)
+		_delete_button.tooltip_text = "删除当前形状"
+		_delete_button.pressed.connect(func() -> void: workspace._delete_shape())
+		add_child(_delete_button)
+		_menu = MenuButton.new()
+		_menu.text = "⋯"
+		_menu.tooltip_text = "时间轴选项"
+		var popup := _menu.get_popup()
+		popup.add_item("适配全部", 1)
+		popup.add_item("跳到开头", 2)
+		popup.add_item("跳到结尾", 3)
+		popup.add_check_item("显示拍线", 4)
+		popup.set_item_checked(popup.get_item_index(4), true)
+		popup.add_check_item("跟随播放头", 5)
+		popup.set_item_checked(popup.get_item_index(5), true)
+		popup.id_pressed.connect(_on_menu)
+		add_child(_menu)
+
+	func _ready() -> void:
+		_layout_children()
+
+	func _notification(what: int) -> void:
+		if what == NOTIFICATION_RESIZED:
+			_layout_children()
+
+	func _layout_children() -> void:
+		if _new_button == null:
+			return
+		var y := size.y - FOOTER_H + 2.0
+		_new_button.position = Vector2(6.0, y)
+		_delete_button.position = Vector2(76.0, y)
+		if _menu != null:
+			_menu.position = Vector2(size.x - 38.0, 1.0)
+
+	func _on_menu(id: int) -> void:
+		match id:
+			1:
+				workspace.fit_all_timeline()
+			2:
+				workspace.seek(0.0)
+			3:
+				var chart: Chart = workspace.chart()
+				if chart != null:
+					workspace.seek(chart.content_end_beat())
+			4:
+				show_grid = not show_grid
+				_menu.get_popup().set_item_checked(_menu.get_popup().get_item_index(4), show_grid)
+			5:
+				follow_playhead = not follow_playhead
+				workspace.follow_playhead_view = follow_playhead
+				_menu.get_popup().set_item_checked(_menu.get_popup().get_item_index(5), follow_playhead)
+		queue_redraw()
 
 	func _x_for(beat: float) -> float:
 		return GUTTER + (beat - workspace.window_start()) / maxf(0.001, workspace.view_beats()) * (size.x - GUTTER)
@@ -163,23 +247,55 @@ class Timeline:
 		return _lane_top(lane) + LANE_H * 0.5
 
 	func _lane_at(y: float) -> int:
-		for lane in 2:
+		for lane in 4:
 			if y >= _lane_top(lane) and y <= _lane_top(lane) + LANE_H:
 				return lane
 		return -1
 
 	func _lane_items(chart: Chart, lane: int) -> Array:
-		if lane == 0:
-			return chart.sorted_shape_keys()
-		var states: Array = chart.view_states.duplicate()
-		states.sort_custom(func(a: ViewState, b: ViewState) -> bool: return a.beat < b.beat)
-		return states
+		match lane:
+			0:
+				return chart.sorted_shape_keys()
+			1:
+				var states: Array = chart.view_states.duplicate()
+				states.sort_custom(func(a: ViewState, b: ViewState) -> bool: return a.beat < b.beat)
+				return states
+			2:
+				var events: Array = chart.events.duplicate()
+				events.sort_custom(func(a, b) -> bool: return float(a.beat) < float(b.beat))
+				return events
+			3:
+				var points: Array = chart.timing.points.duplicate()
+				points.sort_custom(func(a, b) -> bool: return float(a.beat) < float(b.beat))
+				return points
+		return []
 
 	func _item_beat(item) -> float:
-		return float(item.get("beat", 0.0)) if item is Dictionary else (item as ViewState).beat
+		if item is Dictionary:
+			return float(item.get("beat", 0.0))
+		return float((item as Object).get("beat"))
 
 	func _item_easing(item) -> String:
-		return String(item.get("easing", "in-out")) if item is Dictionary else (item as ViewState).easing
+		if item is Dictionary:
+			return String(item.get("easing", "in-out"))
+		if item is ViewState:
+			return (item as ViewState).easing
+		return "linear"
+
+	func _lane_name(lane: int) -> String:
+		return ["形状", "镜头", "边界事件", "BPM"][clampi(lane, 0, 3)]
+
+	func _lane_colour(lane: int) -> Color:
+		match lane:
+			0:
+				return UITheme.CYAN
+			1:
+				return UITheme.AMBER
+			2:
+				return UITheme.CORAL
+			3:
+				return Color(0.62, 0.85, 0.62)
+		return Color.WHITE
 
 	func _item_beats(items: Array) -> Array[float]:
 		var beats: Array[float] = []
@@ -190,8 +306,13 @@ class Timeline:
 	func _draw() -> void:
 		var chart: Chart = workspace.chart()
 		draw_rect(Rect2(Vector2.ZERO, size), Color("#0B0D12"))
+		draw_rect(Rect2(Vector2(0, 0), Vector2(size.x, HEADER_H)), Color("#10131B"))
 		draw_rect(Rect2(Vector2(0, 0), Vector2(GUTTER, size.y)), Color("#0E1118"))
 		draw_line(Vector2(GUTTER, 0), Vector2(GUTTER, size.y), Color(1, 1, 1, 0.12), 1.0)
+		draw_string(UITheme.FONT_REGULAR, Vector2(8, 16), "时间轴", HORIZONTAL_ALIGNMENT_LEFT, -1, 11,
+			Color(1, 1, 1, 0.82))
+		draw_string(UITheme.mono_font(), Vector2(70, 16), "形状 / 镜头 / 边界事件 / BPM",
+			HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(1, 1, 1, 0.38))
 		if chart == null:
 			return
 		var start := workspace.window_start()
@@ -199,13 +320,15 @@ class Timeline:
 		var bpb := maxf(1.0, chart.timing.beats_per_bar_at(start))
 		var snap_division: int = workspace.snap_division()
 		_draw_ruler(start, span, bpb)
-		var shape_keys := _lane_items(chart, 0)
-		var view_states := _lane_items(chart, 1)
-		_draw_lane(0, shape_keys, chart, bpb, snap_division)
-		_draw_lane(1, view_states, chart, bpb, snap_division)
-		_draw_gutter(shape_keys.size(), view_states.size())
+		var lane_items: Array = []
+		for lane in 4:
+			var items := _lane_items(chart, lane)
+			lane_items.append(items)
+			if not hidden_lanes.has(lane):
+				_draw_lane(lane, items, chart, bpb, snap_division)
+		_draw_gutter(lane_items)
 		_draw_playhead()
-		_draw_status(chart, shape_keys, view_states, bpb)
+		_draw_status(chart, lane_items, bpb)
 
 	func _draw_ruler(start: float, span: float, bpb: float) -> void:
 		var font := UITheme.mono_font()
@@ -222,7 +345,7 @@ class Timeline:
 				continue
 			draw_line(Vector2(x, RULER_H - 11.0), Vector2(x, RULER_H), Color(1, 1, 1, 0.45), 1.0)
 			if bar % step == 0:
-				draw_string(font, Vector2(x + 3, 13), str(bar + 1), HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(1, 1, 1, 0.75))
+				draw_string(font, Vector2(x + 3, RULER_H - 13.0), str(bar + 1), HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(1, 1, 1, 0.75))
 		if beat_px >= 12.0:
 			for beat in range(floori(start), ceili(start + span) + 1):
 				var x := _x_for(float(beat))
@@ -233,9 +356,10 @@ class Timeline:
 
 	func _draw_lane(lane: int, items: Array, chart: Chart, bpb: float, snap_division: int) -> void:
 		var top := _lane_top(lane)
-		var color := UITheme.CYAN if lane == 0 else UITheme.AMBER
-		draw_rect(Rect2(Vector2(GUTTER, top), Vector2(size.x - GUTTER, LANE_H)), Color(1, 1, 1, 0.018 if lane == 0 else 0.008))
-		_draw_lane_grid(lane, bpb, snap_division)
+		var color := _lane_colour(lane)
+		draw_rect(Rect2(Vector2(GUTTER, top), Vector2(size.x - GUTTER, LANE_H)), Color(color.r, color.g, color.b, 0.035 if lane == 0 else 0.02))
+		if show_grid:
+			_draw_lane_grid(lane, bpb, snap_division)
 		if items.is_empty():
 			draw_string(UITheme.FONT_REGULAR, Vector2(GUTTER + 8, _lane_center(lane) + 4), "还没有关键帧", HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(1, 1, 1, 0.28))
 			return
@@ -313,39 +437,57 @@ class Timeline:
 						draw_line(Vector2(x, top + 4.0), Vector2(x, top + LANE_H - 4.0), Color(1, 1, 1, 0.022), 1.0)
 				b += step
 
-	func _draw_gutter(shape_count: int, view_count: int) -> void:
+	func _draw_gutter(lane_items: Array) -> void:
 		var font := UITheme.FONT_REGULAR
-		draw_rect(Rect2(Vector2(6, _lane_center(0) - 9), Vector2(3, 18)), UITheme.CYAN)
-		draw_string(font, Vector2(13, _lane_center(0) + 4), "形状", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, UITheme.CYAN)
-		draw_string(UITheme.mono_font(), Vector2(44, _lane_center(0) + 4), str(shape_count), HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(1, 1, 1, 0.45))
-		draw_rect(Rect2(Vector2(6, _lane_center(1) - 9), Vector2(3, 18)), UITheme.AMBER)
-		draw_string(font, Vector2(13, _lane_center(1) + 4), "镜头", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, UITheme.AMBER)
-		draw_string(UITheme.mono_font(), Vector2(44, _lane_center(1) + 4), str(view_count), HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(1, 1, 1, 0.45))
+		for lane in 4:
+			var color := _lane_colour(lane)
+			var center := _lane_center(lane)
+			var hidden := hidden_lanes.has(lane)
+			var locked := locked_lanes.has(lane)
+			var tint := Color(1, 1, 1, 0.3) if (hidden or locked) else color
+			draw_rect(Rect2(Vector2(6, center - 9), Vector2(3, 18)), tint)
+			# 眼睛
+			draw_arc(Vector2(24, center), 4.5, 0, TAU, 12, tint if not hidden else Color(1, 1, 1, 0.25), 1.0)
+			draw_circle(Vector2(24, center), 1.8, tint)
+			if hidden:
+				draw_line(Vector2(19, center - 5), Vector2(29, center + 5), UITheme.CORAL, 1.2)
+			# 锁
+			var lock_colour := UITheme.CORAL if locked else Color(1, 1, 1, 0.22)
+			draw_rect(Rect2(Vector2(36, center - 1), Vector2(8, 6)), lock_colour, false, 1.0)
+			if locked:
+				draw_arc(Vector2(40, center - 2), 3.0, PI, TAU, 8, lock_colour, 1.0)
+			draw_string(font, Vector2(52, center + 4), _lane_name(lane), HORIZONTAL_ALIGNMENT_LEFT, -1, 10, tint)
+			var items: Array = lane_items[lane] if lane < lane_items.size() else []
+			draw_string(UITheme.mono_font(), Vector2(126, center + 4), str(items.size()),
+				HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(1, 1, 1, 0.38))
 
 	func _draw_playhead() -> void:
 		var px := _x_for(workspace.playhead())
 		if px < GUTTER or px > size.x:
 			return
-		draw_line(Vector2(px, RULER_H), Vector2(px, size.y - 18.0), UITheme.CORAL, 1.5)
+		draw_line(Vector2(px, RULER_H), Vector2(px, size.y - FOOTER_H), UITheme.CORAL, 1.5)
 		draw_colored_polygon(PackedVector2Array([Vector2(px - 5, RULER_H - 10), Vector2(px + 5, RULER_H - 10), Vector2(px, RULER_H)]), UITheme.CORAL)
 
-	func _draw_status(chart: Chart, shape_keys: Array, view_states: Array, bpb: float) -> void:
-		var text := "吸附 %s · 滚轮滚动 · Ctrl+滚轮缩放" % GridDivisions.label(workspace.snap_division())
+	func _draw_status(chart: Chart, lane_items: Array, bpb: float) -> void:
+		draw_rect(Rect2(0, size.y - FOOTER_H, size.x, FOOTER_H), Color("#10131B"))
+		var beat := workspace.playhead()
+		var ms := chart.timing.beat_to_chart_ms(beat) + chart.offset_ms
+		var total_ms := chart.timing.beat_to_chart_ms(chart.content_end_beat()) + chart.offset_ms
+		var text := "当前 %s · %.2f 拍 · 总长 %s · %d FPS · 吸附 %s" % [
+			RingWorkspace._fmt_clock(ms), beat,
+			RingWorkspace._fmt_clock(total_ms), int(Engine.get_frames_per_second()),
+			GridDivisions.label(workspace.snap_division())]
 		if _hover_index >= 0 and _hover_lane >= 0:
-			var items := shape_keys if _hover_lane == 0 else view_states
+			var items: Array = lane_items[_hover_lane] if _hover_lane < lane_items.size() else []
 			if _hover_index < items.size():
 				var beats := _item_beats(items)
 				var start := beats[_hover_index]
 				var end := RingWorkspace.span_end(beats, _hover_index, chart.content_end_beat(), bpb)
-				var lane_name := "形状" if _hover_lane == 0 else "镜头"
-				text = "%s · %s → %s · %s · %s" % [
-					lane_name,
-					chart.timing.format_beat(start),
-					chart.timing.format_beat(end),
-					RingWorkspace.span_label(end - start, bpb),
-					RingWorkspace.easing_label(String(_item_easing(items[_hover_index]))),
-				]
-		draw_string(UITheme.FONT_REGULAR, Vector2(GUTTER + 2, size.y - 5), text, HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(1, 1, 1, 0.42))
+				text = "%s · %s → %s · %s" % [
+					_lane_name(_hover_lane), chart.timing.format_beat(start),
+					chart.timing.format_beat(end), RingWorkspace.span_label(end - start, bpb)]
+		draw_string(UITheme.FONT_REGULAR, Vector2(152, size.y - 7), text, HORIZONTAL_ALIGNMENT_LEFT, -1, 10,
+			Color(1, 1, 1, 0.48))
 
 	func _gui_input(event: InputEvent) -> void:
 		if workspace.chart() == null:
@@ -384,7 +526,7 @@ class Timeline:
 		_hover_pos = pos
 		var lane := _lane_at(pos.y)
 		var index := -1
-		if lane >= 0 and pos.x > GUTTER:
+		if lane >= 0 and pos.x > GUTTER and not hidden_lanes.has(lane) and not locked_lanes.has(lane):
 			var chart: Chart = workspace.chart()
 			var items := _lane_items(chart, lane)
 			var beats := _item_beats(items)
@@ -401,15 +543,31 @@ class Timeline:
 			queue_redraw()
 
 	func _press(pos: Vector2, event: InputEventMouseButton) -> void:
+		var lane := _lane_at(pos.y)
 		if pos.x <= GUTTER:
+			# 左侧图层栏：眼睛 / 锁。
+			if lane >= 0:
+				if pos.x < 33.0:
+					if hidden_lanes.has(lane):
+						hidden_lanes.erase(lane)
+					else:
+						hidden_lanes[lane] = true
+					queue_redraw()
+				elif pos.x < 48.0:
+					if locked_lanes.has(lane):
+						locked_lanes.erase(lane)
+					else:
+						locked_lanes[lane] = true
+					queue_redraw()
 			return
 		if pos.y <= RULER_H:
 			_drag_kind = "playhead"
 			workspace.seek(workspace.snap(_beat_at(pos.x)))
 			return
-		var lane := _lane_at(pos.y)
 		if lane < 0:
 			workspace.seek(workspace.snap(_beat_at(pos.x)))
+			return
+		if hidden_lanes.has(lane) or locked_lanes.has(lane):
 			return
 		var chart: Chart = workspace.chart()
 		var items := _lane_items(chart, lane)
@@ -422,7 +580,8 @@ class Timeline:
 					if lane == 0:
 						workspace.open_pad_for_current()
 					return
-				_begin_item_drag(lane, items[i])
+				if lane <= 1:
+					_begin_item_drag(lane, items[i])
 				return
 		# 段块右缘：拖下一帧；段块本身：选中该段起点。
 		for i in items.size() - 1:
@@ -431,7 +590,8 @@ class Timeline:
 			if pos.x >= sx - 2.0 and pos.x <= ex + 2.0:
 				if absf(pos.x - ex) <= EDGE_HIT:
 					workspace.seek(beats[i + 1])
-					_begin_item_drag(lane, items[i + 1])
+					if lane <= 1:
+						_begin_item_drag(lane, items[i + 1])
 					return
 				workspace.seek(beats[i])
 				return
@@ -1048,6 +1208,13 @@ func window_start() -> float:
 	return _view_start
 
 
+## 「适配全部」：缩放到能看到整张谱。
+func fit_all_timeline() -> void:
+	_zoom_index = ZOOM_LEVELS.size()
+	_view_start = 0.0
+	_timeline.queue_redraw()
+
+
 func zoom_timeline(step: int) -> void:
 	_zoom_index = clampi(_zoom_index + step, 0, ZOOM_LEVELS.size())
 	_follow_playhead(true)
@@ -1062,6 +1229,8 @@ func scroll_timeline(direction: float) -> void:
 
 
 func _follow_playhead(force: bool = false) -> void:
+	if not force and not follow_playhead_view:
+		return
 	var span := view_beats()
 	if chart() != null and span >= chart().content_end_beat() + chart().bar_length():
 		# 「全部」能看到整张谱：播放头走动时不要把它重新滚走。
