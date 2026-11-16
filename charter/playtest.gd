@@ -3327,6 +3327,7 @@ func _start_video_export(path: String) -> void:
 		add_child(_video_export)
 	_video_export.encoder_pref = String(_app.video_encoder if _app != null else "auto")
 	_video_export.tilt_degrees = float(_app.ring_tilt_degrees if _app != null else 10.0)
+	_video_export.background_dim = int(_app.playtest_dim if _app != null else 0)
 	_video_export.size = _selected_video_size()
 	_video_export.fps = _selected_video_fps()
 	# 自动演奏（AUTO）没有输入事件，仍然用同一套离线管线跑自动演奏。

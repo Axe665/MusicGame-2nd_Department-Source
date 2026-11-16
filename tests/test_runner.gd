@@ -61,6 +61,7 @@ func _initialize() -> void:
 		"test_storyboard_editor_fit_size",
 		"test_ring_tilt_target",
 		"test_storyboard_editor_transport",
+		"test_background_dim_applies",
 		"test_storyboard_roundtrip_lossless",
 		"test_storyboard_loop_indent_scope",
 		"test_replay_normalized_coords",
@@ -1594,6 +1595,18 @@ func test_storyboard_editor_transport() -> bool:
 	eq(StoryboardEditor.transport_action(5000.0, 5000.0, true), StoryboardEditor.TRANSPORT_RESTART, "loop restarts at the end")
 	eq(StoryboardEditor.transport_action(5000.0, 5000.0, false), StoryboardEditor.TRANSPORT_STOP, "no loop stops at the end")
 	eq(StoryboardEditor.transport_action(6000.0, 5000.0, false), StoryboardEditor.TRANSPORT_STOP, "past the end still stops")
+	return true
+
+
+## 背景暗度：0–100 可调，且预览的遮罩层真的跟着变（回放/导出以前根本没接这个值）。
+func test_background_dim_applies() -> bool:
+	eq(Preview3D.clamp_dim(85), 85, "dim keeps the value")
+	eq(Preview3D.clamp_dim(150), 100, "dim clamps at 100")
+	eq(Preview3D.clamp_dim(-5), 0, "dim clamps at 0")
+	var export := VideoExport.new()
+	eq(export.background_dim, 0, "export defaults to no dim")
+	export.background_dim = 70
+	eq(export.background_dim, 70, "export carries the dim into the rendered frame")
 	return true
 
 

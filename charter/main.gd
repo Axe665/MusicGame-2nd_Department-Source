@@ -3103,9 +3103,10 @@ func _commit_playtest_settings() -> void:
 		_preview.mouse_tilt_degrees = _app.ring_tilt_degrees
 		if _playtest != null and _playtest._preview != null:
 			_playtest._preview.mouse_tilt_degrees = _app.ring_tilt_degrees
-		_preview.set_background_dim(_app.playtest_dim)
-		if _playtest != null and _playtest._preview != null:
-			_playtest._preview.set_background_dim(_app.playtest_dim)
+	# 暗度必须单独应用：之前这段嵌在倾斜的 if 里，倾斜控件不存在时整段不执行。
+	_preview.set_background_dim(_app.playtest_dim)
+	if _playtest != null and _playtest._preview != null:
+		_playtest._preview.set_background_dim(_app.playtest_dim)
 	if _playtest_latency != null:
 		_app.audio_latency_ms = clampf(_playtest_latency.value, 0.0, 250.0)
 	_app.flow_scale = _playtest_flow.value
@@ -3264,6 +3265,11 @@ func _start_replay(data: Replay) -> void:
 	_playtest = Playtest.new()
 	_playtest.replay_source = data
 	add_child(_playtest)
+	# 回放以前漏了这三项：故事板恒开、暗度恒 0，和首次试玩的画面不一致。
+	_playtest._preview.show_storyboard = _app.show_storyboard
+	_playtest._preview.show_storyboard_background = _app.show_storyboard_background
+	_playtest._preview.set_background_dim(_app.playtest_dim)
+	_playtest._preview.mouse_tilt_degrees = _app.ring_tilt_degrees
 	_playtest.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_playtest.setup(_app.chart, data.start_beat, _app.chart_path)
 	_playtest.exit_requested.connect(_end_playtest)

@@ -2400,8 +2400,12 @@ static func _detect_wide(board: Storyboard) -> bool:
 
 ## 背景层（Background / Video）：垫在 3D 判定环下面。
 ## osu 的 Background dim：0 = 不遮，100 = 全黑。只压背景/storyboard，不压判定环和音符。
+static func clamp_dim(value: int) -> int:
+	return clampi(value, 0, 100)
+
+
 func set_background_dim(value: int) -> void:
-	background_dim = clampi(value, 0, 100)
+	background_dim = clamp_dim(value)
 	if _dim_layer != null:
 		_dim_layer.color = Color(0.0, 0.0, 0.0, float(background_dim) / 100.0)
 
