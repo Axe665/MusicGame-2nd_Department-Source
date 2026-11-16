@@ -2398,16 +2398,29 @@ static func _detect_wide(board: Storyboard) -> bool:
 	return false
 
 
-## 背景层（Background / Video）：垫在 3D 判定环下面。
-## osu 的 Background dim：0 = 不遮，100 = 全黑。只压背景/storyboard，不压判定环和音符。
+## 背景暗度：0 = 不遮，100 = 全黑。压曲绘 / BGA / 故事板全部图层，不压判定环和音符。
+##
+## Background/Fail/Pass 在判定环下面，用一层黑色遮罩；
+## Foreground/Overlay 在判定环上面，加黑色遮罩会把环也一起压掉，
+## 所以这三层改成把自身颜色乘暗（self_modulate），只影响故事板自己的像素。
 static func clamp_dim(value: int) -> int:
 	return clampi(value, 0, 100)
+
+
+## 前景 / 覆盖层 / 前瞻加色层的乘暗系数（1 = 不变暗）。
+## 这几层在判定环上面，不能盖黑遮罩（会把环和音符一起压掉），只能乘暗自身像素。
+static func foreground_dim_keep(value: int) -> float:
+	return 1.0 - float(clamp_dim(value)) / 100.0
 
 
 func set_background_dim(value: int) -> void:
 	background_dim = clamp_dim(value)
 	if _dim_layer != null:
 		_dim_layer.color = Color(0.0, 0.0, 0.0, float(background_dim) / 100.0)
+	var keep := foreground_dim_keep(background_dim)
+	for layer in [_storyboard_fg, _storyboard_top, _storyboard_add_fg]:
+		if layer != null:
+			(layer as CanvasItem).self_modulate = Color(keep, keep, keep, 1.0)
 
 
 func draw_storyboard_background(canvas: Control) -> void:

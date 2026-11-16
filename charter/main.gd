@@ -2989,7 +2989,7 @@ func _build_playtest_dialog() -> void:
 	mirror_row.add_child(_playtest_mirror)
 	box.add_child(mirror_row)
 	_playtest_dim = _playtest_spin_row(box, "背景暗度", 0.0, 100.0, 1.0, 70.0, "%")
-	_playtest_dim.tooltip_text = "和 osu 的 Background dim 一样：0% 不遮，100% 全黑。只暗曲绘/BGA/故事板背景层，不暗判定环和音符；编辑器预览也用这个值"
+	_playtest_dim.tooltip_text = "0% 不遮，100% 全黑。压曲绘 / BGA / 故事板全部图层（含前景与覆盖层），不压判定环和音符；编辑器预览也用这个值"
 	_playtest_tilt = _playtest_spin_row(box, "环倾斜", 0.0, 20.0, 1.0, 10.0, "°")
 	_playtest_tilt.tooltip_text = "环随鼠标倾斜的最大角度：鼠标那一侧靠近镜头，环心固定不动，中心区域更敏感；0 = 关闭。超过 15° 时环的视觉重心会明显偏向鼠标一侧"
 	_playtest_offset = _playtest_spin_row(box, "判定偏移", -200.0, 200.0, 1.0, 0.0, "ms")

@@ -1603,6 +1603,11 @@ func test_background_dim_applies() -> bool:
 	eq(Preview3D.clamp_dim(85), 85, "dim keeps the value")
 	eq(Preview3D.clamp_dim(150), 100, "dim clamps at 100")
 	eq(Preview3D.clamp_dim(-5), 0, "dim clamps at 0")
+	# 前景层在判定环上面，只能乘暗自身；0 = 原样，100 = 全黑
+	near(Preview3D.foreground_dim_keep(0), 1.0, 0.001, "dim 0 keeps foreground untouched")
+	near(Preview3D.foreground_dim_keep(70), 0.30, 0.001, "dim 70 multiplies foreground by 0.3")
+	near(Preview3D.foreground_dim_keep(100), 0.0, 0.001, "dim 100 blacks out foreground")
+	near(Preview3D.foreground_dim_keep(150), 0.0, 0.001, "foreground dim clamps at 100")
 	var export := VideoExport.new()
 	eq(export.background_dim, 0, "export defaults to no dim")
 	export.background_dim = 70
