@@ -265,6 +265,10 @@ var _drag_visual_note: Note = null
 var _drag_visual_start: Vector2 = Vector2.ZERO
 var _drag_visual_db: float = 0.0
 var _drag_visual_da: float = 0.0
+var _drag_note: Note = null
+var _drag_note_angle: float = 0.0
+var _drag_note_tail: float = 0.0
+var _drag_note_cursor: float = NAN
 var _drawing_red: bool = false
 var _red_region: Region = null
 var _red_start_u: float = 0.0
@@ -1476,7 +1480,9 @@ func _gui_input(event: InputEvent) -> void:
 			accept_event()
 			return
 		if interactive and not playtest_mode:
-			if _drag_vertex >= 0:
+			if _drag_note != null:
+				_update_note_angle_drag(event.position)
+			elif _drag_vertex >= 0:
 				_update_drag(event.position)
 			elif _drag_visual >= 0:
 				_update_visual_drag(event.position)
@@ -1487,7 +1493,7 @@ func _gui_input(event: InputEvent) -> void:
 				_append_path_point(event.position)
 		_update_cursor()
 		_cursor_layer.queue_redraw()
-		if _drag_vertex >= 0 or _drag_visual >= 0 or _drawing_red or _drawing_path:
+		if _drag_vertex >= 0 or _drag_visual >= 0 or _drag_note != null or _drawing_red or _drawing_path:
 			_overlay.queue_redraw()
 		accept_event()
 		return
@@ -1588,6 +1594,14 @@ func _on_left_press(event: InputEventMouseButton) -> void:
 		var note_id := _pick_note(event.position)
 		if note_id >= 0:
 			_app.select_note(note_id)
+			var note: Note = _app.get_selected_note()
+			var cursor_deg := screen_angle_deg(event.position)
+			if note != null and not note.lock and not is_nan(cursor_deg):
+				_drag_note = note
+				_drag_note_angle = note.angle
+				_drag_note_tail = note.tail_angle
+				_drag_note_cursor = cursor_deg
+				_app.begin_edit()
 
 
 func _on_left_release(_event: InputEventMouseButton) -> void:
@@ -1598,6 +1612,10 @@ func _on_left_release(_event: InputEventMouseButton) -> void:
 	if _drag_visual >= 0:
 		_drag_visual = -1
 		_drag_visual_note = null
+		if _app != null:
+			_app.finish_edit()
+	if _drag_note != null:
+		_drag_note = null
 		if _app != null:
 			_app.finish_edit()
 	if _drag_vertex >= 0:
@@ -1667,6 +1685,29 @@ func _update_visual_drag(screen_position: Vector2) -> void:
 	var angle := rad_to_deg(atan2(design.y, design.x))
 	point["da"] = JudgeMath.angle_delta(_drag_visual_note.angle, angle)
 	_app.touch_chart()
+
+
+## 环上拖动音符：按光标绕环心转过的角度整体旋转，跨 0°/360° 也连续。
+static func dragged_angle(start_angle: float, start_cursor_deg: float, cursor_deg: float) -> float:
+	return fposmod(start_angle + JudgeMath.angle_delta(start_cursor_deg, cursor_deg), 360.0)
+
+
+func _update_note_angle_drag(screen: Vector2) -> void:
+	if _drag_note == null:
+		return
+	var cursor_deg := screen_angle_deg(screen)
+	if is_nan(cursor_deg):
+		return
+	var angle := dragged_angle(_drag_note_angle, _drag_note_cursor, cursor_deg)
+	_drag_note.angle = angle
+	if _drag_note.type == "bell":
+		_drag_note.center_u = angle / 360.0
+	elif _drag_note.type == "path":
+		_drag_note.tail_angle = fposmod(_drag_note_tail + JudgeMath.angle_delta(_drag_note_angle, angle), 360.0)
+	_app.touch_chart()
+	queue_redraw()
+	if _overlay != null:
+		_overlay.queue_redraw()
 
 
 func _design_to_path_local(design: Vector2) -> Vector2:

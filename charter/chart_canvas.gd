@@ -1530,6 +1530,7 @@ func _on_left_press(event: InputEventMouseButton) -> void:
 		var hit := _hit_test(event.position)
 		if String(hit.get("kind", "")) == "note":
 			_app.select_note(int(hit["id"]), event.shift_pressed)
+			_begin_note_drag(event.position)
 			return
 	if _app.tool in NOTE_TOOLS:
 		var placement := _snap_note_placement(event.position, not _snap_modifier(event))
