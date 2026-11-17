@@ -22,8 +22,6 @@ const BELL_RADIAL_TOLERANCE := 55.0
 const BELL_CHAIN_TOLERANCE := 75.0
 ## 星头单独缩小（轨迹宽度不受影响）。
 const PATH_HEAD_SCALE := 0.62
-## 自由绘制 Path：实时只做这层 EMA（1 帧量级），松手再定型。
-const PATH_DRAW_EMA := 0.5
 ## 定型参数：RDP 容差（设计坐标，环半径 1.0）、拐角保护、重采样步长与点数上限。
 const PATH_SMOOTH_RDP := 0.018
 const PATH_SMOOTH_CORNER_DEG := 40.0
@@ -307,8 +305,8 @@ var ring_edit_mode: bool = false
 var _ring_rotating: bool = false
 var _ring_rot_last: float = 0.0
 var _drawing_path: bool = false
+## 绘制中的原始鼠标轨迹（屏幕坐标）：先显示原始轨迹，松手再投影/平滑成 Path。
 var _path_points: Array[Vector2] = []
-var _path_ema: Vector2 = Vector2.INF
 var _path_head_angle: float = 0.0
 
 
@@ -827,7 +825,9 @@ func _process(_delta: float) -> void:
 			_perf_since_usec = perf_now
 	var mouse_moved := mouse_screen.distance_to(_last_mouse_screen) > 0.1
 	if mouse_inside and (playtest_mode or (playing and Engine.get_process_frames() % 6 == 0) or mouse_moved):
-		_update_cursor()
+		# 画 Path 时不做环上吸附：这段完全用不到，省下的就是帧预算。
+		if not _drawing_path:
+			_update_cursor()
 	_update_cursor_trail(_delta)
 	# 场景层只在时间/几何/特效变化时重绘；鼠标移动只触发光标层。
 	var needs_overlay := time_changed or view_changed or flat_dirty or not _pulses.is_empty() or not _arc_flashes.is_empty() or not _note_pops.is_empty()
@@ -1499,9 +1499,11 @@ func _gui_input(event: InputEvent) -> void:
 				_update_red_drag(event.position)
 			elif _drawing_path:
 				_append_path_point(event.position)
-		_update_cursor()
+		if not _drawing_path:
+			# 画 Path 时不需要光标吸附；省下来的 3.7ms 直接进帧预算。
+			_update_cursor()
 		_cursor_layer.queue_redraw()
-		if _drag_vertex >= 0 or _drag_visual >= 0 or _drag_note != null or _drawing_red or _drawing_path:
+		if _drag_vertex >= 0 or _drag_visual >= 0 or _drag_note != null or _drawing_red:
 			_overlay.queue_redraw()
 		accept_event()
 		return
@@ -1592,7 +1594,7 @@ func _on_left_press(event: InputEventMouseButton) -> void:
 			_drawing_path = true
 			_path_head_angle = fposmod(cursor_u * 360.0, 360.0)
 			_path_points.clear()
-			_path_points.append(Vector2(cos(deg_to_rad(_path_head_angle)), sin(deg_to_rad(_path_head_angle))))
+			_path_points.append(event.position)
 		return
 	if _app.tool in ["tap", "hold", "path", "anchor", "bell"]:
 		if cursor_valid:
@@ -1770,25 +1772,27 @@ func _update_red_drag(screen_position: Vector2) -> void:
 	_app.touch_chart()
 
 
+## 绘制中只记屏幕点：不做投影、不做平滑，笔迹就是鼠标走过的原始轨迹。
 func _append_path_point(screen: Vector2) -> void:
-	# 实时只做一层 EMA（约 1 帧延迟）：笔迹看着顺，但不改点数、不改时间轴。
-	if _path_points.is_empty():
-		_path_ema = screen
-	else:
-		_path_ema = _path_ema.lerp(screen, PATH_DRAW_EMA)
-	var design := _screen_to_ring_plane(_path_ema)
-	if not design.is_finite():
-		return
-	var local := _design_to_path_local(design)
-	if not local.is_finite():
-		return
-	var radius := local.length()
-	if radius <= 0.001:
-		return
-	radius = clampf(radius, 0.06, 0.985)
-	local = local.normalized() * radius
-	if _path_points.is_empty() or _path_points[-1].distance_to(local) > 0.012:
-		_path_points.append(local)
+	if _path_points.is_empty() or _path_points[-1].distance_to(screen) > 3.0:
+		_path_points.append(screen)
+
+
+## 把绘制中记下的屏幕轨迹投影到环平面，再交给定型管线。
+func _project_path_points() -> Array[Vector2]:
+	var points: Array[Vector2] = []
+	for screen in _path_points:
+		var design := _screen_to_ring_plane(screen)
+		if not design.is_finite():
+			continue
+		var local := _design_to_path_local(design)
+		if not local.is_finite():
+			continue
+		points.append(local.normalized() * clampf(local.length(), 0.06, 0.985))
+	if points.size() >= 2:
+		# 头必须与判定角度一致，投影误差不能留在这里。
+		points[0] = Vector2(cos(deg_to_rad(_path_head_angle)), sin(deg_to_rad(_path_head_angle)))
+	return points
 
 
 ## 松手定型：RDP 去抖动 → 拐角切段 → 段内 Chaikin → 等弧长重采样。
@@ -1912,10 +1916,14 @@ func _create_path() -> void:
 	if chart == null or _path_points.is_empty():
 		_path_points.clear()
 		return
-	if _path_points.size() < 2:
+	var projected := _project_path_points()
+	if projected.size() < 2:
 		var angle := deg_to_rad(_path_head_angle + 60.0)
-		_path_points.append(Vector2(cos(angle), sin(angle)) * 0.70)
-	var points := finalize_path_points(_path_points)
+		projected = [
+			Vector2(cos(deg_to_rad(_path_head_angle)), sin(deg_to_rad(_path_head_angle))),
+			Vector2(cos(angle), sin(angle)) * 0.70,
+		]
+	var points := finalize_path_points(projected)
 	var start: float = _app.snap_beat(get_time_beat())
 	var note := Note.new("path", start, _path_head_angle, 62.0)
 	note.id = chart.next_note_id()
@@ -2202,7 +2210,7 @@ func _update_cursor() -> void:
 	if cache_key == _cursor_cache_key:
 		return
 	_cursor_cache_key = cache_key
-	var result := BoundaryRuntime.nearest_u(chart, t, mouse_screen, func(point: Vector2) -> Vector2: return project_design(point), 96, _frame_for(chart, t))
+	var result := BoundaryRuntime.nearest_u(chart, t, mouse_screen, func(point: Vector2) -> Vector2: return project_design(point), 48, _frame_for(chart, t))
 	var u := float(result["u"])
 	var distance := float(result["distance"])
 	var center := project_design(Vector2.ZERO)
@@ -2343,6 +2351,11 @@ func draw_cursor_overlay(canvas: Control) -> void:
 	if chart == null:
 		return
 	var t_cursor := Time.get_ticks_usec()
+	# 绘制中的原始鼠标轨迹：屏幕坐标直接用，不投影、不重绘整层预览。
+	if _drawing_path and _path_points.size() > 1:
+		var trail := PackedVector2Array(_path_points)
+		canvas.draw_polyline(trail, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.28), 7.0, false)
+		canvas.draw_polyline(trail, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.85), 2.0, false)
 	_draw_cursor(canvas, chart, get_time_beat())
 	_perf_sections[7] += Time.get_ticks_usec() - t_cursor
 
@@ -3124,16 +3137,6 @@ func _draw_paths(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 	for note in order:
 		var dim := 1.0 if active_list.has(note) else PATH_RELAY_DIM
 		_draw_one_path(canvas, chart, note, t, pre, true, visible.size(), colors[note], dim, active_list.has(note))
-	if _drawing_path and _path_points.size() > 1:
-		var preview := PackedVector2Array()
-		for local in _path_points:
-			var p := _path_local_screen(chart, local, t)
-			if _valid_point(p):
-				preview.append(p)
-		if preview.size() > 1:
-			canvas.draw_polyline(preview, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.75), 3.0, false)
-			for p in preview:
-				canvas.draw_circle(p, 2.5, UITheme.CYAN)
 
 
 ## One synthetic Path for a part chain: one head, one guide ball, one tail.
@@ -3317,7 +3320,6 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 			var p := _path_screen_point(chart, note, rel, t, true, 1.0)
 			if _valid_point(p):
 				_draw_diamond(canvas, p, 4.5, UITheme.GOLD)
-	_draw_target_arc(canvas, note.angle, note.width, t, UITheme.CORAL, 14.0 * PATH_SIZE_SCALE, trail_fade * end_fade)
 	if selected:
 		for point in note.trace_pts:
 			var node := _path_local_screen(chart, Vector2(float(point.get("x", 0.0)), float(point.get("y", 0.0))), t, 1.0)
@@ -5605,15 +5607,6 @@ func _draw_label(canvas: Control, text: String, position: Vector2, color: Color)
 	var rect := Rect2(position + Vector2(-3, -9), Vector2(text_size.x + 6, 12))
 	canvas.draw_rect(rect, Color(0, 0, 0, 0.38))
 	canvas.draw_string(font, position, text, HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(color.r, color.g, color.b, 0.95))
-
-
-func _draw_target_arc(canvas: Control, angle: float, width: float, beat: float, color: Color, thickness: float, alpha: float = 1.0) -> void:
-	thickness *= _note_scale()
-	var points := _arc_points(angle, width, beat, 36)
-	if points.size() < 2:
-		return
-	canvas.draw_polyline(points, Color(color.r, color.g, color.b, 0.22 * alpha), thickness, false)
-	canvas.draw_polyline(points, Color(color.r, color.g, color.b, 0.88 * alpha), 2.0, false)
 
 
 func _arc_points(angle: float, width: float, beat: float, steps: int) -> PackedVector2Array:

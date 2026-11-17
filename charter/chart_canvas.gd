@@ -937,35 +937,19 @@ func _draw_hold(note: Note) -> void:
 	var x := _u_to_x(fposmod(note.angle, 360.0) / 360.0)
 	var selected := _is_note_selected(note.id)
 	var color := UITheme.AMBER
-	# 弯长条已移除：没有体节点就按直 Hold 画实心矩形。
-	var straight := note.visual_pts.is_empty()
-	if straight:
-		# 制谱器里直长条画成实心矩形：宽 = 判定弧宽，长 = 拍长。
-		# 弧宽跨过 0°/360° 接缝时拆成两段画（以前“x1<x0 就铺满整行”会让压接缝的 Hold 变成满屏长条）。
-		var top := minf(y0, y1)
-		var height := maxf(2.0, absf(y1 - y0))
-		for span in _u_intervals(note.angle, note.arc_width()):
-			var x0 := _u_to_x(span.x)
-			var x1 := _u_to_x(span.y)
-			if x1 - x0 < 1.0:
-				continue
-			var rect := Rect2(Vector2(x0, top), Vector2(x1 - x0, height))
-			draw_rect(rect, Color(color.r, color.g, color.b, 0.32))
-			draw_rect(rect, Color(color.r, color.g, color.b, 0.95), false, 1.5)
-	else:
-		var body := PackedVector2Array([Vector2(x, y0)])
-		for point in note.visual_pts:
-			body.append(Vector2(
-				_u_to_x(fposmod(note.angle + float(point.get("da", 0.0)), 360.0) / 360.0),
-				_beat_to_y(note.beat + float(point.get("db", 0.0)))
-			))
-		body.append(Vector2(x, y1))
-		if body.size() > 1:
-			draw_polyline(body, Color(color.r, color.g, color.b, 0.28), 12.0, true)
-			draw_polyline(body, color, 2.0, true)
-		for i in range(1, body.size() - 1):
-			draw_circle(body[i], 3.0, UITheme.MINT)
-		_draw_width_band(note.angle, note.arc_width(), y0, color)
+	# 弯长条已废除：一律按直 Hold 画实心矩形，宽 = 判定弧宽，长 = 拍长。
+	# 旧谱里的 visual_pts 只保留数据，不再参与绘制（否则看不出宽度）。
+	# 弧宽跨过 0°/360° 接缝时拆成两段画（以前“x1<x0 就铺满整行”会让压接缝的 Hold 变成满屏长条）。
+	var top := minf(y0, y1)
+	var height := maxf(2.0, absf(y1 - y0))
+	for span in _u_intervals(note.angle, note.arc_width()):
+		var x0 := _u_to_x(span.x)
+		var x1 := _u_to_x(span.y)
+		if x1 - x0 < 1.0:
+			continue
+		var rect := Rect2(Vector2(x0, top), Vector2(x1 - x0, height))
+		draw_rect(rect, Color(color.r, color.g, color.b, 0.32))
+		draw_rect(rect, Color(color.r, color.g, color.b, 0.95), false, 1.5)
 	_draw_hexagon(Vector2(x, y0), 9.0 if selected else 8.0, color)
 	_draw_ring(Vector2(x, y1), 6.0, color)
 	_draw_width_handles(note, y0)
