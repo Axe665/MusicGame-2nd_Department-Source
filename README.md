@@ -104,13 +104,15 @@ godot --path .
 - 音符：Tap / Hold / Path / Seek / Anchor / Bell、Path 头尾、Hold 仅判头部；Seek 仅有朝向 `orien`（0 朝里 / 1 朝外）
 - 区域：Limit 时间/角度/宽度、4 拍上限、同刻公共角度减限制区校验；预览中 Limit 是填充扇区 + 高亮外弧 + LIMIT 标签，进入前会显示淡色 LIMIT IN
 - 音符视觉：Tap 为可变角宽的切向宽条；Hold 为琥珀色六边形头 + 长体；Path 为珊瑚五角星头 + 琥珀圆环尾 + 灰色厚轨迹 + 青色虚线中轴/方向箭头（part 衔接处头尾为蓝色）；Seek 为扩散圆环 + 朝内/朝外箭头；Anchor 为紫色菱形；Bell 为白描边金键（金色核心 + 圆头 + 细金光环，弧宽 24–30°、和 Tap 到环时的 31° 同级；所有 Bell 都在判定环上，舞萌 C 触也并入外环（角度继承时间上最近的音符））；Limit 为红色扇区
+- 演出指令（环编辑）：`<JLINE>` / `<TEXT>` / 滤镜三类共 31 条，放在「环编辑」工作区的时间轴上单独三行（判定线 / 文本 / 滤镜），双击空白新增、拖动改拍、双击指令选中后在右侧「指令参数」里改持续拍数、过渡曲线与各指令参数；每条指令都有三段包络（起手 attack → 保持 → 收尾 release），`KALEIDOSCOPE` / `INVERT` 是状态开关，`SHAKE` 一类的瞬发指令在起点后 0.5 拍内生效。数据存在谱面 JSON 的 `commands` 数组里，旧版本读到会忽略。预览里判定线画成横线（颜色/粗细/不透明度/expand），文本按 x/y 归一化位置绘制，滤镜用白光/压暗/清单提示做近似反馈（不做真正的 shader 后处理）。
+- 音符修饰：检查器「演出修饰」组给每个音符加 `alpha`（0–1 整体透明）、`hs`（0.2–4 自身下落速度）、`sv`（0.25–4 滚动倍率）、`head_speed`（Hold/Path 头部速度，0.25–4）、`spawn`（0–1 出生半径：0 从环心长出，1 直接在判定环上出现）、`bounce`（0–2 落点弹跳幅度）+ `bounce_dir`（内凹/外凸）、以及 Path 的 `touch_start` / `touch_end` 触摸区端点（A–E，自动换算成 33 路传感器）。全部走 `note_extras` 旁挂持久化，不改变紧凑谱面代码，旧谱面不受影响；镜像时触摸区 A↔B、D↔E 自动对调。
 - 类型卡：检查器上方七张浅色切角卡（黑色背板、黄色选中态）图标 + 标签 + 快捷键，点击即切工具
 - 时间页：基准 BPM、offset、固定预读、BPM 点列表（双击跳转）、选中点的起始拍/BPM/拍号、Tap Tempo、播放头加 BPM、删除、播放头设为起始拍
 - 自动调时：导入歌曲后自动识别基准 BPM 与首拍 offset（三频带起始包络 → 自相关 → 梳状相位 → 拍点跟踪 + 原始采样攻击对齐），结果以弹窗给出，可 `×2` / `÷2` 处理半/倍速、手改后「应用」或「只取 BPM」；分析在后台线程跑，不卡 UI，结果按音频路径缓存
 - 纵轴：左列保留**连续拍号**（1、2、3、4、5…），并显示小节线、竖线与 30° 特殊角度参考线；分音网格、右列分音选择器、顶栏 SNAP 和视图页“分音”已隐藏，音符吸附使用当前小节线与竖线的交点
 - 写入方向：画布右上角「从上往下」开关，关闭后时间轴上下翻转（后出现的音符在上），翻转状态随谱面存进 `editor.flow_down`
 - Path/Hold 编辑：弧线 Path 与 Hold 选中后可在预览中拖动青色体节点；五角星 Path 不含可拖节点
-- 格式：File 菜单可导入 osu!std/taiko `.osz`、导出 `.lbp` v2（Tap/Hold 写实际弧宽，Bell 行尾带 `width=` 选项）；导入报告用对话框显示；谱面 notes/shapes 采用紧凑代码：`[id]tap(beat,angle[,width[,1,size]])`、`[id]hold(beat,end,angle[,width])`、`[id]path{(part0,beat,angle,end,end_angle,centrifuge,axis);...}`、`[id]seek(beat,orien)`、`[id]anchor(beat,angle,pair_id[,pair])`、`[id]bell(beat,angle[,width[,radius]])`、`[id]red(beat,end_beat,width)` 与单块无缩进 `shape{[id,closed,segments{...}];...}`；`timing` 位于 `notes` 之前。宽度/大小 Tap 只在非默认时追加可选段：普通 Tap 不写宽度（60°/0.5 l）、普通 Hold 不写宽度（60°）、普通 Bell 不写宽度/半径（30°/26px）；旧版读到尾巴会忽略，旧谱面照常载入。
+- 格式：File 菜单可导入 osu!std/taiko `.osz`、导出 `.lbp` v2（Tap/Hold 写实际弧宽，Bell 行尾带 `width=` 选项）；导入报告用对话框显示；谱面 notes/shapes 采用紧凑代码：`[id]tap(beat,angle[,width[,1,size]])`、`[id]hold(beat,end,angle[,width])`、`[id]path{(part0,beat,angle,end,end_angle,centrifuge,axis);...}`、`[id]seek(beat,orien)`、`[id]anchor(beat,angle,pair_id[,pair])`、`[id]bell(beat,angle[,width[,radius]])`、`[id]red(beat,end_beat,width)` 与单块无缩进 `shape{[id,closed,segments{...}];...}`；`timing` 位于 `notes` 之前。宽度/大小 Tap 只在非默认时追加可选段：普通 Tap 不写宽度（60°/0.5 l）、普通 Hold 不写宽度（60°）、普通 Bell 不写宽度/半径（30°/26px）；旧版读到尾巴会忽略，旧谱面照常载入。音符修饰（alpha/hs/sv/head_speed/spawn/bounce/touch）不写进紧凑行，单独放在 `note_extras` 旁挂表里，紧凑代码保持一行一音符；演出指令单独放在 `commands` 数组里。
 - Path 造型：选中 Path 后在检查器“路径造型”切换弧线/五角星；五角星在环内画出五条弦，头尾圆环仍落在环上，中段判定仍走头尾弦
 - 预览：默认开启 3D 环网格；环、八边形舞台、八束光、刻度、外圈、投影阴影全部走 GPU 网格；相机投影 tilt/zoom/ellipse/rotation + 鼠标倾斜/视差；固定预读 P(u,q,t)、单光标最近点、HUD 60° 弧、误差刻度、视频层；视图页可关闭“3D 环网格”回退到投影环线
 - Limit 表现与绘制：填充红色扇区、亮色外弧、扇区斜纹、LIMIT/LIMIT IN 标签；Limit 工具在预览中横向拖角度、纵向拖时长（最多 4 拍）；Seek 表现：扩散圆环、方向箭头、朝里冷蓝/朝外暖橙、PERFECT/MISS 双档
@@ -167,15 +169,18 @@ godot --path .
 - 10,000 音符专项性能调优、MCP 对外接口
 - 自由三维飞行/大幅镜头摆动（按文档非目标）；鼠标倾斜限制在 ±11°
 - 自由手绘边界轮廓（当前仍受简单凸轮廓与分段工具约束；Red 已支持预览手绘）
+- touch slide 的判定仍按平面轨迹走：`touch_start` / `touch_end` 目前只做数据、镜像与检查器录入，33 路触摸区传感器还没有接进试玩判定
+- 滤镜只做预览层近似（白光/压暗/活动清单），真正的模糊、色相、故障等 shader 后处理没有接入
 
 ## 测试
 
 ```bash
 godot --headless --path . --import
 godot --headless --path . --script res://tests/test_runner.gd
+godot --headless --path . --script res://tests/alpha_commands.gd
 ```
 
-当前结果：**596 passed, 0 failed**。测试覆盖：
+当前结果：**1375 passed**（Linux CI 全绿；本地 Windows 另有 34 条既有环境相关失败——import/zip/wav/ffmpeg/音频缓冲，与本次功能无关）。测试覆盖：
 
 - 120 BPM / 变速 / offset 的时间换算与反解
 - 新建谱面 BPM 三位小数/一位小数取整与 offset 三位小数规范化
@@ -183,6 +188,8 @@ godot --headless --path . --script res://tests/test_runner.gd
 - 竖线数量合法性、21 条竖线的等分位置与最近竖线吸附
 - 小节线细分吸附目标随 N 变化（1/4、1/3、1/5）
 - 音符镜像的 +180° 角度回绕、Bell center_u、Path 头尾/平面坐标/视觉偏移
+- 演出指令：31 条目录（判定线 1 / 文本 2 / 滤镜 28）、默认参数与夹取、三段包络与 `KALEIDOSCOPE`/`INVERT` 状态语义、同名指令取最强、JSON 往返与未知指令丢弃
+- 音符修饰：alpha/hs/sv/head_speed/spawn/bounce 的夹取与往返、弹跳公式两端归位、A–E 触摸区 33 路传感器映射与镜像互换、旧谱面缺省字段
 - 长度体系：普通 Tap / Hold 头 = 0.5 l、大小 Tap 的 0–1.5 l 范围与两位小数吸附、环心 1/6 l、Path 不受影响、JSON 只给大小 Tap 写 `sized`/`size`
 - osu!std 落道：合成谱面里左/中/右/上/左上五个 circle 按 Sentakki 的流/大跳落到 5/1/1/6/4 道，且所有角度都落在 Sentakki 的 45° 道上
 - FLAC 纳入可读取音频格式（经 ffmpeg 解码缓存）

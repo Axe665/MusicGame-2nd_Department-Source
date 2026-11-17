@@ -713,6 +713,92 @@ func _build_note_page_for(page: VBoxContainer, note: Note) -> void:
 	_note_widgets["seek_orien"] = seek_orien
 	_label(seek_body, "外 = 滚轮上滑；里 = 滚轮下滑。", 11, UITheme.MUTED)
 
+	var mods_body := _note_group(page, "mods", "演出修饰")
+	var alpha_ctl := _spin_slider(mods_body, "不透明度 alpha", note.visual_alpha(), 0.0, 1.0, 0.01, func(value: float) -> void:
+		if _active_note != null:
+			_active_note.alpha = clampf(value, 0.0, 1.0)
+	, true)
+	_note_widgets["mod_alpha"] = alpha_ctl["spin"]
+	_note_widgets["mod_alpha_slider"] = alpha_ctl["slider"]
+	_remember_row("mod_alpha", alpha_ctl["spin"])
+	var hs_spin := _spin(mods_body, "下落速度 HS", note.hs, 0.2, 4.0, 0.05, func(value: float) -> void:
+		if _active_note != null:
+			_active_note.hs = clampf(value, 0.2, 4.0)
+	)
+	hs_spin.tooltip_text = "音符自身下落速度倍率；与原版一致，只在音符出生瞬间取一次。"
+	_note_widgets["mod_hs"] = hs_spin
+	_remember_row("mod_hs", hs_spin)
+	var sv_spin := _spin(mods_body, "时间流速 SV", note.sv, 0.25, 4.0, 0.05, func(value: float) -> void:
+		if _active_note != null:
+			_active_note.sv = clampf(value, 0.25, 4.0)
+	)
+	sv_spin.tooltip_text = "时间轴滚动倍率，影响音符与边界靠近判定环的速度。"
+	_note_widgets["mod_sv"] = sv_spin
+	_remember_row("mod_sv", sv_spin)
+	var head_spin := _spin(mods_body, "滑条头部速度", note.head_speed, 0.25, 4.0, 0.05, func(value: float) -> void:
+		if _active_note != null:
+			_active_note.head_speed = clampf(value, 0.25, 4.0)
+	)
+	head_spin.tooltip_text = "只作用于 Hold / Path 的头部（星星）落速；身体与尾巴仍按 SV 走。"
+	_note_widgets["mod_head"] = head_spin
+	_remember_row("mod_head", head_spin)
+	var spawn_ctl := _spin_slider(mods_body, "出生半径 spawn", note.spawn, 0.0, 1.0, 0.01, func(value: float) -> void:
+		if _active_note != null:
+			_active_note.spawn = clampf(value, 0.0, 1.0)
+	, true)
+	_note_widgets["mod_spawn"] = spawn_ctl["spin"]
+	_note_widgets["mod_spawn_slider"] = spawn_ctl["slider"]
+	_remember_row("mod_spawn", spawn_ctl["spin"])
+	var bounce_ctl := _spin_slider(mods_body, "弹跳幅度 bounce", note.bounce, 0.0, 2.0, 0.01, func(value: float) -> void:
+		if _active_note != null:
+			_active_note.bounce = clampf(value, 0.0, 2.0)
+	, true)
+	_note_widgets["mod_bounce"] = bounce_ctl["spin"]
+	_note_widgets["mod_bounce_slider"] = bounce_ctl["slider"]
+	_remember_row("mod_bounce", bounce_ctl["spin"])
+	var bounce_dir := _option(mods_body, "弹跳方向", ["内凹", "外凸"], note.bounce_dir, func(index: int) -> void:
+		if _active_note != null:
+			_active_note.bounce_dir = 1 if index == 1 else 0
+	)
+	_note_widgets["mod_bounce_dir"] = bounce_dir
+	_remember_row("mod_bounce_dir", bounce_dir)
+	var touch_start := _text(mods_body, "触摸起点", note.touch_start, func(value: String) -> void:
+		if _active_note == null:
+			return
+		var text := value.strip_edges().to_upper()
+		_active_note.touch_start = text if Note.is_touch_position(text) else ""
+	)
+	touch_start.placeholder_text = "例如 A1 / B8（留空＝环上键位）"
+	_note_widgets["mod_touch_start"] = touch_start
+	_remember_row("mod_touch_start", touch_start)
+	var touch_end := _text(mods_body, "触摸终点", note.touch_end, func(value: String) -> void:
+		if _active_note == null:
+			return
+		var text := value.strip_edges().to_upper()
+		_active_note.touch_end = text if Note.is_touch_position(text) else ""
+	)
+	touch_end.placeholder_text = "例如 C / E8（留空＝普通滑条）"
+	_note_widgets["mod_touch_end"] = touch_end
+	_remember_row("mod_touch_end", touch_end)
+	_buttons(mods_body, [{"text": "复位修饰", "callback": func() -> void:
+		if _active_note == null:
+			return
+		var n := _active_note
+		_apply(func() -> void:
+			n.alpha = 1.0
+			n.hs = 1.0
+			n.sv = 1.0
+			n.head_speed = 1.0
+			n.spawn = 0.0
+			n.bounce = 0.0
+			n.bounce_dir = 0
+			n.touch_start = ""
+			n.touch_end = ""
+		)
+		_refresh_note_page()
+	}])
+	_label(mods_body, "alpha/HS/SV/spawn/bounce 是单音符修饰；触摸区写成字母编号（A1–A8、B1–B8、C、D1–D8、E1–E8）即自动变成 touch slide。判定线、文本与滤镜在「环编辑」工作区的时间轴编辑。", 11, UITheme.MUTED)
+
 	var misc := _note_group(page, "misc", "通用")
 	var color_group := _option(misc, "配色组", ["默认"], 0, func(index: int) -> void:
 		if _active_note != null:
@@ -831,6 +917,23 @@ func _refresh_note_page() -> void:
 	_note_groups["hold"].visible = note.type == "hold"
 	_note_groups["seek"].visible = note.type == "seek"
 	_note_groups["anchor"].visible = note.type == "anchor"
+	_note_groups["mods"].visible = true
+	_note_widgets["mod_alpha"].value = note.visual_alpha()
+	_note_widgets["mod_alpha_slider"].value = note.visual_alpha()
+	_note_widgets["mod_hs"].value = note.hs
+	_note_widgets["mod_sv"].value = note.sv
+	_note_widgets["mod_head"].value = note.head_speed
+	_note_widgets["mod_spawn"].value = note.spawn
+	_note_widgets["mod_spawn_slider"].value = note.spawn
+	_note_widgets["mod_bounce"].value = note.bounce
+	_note_widgets["mod_bounce_slider"].value = note.bounce
+	_note_widgets["mod_bounce_dir"].selected = 1 if note.bounce_dir == 1 else 0
+	_note_widgets["mod_touch_start"].text = note.touch_start
+	_note_widgets["mod_touch_end"].text = note.touch_end
+	_note_rows["mod_head"].visible = note.type in ["hold", "path"]
+	_note_rows["mod_touch_start"].visible = note.type == "path"
+	_note_rows["mod_touch_end"].visible = note.type == "path"
+	_note_widgets["mod_bounce_dir"].get_parent().visible = note.bounce > 0.0001
 	_note_widgets["bell_u"].value = note.center_u
 	_note_widgets["bell_w"].value = note.bell_width()
 	_note_widgets["bell_preview"].set_arc_width(note.bell_width())

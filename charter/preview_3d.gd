@@ -1864,6 +1864,7 @@ func draw_overlay(canvas: Control) -> void:
 	sec2 = Time.get_ticks_usec()
 	_perf_sections[2] += sec2 - sec_usec
 	_draw_notes(canvas, chart, t, pre)
+	_draw_alpha_commands(canvas, chart, t)
 	if show_path_judgement:
 		_draw_path_judgement(canvas, chart, t, pre)
 	_draw_note_pops(canvas)
@@ -2203,7 +2204,7 @@ func _draw_paths(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 		order.erase(note)
 		order.append(note)
 	for note in order:
-		var dim := 1.0 if active_list.has(note) else PATH_RELAY_DIM
+		var dim := (1.0 if active_list.has(note) else PATH_RELAY_DIM) * _note_alpha(note)
 		_draw_one_path(canvas, chart, note, t, pre, true, visible.size(), colors[note], dim, active_list.has(note))
 	if _drawing_path and _path_points.size() > 1:
 		var preview := PackedVector2Array()
@@ -3200,6 +3201,7 @@ func _draw_holds(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 			fade = clampf(1.0 - (t - note.end_beat) / fade_beats, 0.0, 1.0)
 		if state == "slip":
 			fade *= HOLD_SLIP_DIM
+		fade *= _note_alpha(note)
 		if fade <= 0.01:
 			continue
 		var hide_head := state == "holding" or state == "slip" or t >= note.end_beat
@@ -3290,10 +3292,11 @@ func _draw_tap_donut(canvas: Control, point: Vector2, radius: float, color: Colo
 
 func _draw_tap_note(canvas: Control, chart: Chart, note: Note, t: float, pre: float) -> void:
 	# 长度系统：普通 Tap = 0.5 l，大小 Tap = size_ratio × l；条带随半径从 1/6 长到 1。
-	var progress := _approach(chart, note.beat, t)
-	var q := lerpf(Note.SPAWN_LENGTH_RATIO, 1.0, progress)
+	# 修饰：HS 改变下落进度；spawn 抬高出生半径；bounce 让落点外凸/内凹；alpha 整体淡出。
+	var progress := _note_progress(chart, note, t)
+	var q := _note_radius_scale(note, progress)
 	var tint := _note_tint(note, UITheme.PINK)
-	var center_point := _draw_length_band(canvas, chart, note.angle, note.arc_width(), q, t, tint)
+	var center_point := _draw_length_band(canvas, chart, note.angle, note.arc_width(), q, t, tint, _note_alpha(note))
 	if show_debug and _valid_point(center_point):
 		var ns := _note_scale()
 		canvas.draw_string(UITheme.bold_font(), center_point + Vector2(-12, -22), "TAP %.0f°%s" % [note.arc_width(), " ×l %.2f" % note.size_ratio if note.sized else ""], HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(tint.r, tint.g, tint.b, 0.85))
@@ -3303,7 +3306,7 @@ func _draw_tap_note(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 ## 返回中心点屏幕坐标（可能为 INF）。
 func _draw_length_band(canvas: Control, chart: Chart, angle: float, width: float, radius_scale: float, t: float, color: Color, alpha: float = 1.0) -> Vector2:
 	var ns := _note_scale()
-	var radius := clampf(radius_scale, 0.0, 1.0)
+	var radius := maxf(0.0, radius_scale)
 	if width <= 0.05:
 		# 长度为 0 的大小 Tap 仍然占一个位置，留一个点提示它存在。
 		var tip := _boundary_point(chart, fposmod(angle, 360.0) / 360.0, t)
@@ -4536,21 +4539,22 @@ func _draw_diamond(canvas: Control, point: Vector2, radius: float, color: Color)
 ## 金键：环上一段白描边金键（圆头 + 金色核心）。所有 Bell 都在判定环上。
 ## 长度走 Note.bell_width()，和 Tap 到环时的 31° 同级；不再是一条长 45° 的金板。
 func _draw_bell(canvas: Control, chart: Chart, note: Note, t: float) -> void:
-	var q := lerpf(Note.SPAWN_LENGTH_RATIO, 1.0, _approach(chart, note.beat, t))
+	var q := _note_radius_scale(note, _note_progress(chart, note, t))
+	var alpha := _note_alpha(note)
 	var half := BELL_BAND_HALF * _note_scale() * float(_skin()["scale"])
 	var breathe := 0.5 + 0.5 * sin(float(Time.get_ticks_msec()) / 1000.0 * 2.4)
 	# 和 Tap / Hold 同一套语言：白色外壳 + 彩色核心，两端圆头。
 	_bell_capsule(canvas, note, t, q, -half - 5.0, half + 5.0,
-		Color(UITheme.KEY_YELLOW.r, UITheme.KEY_YELLOW.g, UITheme.KEY_YELLOW.b, 0.07 + 0.05 * breathe))
-	_bell_capsule(canvas, note, t, q, -half - 2.0, half + 2.0, Color(0, 0, 0, 0.55))
-	_bell_capsule(canvas, note, t, q, -half, half, Color(1, 1, 1, 0.94))
-	_bell_capsule(canvas, note, t, q, -half * 0.62, half * 0.62, UITheme.KEY_YELLOW)
+		Color(UITheme.KEY_YELLOW.r, UITheme.KEY_YELLOW.g, UITheme.KEY_YELLOW.b, (0.07 + 0.05 * breathe) * alpha))
+	_bell_capsule(canvas, note, t, q, -half - 2.0, half + 2.0, Color(0, 0, 0, 0.55 * alpha))
+	_bell_capsule(canvas, note, t, q, -half, half, Color(1, 1, 1, 0.94 * alpha))
+	_bell_capsule(canvas, note, t, q, -half * 0.62, half * 0.62, Color(UITheme.KEY_YELLOW.r, UITheme.KEY_YELLOW.g, UITheme.KEY_YELLOW.b, alpha))
 	# 扫键串的铃判定放宽到 75px，就把这个范围画出来：看到多大 = 能打多大。
 	if bool(path_judgement_states.get(note.id, {}).get("sweep_chain", false)):
 		var halo := _bell_ring_point(chart, note.center_u * 360.0, t, q)
 		if halo.is_finite():
 			canvas.draw_arc(halo, BELL_CHAIN_TOLERANCE * _note_scale(), 0.0, TAU, 64,
-				Color(UITheme.KEY_YELLOW.r, UITheme.KEY_YELLOW.g, UITheme.KEY_YELLOW.b, 0.2), 1.6, true)
+				Color(UITheme.KEY_YELLOW.r, UITheme.KEY_YELLOW.g, UITheme.KEY_YELLOW.b, 0.2 * alpha), 1.6, true)
 
 
 ## 弧带 + 两端圆头：画成一根沿环的胶囊。
@@ -4792,3 +4796,108 @@ func _note_scale() -> float:
 
 func _valid_point(point: Vector2) -> bool:
 	return is_finite(point.x) and is_finite(point.y) and point.x < 1.0e9 and point.y < 1.0e9
+
+
+## 演出指令叠加层：判定线 / 文本 / 滤镜。
+## 滤镜不做真正的 shader 后处理，只叠加可读的画面提示 + 右上角活动清单，让作者看见"此刻生效了什么"。
+func _draw_alpha_commands(canvas: Control, chart: Chart, t: float) -> void:
+	if chart == null or chart.commands.is_empty():
+		return
+	var area := canvas.get_rect()
+	var wash := Color(0, 0, 0, 0)
+	var chips: Array[String] = []
+	for command in chart.commands:
+		if not command.enabled:
+			continue
+		var env := command.envelope_at(t)
+		if env <= 0.01:
+			continue
+		match command.category():
+			AlphaCommand.CATEGORY_JLINE:
+				_draw_jline_command(canvas, area, command, env)
+			AlphaCommand.CATEGORY_TEXT:
+				_draw_text_command(canvas, area, command, env)
+			_:
+				var strength := command.number("strength", command.number("value", command.number("amount", 0.8)))
+				if command.name == "FLASH" or command.name == "BLOOM":
+					wash = Color(1, 1, 1, maxf(wash.a, 0.45 * env * clampf(strength, 0.0, 1.0)))
+				elif command.name == "FADE":
+					wash = Color(0, 0, 0, maxf(wash.a, 0.5 * env * clampf(strength, 0.0, 1.0)))
+				elif command.name == "INVERT":
+					wash = Color(0.86, 0.86, 0.92, maxf(wash.a, 0.18 * env))
+				elif command.name == "BRIGHTNESS":
+					var amount := clampf(strength, -1.0, 1.0) * 0.25 * env
+					if amount > 0.0:
+						wash = Color(1, 1, 1, maxf(wash.a, amount))
+					else:
+						wash = Color(0, 0, 0, maxf(wash.a, -amount))
+				chips.append("%s %.0f%%" % [command.label(), env * 100.0])
+	if wash.a > 0.005:
+		canvas.draw_rect(area, wash)
+	if chips.is_empty():
+		return
+	var font := UITheme.bold_font()
+	var y := area.position.y + 20.0
+	for i in mini(chips.size(), 6):
+		canvas.draw_string(font, Vector2(area.end.x - 8.0, y), chips[i], HORIZONTAL_ALIGNMENT_RIGHT, 220.0, 11,
+			Color(1, 1, 1, 0.55))
+		y += 14.0
+
+
+func _draw_jline_command(canvas: Control, area: Rect2, command: AlphaCommand, env: float) -> void:
+	var color := command.color_value("color", Color.WHITE)
+	var alpha := clampf(command.number("alpha", 1.0), 0.0, 1.0) * env
+	if alpha <= 0.01:
+		return
+	var width := clampf(command.number("width", 6.0), 0.5, 24.0)
+	var expand := clampf(command.number("expand", 0.0), 0.0, 1.0)
+	var y := area.get_center().y + area.size.y * 0.34
+	var half := area.size.x * (0.26 + expand * 0.2)
+	var from := Vector2(area.get_center().x - half, y)
+	var to := Vector2(area.get_center().x + half, y)
+	canvas.draw_line(from, to, Color(color.r, color.g, color.b, 0.16 * alpha), width * 3.0, true)
+	canvas.draw_line(from, to, Color(color.r, color.g, color.b, 0.85 * alpha), width, true)
+	canvas.draw_string(UITheme.bold_font(), to + Vector2(6, 4), command.name, HORIZONTAL_ALIGNMENT_LEFT, -1, 10,
+		Color(color.r, color.g, color.b, 0.7 * alpha))
+
+
+func _draw_text_command(canvas: Control, area: Rect2, command: AlphaCommand, env: float) -> void:
+	# JUDGETEXT 没有 content：它的 alpha 只该作用在判定文字上，预览层不画。
+	var content := command.text_value("content", "")
+	if content.is_empty():
+		return
+	var alpha := clampf(command.number("alpha", 1.0), 0.0, 1.0) * env
+	if alpha <= 0.01:
+		return
+	var font_size := int(clampf(command.number("size", 48.0), 10.0, 200.0))
+	var offset := Vector2(clampf(command.number("x", 0.0), -1.0, 1.0), clampf(command.number("y", 0.0), -1.0, 1.0))
+	var center := area.get_center() + Vector2(offset.x * area.size.x * 0.5, offset.y * area.size.y * 0.5)
+	var color := command.color_value("color", Color.WHITE)
+	canvas.draw_string(UITheme.bold_font(), Vector2(center.x - area.size.x * 0.5, center.y), content,
+		HORIZONTAL_ALIGNMENT_CENTER, area.size.x, font_size, Color(color.r, color.g, color.b, alpha))
+
+
+## 音符透明度（`<ALPHA*0.4>` 之类的等效实现：0 完全隐藏、1 原样）。
+func _note_alpha(note: Note) -> float:
+	if note == null:
+		return 1.0
+	return clampf(note.visual_alpha(), 0.0, 1.0)
+
+
+## 音符下落进度：HS 越大越早冲到判定环，只影响该音符自身。
+func _note_progress(chart: Chart, note: Note, t: float) -> float:
+	var progress := _approach(chart, note.beat, t)
+	var speed := note.speed_scale()
+	if absf(speed - 1.0) > 0.001:
+		progress = clampf(progress * speed, 0.0, 1.0)
+	return progress
+
+
+## 音符视觉半径倍率：出生半径（spawn）+ 落点弹跳（bounce）。返回可 > 1，表示越过判定环外侧。
+func _note_radius_scale(note: Note, progress: float) -> float:
+	var q := lerpf(Note.SPAWN_LENGTH_RATIO, 1.0, progress)
+	if note.spawn > 0.001:
+		q = maxf(q, lerpf(note.spawn, 1.0, progress))
+	if note.bounce > 0.001:
+		q = maxf(0.0, q * note.bounce_radius(progress))
+	return q

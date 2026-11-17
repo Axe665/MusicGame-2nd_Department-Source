@@ -12,6 +12,7 @@ const ZOOM_LEVELS := [8.0, 16.0, 32.0, 64.0]
 const WINDOW_BEATS := 16.0
 const THUMB_SIZE := Vector2(64, 64)
 const EASINGS := ["linear", "in-out"]
+const CATEGORIES := ["jline", "text", "filter"]
 
 
 ## 一段关键帧的长度文字：不足 1 小节写拍，超过写「N 小节 M 拍」。
@@ -80,6 +81,8 @@ var _thumb_signature := ""
 var _drag_kind := ""
 var _drag_key: Dictionary = {}
 var _drag_view: ViewState = null
+var _drag_command: AlphaCommand = null
+var _selected_command: AlphaCommand = null
 var _last_key_beat: float = -999.0
 var _sync_last_msec: int = 0
 var _sync_last_beat: float = -99999.0
@@ -138,6 +141,7 @@ class Timeline:
 	const LABEL_MIN := 42.0
 	const EDGE_HIT := 5.0
 	const KEY_HIT := 8.0
+	const LANE_COUNT := 5
 
 	var workspace: RingWorkspace
 	var _drag_kind := ""
@@ -147,8 +151,39 @@ class Timeline:
 
 	func _init(p_workspace: RingWorkspace) -> void:
 		workspace = p_workspace
-		custom_minimum_size = Vector2(0, 150)
+		custom_minimum_size = Vector2(0, LANE_TOP + float(LANE_COUNT) * (LANE_H + LANE_GAP) + 22.0)
 		mouse_filter = Control.MOUSE_FILTER_STOP
+
+	func _lane_color(lane: int) -> Color:
+		match lane:
+			0:
+				return UITheme.CYAN
+			1:
+				return UITheme.AMBER
+			2:
+				return UITheme.PINK
+			3:
+				return Color("#7FB2FF")
+			4:
+				return Color("#C9A0FF")
+		return UITheme.CYAN
+
+	func _lane_title(lane: int) -> String:
+		match lane:
+			0:
+				return "形状"
+			1:
+				return "镜头"
+			2:
+				return "判定线"
+			3:
+				return "文本"
+			4:
+				return "滤镜"
+		return ""
+
+	func _empty_hint(lane: int) -> String:
+		return "还没有关键帧" if lane <= 1 else "双击空白处添加指令"
 
 	func _x_for(beat: float) -> float:
 		return GUTTER + (beat - workspace.window_start()) / maxf(0.001, workspace.view_beats()) * (size.x - GUTTER)
@@ -163,7 +198,7 @@ class Timeline:
 		return _lane_top(lane) + LANE_H * 0.5
 
 	func _lane_at(y: float) -> int:
-		for lane in 2:
+		for lane in LANE_COUNT:
 			if y >= _lane_top(lane) and y <= _lane_top(lane) + LANE_H:
 				return lane
 		return -1
@@ -171,15 +206,28 @@ class Timeline:
 	func _lane_items(chart: Chart, lane: int) -> Array:
 		if lane == 0:
 			return chart.sorted_shape_keys()
-		var states: Array = chart.view_states.duplicate()
-		states.sort_custom(func(a: ViewState, b: ViewState) -> bool: return a.beat < b.beat)
-		return states
+		if lane == 1:
+			var states: Array = chart.view_states.duplicate()
+			states.sort_custom(func(a: ViewState, b: ViewState) -> bool: return a.beat < b.beat)
+			return states
+		return chart.commands_in(RingWorkspace.CATEGORIES[lane - 2])
 
 	func _item_beat(item) -> float:
+		if item is AlphaCommand:
+			return (item as AlphaCommand).beat
 		return float(item.get("beat", 0.0)) if item is Dictionary else (item as ViewState).beat
 
 	func _item_easing(item) -> String:
+		if item is AlphaCommand:
+			return (item as AlphaCommand).easing
 		return String(item.get("easing", "in-out")) if item is Dictionary else (item as ViewState).easing
+
+	func _item_end(item, items: Array, index: int, chart: Chart, bpb: float) -> float:
+		# 指令块的长度就是它自己的持续拍数；形状/镜头沿用「到下一帧」的语义。
+		if item is AlphaCommand:
+			var command := item as AlphaCommand
+			return maxf(command.beat + 0.25, command.end_beat())
+		return RingWorkspace.span_end(_item_beats(items), index, chart.content_end_beat(), bpb)
 
 	func _item_beats(items: Array) -> Array[float]:
 		var beats: Array[float] = []
@@ -199,13 +247,16 @@ class Timeline:
 		var bpb := maxf(1.0, chart.timing.beats_per_bar_at(start))
 		var snap_division: int = workspace.snap_division()
 		_draw_ruler(start, span, bpb)
-		var shape_keys := _lane_items(chart, 0)
-		var view_states := _lane_items(chart, 1)
-		_draw_lane(0, shape_keys, chart, bpb, snap_division)
-		_draw_lane(1, view_states, chart, bpb, snap_division)
-		_draw_gutter(shape_keys.size(), view_states.size())
+		var lanes: Array = []
+		var counts: Array[int] = []
+		for lane in LANE_COUNT:
+			var items := _lane_items(chart, lane)
+			lanes.append(items)
+			counts.append(items.size())
+			_draw_lane(lane, items, chart, bpb, snap_division)
+		_draw_gutter(counts)
 		_draw_playhead()
-		_draw_status(chart, shape_keys, view_states, bpb)
+		_draw_status(chart, lanes, bpb)
 
 	func _draw_ruler(start: float, span: float, bpb: float) -> void:
 		var font := UITheme.mono_font()
@@ -233,18 +284,18 @@ class Timeline:
 
 	func _draw_lane(lane: int, items: Array, chart: Chart, bpb: float, snap_division: int) -> void:
 		var top := _lane_top(lane)
-		var color := UITheme.CYAN if lane == 0 else UITheme.AMBER
-		draw_rect(Rect2(Vector2(GUTTER, top), Vector2(size.x - GUTTER, LANE_H)), Color(1, 1, 1, 0.018 if lane == 0 else 0.008))
+		var color := _lane_color(lane)
+		var is_primary := lane <= 1
+		draw_rect(Rect2(Vector2(GUTTER, top), Vector2(size.x - GUTTER, LANE_H)), Color(1, 1, 1, 0.018 if is_primary else 0.008))
 		_draw_lane_grid(lane, bpb, snap_division)
 		if items.is_empty():
-			draw_string(UITheme.FONT_REGULAR, Vector2(GUTTER + 8, _lane_center(lane) + 4), "还没有关键帧", HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(1, 1, 1, 0.28))
+			draw_string(UITheme.FONT_REGULAR, Vector2(GUTTER + 8, _lane_center(lane) + 4), _empty_hint(lane), HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(1, 1, 1, 0.28))
 			return
 		var beats := _item_beats(items)
-		var content_end := chart.content_end_beat()
 		for i in items.size():
 			var start := beats[i]
 			var seg_bpb := maxf(1.0, chart.timing.beats_per_bar_at(start))
-			var end := RingWorkspace.span_end(beats, i, content_end, seg_bpb)
+			var end := _item_end(items[i], items, i, chart, seg_bpb)
 			if end <= start:
 				end = start + 0.25
 			var x0 := _x_for(start)
@@ -256,15 +307,24 @@ class Timeline:
 			x1 = clampf(x1, GUTTER + 1.0, size.x - 1.0)
 			var y := _lane_center(lane) - BAR_H * 0.5
 			var hovered := _hover_lane == lane and _hover_index == i
-			var selected := absf(workspace.playhead() - start) < 0.01
+			var selected := false
+			if items[i] is AlphaCommand:
+				selected = workspace.selected_command() == items[i]
+			else:
+				selected = absf(workspace.playhead() - start) < 0.01
 			var fill_alpha := 0.34 if selected else (0.24 if hovered else 0.16)
 			var border_alpha := 0.90 if selected else (0.68 if hovered else 0.45)
 			var rect := Rect2(Vector2(x0, y), Vector2(maxf(2.0, x1 - x0), BAR_H))
 			draw_rect(rect, Color(color.r, color.g, color.b, fill_alpha))
 			draw_rect(rect, Color(color.r, color.g, color.b, border_alpha), false, 1.0)
-			_draw_easing(rect, String(_item_easing(items[i])), color)
+			if items[i] is AlphaCommand:
+				_draw_command_ticks(rect, items[i])
+			else:
+				_draw_easing(rect, String(_item_easing(items[i])), color)
 			if rect.size.x >= LABEL_MIN:
 				var text := RingWorkspace.span_label(end - start, seg_bpb)
+				if items[i] is AlphaCommand:
+					text = (items[i] as AlphaCommand).label()
 				draw_string(UITheme.FONT_REGULAR, Vector2(x0 + 7, y + 15), text, HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(1, 1, 1, 0.92 if (selected or hovered) else 0.72))
 			if key_visible:
 				var key_rect := Rect2(Vector2(x0 - KEY_SIZE * 0.5, _lane_center(lane) - KEY_SIZE * 0.5), Vector2(KEY_SIZE, KEY_SIZE))
@@ -273,12 +333,24 @@ class Timeline:
 				if selected:
 					draw_rect(key_rect.grow(3.0), UITheme.CORAL, false, 1.5)
 		# 最后一段的端帽：Animate 的「竖线 + 空心方块」。
-		var tail_x := _x_for(RingWorkspace.span_end(beats, beats.size() - 1, content_end, maxf(1.0, chart.timing.beats_per_bar_at(beats[-1]))))
+		var last_end := _item_end(items[items.size() - 1], items, items.size() - 1, chart, bpb)
+		var tail_x := _x_for(last_end)
 		if tail_x <= size.x - 1.0:
 			var tail_end := clampf(tail_x, GUTTER, size.x - 3.0)
 			var ty := _lane_center(lane)
 			draw_line(Vector2(tail_end, ty - 8.0), Vector2(tail_end, ty + 8.0), Color(color.r, color.g, color.b, 0.55), 1.5)
 			draw_rect(Rect2(Vector2(tail_end - 3.0, ty + 5.0), Vector2(6, 6)), Color(color.r, color.g, color.b, 0.75), false, 1.0)
+
+	func _draw_command_ticks(rect: Rect2, command: AlphaCommand) -> void:
+		# 起势/保持/收势三段的分界，让长度和手感一眼可见。
+		if command.is_stateful() or command.duration <= 0.0001 or rect.size.x < 18.0:
+			return
+		var attack := clampf(float(command.params.get("attack", 0.25)), 0.0, 0.9)
+		var release := clampf(float(command.params.get("release", 0.25)), 0.0, 0.9)
+		var duration := maxf(0.001, command.duration)
+		for ratio in [attack, 1.0 - release]:
+			var x := rect.position.x + rect.size.x * float(ratio)
+			draw_line(Vector2(x, rect.position.y + 3.0), Vector2(x, rect.end.y - 3.0), Color(1, 1, 1, 0.18), 1.0)
 
 	func _draw_easing(rect: Rect2, easing: String, color: Color) -> void:
 		if rect.size.x < 16.0:
@@ -313,14 +385,13 @@ class Timeline:
 						draw_line(Vector2(x, top + 4.0), Vector2(x, top + LANE_H - 4.0), Color(1, 1, 1, 0.022), 1.0)
 				b += step
 
-	func _draw_gutter(shape_count: int, view_count: int) -> void:
+	func _draw_gutter(counts: Array) -> void:
 		var font := UITheme.FONT_REGULAR
-		draw_rect(Rect2(Vector2(6, _lane_center(0) - 9), Vector2(3, 18)), UITheme.CYAN)
-		draw_string(font, Vector2(13, _lane_center(0) + 4), "形状", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, UITheme.CYAN)
-		draw_string(UITheme.mono_font(), Vector2(44, _lane_center(0) + 4), str(shape_count), HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(1, 1, 1, 0.45))
-		draw_rect(Rect2(Vector2(6, _lane_center(1) - 9), Vector2(3, 18)), UITheme.AMBER)
-		draw_string(font, Vector2(13, _lane_center(1) + 4), "镜头", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, UITheme.AMBER)
-		draw_string(UITheme.mono_font(), Vector2(44, _lane_center(1) + 4), str(view_count), HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(1, 1, 1, 0.45))
+		for lane in LANE_COUNT:
+			var color := _lane_color(lane)
+			draw_rect(Rect2(Vector2(6, _lane_center(lane) - 9), Vector2(3, 18)), color)
+			draw_string(font, Vector2(13, _lane_center(lane) + 4), _lane_title(lane), HORIZONTAL_ALIGNMENT_LEFT, -1, 11, color)
+			draw_string(UITheme.mono_font(), Vector2(52, _lane_center(lane) + 4), str(int(counts[lane])), HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(1, 1, 1, 0.45))
 
 	func _draw_playhead() -> void:
 		var px := _x_for(workspace.playhead())
@@ -329,22 +400,30 @@ class Timeline:
 		draw_line(Vector2(px, RULER_H), Vector2(px, size.y - 18.0), UITheme.CORAL, 1.5)
 		draw_colored_polygon(PackedVector2Array([Vector2(px - 5, RULER_H - 10), Vector2(px + 5, RULER_H - 10), Vector2(px, RULER_H)]), UITheme.CORAL)
 
-	func _draw_status(chart: Chart, shape_keys: Array, view_states: Array, bpb: float) -> void:
-		var text := "吸附 %s · 滚轮滚动 · Ctrl+滚轮缩放" % GridDivisions.label(workspace.snap_division())
+	func _draw_status(chart: Chart, lanes: Array, bpb: float) -> void:
+		var text := "吸附 %s · 滚轮滚动 · Ctrl+滚轮缩放 · 双击指令空白处添加" % GridDivisions.label(workspace.snap_division())
 		if _hover_index >= 0 and _hover_lane >= 0:
-			var items := shape_keys if _hover_lane == 0 else view_states
+			var items: Array = lanes[_hover_lane]
 			if _hover_index < items.size():
-				var beats := _item_beats(items)
-				var start := beats[_hover_index]
-				var end := RingWorkspace.span_end(beats, _hover_index, chart.content_end_beat(), bpb)
-				var lane_name := "形状" if _hover_lane == 0 else "镜头"
-				text = "%s · %s → %s · %s · %s" % [
-					lane_name,
-					chart.timing.format_beat(start),
-					chart.timing.format_beat(end),
-					RingWorkspace.span_label(end - start, bpb),
-					RingWorkspace.easing_label(String(_item_easing(items[_hover_index]))),
-				]
+				var item = items[_hover_index]
+				var start := _item_beat(item)
+				var end := _item_end(item, items, _hover_index, chart, bpb)
+				if item is AlphaCommand:
+					var command := item as AlphaCommand
+					text = "%s · %s → %s · %s" % [
+						command.label(),
+						chart.timing.format_beat(start),
+						chart.timing.format_beat(end),
+						command.summary(),
+					]
+				else:
+					text = "%s · %s → %s · %s · %s" % [
+						_lane_title(_hover_lane),
+						chart.timing.format_beat(start),
+						chart.timing.format_beat(end),
+						RingWorkspace.span_label(end - start, bpb),
+						RingWorkspace.easing_label(String(_item_easing(item))),
+					]
 		draw_string(UITheme.FONT_REGULAR, Vector2(GUTTER + 2, size.y - 5), text, HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(1, 1, 1, 0.42))
 
 	func _gui_input(event: InputEvent) -> void:
@@ -421,6 +500,8 @@ class Timeline:
 				if event.double_click:
 					if lane == 0:
 						workspace.open_pad_for_current()
+					elif lane >= 2:
+						workspace.select_command(items[i])
 					return
 				_begin_item_drag(lane, items[i])
 				return
@@ -435,15 +516,22 @@ class Timeline:
 					return
 				workspace.seek(beats[i])
 				return
-		workspace.seek(workspace.snap(_beat_at(pos.x)))
+		var snapped := workspace.snap(_beat_at(pos.x))
+		if lane >= 2 and event.double_click:
+			workspace.add_command_at(lane, snapped)
+			return
+		workspace.seek(snapped)
 
 	func _begin_item_drag(lane: int, item) -> void:
 		if lane == 0:
 			workspace.begin_key_drag(item)
 			_drag_kind = "key"
-		else:
+		elif lane == 1:
 			workspace.begin_view_drag(item)
 			_drag_kind = "view"
+		else:
+			workspace.begin_command_drag(item)
+			_drag_kind = "command"
 
 
 ## 2D 简图：画形状用的浮层，改完立刻反映到背景 3D。
@@ -1091,6 +1179,8 @@ func current_key() -> Dictionary:
 func _refresh() -> void:
 	if _app == null or _app.chart == null:
 		return
+	if _selected_command != null and not _app.chart.commands.has(_selected_command):
+		_selected_command = null
 	_rebuild_thumbs()
 	_rebuild_panel()
 	_sync_time_tool()
@@ -1233,6 +1323,125 @@ func _rebuild_panel() -> void:
 	var advanced := _fold("高级数值")
 	if advanced.visible:
 		_build_advanced(advanced)
+
+	_build_command_sections()
+
+
+func _build_command_sections() -> void:
+	var chart_data := chart()
+	if chart_data == null:
+		return
+	for index in CATEGORIES.size():
+		var category: String = CATEGORIES[index]
+		var box := _fold(_category_title(category))
+		var entries := AlphaCommand.catalog(category)
+		if entries.is_empty():
+			box.add_child(_label("这一类暂时没有可用指令。"))
+			continue
+		var picker := OptionButton.new()
+		picker.add_theme_font_size_override("font_size", 12)
+		for entry in entries:
+			picker.add_item(String(entry.get("label", entry.get("name", ""))))
+		picker.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var chosen: Array[int] = [0]
+		picker.item_selected.connect(func(item_index: int) -> void: chosen[0] = item_index)
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 4)
+		row.add_child(picker)
+		row.add_child(_button("＋ 播放头", func() -> void:
+			add_command_of(String(entries[clampi(chosen[0], 0, entries.size() - 1)].get("name", "")), snap(playhead()))
+		))
+		box.add_child(row)
+		var commands := chart_data.commands_in(category)
+		if commands.is_empty():
+			box.add_child(_label("双击时间轴这一行的空白处也能直接加一条。"))
+		for command in commands:
+			var line := HBoxContainer.new()
+			line.add_theme_constant_override("separation", 4)
+			var select := _button("%s  @%s" % [command.label(), chart_data.timing.format_beat(command.beat)], func() -> void:
+				select_command(command)
+			)
+			select.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			select.alignment = HORIZONTAL_ALIGNMENT_LEFT
+			line.add_child(select)
+			line.add_child(_button("×", func() -> void:
+				_selected_command = command
+				delete_selected_command()
+			))
+			box.add_child(line)
+	if _selected_command == null:
+		return
+	var edit := _fold("指令参数")
+	var command := _selected_command
+	edit.add_child(_label("%s ｜ %s" % [command.label(), command.hint()]))
+	edit.add_child(_number("起始拍", command.beat, 0.0, 100000.0, 0.25, func(value: float) -> void:
+		command.beat = maxf(0.0, value)
+		_timeline.queue_redraw()
+	))
+	edit.add_child(_number("持续拍数", command.duration, 0.0, 64.0, 0.25, func(value: float) -> void:
+		command.duration = maxf(0.0, value)
+		_timeline.queue_redraw()
+	))
+	edit.add_child(_option("过渡曲线", ["匀速", "缓入缓出"], 0 if command.easing == "linear" else 1, func(item_index: int) -> void:
+		command.easing = "linear" if item_index == 0 else "in-out"
+		_timeline.queue_redraw()
+	))
+	edit.add_child(_check("启用", command.enabled, func(value: bool) -> void:
+		command.enabled = value
+		_timeline.queue_redraw()
+	))
+	for param in command.spec().get("params", []):
+		_build_command_param(edit, command, param)
+	edit.add_child(_button("删除这条指令", delete_selected_command))
+
+
+func _build_command_param(parent: VBoxContainer, command: AlphaCommand, param: Dictionary) -> void:
+	var key := String(param.get("key", ""))
+	if key.is_empty():
+		return
+	var kind := String(param.get("type", "float"))
+	var label := String(param.get("label", key))
+	match kind:
+		"bool":
+			parent.add_child(_check(label, command.flag(key), func(value: bool) -> void:
+				command.params[key] = value
+				_timeline.queue_redraw()
+			))
+		"text":
+			parent.add_child(_text_field(label, command.text_value(key), func(value: String) -> void:
+				command.params[key] = value
+				_timeline.queue_redraw()
+			))
+		"color":
+			var picker := ColorPickerButton.new()
+			picker.edit_alpha = true
+			picker.custom_minimum_size = Vector2(0, 26)
+			picker.color = command.color_value(key)
+			picker.color_changed.connect(func(value: Color) -> void:
+				command.params[key] = value.to_html(true)
+				_timeline.queue_redraw()
+			)
+			parent.add_child(_label(label))
+			parent.add_child(picker)
+		_:
+			var step := float(param.get("step", 1.0))
+			var minimum := float(param.get("min", 0.0))
+			var maximum := float(param.get("max", 100.0))
+			parent.add_child(_number(label, command.number(key), minimum, maximum, step, func(value: float) -> void:
+				command.params[key] = int(value) if kind == "int" else value
+				_timeline.queue_redraw()
+			))
+
+
+func _category_title(category: String) -> String:
+	match category:
+		"jline":
+			return "判定线指令"
+		"text":
+			return "文本指令"
+		"filter":
+			return "滤镜指令"
+	return category
 
 
 func _build_advanced(parent: VBoxContainer) -> void:
@@ -1557,6 +1766,78 @@ func begin_view_drag(state: ViewState) -> void:
 	_app.begin_edit()
 
 
+# ---- 演出指令（判定线 / 文本 / 滤镜） -------------------------------------
+
+func selected_command() -> AlphaCommand:
+	return _selected_command
+
+
+func select_command(command) -> void:
+	if not (command is AlphaCommand):
+		return
+	_selected_command = command
+	seek(command.beat)
+	_rebuild_panel()
+	_timeline.queue_redraw()
+
+
+func add_command_at(lane: int, beat: float) -> void:
+	var chart_data := chart()
+	if chart_data == null or lane < 2 or lane >= 2 + CATEGORIES.size():
+		return
+	var names := AlphaCommand.names(CATEGORIES[lane - 2])
+	if names.is_empty():
+		return
+	var created: AlphaCommand = null
+	_app.mutate(func() -> void:
+		created = chart_data.add_command(names[0], maxf(0.0, beat))
+	)
+	if created == null:
+		return
+	_selected_command = created
+	seek(created.beat)
+	_refresh()
+	_rebuild_panel()
+
+
+func add_command_of(name: String, beat: float) -> void:
+	var chart_data := chart()
+	if chart_data == null or AlphaCommand.spec_of(name).is_empty():
+		return
+	var created: AlphaCommand = null
+	_app.mutate(func() -> void:
+		created = chart_data.add_command(name, maxf(0.0, beat))
+	)
+	if created == null:
+		return
+	_selected_command = created
+	seek(created.beat)
+	_refresh()
+	_rebuild_panel()
+
+
+func delete_selected_command() -> void:
+	if _selected_command == null:
+		return
+	var chart_data := chart()
+	if chart_data == null:
+		return
+	var doomed := _selected_command
+	_app.mutate(func() -> void: chart_data.remove_command(doomed))
+	_selected_command = null
+	_refresh()
+	_rebuild_panel()
+
+
+func begin_command_drag(command) -> void:
+	if not (command is AlphaCommand):
+		return
+	_drag_kind = "command"
+	_drag_command = command
+	_selected_command = command
+	_app.begin_edit()
+
+
 func drag_to(beat: float) -> void:
 	var target: float = _app.snap_beat(beat, false)
 	match _drag_kind:
@@ -1564,6 +1845,9 @@ func drag_to(beat: float) -> void:
 			_drag_key["beat"] = maxf(0.0, target)
 		"view":
 			_drag_view.beat = maxf(0.0, target)
+		"command":
+			if _drag_command != null:
+				_drag_command.beat = maxf(0.0, target)
 	_app.touch_chart()
 	_timeline.queue_redraw()
 
@@ -1572,9 +1856,11 @@ func end_drag() -> void:
 	_drag_kind = ""
 	_drag_key = {}
 	_drag_view = null
+	_drag_command = null
 	chart().shape_keys.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return float(a.get("beat", 0.0)) < float(b.get("beat", 0.0)))
 	_app.finish_edit()
 	_refresh()
+	_rebuild_panel()
 
 
 func _input(event: InputEvent) -> void:
@@ -1701,3 +1987,38 @@ func _number(text: String, value: float, min_value: float, max_value: float, ste
 func _set_hint(text: String) -> void:
 	if _title != null:
 		_title.text = text
+
+
+func _check(caption: String, value: bool, callback: Callable) -> Control:
+	var check := CheckBox.new()
+	check.text = caption
+	check.button_pressed = value
+	check.add_theme_font_size_override("font_size", 12)
+	check.toggled.connect(func(pressed: bool) -> void:
+		if _app != null:
+			_app.mutate(func() -> void: callback.call(pressed))
+	)
+	return check
+
+
+func _text_field(caption: String, value: String, callback: Callable) -> Control:
+	var row := HBoxContainer.new()
+	var label := Label.new()
+	label.text = caption
+	label.custom_minimum_size = Vector2(96, 0)
+	UITheme.style_mono(label, 11, UITheme.MUTED)
+	row.add_child(label)
+	var edit := LineEdit.new()
+	edit.text = value
+	edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var initial := value
+	var commit := func(new_text: String) -> void:
+		# 面板重建会释放输入框并触发 focus_exited：值没变就不要再写一次，避免自重入。
+		if new_text == initial:
+			return
+		if _app != null:
+			_app.mutate(func() -> void: callback.call(new_text))
+	edit.text_submitted.connect(commit)
+	edit.focus_exited.connect(func() -> void: commit.call(edit.text))
+	row.add_child(edit)
+	return row
