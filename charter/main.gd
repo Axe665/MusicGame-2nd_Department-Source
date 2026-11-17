@@ -13,6 +13,10 @@ var _main_row: Control
 var _ring_workspace: Control
 var _view_menu: MenuButton
 var _preview_panel: PanelContainer
+var _inspector_grip: Control
+var _inspector_dragging := false
+var _inspector_drag_start_x := 0.0
+var _inspector_drag_width := 310.0
 var _preview_grip: Control
 var _preview_reopen: Button
 var _preview_gear: MenuButton
@@ -34,6 +38,7 @@ const QUALITY_OPTIONS := [
 	{"key": "use_3d_ring", "label": "3D 环", "choices": [["开", 158], ["关", 159]]},
 	{"key": "note_detail_fine", "label": "音符精细度", "choices": [["全画质", 63], ["省电", 64]]},
 	{"key": "note_glow", "label": "音符光晕", "choices": [["开", 65], ["关", 66]]},
+	{"key": "path_style", "label": "Path 画法", "choices": [["履带（粗，默认）", 180], ["丝带（半透明）", 181]]},
 	{"key": "cursor_trail", "label": "光标拖尾", "choices": [["长", 67], ["短", 68], ["关", 69]]},
 	{"key": "fx_budget", "label": "命中特效", "choices": [["完整", 70], ["精简", 71], ["关", 72]]},
 	{"key": "ring_3d_scale", "label": "3D 环分辨率", "choices": [["原生", 160], ["超采样 1.25×", 161], ["超采样 1.5×", 162], ["高 0.85", 163], ["中 0.65", 164], ["低 0.5", 165]]},
@@ -339,6 +344,46 @@ func _set_preview_collapsed(value: bool, manual: bool) -> void:
 		_app.save_settings()
 
 
+## 检查器在画布右边：往右拖 = 检查器变窄，往左拖 = 变宽。
+func _on_inspector_grip_input(event: InputEvent) -> void:
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
+		if event.pressed and event.double_click:
+			_set_inspector_width(310.0)
+			return
+		if event.pressed:
+			_inspector_dragging = true
+			_inspector_drag_start_x = event.global_position.x
+			_inspector_drag_width = _inspector_wrap_width()
+		else:
+			_inspector_dragging = false
+			if _app != null:
+				_app.inspector_width = _inspector_wrap_width()
+				_app.save_settings()
+	elif event is InputEventMouseMotion and _inspector_dragging:
+		_set_inspector_width(_inspector_drag_width - (event.global_position.x - _inspector_drag_start_x))
+
+
+func _inspector_wrap_width() -> float:
+	var wrap := _main_row.get_node_or_null("InspectorWrap") as Control
+	if wrap == null:
+		# 没命名时退回第一层里带 inspector 子节点的那个 VBox。
+		for child in _main_row.get_children():
+			if child is VBoxContainer and child.get_node_or_null("Inspector") != null:
+				return child.custom_minimum_size.x
+		return 310.0
+	return wrap.custom_minimum_size.x
+
+
+func _set_inspector_width(width: float) -> void:
+	var wrap := _main_row.get_node_or_null("InspectorWrap") as Control if _main_row != null else null
+	if wrap == null:
+		return
+	var clamped := clampf(width, 260.0, 720.0)
+	wrap.custom_minimum_size.x = clamped
+	if _app != null:
+		_app.inspector_width = clamped
+
+
 func _on_preview_grip_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
 		if event.pressed:
@@ -518,19 +563,19 @@ func _build_ui() -> void:
 	var vertical_divider := VSeparator.new()
 	tool_row.add_child(vertical_divider)
 	var vertical_label := Label.new()
-	vertical_label.text = "竖线"
+	vertical_label.text = "角度等分"
 	vertical_label.add_theme_font_size_override("font_size", 11)
 	vertical_label.add_theme_color_override("font_color", UITheme.MUTED)
 	vertical_label.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	tool_row.add_child(vertical_label)
 	_vertical_lines_edit = LineEdit.new()
-	_vertical_lines_edit.text = str(_app.vertical_lines if _app != null else 11)
+	_vertical_lines_edit.text = str(_app.angle_divisions if _app != null else 12)
 	_vertical_lines_edit.custom_minimum_size = Vector2(48, 26)
 	_vertical_lines_edit.max_length = 3
 	_vertical_lines_edit.alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_vertical_lines_edit.select_all_on_focus = true
 	_vertical_lines_edit.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	_vertical_lines_edit.tooltip_text = "竖线数量（1–%d），等距分布在编辑区；放置音符靠近时自动吸附" % TimingMap.MAX_VERTICAL_LINES
+	_vertical_lines_edit.tooltip_text = "角度等分数 N（360÷N 必须是整数，12 → 每格 30°）；放置/拖动音符时按住 Shift 才吸附到格线"
 	_vertical_lines_edit.text_changed.connect(_on_vertical_lines_changed)
 	_vertical_lines_edit.text_submitted.connect(_on_vertical_lines_submitted)
 	_vertical_lines_edit.focus_exited.connect(_on_vertical_lines_focus_exited)
@@ -688,12 +733,20 @@ func _build_ui() -> void:
 	_event_track.canvas = _canvas
 
 	var inspector_wrap := VBoxContainer.new()
-	inspector_wrap.custom_minimum_size = Vector2(310, 0)
+	inspector_wrap.name = "InspectorWrap"
+	inspector_wrap.custom_minimum_size = Vector2(clampf(float(_app.inspector_width) if _app != null else 310.0, 260.0, 720.0), 0)
 	inspector_wrap.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	inspector_wrap.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	inspector_wrap.size_flags_stretch_ratio = 24.0
 	inspector_wrap.add_theme_constant_override("separation", 4)
 	main_row.add_child(inspector_wrap)
+	_inspector_grip = Control.new()
+	_inspector_grip.name = "InspectorGrip"
+	_inspector_grip.custom_minimum_size = Vector2(6, 0)
+	_inspector_grip.mouse_default_cursor_shape = Control.CURSOR_HSIZE
+	_inspector_grip.tooltip_text = "拖动调整检查器宽度（双击恢复默认）"
+	_inspector_grip.gui_input.connect(_on_inspector_grip_input)
+	main_row.add_child(_inspector_grip)
 	_preview_grip = Control.new()
 	_preview_grip.name = "PreviewGrip"
 	_preview_grip.custom_minimum_size = Vector2(6, 0)
@@ -722,10 +775,11 @@ func _build_ui() -> void:
 	_inspector.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	inspector_wrap.add_child(_inspector)
 	main_row.move_child(center, 0)
-	main_row.move_child(inspector_wrap, 1)
-	main_row.move_child(_preview_grip, 2)
-	main_row.move_child(_preview_panel, 3)
-	main_row.move_child(_preview_reopen, 4)
+	main_row.move_child(_inspector_grip, 1)
+	main_row.move_child(inspector_wrap, 2)
+	main_row.move_child(_preview_grip, 3)
+	main_row.move_child(_preview_panel, 4)
+	main_row.move_child(_preview_reopen, 5)
 	_main_row = main_row
 	_ring_workspace = preload("res://charter/ring_workspace.gd").new()
 	add_child(_ring_workspace)
@@ -913,18 +967,18 @@ func _set_beat_subdivision_error(has_error: bool) -> void:
 
 
 func _on_vertical_lines_changed(text: String) -> void:
-	var value := TimingMap.parse_vertical_lines(text)
+	var value := TimingMap.parse_angle_divisions(text)
 	if value > 0:
 		_set_vertical_lines_error(false)
-		if _app != null and _app.vertical_lines != value:
-			_app.vertical_lines = value
+		if _app != null and _app.angle_divisions != value:
+			_app.angle_divisions = value
 			if _canvas != null:
 				_canvas.queue_redraw()
 		return
 	if text.strip_edges().is_empty():
 		_set_vertical_lines_error(false)
 		return
-	_set_vertical_lines_error(true)
+	_set_vertical_lines_error(true, text)
 
 
 func _on_vertical_lines_submitted(text: String) -> void:
@@ -939,23 +993,32 @@ func _on_vertical_lines_focus_exited() -> void:
 func _commit_vertical_lines(text: String) -> void:
 	if _vertical_lines_edit == null:
 		return
-	var value := TimingMap.parse_vertical_lines(text)
+	var value := TimingMap.parse_angle_divisions(text)
 	if value > 0:
 		_vertical_lines_edit.text = str(value)
 		_set_vertical_lines_error(false)
-		if _app != null and _app.vertical_lines != value:
-			_app.vertical_lines = value
+		if _app != null and _app.angle_divisions != value:
+			_app.angle_divisions = value
+			_app.save_settings()
 			if _canvas != null:
 				_canvas.queue_redraw()
 		return
-	_set_vertical_lines_error(true)
-	_show_toast("竖线数据有误：请输入 1–%d 的整数。" % TimingMap.MAX_VERTICAL_LINES, "error")
+	var hint := 0
+	if text.strip_edges().is_valid_int():
+		hint = TimingMap.nearest_angle_divisions(int(text.strip_edges()))
+	_set_vertical_lines_error(true, text)
+	if hint > 0:
+		_show_toast("角度等分必须是 360 的约数：%d 不行，最近的合法值是 %d（每格 %.2f°）。" % [int(text.strip_edges()), hint, 360.0 / float(hint)], "error")
+	else:
+		_show_toast("角度等分请填 2–%d 且能整除 360 的整数（如 8 / 12 / 24）。" % TimingMap.MAX_ANGLE_DIVISIONS, "error")
 
 
-func _set_vertical_lines_error(has_error: bool) -> void:
+func _set_vertical_lines_error(has_error: bool, text: String = "") -> void:
 	if _vertical_lines_error == null or _vertical_lines_edit == null:
 		return
 	_vertical_lines_error.text = "数据有误" if has_error else ""
+	if has_error and text.strip_edges().is_valid_int():
+		_vertical_lines_error.text = str(TimingMap.nearest_angle_divisions(int(text.strip_edges())))
 	_vertical_lines_error.visible = has_error
 	if has_error:
 		_vertical_lines_edit.add_theme_color_override("font_color", UITheme.RED)
@@ -1133,6 +1196,8 @@ func _quality_index(key: String) -> int:
 			return 0 if _app.note_detail_fine else 1
 		"note_glow":
 			return 0 if _app.note_glow else 1
+		"path_style":
+			return 0 if _app.path_style == "tread" else 1
 		"cursor_trail":
 			return ["long", "short", "off"].find(_app.cursor_trail)
 		"fx_budget":
@@ -1173,6 +1238,11 @@ func _set_quality_index(key: String, index: int) -> void:
 			_app.note_detail_fine = index == 0
 		"note_glow":
 			_app.note_glow = index == 0
+		"path_style":
+			_app.path_style = "tread" if index == 0 else "ribbon"
+			# 画法只影响画面，不该把「预设」打成自定义。
+			_apply_visual_options()
+			return
 		"cursor_trail":
 			_app.cursor_trail = ["long", "short", "off"][clampi(index, 0, 2)]
 		"fx_budget":
@@ -1213,6 +1283,7 @@ func _apply_visual_options() -> void:
 	_preview.use_3d_ring = _app.use_3d_ring
 	_preview.note_detail_fine = _app.note_detail_fine
 	_preview.note_glow = _app.note_glow
+	_preview.path_style = _app.path_style
 	_preview.cursor_trail_mode = _app.cursor_trail
 	_preview.fx_budget = _app.fx_budget
 	_preview.ring_3d_scale = _app.ring_3d_scale
@@ -1231,6 +1302,7 @@ func _apply_visual_options() -> void:
 		var inner: Preview3D = _playtest._preview
 		inner.note_detail_fine = _app.note_detail_fine
 		inner.note_glow = _app.note_glow
+		inner.path_style = _app.path_style
 		inner.cursor_trail_mode = _app.cursor_trail
 		inner.fx_budget = _app.fx_budget
 		inner.ring_3d_scale = _app.ring_3d_scale
@@ -1646,7 +1718,7 @@ func _sync_from_app() -> void:
 		_beat_subdiv_edit.text = str(_app.beat_subdivisions)
 		_set_beat_subdivision_error(false)
 	if _vertical_lines_edit != null:
-		_vertical_lines_edit.text = str(_app.vertical_lines)
+		_vertical_lines_edit.text = str(_app.angle_divisions)
 		_set_vertical_lines_error(false)
 	if _stretch_edit != null:
 		_stretch_syncing = true

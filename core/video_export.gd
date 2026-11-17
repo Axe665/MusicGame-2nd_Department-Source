@@ -482,15 +482,9 @@ func _sfx_pcm(kind: String) -> PackedFloat32Array:
 	return out
 
 
-## 成片时长（秒）。ffprobe 不在就返回 0，跳过校验。
+## 成片时长（秒）。ffprobe 不在就退回 ffmpeg 的 -i 输出，都拿不到就返回 0（跳过校验）。
 func _probe_duration(path: String) -> float:
-	var probe := "ffprobe"
-	var out: Array = []
-	var code := OS.execute(probe, ["-v", "error", "-show_entries", "format=duration",
-		"-of", "csv=p=0", ProjectSettings.globalize_path(path)], out, true, false)
-	if code != 0 or out.is_empty():
-		return 0.0
-	return String(out[0]).strip_edges().to_float()
+	return MediaIO.probe_video_duration(ProjectSettings.globalize_path(path))
 
 
 func _smoke_device(encoder_name: String) -> String:

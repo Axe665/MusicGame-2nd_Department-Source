@@ -58,6 +58,9 @@ func _initialize() -> void:
 		"test_video_export_cursor",
 		"test_video_export_plan_hits",
 		"test_video_export_sfx_capture",
+		"test_pre_read_two_beats",
+		"test_bpm_lock_scales_following",
+		"test_wheel_direction_matches_screen",
 		"test_offline_focus_out_keeps_running",
 		"test_storyboard_clamps_first_command",
 		"test_storyboard_editor_fit_size",
@@ -245,19 +248,23 @@ func test_timing() -> bool:
 	near(offsets[1], 0.5, 0.00001, "beat subdivision offset 1")
 	near(offsets[2], 0.75, 0.00001, "beat subdivision offset 2")
 	eq(TimingMap.beat_subdivision_offsets(1).size(), 0, "beat subdivision 1 draws no thin line")
-	eq(TimingMap.parse_vertical_lines("21"), 21, "vertical lines parse 21")
-	eq(TimingMap.parse_vertical_lines("64"), 64, "vertical lines parse max 64")
-	eq(TimingMap.parse_vertical_lines("65"), 0, "vertical lines reject over max")
-	eq(TimingMap.parse_vertical_lines("0"), 0, "vertical lines reject zero")
-	eq(TimingMap.parse_vertical_lines("2.5"), 0, "vertical lines reject fraction")
-	eq(TimingMap.parse_vertical_lines("abc"), 0, "vertical lines reject text")
-	var vlines := TimingMap.vertical_line_offsets(21)
-	eq(vlines.size(), 21, "vertical lines 21 has 21 lines")
-	near(vlines[0], 1.0 / 22.0, 0.00001, "vertical lines first at 1/22")
-	near(vlines[20], 21.0 / 22.0, 0.00001, "vertical lines last at 21/22")
-	near(vlines[1] - vlines[0], 1.0 / 22.0, 0.00001, "vertical lines are evenly spaced")
-	near(TimingMap.nearest_vertical_line_u(0.51, 21), 11.0 / 22.0, 0.00001, "vertical lines snap to nearest interior line")
-	eq(TimingMap.vertical_line_offsets(0).size(), 0, "vertical lines 0 draws nothing")
+	eq(TimingMap.parse_angle_divisions("12"), 12, "angle divisions parse 12")
+	eq(TimingMap.parse_angle_divisions("8"), 8, "angle divisions parse 8")
+	eq(TimingMap.parse_angle_divisions("360"), 360, "angle divisions parse 360")
+	eq(TimingMap.parse_angle_divisions("7"), 0, "angle divisions reject values that do not divide 360")
+	eq(TimingMap.parse_angle_divisions("361"), 0, "angle divisions reject over max")
+	eq(TimingMap.parse_angle_divisions("1"), 0, "angle divisions reject one")
+	eq(TimingMap.parse_angle_divisions("2.5"), 0, "angle divisions reject fraction")
+	eq(TimingMap.parse_angle_divisions("abc"), 0, "angle divisions reject text")
+	eq(TimingMap.nearest_angle_divisions(7), 8, "angle divisions suggest the nearest legal value")
+	var alines := TimingMap.angle_line_offsets(12)
+	eq(alines.size(), 11, "angle divisions 12 has 11 interior lines")
+	near(alines[0], 1.0 / 12.0, 0.00001, "angle divisions first at 1/12")
+	near(alines[10], 11.0 / 12.0, 0.00001, "angle divisions last at 11/12")
+	near(TimingMap.nearest_angle_u(0.51, 12), 6.0 / 12.0, 0.00001, "angle lines snap to nearest line")
+	near(TimingMap.nearest_angle_u(0.01, 12), 0.0, 0.00001, "the 0 degree edge is a snap target")
+	near(TimingMap.nearest_angle_u(0.99, 12), 1.0, 0.00001, "the 360 degree edge is a snap target")
+	eq(TimingMap.angle_line_offsets(2).size(), 1, "two divisions draw one interior line")
 	near(TimingMap.nearest_beat_subdivision(1.13, 4), 1.25, 0.00001, "subdivision 4 snaps to 1.25")
 	near(TimingMap.nearest_beat_subdivision(1.12, 4), 1.0, 0.00001, "subdivision 4 snaps to 1.0")
 	near(TimingMap.nearest_beat_subdivision(2.4, 3), 7.0 / 3.0, 0.00001, "subdivision 3 snaps to 7/3")
@@ -1271,7 +1278,7 @@ func test_nearest_u() -> bool:
 
 func _preview_point(chart: Chart, u: float, target_beat: float, current_beat: float) -> Vector2:
 	var c: Vector2 = BoundaryRuntime.eval_point(chart, u, current_beat).point
-	var beats := chart.pre_read_ms / 60000.0 * chart.timing.bpm_at(current_beat)
+	var beats := chart.pre_read_ms_at(current_beat) / 60000.0 * chart.timing.bpm_at(current_beat)
 	var q := clampf((current_beat - (target_beat - beats)) / maxf(0.001, beats), 0.0, 1.0)
 	return c * q
 
@@ -1399,12 +1406,12 @@ func test_shrink_example() -> bool:
 		{"beat": 0.0, "shape_id": "S0", "easing": "linear"},
 		{"beat": 1.0, "shape_id": "S1", "easing": "linear"},
 	]
-	chart.pre_read_ms = 1000.0
+	# 预读固定 2 拍（60 BPM = 2s）：从 0 拍到 1 拍走一半。
 	var u := 0.0
-	var p_mid := _preview_point(chart, u, 1.0, 0.5)
-	near(p_mid.x, 127.5, 0.5, "1s shrink midpoint 127.5px")
+	var p_mid := _preview_point(chart, u, 1.0, 0.0)
+	near(p_mid.x, 165.0, 0.5, "two-beat pre-read midpoint is halfway")
 	var p_end := _preview_point(chart, u, 1.0, 1.0)
-	near(p_end.x, 180.0, 0.5, "1s shrink end 180px")
+	near(p_end.x, 180.0, 0.5, "two-beat pre-read ends on the boundary")
 	return true
 
 
@@ -2129,6 +2136,47 @@ func test_video_export_plan_hits() -> bool:
 	return true
 
 
+## 预读固定 2 拍：BPM 变了提前量跟着变，不再是固定毫秒。
+func test_pre_read_two_beats() -> bool:
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	near(chart.pre_read_ms_at(0.0), 1000.0, 0.001, "2 beats at 120 BPM is 1s")
+	chart.timing.points.append(TimingPoint.new(8.0, 60.0, 4))
+	near(chart.pre_read_ms_at(8.0), 2000.0, 0.001, "2 beats at 60 BPM is 2s")
+	near(chart.mirrored_copy("lr").pre_read_ms_at(0.0), 1000.0, 0.001, "mirror keeps the same pre-read")
+	return true
+
+
+## 「改 BPM 保持毫秒位置」：锚点之后的拍位按 新/旧 缩放，锚点之前不动。
+func test_bpm_lock_scales_following() -> bool:
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	var before := Note.new("tap", 2.0, 0.0, 60.0)
+	before.id = 1
+	var after := Note.new("hold", 12.0, 0.0, 60.0)
+	after.id = 2
+	after.end_beat = 16.0
+	chart.notes = [before, after]
+	chart.shape_keys = [{"beat": 20.0, "shape_id": "S0", "easing": "linear"}]
+	chart.scale_beats_after(8.0, 2.0)
+	near(before.beat, 2.0, 0.0001, "notes before the anchor keep their beat")
+	near(after.beat, 16.0, 0.0001, "notes after the anchor scale with the ratio")
+	near(after.end_beat, 24.0, 0.0001, "hold end scales too")
+	near(float(chart.shape_keys[0]["beat"]), 32.0, 0.0001, "shape keys scale too")
+	chart.scale_beats_after(8.0, 1.0)
+	near(after.beat, 16.0, 0.0001, "factor 1 is a no-op")
+	return true
+
+
+## 滚轮方向：往上滚，画布内容一定往上走。
+func test_wheel_direction_matches_screen() -> bool:
+	eq(ChartCanvas.wheel_step(true, false), -3.0, "flow up: wheel up moves content up")
+	eq(ChartCanvas.wheel_step(true, true), 3.0, "flow down: wheel up moves content up")
+	eq(ChartCanvas.wheel_step(false, false), 3.0, "flow up: wheel down moves content down")
+	eq(ChartCanvas.wheel_step(false, true), -3.0, "flow down: wheel down moves content down")
+	return true
+
+
 ## 导出视频里的打击音：离线整局静音，必须把 SFX 事件收集起来混进音轨，
 ## 否则成片只剩音乐（和现在的 bug 一致）。
 func test_video_export_sfx_capture() -> bool:
@@ -2654,7 +2702,6 @@ func test_playtest_countdown() -> bool:
 	eq(Playtest.countdown_number(0.0, 2.0), 0, "zero means GO")
 	var chart := Chart.new()
 	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
-	chart.pre_read_ms = 1000.0
 	near(Playtest.timeline_start_beat(chart, 8.0, 1000.0), 5.0, 0.26,
 		"a mid-chart start rewinds one pre-read plus half a second")
 	near(Playtest.timeline_start_beat(chart, 0.0, 1000.0), -3.0, 0.001,

@@ -50,6 +50,10 @@ var msaa_3d_level: int = 1
 var ring_pad_rect: Array = []
 var note_detail_fine: bool = true
 var note_glow: bool = true
+## path 身体画法："tread"（粗 chevron 履带，默认）/ "ribbon"（半透明丝带）。
+var path_style: String = "tread"
+## 时间页：改 BPM 时让后面的音符/事件保持真实毫秒位置（而不是保持拍位）。
+var bpm_lock_ms: bool = false
 ## long / short / off
 var cursor_trail: String = "long"
 ## full / light / off
@@ -85,6 +89,8 @@ var show_storyboard: bool = true
 var show_storyboard_background: bool = true
 ## 右侧预览宽度与折叠状态（编辑器布局记忆）。
 var preview_width: float = 340.0
+## 检查器（右栏）宽度；两条分割线都可拖，宽度跨会话记住。
+var inspector_width: float = 310.0
 var preview_collapsed: bool = false
 var hit_fx_style: String = "burst"
 var hit_sfx_style: String = "default"
@@ -125,7 +131,8 @@ var selected_view_index: int = -1
 var tool: String = "select"
 var snap_division: int = GridDivisions.DEFAULT_DIVISION
 var beat_subdivisions: int = 4
-var vertical_lines: int = 11
+## 角度格线的等分数（360 必须能被它整除）；u = i/N 处画出格线。
+var angle_divisions: int = 12
 var vertical_stretch: float = 0.0
 var zoom_px_per_beat: float = 28.0
 var time_flows_down: bool = true
@@ -567,8 +574,13 @@ func _load_settings() -> void:
 			msaa_3d_level = clampi(int(data.get("msaa_3d_level", 1)), 0, 7)
 			if data.get("ring_pad_rect") is Array:
 				ring_pad_rect = data["ring_pad_rect"]
+			var divisions := int(data.get("angle_divisions", angle_divisions))
+			angle_divisions = divisions if TimingMap.is_angle_division(divisions) else 12
 			note_detail_fine = bool(data.get("note_detail_fine", note_detail_fine))
 			note_glow = bool(data.get("note_glow", note_glow))
+			var style_mode := String(data.get("path_style", path_style))
+			path_style = style_mode if style_mode in ["tread", "ribbon"] else "tread"
+			bpm_lock_ms = bool(data.get("bpm_lock_ms", bpm_lock_ms))
 			var trail_mode := String(data.get("cursor_trail", cursor_trail))
 			cursor_trail = trail_mode if trail_mode in ["long", "short", "off"] else "long"
 			var fx_mode := String(data.get("fx_budget", fx_budget))
@@ -598,6 +610,7 @@ func _load_settings() -> void:
 			show_storyboard = bool(data.get("show_storyboard", show_storyboard))
 			show_storyboard_background = bool(data.get("show_storyboard_background", show_storyboard_background))
 			preview_width = clampf(float(data.get("preview_width", preview_width)), 280.0, 720.0)
+			inspector_width = clampf(float(data.get("inspector_width", inspector_width)), 260.0, 720.0)
 			preview_collapsed = bool(data.get("preview_collapsed", preview_collapsed))
 			hit_fx_style = String(data.get("hit_fx_style", hit_fx_style))
 			hit_sfx_style = String(data.get("hit_sfx_style", hit_sfx_style))
@@ -781,14 +794,14 @@ func effective_latency_sec() -> float:
 
 
 func save_settings() -> void:
-	var data := {"settings_version": 1, "path_wait_indicator": path_wait_indicator, "note_skin": note_skin, "hit_fx_style": hit_fx_style, "hit_sfx_style": hit_sfx_style, "ffmpeg": ffmpeg_path, "frame_cap": frame_cap, "video_encoder": video_encoder, "audio_buffer_ms": audio_buffer_ms, "playtest_offset_ms": playtest_offset_ms, "audio_latency_ms": audio_latency_ms, "music_volume": music_volume, "sfx_volume": sfx_volume, "dynamic_offset": dynamic_offset, "playtest_auto": playtest_auto, "playtest_mirror": playtest_mirror, "playback_scroll": playback_scroll, "background_brightness": background_brightness, "mouse_tilt": mouse_tilt, "startup_tabs": startup_tabs, "osu_favorites": osu_favorites, "last_bias_ms": last_bias_ms, "cursor_scale": cursor_scale, "flow_scale": flow_scale, "star_speed": star_speed, "aa_2d_level": aa_2d_level, "msaa_3d_level": msaa_3d_level, "ring_pad_rect": ring_pad_rect, "note_detail_fine": note_detail_fine, "note_glow": note_glow, "cursor_trail": cursor_trail, "fx_budget": fx_budget, "ring_3d_scale": ring_3d_scale, "ring_3d_hz": ring_3d_hz, "bar_lines": bar_lines, "quality_preset": quality_preset,
+	var data := {"settings_version": 1, "path_wait_indicator": path_wait_indicator, "note_skin": note_skin, "hit_fx_style": hit_fx_style, "hit_sfx_style": hit_sfx_style, "ffmpeg": ffmpeg_path, "frame_cap": frame_cap, "video_encoder": video_encoder, "audio_buffer_ms": audio_buffer_ms, "playtest_offset_ms": playtest_offset_ms, "audio_latency_ms": audio_latency_ms, "music_volume": music_volume, "sfx_volume": sfx_volume, "dynamic_offset": dynamic_offset, "playtest_auto": playtest_auto, "playtest_mirror": playtest_mirror, "playback_scroll": playback_scroll, "background_brightness": background_brightness, "mouse_tilt": mouse_tilt, "startup_tabs": startup_tabs, "osu_favorites": osu_favorites, "last_bias_ms": last_bias_ms, "cursor_scale": cursor_scale, "flow_scale": flow_scale, "star_speed": star_speed, "aa_2d_level": aa_2d_level, "msaa_3d_level": msaa_3d_level, "ring_pad_rect": ring_pad_rect, "angle_divisions": angle_divisions, "note_detail_fine": note_detail_fine, "note_glow": note_glow, "path_style": path_style, "bpm_lock_ms": bpm_lock_ms, "cursor_trail": cursor_trail, "fx_budget": fx_budget, "ring_3d_scale": ring_3d_scale, "ring_3d_hz": ring_3d_hz, "bar_lines": bar_lines, "quality_preset": quality_preset,
 		"hud_scale": hud_scale, "hud_combo_mode": hud_combo_mode, "hud_progress_style": hud_progress_style,
 		"hud_judge_position": hud_judge_position, "hud_opacity": hud_opacity,
 		"hud_show_title": hud_show_title, "hud_show_difficulty": hud_show_difficulty,
 		"hud_show_percent": hud_show_percent, "hud_show_time": hud_show_time,
 		"hud_show_watermark": hud_show_watermark,
 		"mouse_keys": mouse_keys, "show_storyboard": show_storyboard, "show_storyboard_background": show_storyboard_background,
-		"preview_width": preview_width, "preview_collapsed": preview_collapsed}
+		"preview_width": preview_width, "inspector_width": inspector_width, "preview_collapsed": preview_collapsed}
 	var file := FileAccess.open(SETTINGS_PATH, FileAccess.WRITE)
 	if file != null:
 		file.store_string(JSON.stringify(data, "\t"))

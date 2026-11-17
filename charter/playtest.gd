@@ -107,7 +107,10 @@ var _loaded_audio: AudioStream = null
 var _audio_stream_rate: float = 1.0
 ## 时间轴退到音频 0 秒之前时，音频要等这么久再起播（ms）。
 var _audio_delay_ms: float = 0.0
-const COUNTDOWN_SEC := 2.0
+## 准备阶段的倒计时 = 开头这一小节（拍号拍数），滴答落在拍上，最后一拍就是第一颗音符。
+var _countdown_sec: float = 2.0
+var _countdown_beats: int = 4
+var _countdown_bpm: float = 120.0
 var _ready_layer: Control = null
 var _ready_phase: String = "idle"     # load / fill / countdown / done
 var _ready_progress: float = 0.0
@@ -307,7 +310,7 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	if _pause_overlay != null:
 		_pause_overlay.visible = false
 	var flow := float(_app.flow_scale if _app != null else 1.0)
-	var pre_ms := chart.pre_read_ms / maxf(0.1, flow)
+	var pre_ms := chart.pre_read_ms_at(start_beat) / maxf(0.1, flow)
 	# 从读头起手时也先退一个预读 + 0.5s；倒计时结束后第一颗音符不会贴脸。
 	_timeline_start_beat = timeline_start_beat(chart, start_beat, pre_ms)
 	_timeline_start_ms = chart.timing.beat_to_chart_ms(_timeline_start_beat)
@@ -340,6 +343,7 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	if _app != null:
 		_preview.note_detail_fine = bool(_app.note_detail_fine)
 		_preview.note_glow = bool(_app.note_glow)
+		_preview.path_style = String(_app.path_style)
 		_preview.cursor_trail_mode = String(_app.cursor_trail)
 		_preview.fx_budget = String(_app.fx_budget)
 		_preview.ring_3d_scale = String(_app.ring_3d_scale)
@@ -430,6 +434,17 @@ func _start_play() -> void:
 	Input.set_mouse_mode(Input.MOUSE_MODE_HIDDEN)
 
 
+func _start_countdown() -> void:
+	# 用开始拍所在小节的拍号与 BPM：4/4 就是 4 拍，滴答和歌曲同一拍速。
+	_countdown_beats = maxi(2, chart.timing.beats_per_bar_at(start_beat))
+	_countdown_bpm = maxf(20.0, chart.timing.bpm_at(start_beat))
+	_countdown_sec = float(_countdown_beats) * 60.0 / _countdown_bpm
+	_countdown_left = _countdown_sec
+	_ready_phase = "countdown"
+	_tick_index = 0
+	_play_tick(_countdown_beats)
+
+
 func _process_ready(delta: float) -> void:
 	if _ready_layer == null:
 		return
@@ -440,18 +455,17 @@ func _process_ready(delta: float) -> void:
 	if _ready_phase == "fill":
 		_ready_progress = minf(1.0, _ready_progress + delta / maxf(0.05, _ready_delay))
 		if _ready_progress >= 1.0:
-			_ready_phase = "countdown"
-			_countdown_left = COUNTDOWN_SEC
-			_tick_index = 3
-			_play_tick(3)
+			_start_countdown()
 		_ready_layer.queue_redraw()
 		return
 	if _ready_phase == "countdown":
 		_countdown_left = maxf(0.0, _countdown_left - delta)
-		var n := countdown_number(_countdown_left, COUNTDOWN_SEC)
-		if n != _tick_index:
-			_tick_index = n
-			_play_tick(n)
+		# 滴答按拍走：elapsed 跨过第 k 拍就响一次，最后一拍正好是 GO。
+		var elapsed := _countdown_sec - _countdown_left
+		var beat_index := int(floor(elapsed * _countdown_bpm / 60.0))
+		if beat_index != _tick_index:
+			_tick_index = beat_index
+			_play_tick(maxi(0, _countdown_beats - beat_index))
 		if _countdown_left <= 0.0:
 			_start_play()
 			return
@@ -527,7 +541,8 @@ func _draw_ready_layer() -> void:
 		_ready_layer.draw_string(bold, Vector2(0.0, center.y + 14.0), "准备中",
 			HORIZONTAL_ALIGNMENT_CENTER, bounds.x, int(minf(54.0, radius * 0.7)), _ready_tint(UITheme.INK, 0.95))
 	else:
-		var number := str(_tick_index) if _tick_index > 0 else "GO"
+		var remaining := _countdown_beats - _tick_index
+		var number := str(maxi(0, remaining)) if remaining > 0 else "GO"
 		var size := int(minf(120.0, radius * 1.15))
 		_ready_layer.draw_string(bold, Vector2(0.0, center.y + size * 0.34), number,
 			HORIZONTAL_ALIGNMENT_CENTER, bounds.x, size, _ready_tint(UITheme.INK, 0.98))

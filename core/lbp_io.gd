@@ -27,7 +27,6 @@ static func export_chart(chart: Chart) -> String:
 	lines.append("Background: %s" % _clean(String(chart.metadata.get("background", ""))))
 	lines.append("PreviewTime: 0")
 	lines.append("Offset: %s" % _num(chart.offset_ms))
-	lines.append("PreRead: %s" % _num(chart.pre_read_ms))
 	lines.append("JudgeProfile: standard")
 	lines.append("Difficulty: %s" % _clean(chart.difficulty))
 	lines.append("")

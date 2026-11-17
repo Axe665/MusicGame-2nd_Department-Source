@@ -15,6 +15,8 @@ const CORAL_DARK := Color("#A83828")
 const PINK := Color("#FF6FAE")
 const CYAN := Color("#5FD8CF")
 const GOLD := Color("#F0C36A")
+## Hold 专用（和 Tap 的粉红同族，和 Bell 的金色拉开）：按住的键位一眼能认出来。
+const HOLD := Color("#FF5D7A")
 ## 金键（Bell）：亮黄核心。刻意和 Hold 的琥珀 #F2A65A 拉开。
 const KEY_YELLOW := Color("#FFD84D")
 const ACCENT := Color("#FFDE00")

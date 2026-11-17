@@ -134,7 +134,6 @@ static func chart_to_dict(chart: Chart) -> Dictionary:
 			"video_offset_ms": snappedf(chart.video_offset_ms, 0.001),
 			"video_fps": snappedf(chart.video_fps, 0.001),
 			"video_opacity": snappedf(chart.video_opacity, 0.001),
-			"pre_read_ms": snappedf(chart.pre_read_ms, 0.001),
 			"offset_ms": snappedf(chart.offset_ms, 0.001),
 			"difficulty": chart.difficulty,
 		},
@@ -327,7 +326,7 @@ static func chart_from_dict(data: Dictionary) -> Chart:
 	chart.video_offset_ms = float(general.get("video_offset_ms", 0.0))
 	chart.video_fps = float(general.get("video_fps", 60.0))
 	chart.video_opacity = float(general.get("video_opacity", 0.35))
-	chart.pre_read_ms = float(general.get("pre_read_ms", 1000.0))
+	# 旧文件里的 general.pre_read_ms 读进来直接忽略：预读固定 2 拍（Chart.PRE_READ_BEATS）。
 	chart.offset_ms = float(general.get("offset_ms", 0.0))
 	chart.difficulty = String(general.get("difficulty", "Normal"))
 	var meta: Dictionary = data.get("metadata", {})

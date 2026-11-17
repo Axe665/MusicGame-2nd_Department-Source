@@ -7,7 +7,9 @@ var video_path: String = ""
 var video_offset_ms: float = 0.0
 var video_fps: float = 60.0
 var video_opacity: float = 0.35
-var pre_read_ms: float = 1000.0
+## 音符提前多少拍出现。旧的「固定预读 ms」已删除：按当前 BPM 换算，
+## 所以变速曲里每颗音符的提前量是稳定的两拍，而不是固定的墙上时间。
+const PRE_READ_BEATS := 2.0
 var offset_ms: float = 0.0
 var difficulty: String = "Normal"
 var metadata: Dictionary = {
@@ -182,7 +184,6 @@ func mirrored_copy(mode: String) -> Chart:
 	result.video_offset_ms = video_offset_ms
 	result.video_fps = video_fps
 	result.video_opacity = video_opacity
-	result.pre_read_ms = pre_read_ms
 	result.offset_ms = offset_ms
 	result.difficulty = difficulty
 	result.metadata = metadata.duplicate(true)
@@ -386,3 +387,35 @@ func has_custom_note_colors() -> bool:
 		if note.has_custom_color or note.color > 0:
 			return true
 	return false
+
+
+## 两拍在当前 BPM 下是多少毫秒（显示层再按流向倍率缩放）。
+func pre_read_ms_at(beat: float = 0.0) -> float:
+	return PRE_READ_BEATS * 60000.0 / maxf(1.0, timing.bpm_at(beat))
+
+
+## 改 BPM 之后，把 anchor 之后所有「按拍存」的东西按 factor 缩放拍位。
+## factor = 新 BPM / 旧 BPM：大于 1 时同样的真实时间只占更少拍（保持毫秒位置）。
+func scale_beats_after(anchor_beat: float, factor: float) -> void:
+	if is_equal_approx(factor, 1.0):
+		return
+	for note in notes:
+		note.beat = _scale_one(anchor_beat, note.beat, factor)
+		note.end_beat = _scale_one(anchor_beat, note.end_beat, factor)
+	for region in regions:
+		region.start_beat = _scale_one(anchor_beat, region.start_beat, factor)
+		region.end_beat = _scale_one(anchor_beat, region.end_beat, factor)
+	for event in events:
+		event.start_beat = _scale_one(anchor_beat, event.start_beat, factor)
+		event.end_beat = _scale_one(anchor_beat, event.end_beat, factor)
+	for key in shape_keys:
+		key["beat"] = _scale_one(anchor_beat, float(key.get("beat", 0.0)), factor)
+	for state in view_states:
+		state.beat = _scale_one(anchor_beat, state.beat, factor)
+	for point in timing.points:
+		point.beat = _scale_one(anchor_beat, point.beat, factor)
+	timing.sort_points()
+
+
+static func _scale_one(anchor_beat: float, beat: float, factor: float) -> float:
+	return anchor_beat + (beat - anchor_beat) * factor if beat > anchor_beat else beat

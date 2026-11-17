@@ -95,6 +95,8 @@ var hud_ms: float = 0.0
 var hud_total_ms: float = 0.0
 
 var cursor_u: float = 0.0
+## path 身体画法："tread"（粗 chevron 履带）/ "ribbon"（半透明丝带，Arcaea 式）。
+var path_style: String = "tread"
 var cursor_valid: bool = false
 var mouse_screen: Vector2 = Vector2.ZERO
 var mouse_inside: bool = false
@@ -1889,23 +1891,24 @@ func _split_segment() -> void:
 	_mesh_dirty = true
 
 
-func _pre_read_beats(chart: Chart, beat: float) -> float:
-	return chart.pre_read_ms / maxf(0.1, flow_scale) / 60000.0 * chart.timing.bpm_at(beat)
+func _pre_read_beats(_chart: Chart, _beat: float) -> float:
+	# 固定 2 拍（Chart.PRE_READ_BEATS）：流向倍率越快，提前量越短。
+	return Chart.PRE_READ_BEATS / maxf(0.1, flow_scale)
 
 
-## 预读时长（毫秒）。和 BPM 无关，所以变 BPM 时不会跳。
-func _pre_read_ms(chart: Chart) -> float:
-	return maxf(30.0, chart.pre_read_ms / maxf(0.1, flow_scale))
+## 预读时长（毫秒）。按目标音符所在 BPM 换算，变速曲里提前量恒为两拍。
+func _pre_read_ms(chart: Chart, beat: float = 0.0) -> float:
+	return maxf(30.0, chart.pre_read_ms_at(beat) / maxf(0.1, flow_scale))
 
 
 ## 这个音符开始从圆心飞出的拍号（毫秒反推，变 BPM 处连续）。
 func _spawn_beat(chart: Chart, target_beat: float) -> float:
-	return chart.timing.spawn_beat(target_beat, _pre_read_ms(chart))
+	return chart.timing.spawn_beat(target_beat, _pre_read_ms(chart, target_beat))
 
 
 ## 0..1 的接近进度（毫秒恒速，不会在变 BPM 时忽然跳到一半）。
 func _approach(chart: Chart, target_beat: float, current_beat: float) -> float:
-	return chart.timing.approach(target_beat, current_beat, _pre_read_ms(chart))
+	return chart.timing.approach(target_beat, current_beat, _pre_read_ms(chart, target_beat))
 
 
 ## 星星从圆心落到环上的时长（固定 0.5 秒，换算成拍；不超过预读）。
@@ -1933,7 +1936,7 @@ func _radial_scale(point: Vector2, min_scale: float, max_scale: float, beat: flo
 
 ## 星星开始下落（落到环上 0.5 秒前）的拍号。
 func _fall_beat(chart: Chart, target_beat: float) -> float:
-	return chart.timing.spawn_beat(target_beat, minf(_pre_read_ms(chart), 500.0))
+	return chart.timing.spawn_beat(target_beat, minf(_pre_read_ms(chart, target_beat), 500.0))
 
 
 func _flying_position(chart: Chart, angle: float, target_beat: float, current_beat: float, _pre: float) -> Vector2:
@@ -3010,16 +3013,23 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 			# 不再缩成细线，否则多条星先后出现时后一条完全读不出路径。
 			var path_band := float(_skin()["band"])
 			var band_width := 5.0 * PATH_SIZE_SCALE * ns * path_band
-			canvas.draw_polyline(piece, Color(0, 0, 0, 0.50 * trail_dim), band_width + 4.0, false)
-			canvas.draw_polyline(piece, Color(accent.r, accent.g, accent.b, 0.95 * trail_dim), band_width, false)
-			# 箭头链也画在所有星上：后面的星和前面的星同形，只靠 dim 压暗。
-			var piece_length := 0.0
-			for i in piece.size() - 1:
-				piece_length += piece[i].distance_to(piece[i + 1])
-			# 箭头按固定弧长等距排布（屏幕像素）：所有 Path 共用同一个间距，
-			# 短段自动不出箭头，长段也不会被“上限”压缩成稀疏几只。
+			# 同押（同屏还有别的 path）时先垫一圈白描边，重叠加起来的带子才数得清。
+			if visible_count > 1:
+				canvas.draw_polyline(piece, Color(1, 1, 1, 0.34 * trail_dim), band_width * 1.7 + 8.0, false)
+			canvas.draw_polyline(piece, Color(0, 0, 0, 0.55 * trail_dim), band_width * 1.7 + 4.0, false)
+			if path_style == "ribbon":
+				# B 半透明丝带：宽而透的身体 + 一道亮边（Arcaea 式）。
+				canvas.draw_polyline(piece, Color(accent.r, accent.g, accent.b, 0.40 * trail_dim), band_width * 1.55, false)
+				canvas.draw_polyline(piece, Color(accent.r, accent.g, accent.b, 0.95 * trail_dim), band_width * 0.42, false)
+			else:
+				# A 粗 chevron 履带：实心带 + 内部箭头纹，方向一眼可读。
+				canvas.draw_polyline(piece, Color(accent.r, accent.g, accent.b, 0.95 * trail_dim), band_width * 1.7, false)
+				_draw_tread_marks(canvas, piece, band_width * 1.7, Color(0.04, 0.05, 0.08, 0.45 * trail_dim))
+			# 方向箭头：丝带靠它读方向；履带本身已经带纹，只在远处留少量箭头。
 			var chevron_size := 12.0 * ns * PATH_SIZE_SCALE
 			var chevron_spacing := maxf(36.0, chevron_size * 2.3)
+			if path_style == "tread":
+				chevron_spacing *= 2.2
 			for fraction in chevron_fractions(piece, chevron_spacing, chevron_size * 1.9):
 				var sample: Dictionary = _polyline_sample(piece, fraction)
 				# 试玩时轨迹已经被擦到光标处，剩下的每一段都在前方，不该再按“piece 内比例”压暗。
@@ -3058,6 +3068,28 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 	var tail := _path_screen_point(chart, note, total, t, true, 1.0)
 	# 尾点倒计时环：距尾判定 2 拍内从大圈收到尾环，贴合时正是尾判定时刻。
 	# 多条星同时在场时，环先缩满的那条就是要先划完的。
+	if _valid_point(tail) and trail_fade > 0.01 and end_fade > 0.01:
+		# 终点端子：圆头短杠收住轨迹，密集时不会被误读成另一条的起点。
+		var dir := (tail - _path_screen_point(chart, note, total - 0.05, t, true, 1.0)).normalized()
+		if dir.length_squared() < 0.1:
+			dir = Vector2.UP
+		var normal := Vector2(-dir.y, dir.x)
+		var half := 7.0 * ns * PATH_SIZE_SCALE
+		var cap_a := tail + normal * half
+		var cap_b := tail - normal * half
+		canvas.draw_line(cap_a, cap_b, Color(0, 0, 0, 0.55 * trail_dim), 7.0 * ns)
+		canvas.draw_line(cap_a, cap_b, Color(accent.r, accent.g, accent.b, 0.95 * trail_dim), 4.0 * ns)
+		canvas.draw_circle(cap_a, 2.4 * ns, Color(accent.r, accent.g, accent.b, 0.95 * trail_dim))
+		canvas.draw_circle(cap_b, 2.4 * ns, Color(accent.r, accent.g, accent.b, 0.95 * trail_dim))
+		# 多颗星同时在场时，终点再补 3 个反向箭头：一眼看出这条往哪儿结束。
+		if visible_count > 1:
+			for k in 3:
+				var at := tail - dir * float(k + 1) * 11.0 * ns
+				_draw_chevron(canvas, at, -dir, Color(1, 1, 1, 0.75 * trail_dim), 9.0 * ns)
+	if _valid_point(ring_head) and t >= spawn_beat and fall_progress < 1.0:
+		# 发车环：星头落到环上之前，一圈由大到小收进来。
+		var head_ring := lerpf(46.0, 13.0, clampf(fall_progress, 0.0, 1.0)) * ns
+		canvas.draw_arc(ring_head, head_ring, 0.0, TAU, 32, Color(1, 1, 1, 0.55 * trail_fade * end_fade), 2.2, false)
 	if _valid_point(tail) and t >= note.beat - 0.15:
 		var remain := note.end_beat - t
 		if remain <= 2.0 and remain > -end_span:
@@ -3749,6 +3781,12 @@ func _draw_hold_sector(canvas: Control, chart: Chart, note: Note, t: float, pre:
 			canvas.draw_line(outer[0], outer[outer.size() - 1], Color(tint.r, tint.g, tint.b, 0.22 * fade), 30.0 * _note_scale(), false)
 			canvas.draw_line(outer[0], outer[outer.size() - 1], Color(1, 1, 1, 0.30 * fade), 24.0 * _note_scale(), false)
 		_draw_hold_cap_band(canvas, outer[0], outer[outer.size() - 1], fade, tint)
+		# 接近环：头部到判定环之前由大到小收进来，按住的“起点”一眼可见。
+		if not highlight:
+			var mid := (outer[0] + outer[outer.size() - 1]) * 0.5
+			var k := clampf(outer_scale, 0.0, 1.0)
+			var ring := lerpf(44.0, 12.0, k) * _note_scale()
+			canvas.draw_arc(mid, ring, 0.0, TAU, 30, Color(tint.r, tint.g, tint.b, (1.0 - k) * 0.85 * fade), 2.2, false)
 	if inner.size() > 1 and inner_scale > 0.002:
 		_draw_hold_tail_band(canvas, inner[0], inner[inner.size() - 1], fade, tint)
 
@@ -3842,7 +3880,7 @@ func _draw_holds(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 	var next_lead := INF
 	for note in visible:
 		var state := note_state(note.id)
-		var tint := _note_tint(note, UITheme.GOLD)
+		var tint := _note_tint(note, UITheme.HOLD)
 		var fade_beats := end_fade_beats(chart.timing.bpm_at(note.beat))
 		var fade := 1.0
 		if state == "hit":
@@ -5104,7 +5142,7 @@ func _draw_debug(canvas: Control, chart: Chart, t: float) -> void:
 	canvas.draw_string(mono, Vector2(18, 28), "u %.2f°  |  beat %.2f" % [cursor_u * 360.0, t], HORIZONTAL_ALIGNMENT_LEFT, -1, 11, UITheme.INK)
 	canvas.draw_string(mono, Vector2(18, 44), "time %.0f ms  |  %s" % [chart.timing.beat_to_chart_ms(t), "有效" if cursor_valid else "无位置"], HORIZONTAL_ALIGNMENT_LEFT, -1, 11, UITheme.MUTED)
 	canvas.draw_string(mono, Vector2(18, 60), "shape %s  |  zoom %.2f" % [chart.default_shape_id, float(current_view().get("zoom", 1.0))], HORIZONTAL_ALIGNMENT_LEFT, -1, 11, UITheme.MUTED)
-	canvas.draw_string(mono, Vector2(18, 76), "branch 0  |  D %.0f ms ×%.2f  |  %d fps" % [chart.pre_read_ms, flow_scale, Engine.get_frames_per_second()], HORIZONTAL_ALIGNMENT_LEFT, -1, 11, UITheme.MUTED)
+	canvas.draw_string(mono, Vector2(18, 76), "branch 0  |  D %.0f ms ×%.2f  |  %d fps" % [chart.pre_read_ms_at(t), flow_scale, Engine.get_frames_per_second()], HORIZONTAL_ALIGNMENT_LEFT, -1, 11, UITheme.MUTED)
 	for i in 12:
 		var u := float(i) / 12.0
 		var p := project_u(u, t)
@@ -5182,6 +5220,17 @@ static func chevron_fractions(points: PackedVector2Array, spacing: float, min_ga
 		placed.append(spot)
 		fractions.append(clampf(target / total, 0.0, 1.0))
 	return fractions
+
+
+## 履带纹：沿轨迹按固定弧长盖一串暗色 V 纹，读方向、也把实心带区分成“一节一节”。
+func _draw_tread_marks(canvas: Control, piece: PackedVector2Array, width: float, color: Color) -> void:
+	if piece.size() < 2 or width < 3.0:
+		return
+	var spacing := maxf(10.0, width * 0.75)
+	var size := width * 0.42
+	for fraction in chevron_fractions(piece, spacing, spacing * 0.8):
+		var sample: Dictionary = _polyline_sample(piece, fraction)
+		_draw_chevron(canvas, sample["point"], sample["direction"], color, size)
 
 
 func _draw_chevron(canvas: Control, point: Vector2, direction: Vector2, color: Color, size: float) -> void:
@@ -5518,7 +5567,7 @@ func _design_radius_to_screen(point: Vector2, radius: float) -> float:
 ## 变 BPM 时同一个预读在拍号上会变宽/变窄，按拍号取窗口会让音符提前进/提前出；
 ## 这里先把 t±pre_ms 换成拍号，窗口在时间上永远是同一个长度。
 func _notes_around(chart: Chart, t: float, back: float = 0.0, ahead: float = 0.0) -> Array[Note]:
-	var pre_ms := _pre_read_ms(chart)
+	var pre_ms := _pre_read_ms(chart, t)
 	var t_ms := chart.timing.beat_to_chart_ms(t)
 	var from_beat := chart.timing.chart_ms_to_beat(t_ms - pre_ms) - back
 	var to_beat := chart.timing.chart_ms_to_beat(t_ms + pre_ms) + ahead

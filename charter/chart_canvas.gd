@@ -140,7 +140,7 @@ func _u_to_x(u: float) -> float:
 
 func _x_to_u(x: float) -> float:
 	var plot := _plot_rect()
-	return clampf((x - plot.position.x) / maxf(1.0, plot.size.x), 0.0, 0.999999)
+	return clampf((x - plot.position.x) / maxf(1.0, plot.size.x), 0.0, 1.0)
 
 
 func _vertical_scale() -> float:
@@ -772,7 +772,7 @@ func _draw_beat_subdivisions(plot: Rect2, emphasize: bool) -> void:
 func _draw_vertical_lines(plot: Rect2) -> void:
 	if _app == null:
 		return
-	var offsets := TimingMap.vertical_line_offsets(int(_app.vertical_lines))
+	var offsets := TimingMap.angle_line_offsets(int(_app.angle_divisions))
 	if offsets.is_empty():
 		return
 	var color := Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.09)
@@ -1292,7 +1292,7 @@ func _gui_input(event: InputEvent) -> void:
 			_clipboard_mouse_beat = _hover_beat
 			_rebuild_ghost()
 		if _pending_hold != null:
-			var end_beat := _snap_beat_to_subdivision(_y_to_beat(event.position.y), event.alt_pressed)
+			var end_beat := _snap_beat_to_subdivision(_y_to_beat(event.position.y), not _snap_modifier(event))
 			_pending_hold.end_beat = maxf(_pending_hold.beat, end_beat)
 			_app.touch_chart()
 		if _drag_mode == "note":
@@ -1413,8 +1413,7 @@ func _handle_wheel(event: InputEventMouseButton) -> void:
 		if _app != null:
 			_app.set_vertical_stretch(_app.vertical_stretch + step)
 	else:
-		var direction := -1.0 if event.button_index == MOUSE_BUTTON_WHEEL_UP else 1.0
-		scroll_beat = clampf(scroll_beat + direction * 3.0, 0.0, _scroll_limit())
+		scroll_beat = clampf(scroll_beat + wheel_step(event.button_index == MOUSE_BUTTON_WHEEL_UP, flow_down), 0.0, _scroll_limit())
 		if playback_pinned and playback_view == "pin":
 			# 滚轮临时脱离钉住：过一会儿自动拉回播放头。
 			_pin_resume_msec = Time.get_ticks_msec() + PIN_RESUME_MS
@@ -1427,7 +1426,18 @@ func _handle_wheel(event: InputEventMouseButton) -> void:
 		_overlay.queue_redraw()
 
 
-func _snap_beat_to_subdivision(raw_beat: float, bypass: bool = false) -> float:
+## 默认不吸附（真正的自由放置）；按住 Shift 才吸附到最近的 拍×角度 格点。
+static func _snap_modifier(event: InputEventWithModifiers) -> bool:
+	return event.shift_pressed and not event.alt_pressed
+
+
+## 滚轮一小格的 beat 位移。规则只有一条：往上滚，画布内容往上走。
+## 时间轴朝下（flow_down）时 beat 越大越靠下，往上要加 beat；朝上时反过来。
+static func wheel_step(up: bool, flow_down: bool, steps: float = 3.0) -> float:
+	return steps if up == flow_down else -steps
+
+
+func _snap_beat_to_subdivision(raw_beat: float, bypass: bool = true) -> float:
 	if bypass or _app == null:
 		return raw_beat
 	return TimingMap.nearest_beat_subdivision(raw_beat, int(_app.beat_subdivisions))
@@ -1440,11 +1450,8 @@ func _snap_beat_u(raw_beat: float, raw_u: float, bypass: bool) -> Vector2:
 	if bypass or _app == null:
 		return Vector2(raw_beat, raw_u)
 	var beat := _snap_beat_to_subdivision(raw_beat, false)
-	var lines := mini(int(_app.vertical_lines), TimingMap.MAX_VERTICAL_LINES)
-	if lines <= 0:
-		return Vector2(beat, raw_u)
-	var u := TimingMap.nearest_vertical_line_u(raw_u, lines)
-	return Vector2(beat, u)
+	# 角度格线：N 等分（360÷N 必须是整数），包含 0°/360° 两个接缝。
+	return Vector2(beat, TimingMap.nearest_angle_u(raw_u, int(_app.angle_divisions)))
 
 
 func _snap_note_placement(screen: Vector2, bypass: bool) -> Vector2:
@@ -1506,7 +1513,7 @@ func _on_left_press(event: InputEventMouseButton) -> void:
 	# A pending hold consumes the next left click as its end time, before the
 	# overlap guard can select another note.
 	if _pending_hold != null:
-		var end_beat := _snap_beat_to_subdivision(_y_to_beat(event.position.y), event.alt_pressed)
+		var end_beat := _snap_beat_to_subdivision(_y_to_beat(event.position.y), not _snap_modifier(event))
 		_finish_pending_hold(end_beat)
 		return
 	# Ctrl is a selection modifier across all tools: toggle the clicked note
@@ -1525,7 +1532,7 @@ func _on_left_press(event: InputEventMouseButton) -> void:
 			_app.select_note(int(hit["id"]), event.shift_pressed)
 			return
 	if _app.tool in NOTE_TOOLS:
-		var placement := _snap_note_placement(event.position, event.alt_pressed)
+		var placement := _snap_note_placement(event.position, not _snap_modifier(event))
 		beat = placement.x
 		u = placement.y
 	match _app.tool:
@@ -1551,7 +1558,7 @@ func _on_left_release(event: InputEventMouseButton) -> void:
 	if _app == null:
 		return
 	if _drag_mode == "note":
-		_snap_dragged_notes(event.alt_pressed)
+		_snap_dragged_notes(not _snap_modifier(event))
 	if _drag_mode in ["note", "width", "limit", "hold_end"]:
 		_app.finish_edit()
 	if _drag_mode == "marquee":
@@ -1754,7 +1761,7 @@ func _drag_notes_update(screen: Vector2, event: InputEventMouseMotion) -> void:
 		var note: Note = item["note"]
 		if note.lock:
 			continue
-		var new_beat := maxf(0.0, _snap_beat_to_subdivision(float(item["beat"]) + delta_beat, event.alt_pressed))
+		var new_beat := maxf(0.0, _snap_beat_to_subdivision(float(item["beat"]) + delta_beat, not _snap_modifier(event)))
 		var new_angle := fposmod(float(item["angle"]) + delta_u * 360.0, 360.0)
 		var beat_delta := new_beat - note.beat
 		note.beat = new_beat
@@ -1772,7 +1779,7 @@ func _drag_hold_update(screen: Vector2, event: InputEventMouseMotion) -> void:
 	if _drag_notes.is_empty():
 		return
 	var note: Note = _drag_notes[0]["note"]
-	var beat: float = _snap_beat_to_subdivision(_y_to_beat(screen.y), event.alt_pressed)
+	var beat: float = _snap_beat_to_subdivision(_y_to_beat(screen.y), not _snap_modifier(event))
 	note.end_beat = maxf(note.beat + 0.25, beat)
 	_app.touch_chart()
 
