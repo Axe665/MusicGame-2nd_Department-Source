@@ -94,6 +94,32 @@ static func analyze(samples: PackedFloat32Array, sample_rate: float) -> Dictiona
 	return result
 
 
+## 检测结果允许的倍数校正：2/3 与 3/2 是检测器最常见的“三拍两拍”错位，
+## 4 与 1/4 兜住把一小节当成一拍的情况。
+const MULTIPLIERS := [0.25, 0.5, 2.0 / 3.0, 1.0, 1.5, 2.0, 4.0]
+const SNAP_TOLERANCE := 0.04
+
+
+## 把一个检测值校正到 `reference`（通常是谱面里已有的 BPM）。
+## 只有在某个倍数与 reference 的误差 ≤4% 时才校正，否则原样返回。
+static func snap_to_reference(detected: float, reference: float, tolerance: float = SNAP_TOLERANCE) -> float:
+	if detected <= 0.0 or reference <= 0.0:
+		return detected
+	if absf(detected - reference) / reference <= 0.005:
+		return reference
+	var best := detected
+	var best_error := tolerance
+	for factor in MULTIPLIERS:
+		var candidate: float = detected * factor
+		if candidate < MIN_BPM or candidate > MAX_BPM:
+			continue
+		var error := absf(candidate - reference) / reference
+		if error <= best_error:
+			best_error = error
+			best = candidate
+	return best
+
+
 ## Onset strength per frame, normalised so the loudest onset is 1.0.
 static func onset_envelope(samples: PackedFloat32Array, sample_rate: float) -> PackedFloat32Array:
 	var hop := maxi(1, int(round(sample_rate / RATE)))

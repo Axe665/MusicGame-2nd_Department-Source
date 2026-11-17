@@ -56,6 +56,9 @@ const TAIL_GOOD_MS := 350.0
 const TAIL_EXT_MAX_MS := 366.6667
 ## 位置判定：鼠标到音符图形边缘外还有这么多像素也算命中。
 ## Tap / Hold 头 / Path 头 / Anchor 共用这一把尺子（再各自加上图形半径）。
+## 瞄准辅助：像素距离超了，但鼠标落在音符角度 ±12° 内也算命中
+## （环形谱上角度比像素更贴近“我瞄准了它”，斜着挪鼠标也能打上）。
+const AIM_ANGLE_TOLERANCE_DEG := 12.0
 const POSITION_TOLERANCE_PX := 120.0
 ## 光标离图形中线这么近就算“指着这颗”：分配按键时优先于时间更近的邻键。
 const ON_SHAPE_PX := 20.0
@@ -2617,9 +2620,18 @@ func _match_press(press: Dictionary, target: Dictionary) -> Dictionary:
 		return {"ok": true, "distance": delta}
 	var mouse: Vector2 = press.get("mouse", Vector2.ZERO)
 	var distance := _distance_to_polyline(mouse, points)
-	if distance > tolerance:
+	if distance <= tolerance:
+		return {"ok": true, "distance": distance}
+	# 像素距离不够近，但瞄准角度对了：允许按 ±12° 命中（只对合法的环上光标生效）。
+	if not bool(press.get("valid", true)):
 		return {}
-	return {"ok": true, "distance": distance}
+	var press_angle := float(press.get("angle", NAN))
+	if is_nan(press_angle):
+		return {}
+	var angular := absf(JudgeMath.angle_delta(press_angle, note.angle))
+	if angular <= AIM_ANGLE_TOLERANCE_DEG:
+		return {"ok": true, "distance": distance, "angular": angular}
+	return {}
 
 
 func _take_assigned_press(note_id: int) -> Dictionary:

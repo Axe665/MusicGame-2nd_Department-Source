@@ -21,6 +21,10 @@ var _result: Dictionary = {}
 var _status: Label
 var _detail: Label
 var _bpm_spin: SpinBox
+var _bpm_multiplier: OptionButton
+## 检测出的原始 BPM：倍数按钮永远相对它算，不叠加。
+var _detected_bpm: float = 0.0
+const BPM_MULTIPLIER_LABELS := [["÷4", 0.25], ["÷2", 0.5], ["÷1.5", 2.0 / 3.0], ["原值", 1.0], ["×1.5", 1.5], ["×2", 2.0], ["×4", 4.0]]
 var _offset_spin: SpinBox
 var _ffmpeg_edit: LineEdit
 var _apply_button: Button
@@ -90,16 +94,16 @@ func _build() -> void:
 	var tempo_row := HBoxContainer.new()
 	tempo_row.add_theme_constant_override("separation", 6)
 	content.add_child(tempo_row)
-	var double_button := Button.new()
-	double_button.text = "×2"
-	double_button.tooltip_text = "检测结果偏慢时把 BPM 翻倍"
-	double_button.pressed.connect(func() -> void: _scale_tempo(2.0))
-	tempo_row.add_child(double_button)
-	var half_button := Button.new()
-	half_button.text = "÷2"
-	half_button.tooltip_text = "检测结果偏快时把 BPM 减半"
-	half_button.pressed.connect(func() -> void: _scale_tempo(0.5))
-	tempo_row.add_child(half_button)
+	tempo_row.add_child(_grid_label("节拍倍数"))
+	_bpm_multiplier = OptionButton.new()
+	for entry in BPM_MULTIPLIER_LABELS:
+		_bpm_multiplier.add_item(String(entry[0]))
+	_bpm_multiplier.select(3)
+	_bpm_multiplier.tooltip_text = "检测器偶尔会把 3 拍当 2 拍（或反之）：换一个倍数，BPM 按检测值 × 倍数重算，offset 不动"
+	_bpm_multiplier.item_selected.connect(func(index: int) -> void:
+		_scale_tempo(float(BPM_MULTIPLIER_LABELS[clampi(index, 0, BPM_MULTIPLIER_LABELS.size() - 1)][1]))
+	)
+	tempo_row.add_child(_bpm_multiplier)
 	var rerun_button := Button.new()
 	rerun_button.text = "重新检测"
 	rerun_button.pressed.connect(_restart)
@@ -222,10 +226,22 @@ func _process(_delta: float) -> void:
 func _populate() -> void:
 	var ok := bool(_result.get("ok", false))
 	if ok:
-		_bpm_spin.set_value_no_signal(float(_result.get("bpm", 120.0)))
+		var detected := float(_result.get("bpm", 120.0))
+		# 已有谱面时：检测值先吸附到谱面 BPM 的最近倍数（官方 BPM 与谱面一致的情况）。
+		if _app != null and _app.chart != null and not _app.chart.timing.points.is_empty():
+			var reference: float = _app.chart.timing.points[0].bpm
+			var snapped := BpmDetect.snap_to_reference(detected, reference)
+			if not is_equal_approx(snapped, detected):
+				_detail.text = "%s（检测 %.2f，按谱面 %.2f 校正）" % [_detail.text, detected, reference]
+				detected = snapped
+		_detected_bpm = detected
+		_bpm_spin.set_value_no_signal(detected)
+		if _bpm_multiplier != null:
+			_bpm_multiplier.select(3)
 		_offset_spin.set_value_no_signal(float(_result.get("offset_ms", 0.0)))
 	else:
 		if _app != null and _app.chart != null:
+			_detected_bpm = 0.0
 			_bpm_spin.set_value_no_signal(_app.chart.timing.bpm_at(0.0))
 			_offset_spin.set_value_no_signal(_app.chart.offset_ms)
 	await _measure_playback()
@@ -305,8 +321,9 @@ func _restart() -> void:
 		_thread = null
 
 
-func _scale_tempo(factor: float) -> void:
-	_bpm_spin.value = clampf(_bpm_spin.value * factor, 20.0, 600.0)
+func _scale_tempo(factor: float, _from_user: bool = true) -> void:
+	var base := _detected_bpm if _detected_bpm > 0.0 else _bpm_spin.value
+	_bpm_spin.value = clampf(base * factor, 20.0, 600.0)
 
 
 func _on_ffmpeg_submitted(text: String) -> void:

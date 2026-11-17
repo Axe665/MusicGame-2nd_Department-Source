@@ -59,6 +59,8 @@ func _initialize() -> void:
 		"test_video_export_plan_hits",
 		"test_video_export_sfx_capture",
 		"test_note_fall_time",
+		"test_aim_angle_fallback",
+		"test_bpm_snap_multipliers",
 		"test_path_zone_granularity",
 		"test_bpm_lock_scales_following",
 		"test_wheel_direction_matches_screen",
@@ -4053,6 +4055,37 @@ func test_path_tail_judge() -> bool:
 	var long_chord := 1.5 * ring
 	var long_radius := clampf(minf(Playtest.PATH_TAIL_RADIUS, long_chord * Playtest.PATH_TAIL_RADIUS_RATIO), 56.0, Playtest.PATH_TAIL_RADIUS)
 	near(long_radius, Playtest.PATH_TAIL_RADIUS, 0.01, "long slides keep the full tail radius")
+	return true
+
+
+## 瞄准辅助：像素距离超了但角度对（±12°）也算命中；角度不对或光标不合法仍拒绝。
+func test_aim_angle_fallback() -> bool:
+	var run := Playtest.new()
+	var note := Note.new("tap", 0.0, 90.0, 60.0)
+	var band := PackedVector2Array([Vector2(300, 100), Vector2(340, 100)])
+	var target := {"note": note, "points": band, "tolerance": 120.0, "pad": 0.0,
+		"dense": false, "ring_radius": 330.0}
+	var far_away := {"mouse": Vector2(1200, 900), "angle": 95.0, "valid": true}
+	ok(bool(run._match_press(far_away, target).get("ok", false)), "12 degrees of aim still hits")
+	var off_angle := {"mouse": Vector2(1200, 900), "angle": 130.0, "valid": true}
+	ok(run._match_press(off_angle, target).is_empty(), "40 degrees off does not hit")
+	var invalid := {"mouse": Vector2(1200, 900), "angle": 95.0, "valid": false}
+	ok(run._match_press(invalid, target).is_empty(), "an invalid cursor never gets aim assist")
+	var on_point := {"mouse": Vector2(320, 105), "angle": 300.0, "valid": true}
+	ok(bool(run._match_press(on_point, target).get("ok", false)), "a close pixel hit still works")
+	run.free()
+	return true
+
+
+## 倍数校正：2/3 与 3/2 的错位能被谱面 BPM 拉回来，误差太大则不动。
+func test_bpm_snap_multipliers() -> bool:
+	ok(BpmDetect.MULTIPLIERS.has(1.5), "a 3:2 multiplier exists")
+	ok(BpmDetect.MULTIPLIERS.has(4.0), "a 4x multiplier exists")
+	near(BpmDetect.snap_to_reference(100.1, 150.0), 150.15, 0.001, "2/3 detection snaps up to the chart tempo")
+	near(BpmDetect.snap_to_reference(158.3, 238.0), 237.45, 0.001, "238 with a 2/3 detection snaps back")
+	near(BpmDetect.snap_to_reference(65.3, 257.0), 261.2, 0.001, "a quarter-tempo detection snaps with x4")
+	near(BpmDetect.snap_to_reference(193.0, 193.0), 193.0, 0.001, "an exact match stays exact")
+	near(BpmDetect.snap_to_reference(140.0, 200.0), 140.0, 0.001, "an unrelated value is left alone")
 	return true
 
 
