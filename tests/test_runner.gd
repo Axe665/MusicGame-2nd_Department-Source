@@ -58,7 +58,8 @@ func _initialize() -> void:
 		"test_video_export_cursor",
 		"test_video_export_plan_hits",
 		"test_video_export_sfx_capture",
-		"test_pre_read_two_beats",
+		"test_note_fall_time",
+		"test_path_zone_granularity",
 		"test_bpm_lock_scales_following",
 		"test_wheel_direction_matches_screen",
 		"test_offline_focus_out_keeps_running",
@@ -1278,7 +1279,7 @@ func test_nearest_u() -> bool:
 
 func _preview_point(chart: Chart, u: float, target_beat: float, current_beat: float) -> Vector2:
 	var c: Vector2 = BoundaryRuntime.eval_point(chart, u, current_beat).point
-	var beats := chart.pre_read_ms_at(current_beat) / 60000.0 * chart.timing.bpm_at(current_beat)
+	var beats := chart.note_fall_ms() / 60000.0 * chart.timing.bpm_at(current_beat)
 	var q := clampf((current_beat - (target_beat - beats)) / maxf(0.001, beats), 0.0, 1.0)
 	return c * q
 
@@ -1406,12 +1407,12 @@ func test_shrink_example() -> bool:
 		{"beat": 0.0, "shape_id": "S0", "easing": "linear"},
 		{"beat": 1.0, "shape_id": "S1", "easing": "linear"},
 	]
-	# 预读固定 2 拍（60 BPM = 2s）：从 0 拍到 1 拍走一半。
+	# 飞行时长 1 秒（60 BPM = 1 拍）：从 0 拍到 1 拍走完。
 	var u := 0.0
-	var p_mid := _preview_point(chart, u, 1.0, 0.0)
-	near(p_mid.x, 165.0, 0.5, "two-beat pre-read midpoint is halfway")
+	var p_mid := _preview_point(chart, u, 1.0, 0.5)
+	near(p_mid.x, 127.5, 0.5, "1s fall midpoint is halfway")
 	var p_end := _preview_point(chart, u, 1.0, 1.0)
-	near(p_end.x, 180.0, 0.5, "two-beat pre-read ends on the boundary")
+	near(p_end.x, 180.0, 0.5, "1s fall ends on the boundary")
 	return true
 
 
@@ -2136,14 +2137,14 @@ func test_video_export_plan_hits() -> bool:
 	return true
 
 
-## 预读固定 2 拍：BPM 变了提前量跟着变，不再是固定毫秒。
-func test_pre_read_two_beats() -> bool:
+## 飞行时长固定 1 秒，不随 BPM 变：高 BPM 曲不该因此更难读。
+func test_note_fall_time() -> bool:
 	var chart := Chart.new()
 	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
-	near(chart.pre_read_ms_at(0.0), 1000.0, 0.001, "2 beats at 120 BPM is 1s")
-	chart.timing.points.append(TimingPoint.new(8.0, 60.0, 4))
-	near(chart.pre_read_ms_at(8.0), 2000.0, 0.001, "2 beats at 60 BPM is 2s")
-	near(chart.mirrored_copy("lr").pre_read_ms_at(0.0), 1000.0, 0.001, "mirror keeps the same pre-read")
+	near(chart.note_fall_ms(), 1000.0, 0.001, "fall time is one second at 120 BPM")
+	chart.timing.points.append(TimingPoint.new(8.0, 240.0, 4))
+	near(chart.note_fall_ms(), 1000.0, 0.001, "fall time does not shrink at 240 BPM")
+	near(chart.mirrored_copy("lr").note_fall_ms(), 1000.0, 0.001, "mirror keeps the same fall time")
 	return true
 
 
@@ -4052,6 +4053,34 @@ func test_path_tail_judge() -> bool:
 	var long_chord := 1.5 * ring
 	var long_radius := clampf(minf(Playtest.PATH_TAIL_RADIUS, long_chord * Playtest.PATH_TAIL_RADIUS_RATIO), 56.0, Playtest.PATH_TAIL_RADIUS)
 	near(long_radius, Playtest.PATH_TAIL_RADIUS, 0.01, "long slides keep the full tail radius")
+	return true
+
+
+## 每段判定区缩短后：1.4R 的星至少 5 段，长星的分段也按 0.5R 走。
+## 判定只看轨迹参数，不读任何“飞行时长”设置——视觉快慢不该改变判定。
+func test_path_zone_granularity() -> bool:
+	ok(PathProgress.GATE_SPACING <= 0.55, "each judgement zone is at most 0.55R long")
+	var short_path := PackedVector2Array()
+	for i in 41:
+		short_path.append(Vector2(0.7 * float(i) / 40.0, 0.0))
+	var tracker := PathProgress.new()
+	tracker.configure(short_path)
+	var projected := tracker.points
+	tracker.confirm_head()
+	eq(tracker.group_count, 5, "a 0.7R slide splits into 5 judgement zones")
+	eq(tracker.remaining_groups(), 4, "the head counts as the first cleared zone")
+	# 沿轨迹喂一串点：进度必须跟着走，而不是一口气算完整条。
+	for i in projected.size():
+		tracker.feed(projected[i], 100.0 + float(i) * 5.0, projected, tracker.contact_radius * 2.0, 0.0)
+	ok(tracker.fraction > 0.0, "tracing the slide builds progress")
+	ok(tracker.remaining_groups() < 4, "tracing clears judgement zones")
+	# 判定器不接收 BPM / 飞行时长：同一段轨迹在任何设置下结果一致（结构性保证）。
+	var replayed := PathProgress.new()
+	replayed.configure(short_path)
+	replayed.confirm_head()
+	for i in projected.size():
+		replayed.feed(projected[i], 100.0 + float(i) * 5.0, projected, replayed.contact_radius * 2.0, 0.0)
+	near(replayed.fraction, tracker.fraction, 0.0001, "judgement is independent of fall time")
 	return true
 
 

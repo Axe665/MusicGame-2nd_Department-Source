@@ -31,6 +31,7 @@ var audio_latency_ms: float = 0.0
 ## Music / SFX 总线音量（0–100），编辑器「音频」弹窗和试玩设置共用。
 var music_volume: float = 100.0
 var sfx_volume: float = 100.0
+## 音符速度倍率：飞行时长 = Chart.NOTE_FALL_MS / flow_scale（和 BPM 无关）。
 var flow_scale: float = 1.0
 var ffmpeg_path: String = "ffmpeg"
 var star_speed: float = 1.0

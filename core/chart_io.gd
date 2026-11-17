@@ -326,7 +326,7 @@ static func chart_from_dict(data: Dictionary) -> Chart:
 	chart.video_offset_ms = float(general.get("video_offset_ms", 0.0))
 	chart.video_fps = float(general.get("video_fps", 60.0))
 	chart.video_opacity = float(general.get("video_opacity", 0.35))
-	# 旧文件里的 general.pre_read_ms 读进来直接忽略：预读固定 2 拍（Chart.PRE_READ_BEATS）。
+	# 旧文件里的 general.pre_read_ms 读进来直接忽略：飞行时长固定 1 秒（Chart.NOTE_FALL_MS）。
 	chart.offset_ms = float(general.get("offset_ms", 0.0))
 	chart.difficulty = String(general.get("difficulty", "Normal"))
 	var meta: Dictionary = data.get("metadata", {})

@@ -310,7 +310,7 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	if _pause_overlay != null:
 		_pause_overlay.visible = false
 	var flow := float(_app.flow_scale if _app != null else 1.0)
-	var pre_ms := chart.pre_read_ms_at(start_beat) / maxf(0.1, flow)
+	var pre_ms := chart.note_fall_ms() / maxf(0.05, flow)
 	# 从读头起手时也先退一个预读 + 0.5s；倒计时结束后第一颗音符不会贴脸。
 	_timeline_start_beat = timeline_start_beat(chart, start_beat, pre_ms)
 	_timeline_start_ms = chart.timing.beat_to_chart_ms(_timeline_start_beat)

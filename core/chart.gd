@@ -7,9 +7,9 @@ var video_path: String = ""
 var video_offset_ms: float = 0.0
 var video_fps: float = 60.0
 var video_opacity: float = 0.35
-## 音符提前多少拍出现。旧的「固定预读 ms」已删除：按当前 BPM 换算，
-## 所以变速曲里每颗音符的提前量是稳定的两拍，而不是固定的墙上时间。
-const PRE_READ_BEATS := 2.0
+## 音符从出现到该打的时间（毫秒）。和 BPM 无关：BPM 描述谱面密度，
+## 不该改变读谱时间。显示层再按「音符速度（倍率）」除一次。
+const NOTE_FALL_MS := 1000.0
 var offset_ms: float = 0.0
 var difficulty: String = "Normal"
 var metadata: Dictionary = {
@@ -389,9 +389,9 @@ func has_custom_note_colors() -> bool:
 	return false
 
 
-## 两拍在当前 BPM 下是多少毫秒（显示层再按流向倍率缩放）。
-func pre_read_ms_at(beat: float = 0.0) -> float:
-	return PRE_READ_BEATS * 60000.0 / maxf(1.0, timing.bpm_at(beat))
+## 音符飞行时长（毫秒，已含当前 BPM 不影响）。显示层再按音符速度倍率缩放。
+func note_fall_ms() -> float:
+	return NOTE_FALL_MS
 
 
 ## 改 BPM 之后，把 anchor 之后所有「按拍存」的东西按 factor 缩放拍位。

@@ -1891,14 +1891,15 @@ func _split_segment() -> void:
 	_mesh_dirty = true
 
 
-func _pre_read_beats(_chart: Chart, _beat: float) -> float:
-	# 固定 2 拍（Chart.PRE_READ_BEATS）：流向倍率越快，提前量越短。
-	return Chart.PRE_READ_BEATS / maxf(0.1, flow_scale)
+func _pre_read_beats(chart: Chart, beat: float) -> float:
+	# 飞行时长换算成拍：只用于取窗口/画箭头，判定仍按毫秒。
+	return _pre_read_ms(chart, beat) / 60000.0 * chart.timing.bpm_at(beat)
 
 
-## 预读时长（毫秒）。按目标音符所在 BPM 换算，变速曲里提前量恒为两拍。
-func _pre_read_ms(chart: Chart, beat: float = 0.0) -> float:
-	return maxf(30.0, chart.pre_read_ms_at(beat) / maxf(0.1, flow_scale))
+## 音符从出现到该打的时间（毫秒）：固定 1 秒 ÷ 音符速度倍率。
+## 不随 BPM 变——高 BPM 只代表谱面更密，不代表要读得更快。
+func _pre_read_ms(chart: Chart, _beat: float = 0.0) -> float:
+	return maxf(30.0, chart.note_fall_ms() / maxf(0.05, flow_scale))
 
 
 ## 这个音符开始从圆心飞出的拍号（毫秒反推，变 BPM 处连续）。
@@ -5142,7 +5143,7 @@ func _draw_debug(canvas: Control, chart: Chart, t: float) -> void:
 	canvas.draw_string(mono, Vector2(18, 28), "u %.2f°  |  beat %.2f" % [cursor_u * 360.0, t], HORIZONTAL_ALIGNMENT_LEFT, -1, 11, UITheme.INK)
 	canvas.draw_string(mono, Vector2(18, 44), "time %.0f ms  |  %s" % [chart.timing.beat_to_chart_ms(t), "有效" if cursor_valid else "无位置"], HORIZONTAL_ALIGNMENT_LEFT, -1, 11, UITheme.MUTED)
 	canvas.draw_string(mono, Vector2(18, 60), "shape %s  |  zoom %.2f" % [chart.default_shape_id, float(current_view().get("zoom", 1.0))], HORIZONTAL_ALIGNMENT_LEFT, -1, 11, UITheme.MUTED)
-	canvas.draw_string(mono, Vector2(18, 76), "branch 0  |  D %.0f ms ×%.2f  |  %d fps" % [chart.pre_read_ms_at(t), flow_scale, Engine.get_frames_per_second()], HORIZONTAL_ALIGNMENT_LEFT, -1, 11, UITheme.MUTED)
+	canvas.draw_string(mono, Vector2(18, 76), "branch 0  |  fall %.0f ms ×%.2f  |  %d fps" % [_pre_read_ms(chart, t), flow_scale, Engine.get_frames_per_second()], HORIZONTAL_ALIGNMENT_LEFT, -1, 11, UITheme.MUTED)
 	for i in 12:
 		var u := float(i) / 12.0
 		var p := project_u(u, t)

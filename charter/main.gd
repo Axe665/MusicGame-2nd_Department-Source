@@ -155,7 +155,7 @@ var _import_progress_label: Label = null
 var _import_progress_bar: ProgressBar = null
 var _new_dialog: NewChartDialog
 var _playtest: Playtest
-## 试玩前的设置窗口：倍速 / 流速 / 星速 / 星显。
+## 试玩前的设置窗口：倍速 / 音符速度 / 星速 / 星显。
 var _playtest_dialog: AcceptDialog = null
 var _playtest_rate: SpinBox = null
 var _playtest_flow: SpinBox = null
@@ -175,7 +175,7 @@ var _calibration_dialog: CalibrationDialog = null
 ## 校准窗口关掉后要回到哪里："" / "settings" / "playtest"。
 var _calibration_return := ""
 var _playtest_from_start: bool = false
-## 制谱界面保留的流速输入框（试玩设置改流速后要同步回来）。
+## 制谱界面保留的音符速度输入框（试玩设置改完要同步回来）。
 var _editor_flow_spin: SpinBox = null
 ## 制谱界面保留的「星显」输入框，和试玩设置共用同一个值。
 var _cursor_u: float = 0.0
@@ -833,10 +833,10 @@ func _build_ui() -> void:
 	_bpm_label = Label.new()
 	UITheme.style_mono(_bpm_label, 12, UITheme.MUTED)
 	transport_row.add_child(_bpm_label)
-	# 制谱界面单独保留「流速」，只影响编辑预览的预读速度；试玩里另有同名设置。
+	# 制谱界面单独保留「音符速度」，只影响编辑预览；试玩里另有同名设置。
 	var flow_label := Label.new()
 	UITheme.style_mono(flow_label, 11, UITheme.MUTED)
-	flow_label.text = "流速"
+	flow_label.text = "音符速度"
 	transport_row.add_child(flow_label)
 	var flow_spin := SpinBox.new()
 	flow_spin.min_value = 0.05
@@ -845,7 +845,7 @@ func _build_ui() -> void:
 	flow_spin.value = _app.flow_scale
 	flow_spin.suffix = "×"
 	flow_spin.custom_minimum_size = Vector2(92, 0)
-	flow_spin.tooltip_text = "编辑预览的预读速度（0.05–3.0，步进 0.01）；试玩流速在「试玩设置」里单独设"
+	flow_spin.tooltip_text = "音符从出现到判定环的时间 = 1 秒 ÷ 这个倍率（0.05–3.0）。不随 BPM 变；试玩在「试玩设置」里单独设"
 	flow_spin.focus_mode = Control.FOCUS_NONE
 	flow_spin.get_line_edit().focus_mode = Control.FOCUS_NONE
 	flow_spin.value_changed.connect(func(value: float) -> void:
@@ -3074,7 +3074,8 @@ func _build_playtest_dialog() -> void:
 	scroll.add_child(box)
 	_playtest_rate = _playtest_spin_row(box, "倍速", 0.5, 2.0, 0.05, 1.0, "×")
 	_playtest_rate.tooltip_text = "试玩和编辑器试听都按这个速度走；声音不变调（每个新倍速首次生成缓存）；局中修改在重开本局后生效；只对本次运行有效"
-	_playtest_flow = _playtest_spin_row(box, "流速", 0.05, 3.0, 0.01, 1.0, "×")
+	_playtest_flow = _playtest_spin_row(box, "音符速度", 0.05, 3.0, 0.01, 1.0, "×")
+	_playtest_flow.tooltip_text = "音符从出现到该打的时间 = 1 秒 ÷ 这个倍率；和 BPM 无关，越高越快"
 	_playtest_star = _playtest_spin_row(box, "星速", 0.5, 2.0, 0.05, 1.0, "×")
 	_playtest_cursor = _playtest_spin_row(box, "光标大小", 0.5, 2.0, 0.05, 1.0, "×")
 	var mirror_row := HBoxContainer.new()

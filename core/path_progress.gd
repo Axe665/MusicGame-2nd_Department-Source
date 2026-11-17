@@ -5,7 +5,9 @@ extends RefCounted
 ## Groups come from the path geometry (arc length + corners), not from maimai's
 ## physical sensor layout, so any plane curve or deformed ring works.
 const SAMPLE_SPACING := 0.06
-const GATE_SPACING := 0.85
+## 每一段（判定区）沿轨迹的最大长度，单位是“环半径 = 1”。
+## 0.5R 一段：1.4R 的星拆成 5 段，比原来的 0.85R / 3 段细。
+const GATE_SPACING := 0.5
 const CONTACT_RADIUS := 0.25
 const CORNER_RADIUS := 0.34
 ## How many groups a single movement may skip. AstroDX uses one by default.
@@ -110,7 +112,7 @@ func configure(source: PackedVector2Array, source_parameters := PackedFloat32Arr
 		if a.length_squared() > 0.000001 and b.length_squared() > 0.000001 and a.normalized().dot(b.normalized()) < 0.8:
 			corners.append(float(cumulative[i]))
 	var gate_targets: Array[float] = [0.0, length]
-	var gate_step := minf(GATE_SPACING, length / 3.0)
+	var gate_step := minf(GATE_SPACING, length / 5.0)
 	var d := gate_step
 	while d < length - 0.00001:
 		var close_to_corner := false
