@@ -3782,12 +3782,6 @@ func _draw_hold_sector(canvas: Control, chart: Chart, note: Note, t: float, pre:
 			canvas.draw_line(outer[0], outer[outer.size() - 1], Color(tint.r, tint.g, tint.b, 0.22 * fade), 30.0 * _note_scale(), false)
 			canvas.draw_line(outer[0], outer[outer.size() - 1], Color(1, 1, 1, 0.30 * fade), 24.0 * _note_scale(), false)
 		_draw_hold_cap_band(canvas, outer[0], outer[outer.size() - 1], fade, tint)
-		# 接近环：头部到判定环之前由大到小收进来，按住的“起点”一眼可见。
-		if not highlight:
-			var mid := (outer[0] + outer[outer.size() - 1]) * 0.5
-			var k := clampf(outer_scale, 0.0, 1.0)
-			var ring := lerpf(44.0, 12.0, k) * _note_scale()
-			canvas.draw_arc(mid, ring, 0.0, TAU, 30, Color(tint.r, tint.g, tint.b, (1.0 - k) * 0.85 * fade), 2.2, false)
 	if inner.size() > 1 and inner_scale > 0.002:
 		_draw_hold_tail_band(canvas, inner[0], inner[inner.size() - 1], fade, tint)
 
