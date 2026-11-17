@@ -1838,10 +1838,12 @@ func project_u(u: float, beat: float) -> Vector2:
 
 func draw_overlay(canvas: Control) -> void:
 	var chart := get_chart()
+	var t := get_time_beat()
+	# 先无条件写一遍滤镜 uniform：指令被删掉或谱面被换掉时也要把画面还原成恒等透传。
+	_apply_filters(chart, t)
 	if chart == null:
 		return
 	var started_usec := Time.get_ticks_usec()
-	var t := get_time_beat()
 	var pre := _pre_read_beats(chart, t)
 	if not use_3d_ring:
 		_draw_flat_stage(canvas, chart, t)
@@ -4807,13 +4809,12 @@ func _draw_alpha_commands(canvas: Control, chart: Chart, t: float) -> void:
 	if chart == null or chart.commands.is_empty():
 		return
 	var area := canvas.get_rect()
-	_apply_filters(chart, t)
 	var chips: Array[String] = []
 	for command in chart.commands:
 		if not command.enabled:
 			continue
 		var env := command.envelope_at(t)
-		var in_window := t >= command.beat - 0.0001 and (command.is_stateful() or t <= command.end_beat() + 0.0001)
+		var in_window := t >= command.beat - 0.0001 and t <= command.end_beat() + 0.0001
 		if not in_window:
 			continue
 		if command.category() == AlphaCommand.CATEGORY_FILTER:
@@ -5060,12 +5061,14 @@ func _filter_state(chart: Chart, t: float) -> Dictionary:
 		"tint": Color(1, 1, 1, 1), "tint_amount": 0.0,
 		"flash": Color(1, 1, 1, 0), "fade": Color(0, 0, 0, 0),
 	}
+	if chart == null:
+		return {"uniforms": state, "active": false}
 	var active := false
 	for command in chart.commands:
 		if not command.enabled or command.category() != AlphaCommand.CATEGORY_FILTER:
 			continue
 		var env := command.envelope_at(t)
-		var in_window := t >= command.beat - 0.0001 and (command.is_stateful() or t <= command.end_beat() + 0.0001)
+		var in_window := t >= command.beat - 0.0001 and t <= command.end_beat() + 0.0001
 		if env <= 0.001:
 			if not in_window:
 				continue
@@ -5093,9 +5096,10 @@ func _filter_state(chart: Chart, t: float) -> Dictionary:
 			"ROTATE":
 				state["rotate"] = float(state["rotate"]) + deg_to_rad(command.number("value", 10.0)) * env
 			"KALEIDOSCOPE":
-				if command.flag("on", true):
-					state["kaleido"] = maxf(float(state["kaleido"]), env)
-					state["kaleido_segments"] = clampf(command.number("segments", 6.0), 2.0, 16.0)
+				# on=false 表示在这段时长里从满强度过渡回关闭，而不是永久保持。
+				var fade_out := 1.0 - command.progress_at(t) if not command.flag("on", true) else 1.0
+				state["kaleido"] = maxf(float(state["kaleido"]), env * fade_out)
+				state["kaleido_segments"] = clampf(command.number("segments", 6.0), 2.0, 16.0)
 			"BLOOM":
 				state["bloom"] = maxf(float(state["bloom"]), clampf(strength, 0.0, 4.0))
 			"INVERT":

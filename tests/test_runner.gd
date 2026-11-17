@@ -3870,8 +3870,8 @@ func test_osu_pill_rows() -> bool:
 
 
 func test_alpha_command_catalog() -> bool:
-	eq(AlphaCommand.CATALOG.size(), 31, "catalog has 31 commands")
-	eq(AlphaCommand.names("filter").size(), 28, "28 filter commands")
+	eq(AlphaCommand.CATALOG.size(), 27, "catalog has 27 commands")
+	eq(AlphaCommand.names("filter").size(), 24, "24 filter commands")
 	eq(AlphaCommand.names("jline").size(), 1, "one judge line command")
 	eq(AlphaCommand.names("text").size(), 2, "two text commands")
 	var seen := {}
@@ -3894,7 +3894,8 @@ func test_alpha_command_envelope() -> bool:
 	flash.enabled = false
 	eq(flash.envelope_at(4.5), 0.0, "disabled command is silent")
 	var kaleido := AlphaCommand.new("KALEIDOSCOPE", 2.0)
-	eq(kaleido.envelope_at(9.0), 1.0, "stateful command stays on")
+	eq(kaleido.envelope_at(3.0), 1.0, "stateful command holds inside its window")
+	eq(kaleido.envelope_at(9.0), 0.0, "stateful command stops at its end beat")
 	var shake := AlphaCommand.new("SHAKE", 1.0)
 	ok(shake.envelope_at(1.2) > 0.0 and shake.envelope_at(1.2) < 1.0, "shake ramps in")
 	eq(shake.envelope_at(1.6), 1.0, "shake reaches full strength")

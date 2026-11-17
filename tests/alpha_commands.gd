@@ -50,7 +50,7 @@ func _test_catalog() -> void:
 	var filters := AlphaCommand.catalog(AlphaCommand.CATEGORY_FILTER)
 	check(jline.size() == 1, "判定线目录只有 JLINE")
 	check(text.size() == 2, "文本目录含 TEXT / JUDGETEXT")
-	check(filters.size() == 28, "滤镜目录 28 条，实际 %d" % filters.size())
+	check(filters.size() == 24, "滤镜目录 26 条，实际 %d" % filters.size())
 	check(jline.size() + text.size() + filters.size() == AlphaCommand.CATALOG.size(), "三类相加等于总目录")
 
 	var seen := {}
@@ -71,7 +71,7 @@ func _test_catalog() -> void:
 func _test_defaults_and_normalize() -> void:
 	var defaults := AlphaCommand.defaults("FLASH")
 	check(is_equal_approx(float(defaults.get("strength", 0.0)), 0.8), "FLASH 默认强度 0.8")
-	check(AlphaCommand.default_duration("KALEIDOSCOPE") == 0.0, "KALEIDOSCOPE 是状态指令，时长为 0")
+	check(AlphaCommand.default_duration("KALEIDOSCOPE") == 2.0, "KALEIDOSCOPE 默认 2 拍，有明确结束点")
 	check(AlphaCommand.default_duration("FLASH") == 1.0, "FLASH 默认时长 1 拍")
 
 	var normalized := AlphaCommand.normalize("FLASH", {"strength": 9.0, "junk": 1})
@@ -107,14 +107,26 @@ func _test_envelope() -> void:
 
 func _test_stateful() -> void:
 	var flip := AlphaCommand.new("INVERT", 8.0)
-	check(flip.envelope_at(7.9) == 0.0, "状态指令生效前为 0")
-	check(flip.envelope_at(8.0) == 1.0, "状态指令生效瞬间为 1")
-	check(flip.envelope_at(100.0) == 1.0, "状态指令之后保持 1")
+	check(not flip.is_stateful(), "INVERT 现在是有限时长滤镜")
+	check(flip.envelope_at(8.4) == 1.0, "反色起手后立即满强度")
+	check(flip.envelope_at(100.0) == 0.0, "反色超过时长后停止")
 
 	var kaleido := AlphaCommand.new("KALEIDOSCOPE", 2.0)
+	check(kaleido.is_stateful(), "万花筒是开关型")
+	check(kaleido.envelope_at(3.0) == 1.0, "万花筒窗口内生效")
+	check(kaleido.envelope_at(5.0) == 0.0, "万花筒到结束拍就停，不会一直挂在画面上")
 	kaleido.params["on"] = false
-	check(kaleido.envelope_at(3.0) == 1.0, "关闭态也是“生效”的事件点")
 	check(kaleido.flag("on", true) == false, "关闭标记可读取")
+
+	check(AlphaCommand.canonical("TVNOISE") == "GLITCH", "雪花噪点折叠到故障")
+	check(AlphaCommand.canonical("shatter") == "GLITCH", "碎裂折叠到故障，且不区分大小写")
+	check(AlphaCommand.canonical("GAUSSIAN") == "RADIALBLUR", "高斯模糊折叠到径向模糊")
+	check(AlphaCommand.canonical("TRAIL") == "RADIALBLUR", "拖影折叠到径向模糊")
+	check(AlphaCommand.spec_of("TVNOISE").get("label", "") == "故障", "别名能解析到保留下来的目录项")
+
+	var legacy := AlphaCommand.from_dict({"name": "gaussian", "beat": 4.0, "duration": 1.0})
+	check(legacy.name == "RADIALBLUR", "旧谱别名在载入时改名")
+	check(legacy.to_dict()["name"] == "RADIALBLUR", "写出时只写保留名")
 
 
 func _test_roundtrip() -> void:

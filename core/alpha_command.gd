@@ -22,7 +22,7 @@ const CATEGORY_LABELS := {
 
 ## 指令目录。params 里每个参数：
 ##   key/label/type(float|int|bool|color|text|option)/default/min/max/step/options/hint
-## stateful = 开关型指令：只在起始拍切换状态，不做三段包络。
+## stateful = 开关型指令：起始拍立即满强度、不做起手过渡，但到 duration 结束拍就停（不会永久挂住）。
 ## instant = 瞬时指令：duration 固定为 0，只触发一次。
 const CATALOG := [
 	{
@@ -186,8 +186,7 @@ const CATALOG := [
 		"name": "INVERT",
 		"label": "反色",
 		"category": CATEGORY_FILTER,
-		"duration": 0.0,
-		"stateful": true,
+		"duration": 1.0,
 		"params": [
 			{"key": "strength", "label": "强度", "type": "float", "default": 1.0, "min": 0.0, "max": 1.0, "step": 0.05},
 		],
@@ -205,7 +204,7 @@ const CATALOG := [
 		"name": "KALEIDOSCOPE",
 		"label": "万花筒",
 		"category": CATEGORY_FILTER,
-		"duration": 0.0,
+		"duration": 2.0,
 		"stateful": true,
 		"params": [
 			{"key": "segments", "label": "份数", "type": "float", "default": 6.0, "min": 2.0, "max": 16.0, "step": 1.0},
@@ -231,15 +230,6 @@ const CATALOG := [
 		],
 	},
 	{
-		"name": "TVNOISE",
-		"label": "雪花噪点",
-		"category": CATEGORY_FILTER,
-		"duration": 1.0,
-		"params": [
-			{"key": "strength", "label": "强度", "type": "float", "default": 0.5, "min": 0.0, "max": 1.0, "step": 0.05},
-		],
-	},
-	{
 		"name": "ROTATE",
 		"label": "画面旋转",
 		"category": CATEGORY_FILTER,
@@ -255,33 +245,6 @@ const CATALOG := [
 		"duration": 1.0,
 		"params": [
 			{"key": "strength", "label": "强度", "type": "float", "default": 0.6, "min": 0.0, "max": 1.0, "step": 0.05},
-		],
-	},
-	{
-		"name": "TRAIL",
-		"label": "拖影",
-		"category": CATEGORY_FILTER,
-		"duration": 1.0,
-		"params": [
-			{"key": "strength", "label": "强度", "type": "float", "default": 0.5, "min": 0.0, "max": 1.0, "step": 0.05},
-		],
-	},
-	{
-		"name": "GAUSSIAN",
-		"label": "高斯模糊",
-		"category": CATEGORY_FILTER,
-		"duration": 1.0,
-		"params": [
-			{"key": "strength", "label": "强度", "type": "float", "default": 0.5, "min": 0.0, "max": 1.0, "step": 0.05},
-		],
-	},
-	{
-		"name": "SHATTER",
-		"label": "碎裂",
-		"category": CATEGORY_FILTER,
-		"duration": 1.0,
-		"params": [
-			{"key": "strength", "label": "强度", "type": "float", "default": 0.5, "min": 0.0, "max": 1.0, "step": 0.05},
 		],
 	},
 	{
@@ -323,6 +286,15 @@ const CATALOG := [
 		],
 	},
 ]
+
+## 旧谱面里已经写下的近义指令，读取时折叠到保留的那一条。
+## 雪花噪点/碎裂 归到故障，高斯模糊/拖影 归到径向模糊，避免同一效果四五个名字。
+const ALIASES := {
+	"TVNOISE": "GLITCH",
+	"SHATTER": "GLITCH",
+	"GAUSSIAN": "RADIALBLUR",
+	"TRAIL": "RADIALBLUR",
+}
 
 var id: String = ""
 var name: String = ""
@@ -387,7 +359,8 @@ func envelope_at(at_beat: float) -> float:
 	if at_beat < beat - 0.0001:
 		return 0.0
 	if is_stateful():
-		return 1.0
+		# 开关型同样受 duration 限制：起始立即生效，到结束拍就停，不会一直挂在画面上。
+		return 1.0 if at_beat <= end_beat() + 0.0001 else 0.0
 	if duration <= 0.0001:
 		# 瞬时指令：只在起始拍附近有效；给半拍宽限，方便在时间轴上看见。
 		return 1.0 if at_beat <= beat + 0.5 else 0.0
@@ -464,7 +437,7 @@ func summary() -> String:
 func to_dict() -> Dictionary:
 	return {
 		"id": id,
-		"name": name,
+		"name": canonical(name),
 		"beat": snappedf(beat, 0.001),
 		"duration": snappedf(duration, 0.001),
 		"easing": easing,
@@ -476,7 +449,7 @@ func to_dict() -> Dictionary:
 static func from_dict(raw: Dictionary) -> AlphaCommand:
 	var command := AlphaCommand.new()
 	command.id = String(raw.get("id", ""))
-	command.name = String(raw.get("name", "")).to_upper()
+	command.name = canonical(String(raw.get("name", "")))
 	command.beat = float(raw.get("beat", 0.0))
 	command.duration = float(raw.get("duration", default_duration(command.name)))
 	command.easing = String(raw.get("easing", "linear"))
@@ -490,9 +463,16 @@ static func from_dict(raw: Dictionary) -> AlphaCommand:
 	return command
 
 
+## 把历史别名折叠成目录里保留下来的名字；未知名字原样返回。
+static func canonical(command_name: String) -> String:
+	var upper := command_name.strip_edges().to_upper()
+	return String(ALIASES.get(upper, upper))
+
+
 static func spec_of(command_name: String) -> Dictionary:
+	var target := canonical(command_name)
 	for entry in CATALOG:
-		if String(entry.get("name", "")) == command_name:
+		if String(entry.get("name", "")) == target:
 			return entry
 	return {}
 
