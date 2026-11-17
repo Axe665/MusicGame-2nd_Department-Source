@@ -460,6 +460,9 @@ static func from_dict(raw: Dictionary) -> AlphaCommand:
 		for key in (stored as Dictionary).keys():
 			command.params[String(key)] = (stored as Dictionary)[key]
 	command.params = normalize(command.name, command.params)
+	# 旧谱里的状态指令时长是 0，按新语义会立刻结束；补成目录默认时长。
+	if command.duration <= 0.0001:
+		command.duration = maxf(default_duration(command.name), 0.25)
 	return command
 
 

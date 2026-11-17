@@ -128,6 +128,10 @@ func _test_stateful() -> void:
 	check(legacy.name == "RADIALBLUR", "旧谱别名在载入时改名")
 	check(legacy.to_dict()["name"] == "RADIALBLUR", "写出时只写保留名")
 
+	var zero_duration := AlphaCommand.from_dict({"name": "KALEIDOSCOPE", "beat": 4.0, "duration": 0.0})
+	check(zero_duration.duration >= 0.25, "旧谱的 0 时长状态指令载入时补成有界时长")
+	check(zero_duration.envelope_at(4.5) == 1.0, "补完时长后仍然生效")
+
 
 func _test_roundtrip() -> void:
 	var command := AlphaCommand.new("TEXT", 12.5)
