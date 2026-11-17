@@ -46,6 +46,9 @@ var _drag_width_side: int = 0
 var _drag_width_note: Note = null
 var _drag_width_origin: float = 0.0
 var _drag_width_start: float = 0.0
+var _drag_tail_note: Note = null
+var _drag_tail_start: float = 0.0
+var _drag_tail_origin: float = 0.0
 var _marquee: Rect2 = Rect2()
 var _marquee_start_beat: float = 0.0
 var _marquee_start_u: float = 0.0
@@ -920,6 +923,7 @@ func _draw_tap(note: Note) -> void:
 	var center_x := _u_to_x(fposmod(note.angle, 360.0) / 360.0)
 	draw_line(Vector2(center_x, y - 8.0), Vector2(center_x, y + 8.0), UITheme.INK, 2.0)
 	draw_circle(Vector2(center_x, y), 2.2, UITheme.INK)
+	_draw_width_handles(note, y)
 	if _show_type_label(note):
 		_draw_type_label("TAP", Vector2(center_x + 8.0, y + 12.0), UITheme.CORAL)
 
@@ -961,6 +965,11 @@ func _draw_hold(note: Note) -> void:
 		_draw_width_band(note.angle, note.arc_width(), y0, color)
 	_draw_hexagon(Vector2(x, y0), 9.0 if selected else 8.0, color)
 	_draw_ring(Vector2(x, y1), 6.0, color)
+	_draw_width_handles(note, y0)
+	if selected:
+		# 尾巴手柄：拖它只改结束拍。
+		draw_circle(Vector2(x, y1), 6.0, UITheme.INK)
+		draw_arc(Vector2(x, y1), 6.0, 0.0, TAU, 16, UITheme.BG, 1.5, true)
 	if _show_type_label(note):
 		_draw_type_label("HOLD", Vector2(x + 11.0, y0 + 12.0), color)
 
@@ -1218,6 +1227,17 @@ func _draw_width_band(angle: float, width: float, y: float, color: Color) -> voi
 		draw_line(Vector2(x0, y), Vector2(x1, y), Color(color.r, color.g, color.b, 0.40), 6.0, true)
 
 
+## 选中时在弧带两端画方柄：手柄要永远比窄音符宽，否则抓不到。
+func _draw_width_handles(note: Note, y: float) -> void:
+	if not _is_note_selected(note.id):
+		return
+	for interval in _u_intervals(note.angle, note.arc_width()):
+		for x in [_u_to_x(interval.x), _u_to_x(interval.y)]:
+			var rect := Rect2(Vector2(x - 6.0, y - 6.0), Vector2(12.0, 12.0))
+			draw_rect(rect, UITheme.INK)
+			draw_rect(rect, UITheme.BG, false, 1.5)
+
+
 func _draw_diamond(p: Vector2, r: float, color: Color) -> void:
 	var points := PackedVector2Array([p + Vector2(0, -r), p + Vector2(r, 0), p + Vector2(0, r), p + Vector2(-r, 0), p + Vector2(0, -r)])
 	draw_polyline(points, color, 2.0, true)
@@ -1283,6 +1303,7 @@ func _gui_input(event: InputEvent) -> void:
 		_mouse_pos = event.position
 		_hover_u = _x_to_u(event.position.x)
 		_hover_beat = _y_to_beat(event.position.y)
+		_update_hover_cursor()
 		var hover_index := _division_index_at(event.position)
 		if hover_index != _division_hover:
 			_division_hover = hover_index
@@ -1299,6 +1320,8 @@ func _gui_input(event: InputEvent) -> void:
 			_drag_notes_update(event.position, event)
 		elif _drag_mode == "width":
 			_drag_width_update(event.position)
+		elif _drag_mode == "path_tail":
+			_drag_path_tail_update(event.position, event)
 		elif _drag_mode == "limit":
 			_drag_red_update(event.position, event)
 		elif _drag_mode == "hold_end":
@@ -1561,7 +1584,7 @@ func _on_left_release(event: InputEventMouseButton) -> void:
 		return
 	if _drag_mode == "note":
 		_snap_dragged_notes(not _snap_modifier(event))
-	if _drag_mode in ["note", "width", "limit", "hold_end"]:
+	if _drag_mode in ["note", "width", "limit", "hold_end", "path_tail"]:
 		_app.finish_edit()
 	if _drag_mode == "marquee":
 		_finish_marquee()
@@ -1570,6 +1593,7 @@ func _on_left_release(event: InputEventMouseButton) -> void:
 	_drag_notes.clear()
 	_drag_region = null
 	_drag_width_note = null
+	_drag_tail_note = null
 	queue_redraw()
 	if _overlay != null:
 		_overlay.queue_redraw()
@@ -1619,6 +1643,8 @@ func _select_press(event: InputEventMouseButton) -> void:
 			_app.select_note(note_id, event.shift_pressed)
 			if hit.get("part", "") == "width":
 				_begin_width_drag(note_id, event.position)
+			elif hit.get("part", "") == "tail":
+				_begin_tail_drag(note_id, event.position)
 			else:
 				_begin_note_drag(event.position)
 		"region":
@@ -1642,12 +1668,20 @@ func _hit_test(pos: Vector2) -> Dictionary:
 				best = {"kind": "note", "id": note.id, "part": item["part"]}
 		if note.type in ["tap", "hold"]:
 			var edge := _width_edge_hit(note, pos)
-			if not edge.is_empty():
-				return edge
+			if not edge.is_empty() and float(edge["distance"]) <= best_distance:
+				best = {"kind": "note", "id": note.id, "part": "width"}
+				best_distance = float(edge["distance"])
 			var note_y := _beat_to_y(note.beat)
 			if absf(pos.y - note_y) <= 7.0 and JudgeMath.in_arc(_x_to_u(pos.x) * 360.0, note.angle, note.arc_width()):
-				return {"kind": "note", "id": note.id, "part": "body"}
+				# 宽度手柄优先：手指就按在弧带端点上，别当成整条拖动。
+				if String(best.get("part", "")) != "width":
+					return {"kind": "note", "id": note.id, "part": "body"}
 		if note.type == "path":
+			# 尾巴优先：它就长在轨迹末端，不先判的话会被 body 抢走。
+			if positions.size() > 1:
+				var tail_point: Vector2 = positions[1]["point"]
+				if tail_point.distance_to(pos) <= 10.0:
+					return {"kind": "note", "id": note.id, "part": "tail"}
 			# The whole drawn Path is selectable, not just its head/tail or
 			# the column at the start angle.
 			if _path_body_hit(note, pos):
@@ -1658,6 +1692,9 @@ func _hit_test(pos: Vector2) -> Dictionary:
 		if note.type == "hold":
 			var y0 := _beat_to_y(note.beat)
 			var y1 := _beat_to_y(note.end_beat)
+			var tail_x := _u_to_x(fposmod(note.angle, 360.0) / 360.0)
+			if absf(pos.x - tail_x) <= 9.0 and absf(pos.y - y1) <= 7.0:
+				return {"kind": "note", "id": note.id, "part": "tail"}
 			if pos.y >= minf(y0, y1) - 4 and pos.y <= maxf(y0, y1) + 4:
 				var body_x := _u_to_x(fposmod(note.angle, 360.0) / 360.0)
 				if absf(pos.x - body_x) < 8.0:
@@ -1708,9 +1745,21 @@ func _width_edge_hit(note: Note, pos: Vector2) -> Dictionary:
 	var half := note.arc_width() / 720.0
 	var left := fposmod(center - half + 1.0, 1.0)
 	var right := fposmod(center + half, 1.0)
-	if absf(pos.x - _u_to_x(left)) < 6.0 or absf(pos.x - _u_to_x(right)) < 6.0:
-		return {"kind": "note", "id": note.id, "part": "width"}
-	return {}
+	var distance := minf(absf(pos.x - _u_to_x(left)), absf(pos.x - _u_to_x(right)))
+	if distance >= 9.0:
+		return {}
+	return {"kind": "note", "id": note.id, "part": "width", "distance": distance}
+
+
+## 手柄只在选中时画出来，但指针靠近也要变成左右缩放光标。
+func _update_hover_cursor() -> void:
+	var shape := Control.CURSOR_ARROW
+	if _app != null and _drag_mode == "":
+		for note in _app.get_selected_notes():
+			if note.type in ["tap", "hold"] and not _width_edge_hit(note, _mouse_pos).is_empty():
+				shape = Control.CURSOR_HSIZE
+				break
+	mouse_default_cursor_shape = shape
 
 
 func _note_positions(note: Note) -> Array[Dictionary]:
@@ -1786,6 +1835,32 @@ func _drag_hold_update(screen: Vector2, event: InputEventMouseMotion) -> void:
 	_app.touch_chart()
 
 
+## 抓尾巴：Hold 只拉长短；Path 横向改尾角、纵向改结束拍。
+func _begin_tail_drag(note_id: int, screen: Vector2) -> void:
+	var note := _find_note(note_id)
+	if note == null:
+		return
+	_drag_tail_note = note
+	_drag_tail_start = note.tail_angle
+	_drag_tail_origin = _x_to_u(screen.x)
+	if note.type == "hold":
+		_drag_mode = "hold_end"
+		_drag_notes = [{"note": note}]
+	else:
+		_drag_mode = "path_tail"
+	_app.begin_edit()
+
+
+func _drag_path_tail_update(screen: Vector2, event: InputEventMouseMotion) -> void:
+	if _drag_tail_note == null:
+		return
+	_drag_tail_note.tail_angle = fposmod(
+		_drag_tail_start + (_x_to_u(screen.x) - _drag_tail_origin) * 360.0, 360.0)
+	_drag_tail_note.end_beat = maxf(_drag_tail_note.beat + 0.25,
+		_snap_beat_to_subdivision(_y_to_beat(screen.y), not _snap_modifier(event)))
+	_app.touch_chart()
+
+
 func _begin_width_drag(note_id: int, screen: Vector2) -> void:
 	var note := _find_note(note_id)
 	if note == null:
@@ -1803,12 +1878,16 @@ func _drag_width_update(screen: Vector2) -> void:
 	if _drag_width_note == null:
 		return
 	var u := _x_to_u(screen.x)
-	var delta := (u - _drag_width_origin) * 360.0
-	# 画出来的是 width × length_ratio，把鼠标位移换算回 width，边缘才跟手。
-	var visual := maxf(0.05, _drag_width_note.length_ratio())
-	var new_width := _drag_width_start + delta * 2.0 * float(_drag_width_side) / visual
-	_drag_width_note.width = clampf(new_width, 5.0, 360.0)
+	_drag_width_note.width = dragged_width(
+		_drag_width_start, u - _drag_width_origin, _drag_width_side, _drag_width_note.length_ratio())
 	_app.touch_chart()
+
+
+## 画出来的是 width × length_ratio，鼠标位移要换算回 width，边缘才跟手；
+## 上限也按画出来的弧宽算，否则 sized Tap ×1.5 会推出 540° 的非法宽度。
+static func dragged_width(start_width: float, delta_u: float, side: int, length_ratio: float) -> float:
+	var visual := maxf(0.05, length_ratio)
+	return clampf(start_width + delta_u * 360.0 * 2.0 * float(side) / visual, 5.0, 360.0 / visual)
 
 
 func _create_simple(type: String, beat: float, u: float) -> void:

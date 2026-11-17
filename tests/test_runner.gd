@@ -62,6 +62,11 @@ func _initialize() -> void:
 		"test_aim_angle_fallback",
 		"test_inspector_wheel_scrolls_page",
 		"test_preview_note_drag_angle",
+		"test_canvas_width_drag",
+		"test_path_axis_drag",
+		"test_path_smoothing",
+		"test_seek_limit_animation_curves",
+		"test_limit_dwell_once",
 		"test_bpm_snap_multipliers",
 		"test_path_zone_granularity",
 		"test_bpm_lock_scales_following",
@@ -4084,6 +4089,94 @@ func test_inspector_wheel_scrolls_page() -> bool:
 	ok(Inspector.wheel_delta(true) < 0.0, "wheel up scrolls the page up")
 	ok(Inspector.wheel_delta(false) > 0.0, "wheel down scrolls the page down")
 	near(Inspector.wheel_delta(true) + Inspector.wheel_delta(false), 0.0, 0.0001, "both directions use the same step")
+	return true
+
+
+## 宽度手柄：边缘 1:1 跟手；上限按“画出来的弧宽 ≤ 360°”算。
+func test_canvas_width_drag() -> bool:
+	near(ChartCanvas.dragged_width(60.0, 0.0, 1, 1.0), 60.0, 0.0001, "no movement keeps the width")
+	ok(ChartCanvas.dragged_width(60.0, 0.02, 1, 0.5) > 60.0, "dragging right grows the right edge")
+	ok(ChartCanvas.dragged_width(60.0, 0.02, -1, 0.5) < 60.0, "dragging the left edge grows outward")
+	near(ChartCanvas.dragged_width(60.0, 10.0, 1, 1.5) * 1.5, 360.0, 0.001, "sized taps stop at a full ring")
+	near(ChartCanvas.dragged_width(1.0, -10.0, 1, 1.0), 5.0, 0.001, "width never goes below 5 degrees")
+	return true
+
+
+## Path 轴长手柄：沿起终弦法向拖过去多少，就是多少个弦长。
+func test_path_axis_drag() -> bool:
+	var head := Vector2(1, 0)
+	var tail := Vector2(0, 0.5)
+	var chord := tail - head
+	var middle := (head + tail) * 0.5
+	near(Preview3D.path_axis_from_drag(head, tail, middle), 0.0, 0.0001, "dragging through the chord keeps it straight")
+	var normal := Vector2(-chord.y, chord.x).normalized()
+	near(Preview3D.path_axis_from_drag(head, tail, middle + normal * chord.length() * 0.25),
+		0.25, 0.0001, "normal drag becomes the axis in chord lengths")
+	near(Preview3D.path_axis_from_drag(head, tail, middle - normal * chord.length() * 0.5),
+		-0.5, 0.0001, "the other side is negative")
+	near(Preview3D.path_axis_from_drag(head, head, middle), 0.0, 0.0001, "a zero-length chord is a no-op")
+	return true
+
+
+func _path_turning(points: Array[Vector2]) -> float:
+	var total := 0.0
+	for i in range(1, points.size() - 1):
+		var a := (points[i] - points[i - 1]).normalized()
+		var b := (points[i + 1] - points[i]).normalized()
+		total += acos(clampf(a.dot(b), -1.0, 1.0))
+	return total
+
+
+## 手绘定型：端点不动、点数封顶、锯齿被压平、拐角保留。
+func test_path_smoothing() -> bool:
+	var raw: Array[Vector2] = []
+	for i in 41:
+		raw.append(Vector2(float(i) / 40.0, 0.0 if i % 2 == 0 else 0.01))
+	var smooth := Preview3D.finalize_path_points(raw)
+	ok(smooth.size() >= 2 and smooth.size() <= Preview3D.PATH_SMOOTH_MAX_POINTS,
+		"smoothed trace stays inside the point budget")
+	ok(smooth[0].is_equal_approx(raw[0]) and smooth[-1].is_equal_approx(raw[-1]),
+		"head and tail are never moved")
+	ok(_path_turning(smooth) < _path_turning(raw), "smoothing reduces direction changes")
+	var corner: Array[Vector2] = []
+	for i in 11:
+		corner.append(Vector2(float(i) / 10.0, 0.0))
+	for i in range(1, 11):
+		corner.append(Vector2(1.0, float(i) / 10.0))
+	var kept := Preview3D.finalize_path_points(corner)
+	var closest := 99.0
+	for point in kept:
+		closest = minf(closest, point.distance_to(Vector2(1, 0)))
+	ok(closest < 0.02, "a 90 degree corner survives")
+	ok(kept.size() <= Preview3D.PATH_SMOOTH_MAX_POINTS, "corner path also respects the budget")
+	var line: Array[Vector2] = [Vector2(0, 0), Vector2(0.5, 0), Vector2(1, 0), Vector2(1.5, 0)]
+	ok(Preview3D._rdp_path(line, 0.018).size() == 2, "a straight line collapses to its endpoints")
+	return true
+
+
+## Seek / Limit 的入场曲线：数值必须落在设计区间里。
+func test_seek_limit_animation_curves() -> bool:
+	near(Preview3D.ease_out_cubic(0.0), 0.0, 0.0001, "ease out starts at 0")
+	near(Preview3D.ease_out_cubic(1.0), 1.0, 0.0001, "ease out ends at 1")
+	ok(Preview3D.ease_out_cubic(0.5) > 0.5, "ease out front-loads the motion")
+	near(Preview3D.limit_fill_alpha(0.0), 0.12, 0.0001, "a limit region starts almost empty")
+	ok(Preview3D.limit_fill_alpha(110.0) > 0.48, "110ms in, the fill is nearly solid")
+	ok(Preview3D.limit_fill_alpha(1000.0) < 0.62, "breathing never turns the fill opaque")
+	near(Preview3D.limit_flash_alpha(0.0), 0.35, 0.0001, "activation flashes white")
+	near(Preview3D.limit_flash_alpha(70.0), 0.0, 0.0001, "the flash is gone after 70ms")
+	return true
+
+
+## 红区驻留：进入那一帧不计时、离开清零、每局每区只断一次。
+func test_limit_dwell_once() -> bool:
+	var state := {"time": 0.0, "broken": false}
+	ok(not Playtest.limit_dwell_break(state, true, 0.2, 0.2), "the frame you enter does not count")
+	ok(not Playtest.limit_dwell_break(state, true, 0.1, 0.2), "100ms is not enough")
+	ok(Playtest.limit_dwell_break(state, true, 0.15, 0.2), "200ms of dwell breaks")
+	ok(not Playtest.limit_dwell_break(state, true, 1.0, 0.2), "the same region only breaks once")
+	ok(not Playtest.limit_dwell_break(state, false, 0.0, 0.2), "leaving resets the timer")
+	near(float(state["time"]), 0.0, 0.0001, "timer is cleared after leaving")
+	ok(not Playtest.limit_dwell_break(state, true, 0.3, 0.2), "a broken region stays broken for the run")
 	return true
 
 
