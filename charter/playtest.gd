@@ -1840,7 +1840,7 @@ func _judge_seek(note: Note, ms: float, beat: float) -> void:
 		var press: Dictionary = _seek_presses[picked]
 		_seek_presses.remove_at(picked)
 		state["done"] = true
-		_preview.set_note_state(note.id, "hit")
+		_preview.set_note_state(note.id, "hit", beat)
 		_register_hit("PERFECT")
 		var color := UITheme.SEEK_IN if note.seek_orien == 1 else UITheme.SEEK_OUT
 		_pulse_at(0.0, beat, color, "PERFECT", 360.0, "seek", "SEEK", _preview.project_design(Vector2.ZERO))
@@ -1849,7 +1849,7 @@ func _judge_seek(note: Note, ms: float, beat: float) -> void:
 		return
 	if ms > target + HIT_WINDOW_MS:
 		state["done"] = true
-		_preview.set_note_state(note.id, "miss")
+		_preview.set_note_state(note.id, "miss", beat)
 		_miss_count += 1
 		_add_judgement("MISS")
 		_combo = 0
@@ -2411,37 +2411,40 @@ func _judge_red(ms: float, beat: float, mouse: Vector2) -> void:
 		state["last_ms"] = ms
 		if not region.active_at(beat):
 			state["time"] = 0.0
-			state["broken"] = false
 			state["was_inside"] = false
 			continue
-		# 红区按可见多边形判定：鼠标实际落在红区里才算。
+		# 红区多边形是环面上的扇带（0.68R–1.0R）：环心空洞与环外都不算“停在环上”。
 		var polygon := _preview.red_region_polygon(region, beat)
 		var inside := polygon.size() >= 3 and Geometry2D.is_point_in_polygon(mouse, polygon)
-		if inside:
-			# 停留时间按时间轴算，不累加帧长：拖动进度条时 delta 是 0，
-			# 累加帧长会让红区在回放里永远不断（回放和实时走同一套判定）。
-			# 刚进入的那一帧不算：否则会把进区之前的那段时间也记成停留。
-			if not bool(state.get("was_inside", false)):
-				step_sec = 0.0
-				state["was_inside"] = true
-			state["time"] = float(state["time"]) + step_sec
-			if float(state["time"]) >= RED_LIMIT_SEC and not bool(state["broken"]):
-				state["broken"] = true
-				_red_breaks += 1
-				_miss_count += 1
-				_add_judgement("MISS")
-				# 红区断连：真的清空连击，并在红区中心炸一次红色反馈。
-				_combo = 0
-				var center := Vector2.ZERO
-				for point in polygon:
-					center += point
-				if not polygon.is_empty():
-					_preview.add_hit_pulse(center / float(polygon.size()), UITheme.RED, "LIMIT", "tap")
-				_add_log("LIMIT #%d BREAK @ %.0fms" % [region.id, ms])
-		else:
-			state["time"] = 0.0
-			state["broken"] = false
-			state["was_inside"] = false
+		if limit_dwell_break(state, inside, step_sec, RED_LIMIT_SEC):
+			_red_breaks += 1
+			_miss_count += 1
+			_add_judgement("MISS")
+			# 红区断连：真的清空连击，并在红区中心炸一次红色反馈。
+			_combo = 0
+			var center := Vector2.ZERO
+			for point in polygon:
+				center += point
+			if not polygon.is_empty():
+				_preview.add_hit_pulse(center / float(polygon.size()), UITheme.RED, "LIMIT", "tap")
+			_add_log("LIMIT #%d BREAK @ %.0fms" % [region.id, ms])
+
+
+## 红区驻留：进入的那一帧不计时（否则会把进区之前的时间也记成停留）；
+## 离开清零；每局每个红区只断一次。
+static func limit_dwell_break(state: Dictionary, inside: bool, step_sec: float, limit_sec: float) -> bool:
+	if not inside:
+		state["time"] = 0.0
+		state["was_inside"] = false
+		return false
+	if not bool(state.get("was_inside", false)):
+		step_sec = 0.0
+		state["was_inside"] = true
+	state["time"] = float(state.get("time", 0.0)) + step_sec
+	if float(state["time"]) >= limit_sec and not bool(state.get("broken", false)):
+		state["broken"] = true
+		return true
+	return false
 
 
 func _pulse_at(angle_degrees: float, beat: float, color: Color, label: String, width: float = 60.0, kind: String = "tap", detail: String = "", screen_point: Vector2 = Vector2.INF) -> void:

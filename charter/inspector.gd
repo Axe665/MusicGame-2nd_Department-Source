@@ -21,6 +21,15 @@ var _pages: Dictionary = {}
 var _page_list: Array[VBoxContainer] = []
 var _applying: bool = false
 var _rebuilding: bool = false
+## 每个标签页上次构建时的「结构签名」。中文 Label 进树要重新量最小尺寸（实测单个
+## 标签 ~17ms），整页重建 0.2–2.3 秒；结构没变时直接复用已建好的页。
+var _page_keys: Dictionary = {}
+## 音符页的两种形态各建一次、之后只切可见性：中文 Label 进树要重新量尺寸，
+## 每次多选/单选来回都重建会卡 1.5 秒。
+var _note_single_host: VBoxContainer = null
+var _note_multi_host: VBoxContainer = null
+var _note_multi_count: Label = null
+var _note_multi_types: Label = null
 var _video_dialog: FileDialog
 var _video_progress: AcceptDialog
 var _video_progress_bar: ProgressBar
@@ -28,7 +37,6 @@ var _video_progress_label: Label
 var _selected_timing: int = 0
 var _selected_visual: int = 0
 var _note_page_ready: bool = false
-var _note_page_chart: Chart = null
 var _active_note: Note = null
 var _note_groups: Dictionary = {}
 var _note_rows: Dictionary = {}
@@ -138,34 +146,97 @@ func _rebuild() -> void:
 	if _app == null or _rebuilding:
 		return
 	_rebuilding = true
-	if current_tab == 0 and _note_page_ready and _note_page_chart == _app.chart and _app.selected_notes.size() == 1 and _app.get_selected_note() != null:
-		_refresh_note_page()
-		refresh_tab_titles()
-		_rebuilding = false
-		return
-	if current_tab == 0 and _note_page_ready and _note_page_chart == _app.chart and _app.selected_notes.is_empty():
-		_show_note_empty()
+	if current_tab == 0:
+		_rebuild_note_tab()
 		refresh_tab_titles()
 		_rebuilding = false
 		return
 	var current_page: VBoxContainer = _page_list[clampi(current_tab, 0, _page_list.size() - 1)]
+	if _page_keys.get(current_tab, "") == _page_key(current_tab) and current_page.get_child_count() > 0:
+		refresh_tab_titles()
+		_rebuilding = false
+		return
 	for child in current_page.get_children():
 		child.queue_free()
-	if current_tab == 0:
-		_note_page_ready = false
+	# 先建在脱离场景树的容器里，最后一次性挂上去：否则每 add_child 都会重排整页，
+	# 控件一多就是 O(n²)（实测 1.6 秒）。
+	var host := VBoxContainer.new()
+	host.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	host.add_theme_constant_override("separation", 8)
 	match current_tab:
-		0:
-			_build_note_page(_pages["音符"])
 		1:
-			_build_region_page(_pages["区域"])
+			_build_region_page(host)
 		2:
-			_build_view_page(_pages["视图"])
+			_build_view_page(host)
 		3:
-			_build_timing_page(_pages["时间"])
+			_build_timing_page(host)
 		4:
-			_build_chart_page(_pages["谱面"])
+			_build_chart_page(host)
+	current_page.add_child(host)
+	if current_tab != 0:
+		_page_keys[current_tab] = _page_key(current_tab)
 	refresh_tab_titles()
 	_rebuilding = false
+
+
+## 音符页：单选/多选/空选三种形态各自复用，绝不在选择变化时重建整页。
+func _rebuild_note_tab() -> void:
+	var selected: int = _app.selected_notes.size()
+	if selected == 0:
+		_show_note_mode("empty")
+		return
+	if selected > 1:
+		if _note_multi_host == null:
+			_note_multi_host = _new_page_host()
+			_build_multi_page(_note_multi_host)
+			_pages["音符"].add_child(_note_multi_host)
+		_update_multi_labels()
+		_show_note_mode("multi")
+		return
+	if _app.get_selected_note() == null:
+		_show_note_mode("empty")
+		return
+	if _note_single_host == null:
+		_note_single_host = _new_page_host()
+		_build_note_page_for(_note_single_host, _app.get_selected_note())
+		_pages["音符"].add_child(_note_single_host)
+		_note_page_ready = true
+	_show_note_mode("single")
+	_refresh_note_page()
+
+
+func _new_page_host() -> VBoxContainer:
+	var host := VBoxContainer.new()
+	host.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	host.add_theme_constant_override("separation", 8)
+	return host
+
+
+func _show_note_mode(mode: String) -> void:
+	_prepare_note_empty_label(_pages["音符"])
+	_note_empty_label.visible = mode == "empty"
+	if _note_single_host != null:
+		_note_single_host.visible = mode == "single"
+	if _note_multi_host != null:
+		_note_multi_host.visible = mode == "multi"
+
+
+## 页面结构只在这些东西变化时需要重建；数值变化由刷新/控件自身处理。
+func _page_key(tab: int) -> String:
+	if _app == null or _app.chart == null:
+		return ""
+	var chart_id := str(_app.chart.get_instance_id())
+	match tab:
+		2:
+			# 视图页全是编辑器设置，和谱面对象无关；建一次就复用。
+			return "view"
+		1:
+			return "%s|region:%d" % [chart_id, _app.selected_region_id]
+		3:
+			return "%s|timing:%d" % [chart_id, _app.chart.timing.points.size()]
+		4:
+			return "%s|palette:%d|shapes:%d" % [chart_id, _app.chart.palette.size(), _app.chart.shapes.size()]
+	return chart_id
 
 
 func refresh_tab_titles() -> void:
@@ -395,34 +466,27 @@ func _remember_row(key: String, control: Control) -> void:
 	_note_rows[key] = control.get_parent()
 
 
-func _build_note_page(page: VBoxContainer) -> void:
-	if _app.selected_notes.size() > 1:
-		_note_page_ready = false
-		_section(page, "多选")
-		_label(page, "已选中 %d 个音符。拖动可整体移动；数值混合时不显示单一值。" % _app.selected_notes.size(), 12, UITheme.INK)
-		var types := {}
-		for item in _app.get_selected_notes():
-			types[item.type] = true
-		_label(page, "类型：%s" % ",".join(types.keys()), 12, UITheme.MUTED)
-		_label(page, "快捷键：批量复制 Ctrl+C ｜ 批量粘贴 Ctrl+V ｜ 批量镜像粘贴 Ctrl+A", 11, UITheme.CYAN)
-		_buttons(page, [
-			{"text": "删除选中", "callback": _delete_selected},
-			{"text": "解锁", "callback": _unlock_selected},
-		])
+## 多选页只建一次：数量/类型写在两个常驻 Label 里，之后只改文字。
+func _build_multi_page(page: VBoxContainer) -> void:
+	_section(page, "多选")
+	_note_multi_count = _label(page, "", 12, UITheme.INK)
+	_note_multi_types = _label(page, "", 12, UITheme.MUTED)
+	_label(page, "快捷键：批量复制 Ctrl+C ｜ 批量粘贴 Ctrl+V ｜ 批量镜像粘贴 Ctrl+A", 11, UITheme.CYAN)
+	_buttons(page, [
+		{"text": "删除选中", "callback": _delete_selected},
+		{"text": "解锁", "callback": _unlock_selected},
+	])
+	_update_multi_labels()
+
+
+func _update_multi_labels() -> void:
+	if _note_multi_count == null or not is_instance_valid(_note_multi_count):
 		return
-	var note: Note = _app.get_selected_note()
-	if note == null:
-		_note_page_ready = false
-		_empty("音符", "在上方类型卡片（或 1–7 快捷键）选择工具；点击画布放置，预览窗可点边界放置。")
-		return
-	if _note_page_ready and _note_page_chart == _app.chart:
-		_refresh_note_page()
-		return
-	_note_page_ready = true
-	_note_page_chart = _app.chart
-	_active_note = note
-	_build_note_page_for(page, note)
-	_refresh_note_page()
+	_note_multi_count.text = "已选中 %d 个音符。拖动可整体移动；数值混合时不显示单一值。" % _app.selected_notes.size()
+	var types := {}
+	for item in _app.get_selected_notes():
+		types[item.type] = true
+	_note_multi_types.text = "类型：%s" % ",".join(types.keys())
 
 
 func _build_note_page_for(page: VBoxContainer, note: Note) -> void:
@@ -798,27 +862,21 @@ func _prepare_note_empty_label(page: VBoxContainer) -> void:
 	page.add_child(_note_empty_label)
 
 
-func _show_note_empty() -> void:
-	var page: VBoxContainer = _pages["音符"]
-	_prepare_note_empty_label(page)
-	for group in _note_groups.values():
-		if group is Control:
-			group.visible = false
-	_note_empty_label.visible = true
-
-
 func _prebuild_note_page() -> void:
 	# 启动时一次性构建静态页，之后选择音符只刷新数值，不再创建中文控件。
+	# 和 _rebuild 一样先建在脱离场景树的容器里，避免每个 add_child 都重排整页。
 	var page: VBoxContainer = _pages["音符"]
 	for child in page.get_children():
 		child.queue_free()
+	var host := _new_page_host()
 	var dummy := Note.new("tap", 0.0, 0.0, 60.0)
 	dummy.id = -1
-	_build_note_page_for(page, dummy)
+	_build_note_page_for(host, dummy)
+	page.add_child(host)
+	_note_single_host = host
 	_note_page_ready = true
-	_note_page_chart = _app.chart
 	_active_note = null
-	_show_note_empty()
+	_show_note_mode("empty")
 
 
 func _refresh_note_page() -> void:
