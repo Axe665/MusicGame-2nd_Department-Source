@@ -4914,6 +4914,7 @@ uniform float split = 0.0;
 uniform float ripple = 0.0;
 uniform float radial = 0.0;
 uniform float kaleido = 0.0;
+uniform float kaleido_segments = 6.0;
 uniform float rotate = 0.0;
 uniform float bloom = 0.0;
 uniform vec2 move = vec2(0.0);
@@ -4955,7 +4956,7 @@ void fragment() {
 		vec2 d = warped - center;
 		float radius = length(d);
 		float angle = atan(d.y, d.x);
-		float segment = 6.2831853 / mix(16.0, 3.0, clamp(kaleido, 0.0, 1.0));
+		float segment = 6.2831853 / max(kaleido_segments, 2.0);
 		angle = abs(mod(angle, segment) - segment * 0.5);
 		warped = center + vec2(cos(angle), sin(angle)) * radius;
 	}
@@ -4983,7 +4984,7 @@ void fragment() {
 	} else if (radial > 0.001) {
 		vec3 acc = vec3(0.0);
 		for (int i = 0; i < 6; i++) {
-			float scale = 1.0 - float(i) * 0.018 * clamp(radial, 0.0, 1.0);
+			float scale = 1.0 - float(i) * 0.032 * clamp(radial, 0.0, 1.0);
 			acc += texture(screen_tex, center + (warped - center) * scale).rgb;
 		}
 		col = acc / 6.0;
@@ -5054,6 +5055,7 @@ func _filter_state(chart: Chart, t: float) -> Dictionary:
 		"brightness": 0.0, "contrast": 1.0, "saturation": 1.0, "hue_shift": 0.0,
 		"vignette": 0.0, "zoom": 1.0, "pixelate": 0.0, "glitch": 0.0, "invert": 0.0,
 		"posterize": 0.0, "split": 0.0, "ripple": 0.0, "radial": 0.0, "kaleido": 0.0,
+		"kaleido_segments": 6.0,
 		"rotate": 0.0, "bloom": 0.0, "move": Vector2.ZERO, "shake": 0.0, "shake_freq": 12.0,
 		"tint": Color(1, 1, 1, 1), "tint_amount": 0.0,
 		"flash": Color(1, 1, 1, 0), "fade": Color(0, 0, 0, 0),
@@ -5063,8 +5065,12 @@ func _filter_state(chart: Chart, t: float) -> Dictionary:
 		if not command.enabled or command.category() != AlphaCommand.CATEGORY_FILTER:
 			continue
 		var env := command.envelope_at(t)
+		var in_window := t >= command.beat - 0.0001 and (command.is_stateful() or t <= command.end_beat() + 0.0001)
 		if env <= 0.001:
-			continue
+			if not in_window:
+				continue
+			# 停在指令起始拍时包络正好是 0，给一个可见的预览底噪，免得以为指令没生效。
+			env = 0.35
 		active = true
 		var strength := clampf(command.number("strength", 0.8), 0.0, 4.0) * env
 		match command.name:
@@ -5088,8 +5094,8 @@ func _filter_state(chart: Chart, t: float) -> Dictionary:
 				state["rotate"] = float(state["rotate"]) + deg_to_rad(command.number("value", 10.0)) * env
 			"KALEIDOSCOPE":
 				if command.flag("on", true):
-					var segments := clampf(command.number("segments", 6.0), 2.0, 16.0)
-					state["kaleido"] = maxf(float(state["kaleido"]), env * clampf(1.0 - (segments - 2.0) / 22.0, 0.15, 1.0))
+					state["kaleido"] = maxf(float(state["kaleido"]), env)
+					state["kaleido_segments"] = clampf(command.number("segments", 6.0), 2.0, 16.0)
 			"BLOOM":
 				state["bloom"] = maxf(float(state["bloom"]), clampf(strength, 0.0, 4.0))
 			"INVERT":
