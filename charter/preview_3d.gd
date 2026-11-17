@@ -234,6 +234,7 @@ func _ready() -> void:
 	_app = get_node_or_null("/root/App")
 	_build_layers()
 	_build_3d()
+	_build_filter_layer()
 	mouse_entered.connect(_on_mouse_entered)
 	mouse_exited.connect(_on_mouse_exited)
 	resized.connect(_on_resized)
@@ -253,6 +254,8 @@ func _exit_tree() -> void:
 
 ## 画质档：0 = 全开，1 = 省电（只降 3D 背景的渲染分辨率，音符永远按全画质画）。
 ## 试玩里由实测帧时自动降档，只为让弱机也能稳住节奏。
+## 全屏滤镜层（屏幕采样 shader）；由 <FLASH>/<HUE>/<ZOOM> 等滤镜指令逐帧驱动。
+var _filter_layer: ColorRect = null
 var quality_level: int = 0
 ## 音符弧带采样精度：true = 1/4°（全画质），false = 1/6°（省电，边缘略方）。
 var note_detail_fine: bool = true
@@ -4804,36 +4807,25 @@ func _draw_alpha_commands(canvas: Control, chart: Chart, t: float) -> void:
 	if chart == null or chart.commands.is_empty():
 		return
 	var area := canvas.get_rect()
-	var wash := Color(0, 0, 0, 0)
+	_apply_filters(chart, t)
 	var chips: Array[String] = []
 	for command in chart.commands:
 		if not command.enabled:
 			continue
 		var env := command.envelope_at(t)
+		var in_window := t >= command.beat - 0.0001 and (command.is_stateful() or t <= command.end_beat() + 0.0001)
+		if not in_window:
+			continue
+		if command.category() == AlphaCommand.CATEGORY_FILTER:
+			# 滤镜在起手段包络为 0 也要显示，否则刚好停在起始拍会以为没生效。
+			chips.append("%s %.0f%%" % [command.label(), env * 100.0])
+			continue
 		if env <= 0.01:
 			continue
-		match command.category():
-			AlphaCommand.CATEGORY_JLINE:
-				_draw_jline_command(canvas, area, command, env)
-			AlphaCommand.CATEGORY_TEXT:
-				_draw_text_command(canvas, area, command, env)
-			_:
-				var strength := command.number("strength", command.number("value", command.number("amount", 0.8)))
-				if command.name == "FLASH" or command.name == "BLOOM":
-					wash = Color(1, 1, 1, maxf(wash.a, 0.45 * env * clampf(strength, 0.0, 1.0)))
-				elif command.name == "FADE":
-					wash = Color(0, 0, 0, maxf(wash.a, 0.5 * env * clampf(strength, 0.0, 1.0)))
-				elif command.name == "INVERT":
-					wash = Color(0.86, 0.86, 0.92, maxf(wash.a, 0.18 * env))
-				elif command.name == "BRIGHTNESS":
-					var amount := clampf(strength, -1.0, 1.0) * 0.25 * env
-					if amount > 0.0:
-						wash = Color(1, 1, 1, maxf(wash.a, amount))
-					else:
-						wash = Color(0, 0, 0, maxf(wash.a, -amount))
-				chips.append("%s %.0f%%" % [command.label(), env * 100.0])
-	if wash.a > 0.005:
-		canvas.draw_rect(area, wash)
+		if command.category() == AlphaCommand.CATEGORY_JLINE:
+			_draw_jline_command(canvas, area, command, env)
+		elif command.category() == AlphaCommand.CATEGORY_TEXT:
+			_draw_text_command(canvas, area, command, env)
 	if chips.is_empty():
 		return
 	var font := UITheme.bold_font()
@@ -4901,3 +4893,253 @@ func _note_radius_scale(note: Note, progress: float) -> float:
 	if note.bounce > 0.001:
 		q = maxf(0.0, q * note.bounce_radius(progress))
 	return q
+
+
+## 滤镜后处理：整块预览画面走一次屏幕采样 shader。
+## 指令名与默认值照搬 MajdataPlay 的滤镜目录，效果是同一语义的近似实现（不是移植它的 shader）。
+const FILTER_SHADER := """shader_type canvas_item;
+
+uniform sampler2D screen_tex : hint_screen_texture, filter_linear_mipmap;
+uniform float brightness = 0.0;
+uniform float contrast = 1.0;
+uniform float saturation = 1.0;
+uniform float hue_shift = 0.0;
+uniform float vignette = 0.0;
+uniform float zoom = 1.0;
+uniform float pixelate = 0.0;
+uniform float glitch = 0.0;
+uniform float invert = 0.0;
+uniform float posterize = 0.0;
+uniform float split = 0.0;
+uniform float ripple = 0.0;
+uniform float radial = 0.0;
+uniform float kaleido = 0.0;
+uniform float rotate = 0.0;
+uniform float bloom = 0.0;
+uniform vec2 move = vec2(0.0);
+uniform float shake = 0.0;
+uniform float shake_freq = 12.0;
+uniform vec4 tint = vec4(1.0);
+uniform float tint_amount = 0.0;
+uniform vec4 flash = vec4(1.0, 1.0, 1.0, 0.0);
+uniform vec4 fade = vec4(0.0, 0.0, 0.0, 0.0);
+
+vec3 rgb2hsv(vec3 c) {
+	vec4 k = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+	vec4 p = mix(vec4(c.bg, k.wz), vec4(c.gb, k.xy), step(c.b, c.g));
+	vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));
+	float d = q.x - min(q.w, q.y);
+	float e = 1.0e-10;
+	return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
+}
+
+vec3 hsv2rgb(vec3 c) {
+	vec4 k = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+	vec3 p = abs(fract(c.xxx + k.xyz) * 6.0 - k.www);
+	return c.z * mix(k.xxx, clamp(p - k.xxx, 0.0, 1.0), c.y);
+}
+
+void fragment() {
+	vec2 uv = SCREEN_UV - move;
+	vec2 center = vec2(0.5);
+	vec2 offset = uv - center;
+	float tremor = sin(TIME * shake_freq) * 0.006 * shake;
+	uv += vec2(tremor, cos(TIME * shake_freq * 1.7) * 0.006 * shake);
+
+	vec2 warped = center + (uv - center) / max(zoom, 0.05);
+	float cs = cos(rotate);
+	float sn = sin(rotate);
+	warped = center + mat2(vec2(cs, -sn), vec2(sn, cs)) * (warped - center);
+
+	if (kaleido > 0.001) {
+		vec2 d = warped - center;
+		float radius = length(d);
+		float angle = atan(d.y, d.x);
+		float segment = 6.2831853 / mix(16.0, 3.0, clamp(kaleido, 0.0, 1.0));
+		angle = abs(mod(angle, segment) - segment * 0.5);
+		warped = center + vec2(cos(angle), sin(angle)) * radius;
+	}
+
+	float wave = sin(length(warped - center) * 46.0 - TIME * 7.0) * 0.012 * ripple;
+	warped += normalize(warped - center + vec2(0.0001)) * wave;
+
+	if (glitch > 0.001) {
+		float band = floor(warped.y * 42.0);
+		float noise = fract(sin(band * 12.9898 + floor(TIME * 14.0) * 7.233) * 43758.5453);
+		warped.x += (noise - 0.5) * 0.12 * glitch * step(0.55, noise);
+	}
+
+	if (pixelate > 0.001) {
+		float cells = mix(640.0, 36.0, clamp(pixelate, 0.0, 1.0));
+		warped = floor(warped * cells) / cells;
+	}
+
+	vec3 col;
+	if (split > 0.001) {
+		float shift = 0.004 * clamp(split, 0.0, 1.0);
+		col.r = texture(screen_tex, warped + vec2(shift, 0.0)).r;
+		col.g = texture(screen_tex, warped).g;
+		col.b = texture(screen_tex, warped - vec2(shift, 0.0)).b;
+	} else if (radial > 0.001) {
+		vec3 acc = vec3(0.0);
+		for (int i = 0; i < 6; i++) {
+			float scale = 1.0 - float(i) * 0.018 * clamp(radial, 0.0, 1.0);
+			acc += texture(screen_tex, center + (warped - center) * scale).rgb;
+		}
+		col = acc / 6.0;
+	} else if (bloom > 0.001) {
+		float amount = clamp(bloom, 0.0, 4.0);
+		col = texture(screen_tex, warped).rgb;
+		for (int i = 1; i <= 3; i++) {
+			float spread = 0.0035 * float(i) * amount;
+			float weight = 0.4 / float(i);
+			col += texture(screen_tex, warped + vec2(spread, 0.0)).rgb * weight;
+			col += texture(screen_tex, warped - vec2(spread, 0.0)).rgb * weight;
+			col += texture(screen_tex, warped + vec2(0.0, spread)).rgb * weight;
+			col += texture(screen_tex, warped - vec2(0.0, spread)).rgb * weight;
+		}
+		col /= 1.0 + 1.6 * amount;
+	} else {
+		col = texture(screen_tex, warped).rgb;
+	}
+
+	col = (col - 0.5) * contrast + 0.5;
+	col += brightness;
+
+	vec3 hsv = rgb2hsv(clamp(col, 0.0, 1.0));
+	hsv.x = fract(hsv.x + hue_shift / 6.2831853);
+	hsv.y = clamp(hsv.y * saturation, 0.0, 1.0);
+	col = hsv2rgb(hsv);
+
+	if (posterize > 0.5) {
+		float steps = max(posterize, 2.0);
+		col = floor(col * steps) / steps;
+	}
+
+	col = mix(col, vec3(1.0) - col, clamp(invert, 0.0, 1.0));
+	col = mix(col, tint.rgb, clamp(tint_amount * tint.a, 0.0, 1.0));
+
+	float curve = smoothstep(0.95, 0.26, length(offset) * 1.45);
+	col *= mix(1.0, curve, clamp(vignette, 0.0, 1.0));
+
+	col = mix(col, flash.rgb, clamp(flash.a, 0.0, 1.0));
+	col = mix(col, fade.rgb, clamp(fade.a, 0.0, 1.0));
+
+	COLOR = vec4(clamp(col, 0.0, 1.0), 1.0);
+}
+"""
+
+
+func _build_filter_layer() -> void:
+	if _filter_layer != null:
+		return
+	var shader := Shader.new()
+	shader.code = FILTER_SHADER
+	var material := ShaderMaterial.new()
+	material.shader = shader
+	_filter_layer = ColorRect.new()
+	_filter_layer.name = "FilterLayer"
+	_filter_layer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_filter_layer.color = Color.WHITE
+	_filter_layer.material = material
+	# 常驻可见：没有滤镜时 shader 是恒等透传，换来的是切滤镜时不会临时编译卡一下。
+	_filter_layer.visible = true
+	add_child(_filter_layer)
+	_filter_layer.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+
+
+## 把当前拍点上所有启用中的滤镜指令合成为一组 shader 参数。
+func _filter_state(chart: Chart, t: float) -> Dictionary:
+	var state := {
+		"brightness": 0.0, "contrast": 1.0, "saturation": 1.0, "hue_shift": 0.0,
+		"vignette": 0.0, "zoom": 1.0, "pixelate": 0.0, "glitch": 0.0, "invert": 0.0,
+		"posterize": 0.0, "split": 0.0, "ripple": 0.0, "radial": 0.0, "kaleido": 0.0,
+		"rotate": 0.0, "bloom": 0.0, "move": Vector2.ZERO, "shake": 0.0, "shake_freq": 12.0,
+		"tint": Color(1, 1, 1, 1), "tint_amount": 0.0,
+		"flash": Color(1, 1, 1, 0), "fade": Color(0, 0, 0, 0),
+	}
+	var active := false
+	for command in chart.commands:
+		if not command.enabled or command.category() != AlphaCommand.CATEGORY_FILTER:
+			continue
+		var env := command.envelope_at(t)
+		if env <= 0.001:
+			continue
+		active = true
+		var strength := clampf(command.number("strength", 0.8), 0.0, 4.0) * env
+		match command.name:
+			"FLASH":
+				state["flash"] = _stronger_color(state["flash"], Color(1, 1, 1, clampf(strength, 0.0, 1.0)))
+			"FADE":
+				state["fade"] = _stronger_color(state["fade"], Color(0, 0, 0, clampf(strength, 0.0, 1.0)))
+			"BRIGHTNESS":
+				state["brightness"] = float(state["brightness"]) + command.number("value", 0.5) * env * 0.6
+			"SATURATION":
+				state["saturation"] = maxf(float(state["saturation"]) * maxf(1.0 + command.number("value", 0.5) * env, 0.0), 0.0)
+			"CONTRAST":
+				state["contrast"] = maxf(float(state["contrast"]) * maxf(1.0 + (command.number("value", 1.2) - 1.0) * env, 0.1), 0.1)
+			"HUE":
+				state["hue_shift"] = float(state["hue_shift"]) + deg_to_rad(command.number("value", 45.0)) * env
+			"ZOOM":
+				state["zoom"] = maxf(float(state["zoom"]) * maxf(lerpf(1.0, command.number("value", 1.5), env), 0.05), 0.05)
+			"VIGNETTE":
+				state["vignette"] = maxf(float(state["vignette"]), clampf(strength, 0.0, 1.0))
+			"ROTATE":
+				state["rotate"] = float(state["rotate"]) + deg_to_rad(command.number("value", 10.0)) * env
+			"KALEIDOSCOPE":
+				if command.flag("on", true):
+					var segments := clampf(command.number("segments", 6.0), 2.0, 16.0)
+					state["kaleido"] = maxf(float(state["kaleido"]), env * clampf(1.0 - (segments - 2.0) / 22.0, 0.15, 1.0))
+			"BLOOM":
+				state["bloom"] = maxf(float(state["bloom"]), clampf(strength, 0.0, 4.0))
+			"INVERT":
+				state["invert"] = maxf(float(state["invert"]), clampf(strength, 0.0, 1.0))
+			"POSTERIZE":
+				state["posterize"] = maxf(float(state["posterize"]), maxf(command.number("levels", 6.0) * env, 2.0))
+			"PIXELATE":
+				state["pixelate"] = maxf(float(state["pixelate"]), clampf(command.number("size", 8.0) / 32.0, 0.05, 1.0) * env)
+			"GLITCH", "SHATTER", "TVNOISE":
+				state["glitch"] = maxf(float(state["glitch"]), clampf(strength, 0.0, 1.0))
+			"SPLIT":
+				state["split"] = maxf(float(state["split"]), clampf(command.number("offset", 0.1) / 0.1, 0.0, 1.0) * env)
+			"RIPPLE":
+				state["ripple"] = maxf(float(state["ripple"]), clampf(strength, 0.0, 1.0))
+			"RADIALBLUR", "GAUSSIAN", "TRAIL", "LENSDISTORT":
+				state["radial"] = maxf(float(state["radial"]), clampf(strength, 0.0, 1.0))
+			"TINT":
+				state["tint"] = command.color_value("color", Color(1, 0.4, 0.8))
+				state["tint_amount"] = maxf(float(state["tint_amount"]), clampf(strength, 0.0, 1.0))
+			"NEON":
+				state["tint"] = command.color_value("color", Color(0.25, 0.9, 1.0))
+				state["tint_amount"] = maxf(float(state["tint_amount"]), 0.55 * env)
+				state["bloom"] = maxf(float(state["bloom"]), env)
+				state["saturation"] = maxf(float(state["saturation"]), 1.25)
+			"RAINBOW":
+				var spin := fmod(Time.get_ticks_msec() / 1000.0 * 2.0, TAU)
+				state["hue_shift"] = float(state["hue_shift"]) + spin * clampf(strength, 0.0, 1.0)
+			"SHAKE":
+				state["shake"] = maxf(float(state["shake"]), clampf(command.number("strength", 0.5), 0.0, 1.0))
+				state["shake_freq"] = command.number("frequency", 12.0)
+			"MOVE":
+				state["move"] = Vector2(command.number("x", 0.0), command.number("y", 0.0)) * env * 0.25
+			_:
+				pass
+	return {"uniforms": state, "active": active}
+
+
+func _stronger_color(current: Variant, candidate: Color) -> Color:
+	var existing: Color = current
+	return candidate if candidate.a > existing.a else existing
+
+
+func _apply_filters(chart: Chart, t: float) -> void:
+	if _filter_layer == null:
+		return
+	var material := _filter_layer.material as ShaderMaterial
+	if material == null:
+		return
+	var state := _filter_state(chart, t)
+	var uniforms: Dictionary = state["uniforms"]
+	for key in uniforms:
+		material.set_shader_parameter(String(key), uniforms[key])
+
