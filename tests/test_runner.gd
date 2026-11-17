@@ -2173,12 +2173,12 @@ func test_bpm_lock_scales_following() -> bool:
 	return true
 
 
-## 滚轮方向：往上滚，画布内容一定往上走。
+## 滚轮方向：往上滚 = 页面往上走（回到更早的拍），往下滚 = 继续往后。
 func test_wheel_direction_matches_screen() -> bool:
-	eq(ChartCanvas.wheel_step(true, false), -3.0, "flow up: wheel up moves content up")
-	eq(ChartCanvas.wheel_step(true, true), 3.0, "flow down: wheel up moves content up")
-	eq(ChartCanvas.wheel_step(false, false), 3.0, "flow up: wheel down moves content down")
-	eq(ChartCanvas.wheel_step(false, true), -3.0, "flow down: wheel down moves content down")
+	eq(ChartCanvas.wheel_step(true, true), -3.0, "flow down: wheel up goes back in time")
+	eq(ChartCanvas.wheel_step(false, true), 3.0, "flow down: wheel down goes forward in time")
+	eq(ChartCanvas.wheel_step(true, false), 3.0, "flow up: wheel up goes back in time")
+	eq(ChartCanvas.wheel_step(false, false), -3.0, "flow up: wheel down goes forward in time")
 	return true
 
 
