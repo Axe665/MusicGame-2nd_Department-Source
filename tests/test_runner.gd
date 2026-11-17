@@ -63,6 +63,9 @@ func _initialize() -> void:
 		"test_inspector_wheel_scrolls_page",
 		"test_preview_note_drag_angle",
 		"test_canvas_width_drag",
+		"test_bell_width_drag",
+		"test_region_drag",
+		"test_anchor_pair_drag",
 		"test_path_axis_drag",
 		"test_path_head_beat",
 		"test_path_smoothing",
@@ -4100,6 +4103,50 @@ func test_canvas_width_drag() -> bool:
 	ok(ChartCanvas.dragged_width(60.0, 0.02, -1, 0.5) < 60.0, "dragging the left edge grows outward")
 	near(ChartCanvas.dragged_width(60.0, 10.0, 1, 1.5) * 1.5, 360.0, 0.001, "sized taps stop at a full ring")
 	near(ChartCanvas.dragged_width(1.0, -10.0, 1, 1.0), 5.0, 0.001, "width never goes below 5 degrees")
+	return true
+
+
+## Bell 宽度手柄：合法范围只有 24–30°，两端拖动方向相反。
+func test_bell_width_drag() -> bool:
+	near(ChartCanvas.dragged_bell_width(27.0, 0.0, 1), 27.0, 0.0001, "no movement keeps the bell width")
+	ok(ChartCanvas.dragged_bell_width(27.0, 0.01, 1) > 27.0, "dragging right grows the right edge")
+	ok(ChartCanvas.dragged_bell_width(27.0, 0.01, -1) < 27.0, "dragging the left edge grows outward")
+	near(ChartCanvas.dragged_bell_width(27.0, 1.0, 1), Note.BELL_MAX_WIDTH, 0.0001, "bell width stops at 30 degrees")
+	near(ChartCanvas.dragged_bell_width(27.0, -1.0, 1), Note.BELL_MIN_WIDTH, 0.0001, "bell width stops at 24 degrees")
+	return true
+
+
+## Limit 红区：身体平移保持时长；边缘改宽度时中心角度只走一半。
+func test_region_drag() -> bool:
+	var span := ChartCanvas.moved_region(4.0, 6.0, 5.0, 7.0)
+	near(span.x, 6.0, 0.0001, "dragging the body moves the start")
+	near(span.y, 8.0, 0.0001, "dragging the body keeps the duration")
+	near(ChartCanvas.moved_region(0.5, 2.5, 1.0, -5.0).x, 0.0, 0.0001, "the region never starts before beat 0")
+	near(ChartCanvas.dragged_region_width(60.0, 0.02, 1), 74.4, 0.0001, "dragging the right edge widens")
+	near(ChartCanvas.dragged_region_width(60.0, 0.02, -1), 45.6, 0.0001, "dragging the left edge widens outward")
+	near(ChartCanvas.dragged_region_width(60.0, 10.0, 1), 359.0, 0.0001, "width stops below a full ring")
+	near(ChartCanvas.dragged_region_angle(90.0, 0.1, 1), 108.0, 0.0001, "angle follows half of the edge drag")
+	return true
+
+
+## Anchor 双押：拖一颗要带上同 pairId 的伙伴，整对保持同拍 + 180°。
+func test_anchor_pair_drag() -> bool:
+	var app: App = load("res://charter/app.gd").new()
+	var chart := Chart.new()
+	var pair := chart.make_anchor_pair(4.0, 90.0)
+	for item in pair:
+		chart.notes.append(item)
+	app.chart = chart
+	app.selected_notes.append(pair[0].id)
+	var dragged: Array[Note] = app.with_anchor_partners(app.get_selected_notes())
+	eq(dragged.size(), 2, "dragging one anchor carries its partner")
+	ok(dragged.has(pair[1]), "the partner is the other anchor")
+	for item in dragged:
+		item.beat += 1.0
+		item.angle = fposmod(item.angle + 30.0, 360.0)
+	near(pair[0].beat, pair[1].beat, 0.0001, "the pair stays on the same beat")
+	near(absf(fposmod(pair[0].angle - pair[1].angle + 360.0, 360.0)), 180.0, 0.0001, "the pair stays 180° apart")
+	app.free()
 	return true
 
 

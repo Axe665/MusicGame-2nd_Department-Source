@@ -1731,7 +1731,8 @@ func _sync_from_app() -> void:
 	_sync_tools()
 	_update_transport()
 	_update_status()
-	_update_validation(Validator.validate(_app.chart))
+	# 全谱校验由 chart_changed/_emit_validation 预约（120ms 后跑一次）。这里同步再跑
+	# 一遍会让每次 Ctrl+Z 多花 25–40ms，而算的是同一份结果。
 
 
 func _ensure_audio() -> void:
@@ -2116,6 +2117,16 @@ func _update_transport(force: bool = false) -> void:
 	_save_label.text = ("● 未保存" if _app.dirty else "已保存") + ("  %s" % _app.chart_path.get_file() if not _app.chart_path.is_empty() else "")
 
 
+## 状态栏文字 + 颜色：文字没变就不碰主题。add_theme_color_override 会触发中文
+## label 重新排版（实测单次 20ms），而选中/拖动的每个 status_changed 都会走到这里。
+func _tint_label(label: Label, color: Color, text: String) -> void:
+	if label.text == text and label.get_meta("tint_color", Color(-1, 0, 0, 0)) == color:
+		return
+	label.text = text
+	label.set_meta("tint_color", color)
+	label.add_theme_color_override("font_color", color)
+
+
 func _update_status() -> void:
 	_sync_playback_view()
 	if _app == null or _app.chart == null:
@@ -2131,14 +2142,11 @@ func _update_status() -> void:
 		var errors: Array = Validator.errors(_issues)
 		var warnings: Array = Validator.warnings(_issues)
 		if not errors.is_empty():
-			_status_error.text = "校验 %d 错误" % errors.size()
-			_status_error.add_theme_color_override("font_color", UITheme.RED)
+			_tint_label(_status_error, UITheme.RED, "校验 %d 错误" % errors.size())
 		elif not warnings.is_empty():
-			_status_error.text = "校验 %d 警告" % warnings.size()
-			_status_error.add_theme_color_override("font_color", UITheme.GOLD)
+			_tint_label(_status_error, UITheme.GOLD, "校验 %d 警告" % warnings.size())
 		else:
-			_status_error.text = "校验通过"
-			_status_error.add_theme_color_override("font_color", UITheme.GREEN)
+			_tint_label(_status_error, UITheme.GREEN, "校验通过")
 	_update_transport(true)
 
 
@@ -2149,14 +2157,11 @@ func _update_validation(issues: Array) -> void:
 	var errors: Array = issues.filter(func(item: Dictionary) -> bool: return item.get("level", "") == "error")
 	var warnings: Array = issues.filter(func(item: Dictionary) -> bool: return item.get("level", "") == "warning")
 	if not errors.is_empty():
-		_validation_label.text = "● %s" % errors[0].get("message", "")
-		_validation_label.add_theme_color_override("font_color", UITheme.RED)
+		_tint_label(_validation_label, UITheme.RED, "● %s" % errors[0].get("message", ""))
 	elif not warnings.is_empty():
-		_validation_label.text = "● %s" % warnings[0].get("message", "")
-		_validation_label.add_theme_color_override("font_color", UITheme.GOLD)
+		_tint_label(_validation_label, UITheme.GOLD, "● %s" % warnings[0].get("message", ""))
 	else:
-		_validation_label.text = "● 校验通过"
-		_validation_label.add_theme_color_override("font_color", UITheme.GREEN)
+		_tint_label(_validation_label, UITheme.GREEN, "● 校验通过")
 	_update_status()
 
 
