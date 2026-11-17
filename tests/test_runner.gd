@@ -145,6 +145,11 @@ func _initialize() -> void:
 		"test_chart_offset_for_bias",
 		"test_audio_buffer_override",
 		"test_bell_center_merges",
+		"test_alpha_command_catalog",
+		"test_alpha_command_envelope",
+		"test_note_mods_io",
+		"test_note_touch_zones",
+		"test_chart_commands_roundtrip",
 	]
 	for test_name in tests:
 		if call(test_name) != true:
@@ -3861,4 +3866,119 @@ func test_osu_pill_rows() -> bool:
 	eq(OsuBrowser.pill_rows(19, 1300), 2, "wide card fits 19 on two rows")
 	ok(OsuBrowser.pill_rows(19, 700) > OsuBrowser.pill_rows(19, 1300), "narrower card needs more rows")
 	eq(OsuBrowser.pill_rows(0, 900), 1, "no difficulties still one row (the toggle chip)")
+	return true
+
+
+func test_alpha_command_catalog() -> bool:
+	eq(AlphaCommand.CATALOG.size(), 31, "catalog has 31 commands")
+	eq(AlphaCommand.names("filter").size(), 28, "28 filter commands")
+	eq(AlphaCommand.names("jline").size(), 1, "one judge line command")
+	eq(AlphaCommand.names("text").size(), 2, "two text commands")
+	var seen := {}
+	for entry in AlphaCommand.CATALOG:
+		var command_name := String(entry.get("name", ""))
+		ok(not seen.has(command_name), "unique command name %s" % command_name)
+		seen[command_name] = true
+		ok(not String(entry.get("label", "")).is_empty(), "label for %s" % command_name)
+		ok(float(entry.get("duration", -1.0)) >= 0.0, "duration for %s" % command_name)
+	ok(AlphaCommand.spec_of("NOPE").is_empty(), "unknown command has no spec")
+	eq(AlphaCommand.default_duration("NOPE"), 1.0, "unknown command falls back to one beat")
+	return true
+
+
+func test_alpha_command_envelope() -> bool:
+	var flash := AlphaCommand.new("FLASH", 4.0)
+	eq(flash.envelope_at(3.0), 0.0, "not started yet")
+	eq(flash.envelope_at(4.5), 1.0, "hold segment is full strength")
+	eq(flash.envelope_at(5.5), 0.0, "released after the end")
+	flash.enabled = false
+	eq(flash.envelope_at(4.5), 0.0, "disabled command is silent")
+	var kaleido := AlphaCommand.new("KALEIDOSCOPE", 2.0)
+	eq(kaleido.envelope_at(9.0), 1.0, "stateful command stays on")
+	var shake := AlphaCommand.new("SHAKE", 1.0)
+	ok(shake.envelope_at(1.2) > 0.0 and shake.envelope_at(1.2) < 1.0, "shake ramps in")
+	eq(shake.envelope_at(1.6), 1.0, "shake reaches full strength")
+	eq(shake.envelope_at(4.0), 0.0, "shake released")
+	return true
+
+
+func test_note_mods_io() -> bool:
+	var note := Note.new("tap", 1.0, 90.0, 60.0)
+	ok(note.mods_to_dict().is_empty(), "default note has no mods")
+	note.alpha = 0.4
+	note.hs = 1.5
+	note.sv = 0.75
+	note.spawn = 0.3
+	note.bounce = 0.5
+	note.bounce_dir = 1
+	note.touch_start = "A1"
+	note.touch_end = "E8"
+	var mods := note.mods_to_dict()
+	ok(mods.has("alpha") and mods.has("hs") and mods.has("touch_start"), "mods written")
+	var restored := Note.from_dict(note.to_dict())
+	ok(is_equal_approx(restored.alpha, 0.4), "alpha round trips")
+	ok(is_equal_approx(restored.hs, 1.5), "hs round trips")
+	ok(is_equal_approx(restored.sv, 0.75), "sv round trips")
+	ok(is_equal_approx(restored.spawn, 0.3), "spawn round trips")
+	ok(is_equal_approx(restored.bounce, 0.5), "bounce round trips")
+	eq(restored.bounce_dir, 1, "bounce direction round trips")
+	eq(restored.touch_start, "A1", "touch start round trips")
+	eq(restored.touch_end, "E8", "touch end round trips")
+	return true
+
+
+func test_note_touch_zones() -> bool:
+	eq(Note.touch_sensor("A1"), 0, "A1 is sensor 0")
+	eq(Note.touch_sensor("A8"), 7, "A8 is sensor 7")
+	eq(Note.touch_sensor("B1"), 8, "B1 is sensor 8")
+	eq(Note.touch_sensor("C"), 16, "C is sensor 16")
+	eq(Note.touch_sensor("D1"), 17, "D1 is sensor 17")
+	eq(Note.touch_sensor("E8"), 32, "E8 is sensor 32")
+	eq(Note.touch_sensor("F1"), -1, "F zone does not exist")
+	eq(Note.touch_sensor("A9"), -1, "sensor index out of range")
+	ok(Note.is_touch_position("b7"), "lowercase touch zone accepted")
+	ok(not Note.is_touch_position("Q1"), "unknown zone rejected")
+	eq(Note.mirror_touch("A1"), "B1", "mirror A to B")
+	eq(Note.mirror_touch("D4"), "E4", "mirror D to E")
+	eq(Note.mirror_touch("C"), "C", "center zone stays")
+	var slide := Note.new("path", 2.0, 90.0, 60.0)
+	slide.touch_start = "A1"
+	ok(slide.is_touch_slide(), "touch zone makes a touch slide")
+	slide.mirror_lr()
+	eq(slide.touch_start, "B1", "mirroring swaps the touch zone")
+	return true
+
+
+func test_chart_commands_roundtrip() -> bool:
+	var chart := Chart.new()
+	chart.timing.points.clear()
+	chart.timing.points.append(TimingPoint.new(0.0, 120.0, 4))
+	var note := Note.new("tap", 1.0, 90.0, 60.0)
+	note.id = 1
+	note.alpha = 0.4
+	chart.notes.append(note)
+	var text := chart.add_command("TEXT", 2.0)
+	text.params["content"] = "HELLO"
+	chart.add_command("JLINE", 3.0)
+	eq(chart.commands.size(), 2, "two commands added")
+	eq(text.id, "C1", "first command id")
+	ok(is_equal_approx(chart.duration_beats(), 4.0), "command duration counted")
+
+	var json := ChartIO.to_json(chart)
+	var loaded := ChartIO.from_json(json)
+	ok(loaded != null, "chart with commands loads back")
+	if loaded == null:
+		return false
+	eq(loaded.commands.size(), 2, "commands survive the round trip")
+	eq(String(loaded.commands_in("text")[0].params.get("content", "")), "HELLO", "text content survives")
+	ok(is_equal_approx(loaded.notes[0].alpha, 0.4), "note mods survive")
+	ok(is_equal_approx(loaded.duration_beats(), 4.0), "loaded duration matches")
+
+	var legacy := ChartIO.chart_from_dict({
+		"format": "tamaki3-chart",
+		"version": 1,
+		"timing": {"points": [{"beat": 0.0, "bpm": 120.0, "beats_per_bar": 4}]},
+		"notes": [],
+	})
+	ok(legacy != null and legacy.commands.is_empty(), "charts without commands still load")
 	return true

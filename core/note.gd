@@ -74,6 +74,38 @@ var seek_pending: bool = false
 ## 兼容字段：所有 Bell 都在判定环上（舞萌 C 触也并入外环），读取旧谱时统一归 1.0。
 var bell_radius: float = 1.0
 
+# ---------------------------------------------------------------- 演出修饰
+## 以下字段对应 MajdataPlay 的 note 级指令，全部按 note 旁挂持久化，
+## 旧版本打开时会被忽略（不会破坏紧凑代码）。
+
+## 音符不透明度：0 不可见，1 正常。
+var alpha: float = 1.0
+## 音符自身下落速度倍率（出生时取一次，之后不再变）。
+var hs: float = 1.0
+## 该音符所在时间段的滚动倍率（SV）；只影响观感与时间轴提示。
+var sv: float = 1.0
+## Slide / Path 头部速度倍率：头部早点或晚点到环上。
+var head_speed: float = 1.0
+## 出生位置：0 = 圆心，1 = 判定环（默认 0，和其它音符一致）。
+var spawn: float = 0.0
+## 出生动画拍数；0 表示用预览默认的预读时长。
+var spawn_beats: float = 0.0
+## 飞行途中的弹跳幅度（0 = 不弹），按 1 - q² 曲线偏离。
+var bounce: float = 0.0
+## 弹跳周期拍数；0 表示整段飞行。
+var bounce_beats: float = 0.0
+## 弹跳方向：0 = 向环内凹，1 = 向环外凸。
+var bounce_dir: int = 0
+## Touch Slide：起点 / 终点的触摸区写法（如 "A1"、"C"、"E8"）。
+## 任一非空就表示整条 Path 是触摸区滑条（不再按普通键位判定）。
+var touch_start: String = ""
+var touch_end: String = ""
+
+## 33 路触摸传感器的区首索引：A 左 0–7、B 右 8–15、C 中 16、D 左下 17–24、E 右下 25–32。
+const TOUCH_ZONE_BASE := {"A": 0, "B": 8, "C": 16, "D": 17, "E": 25}
+const TOUCH_ZONES := ["A", "B", "C", "D", "E"]
+const TOUCH_SENSOR_COUNT := 33
+
 
 func _init(p_type: String = "tap", p_beat: float = 0.0, p_angle: float = 0.0, p_width: float = 60.0) -> void:
 	type = p_type
@@ -113,6 +145,107 @@ func arc_width() -> float:
 ## 金键的有效弧宽。数据已收敛，这里再兜底一次，编辑器直接改 width 也不会越界。
 func bell_width() -> float:
 	return clampf(width, BELL_MIN_WIDTH, BELL_MAX_WIDTH)
+
+
+# ---------------------------------------------------------------- 演出修饰取值
+
+
+## 不透明度：编辑器给的 0..1 之外一律夹回来。
+func visual_alpha() -> float:
+	return clampf(alpha, 0.0, 1.0)
+
+
+## 下落速度倍率：HS 影响出生后的飞行，0 会让音符定住，下限取 0.2。
+func speed_scale() -> float:
+	return clampf(hs, 0.2, 4.0)
+
+
+## 头部速度倍率：只对 hold 头 / path 头有意义。
+func head_speed_scale() -> float:
+	return clampf(head_speed, 0.2, 4.0)
+
+
+func is_touch_slide() -> bool:
+	return not touch_start.is_empty() or not touch_end.is_empty()
+
+
+## 起点触摸传感器（0..32）；没有触摸区写法时返回 -1。
+func touch_head_sensor() -> int:
+	return touch_sensor(touch_start)
+
+
+func touch_tail_sensor() -> int:
+	return touch_sensor(touch_end)
+
+
+## "A1" → 0..32；"C" → 16。非法写法返回 -1。
+static func touch_sensor(position: String) -> int:
+	var text := position.strip_edges().to_upper()
+	if text.is_empty():
+		return -1
+	var zone := text.substr(0, 1)
+	if not TOUCH_ZONE_BASE.has(zone):
+		return -1
+	var base: int = TOUCH_ZONE_BASE[zone]
+	if zone == "C":
+		# C 是固定中区，只接受 "C" / "C1"。
+		if text.length() <= 2:
+			return base
+		return -1
+	if text.length() != 2:
+		return -1
+	var digit := text.substr(1, 1)
+	if not digit.is_valid_int():
+		return -1
+	var index := int(digit)
+	if index < 1 or index > 8:
+		return -1
+	return base + index - 1
+
+
+## 合法写法：A1..A8 / B1..B8 / C（或 C1）/ D1..D8 / E1..E8。
+static func is_touch_position(position: String) -> bool:
+	return touch_sensor(position) >= 0
+
+
+## 左右镜像时触摸区互换：A↔B、D↔E，中区 C 不变。
+static func mirror_touch(position: String) -> String:
+	var text := position.strip_edges().to_upper()
+	if text.is_empty():
+		return ""
+	var zone := text.substr(0, 1)
+	var rest := text.substr(1)
+	match zone:
+		"A":
+			return "B" + rest
+		"B":
+			return "A" + rest
+		"D":
+			return "E" + rest
+		"E":
+			return "D" + rest
+	return text
+
+
+## 出生半径比例：0 = 圆心，1 = 判定环。
+func spawn_radius() -> float:
+	return clampf(spawn, 0.0, 1.0)
+
+
+## 弹跳后的半径比例。progress 0..1 是飞行进度，end_radius 是正常落点半径。
+## 和 MajdataPlay 一致：q = 2p-1，delta = (end-start)*(1-q²)；
+## 方向 0 从内侧补回来（凹），方向 1 向环外凸出去。
+func bounce_radius(progress: float, end_radius: float = 1.0) -> float:
+	var amount := clampf(bounce, 0.0, 1.0)
+	if amount <= 0.0001:
+		return end_radius
+	var start := spawn_radius()
+	var p := clampf(progress, 0.0, 1.0)
+	var q := 2.0 * p - 1.0
+	var delta := (end_radius - start) * (1.0 - q * q) * amount
+	if bounce_dir <= 0:
+		return end_radius - delta
+	return end_radius + delta
 
 
 ## 大小 Tap 只允许 Tap 使用；给编辑器一个统一的入口。
@@ -366,6 +499,8 @@ func mirror_lr() -> void:
 		point["da"] = -float(point.get("da", 0.0))
 	if path_part > 0 and path_head_local.is_finite():
 		path_head_local = Vector2(-path_head_local.x, path_head_local.y)
+	touch_start = mirror_touch(touch_start)
+	touch_end = mirror_touch(touch_end)
 
 
 func mirror_u() -> void:
@@ -381,6 +516,53 @@ func mirror_u() -> void:
 		point["y"] = -float(point.get("y", 0.0))
 	if path_part > 0 and path_head_local.is_finite():
 		path_head_local = -path_head_local
+	touch_start = mirror_touch(touch_start)
+	touch_end = mirror_touch(touch_end)
+
+
+## 演出修饰的序列化：只写非默认值，写进 note_extras / JSON 的 "mods"。
+func mods_to_dict() -> Dictionary:
+	var mods := {}
+	if not is_equal_approx(alpha, 1.0):
+		mods["alpha"] = snappedf(alpha, 0.001)
+	if not is_equal_approx(hs, 1.0):
+		mods["hs"] = snappedf(hs, 0.001)
+	if not is_equal_approx(sv, 1.0):
+		mods["sv"] = snappedf(sv, 0.001)
+	if not is_equal_approx(head_speed, 1.0):
+		mods["head_speed"] = snappedf(head_speed, 0.001)
+	if not is_equal_approx(spawn, 0.0):
+		mods["spawn"] = snappedf(spawn, 0.001)
+	if not is_equal_approx(spawn_beats, 0.0):
+		mods["spawn_beats"] = snappedf(spawn_beats, 0.001)
+	if not is_equal_approx(bounce, 0.0):
+		mods["bounce"] = snappedf(bounce, 0.001)
+	if not is_equal_approx(bounce_beats, 0.0):
+		mods["bounce_beats"] = snappedf(bounce_beats, 0.001)
+	if bounce_dir != 0:
+		mods["bounce_dir"] = 1 if bounce_dir > 0 else 0
+	if not touch_start.is_empty():
+		mods["touch_start"] = touch_start
+	if not touch_end.is_empty():
+		mods["touch_end"] = touch_end
+	return mods
+
+
+## 读回演出修饰；缺省字段保持当前值，非法触摸区写法直接丢弃。
+func apply_mods(raw: Dictionary) -> void:
+	alpha = clampf(float(raw.get("alpha", alpha)), 0.0, 1.0)
+	hs = clampf(float(raw.get("hs", hs)), 0.2, 4.0)
+	sv = clampf(float(raw.get("sv", sv)), 0.05, 8.0)
+	head_speed = clampf(float(raw.get("head_speed", head_speed)), 0.2, 4.0)
+	spawn = clampf(float(raw.get("spawn", spawn)), 0.0, 1.0)
+	spawn_beats = maxf(0.0, float(raw.get("spawn_beats", spawn_beats)))
+	bounce = clampf(float(raw.get("bounce", bounce)), 0.0, 1.0)
+	bounce_beats = maxf(0.0, float(raw.get("bounce_beats", bounce_beats)))
+	bounce_dir = 1 if int(raw.get("bounce_dir", bounce_dir)) > 0 else 0
+	var start := String(raw.get("touch_start", touch_start)).strip_edges().to_upper()
+	var tail := String(raw.get("touch_end", touch_end)).strip_edges().to_upper()
+	touch_start = start if is_touch_position(start) else ""
+	touch_end = tail if is_touch_position(tail) else ""
 
 
 func to_dict() -> Dictionary:
@@ -449,6 +631,9 @@ func to_dict() -> Dictionary:
 			data["radius"] = snappedf(radius, 0.001)
 			if absf(bell_radius - 1.0) > 0.0001:
 				data["bell_radius"] = snappedf(bell_radius, 0.001)
+	var mods := mods_to_dict()
+	if not mods.is_empty():
+		data["mods"] = mods
 	return data
 
 
@@ -491,6 +676,8 @@ static func from_dict(raw: Dictionary) -> Note:
 		note.path_gaps = _ranges_from_array(raw.get("path_gaps", []))
 	if raw.has("trace"):
 		note.trace_pts = _points_from_array(raw.get("trace", []))
+	if raw.has("mods") and raw["mods"] is Dictionary:
+		note.apply_mods(raw["mods"])
 	if note.type == "seek":
 		note.seek_orien = 1 if int(raw.get("orien", 0)) == 1 else 0
 		note.angle = 0.0

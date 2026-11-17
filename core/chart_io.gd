@@ -94,6 +94,10 @@ static func chart_to_dict(chart: Chart) -> Dictionary:
 	var meta := {}
 	for key in ["title", "artist", "creator", "version", "tags", "license", "background"]:
 		meta[key] = String(chart.metadata.get(key, ""))
+	# 演出指令单独一段：旧版本读到会忽略，音符代码不受影响。
+	var command_rows: Array[Dictionary] = []
+	for command in chart.sorted_commands():
+		command_rows.append(command.to_dict())
 	# 紧凑代码丢不掉的字段旁挂在这里；旧版本读到会直接忽略。
 	var note_extras := {}
 	for note in chart.notes:
@@ -120,6 +124,8 @@ static func chart_to_dict(chart: Chart) -> Dictionary:
 			"bell":
 				if absf(note.bell_radius - 1.0) > 0.0001:
 					extra["bell_radius"] = snappedf(note.bell_radius, 0.001)
+		# 演出修饰（alpha / hs / sv / spawn / bounce / touch）对所有类型通用。
+		extra.merge(note.mods_to_dict(), true)
 		if not extra.is_empty():
 			note_extras[str(note.id)] = extra
 	var result := {
@@ -164,6 +170,8 @@ static func chart_to_dict(chart: Chart) -> Dictionary:
 		result["note_flags"] = note_flags
 	if not note_extras.is_empty():
 		result["note_extras"] = note_extras
+	if not command_rows.is_empty():
+		result["commands"] = command_rows
 	return result
 
 
@@ -225,6 +233,8 @@ static func _apply_note_extras(note: Note, extra: Dictionary) -> void:
 		note.visual_pts = Note._points_from_array(extra["visual"])
 	if extra.has("bell_radius"):
 		note.bell_radius = float(extra["bell_radius"])
+	# 未知键由 apply_mods 自己忽略，所以整包传进去最省事。
+	note.apply_mods(extra)
 
 
 static func _palette_rows(chart: Chart) -> Array[Dictionary]:
@@ -443,6 +453,13 @@ static func chart_from_dict(data: Dictionary) -> Chart:
 	var stored_flags: Variant = data.get("note_flags", {})
 	if stored_flags is Dictionary:
 		_apply_note_flags(chart, stored_flags)
+	chart.commands.clear()
+	for raw in data.get("commands", []):
+		if raw is Dictionary:
+			var command := AlphaCommand.from_dict(raw)
+			# 未知指令名（来自更新版本的文件）整条丢弃，不让它污染时间轴。
+			if not command.spec().is_empty():
+				chart.commands.append(command)
 	# Normalize legacy Path JSON to the new centrifuge/axis representation on
 	# every chart load, not just for the bundled demo.
 	for note in chart.notes:

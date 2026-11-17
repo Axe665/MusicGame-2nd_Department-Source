@@ -41,5 +41,8 @@ jobs:
       - name: path_judgement
         run: godot --headless --path . --script res://tests/path_judgement.gd
 
+      - name: alpha_commands
+        run: godot --headless --path . --script res://tests/alpha_commands.gd
+
       - name: sfx_playback
         run: godot --headless --path . --script res://tests/sfx_playback.gd

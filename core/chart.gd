@@ -31,6 +31,8 @@ var load_warnings: Array[String] = []
 var view_states: Array[ViewState] = []
 var regions: Array[Region] = []
 var notes: Array[Note] = []
+## 演出指令：判定线 / 文本 / 滤镜。只在环编辑工作区里增删，预览按拍采样。
+var commands: Array[AlphaCommand] = []
 
 
 ## Anchor 的配对：同一 pairId、同一拍即可，角度自由。
@@ -77,6 +79,7 @@ var palette: Array[Dictionary] = []
 var _next_note_id: int = 1
 var _next_region_id: int = 1
 var _next_event_id: int = 1
+var _next_command_id: int = 1
 
 
 func _init() -> void:
@@ -198,6 +201,7 @@ func mirrored_copy(mode: String) -> Chart:
 	result._next_note_id = _next_note_id
 	result._next_region_id = _next_region_id
 	result._next_event_id = _next_event_id
+	result._next_command_id = _next_command_id
 	result.notes = []
 	for note in notes:
 		var copy := Note.from_dict(note.to_dict())
@@ -212,6 +216,9 @@ func mirrored_copy(mode: String) -> Chart:
 		var flipped := 180.0 - copy.angle if mode == "lr" else copy.angle + 180.0
 		copy.angle = fposmod(flipped, 360.0)
 		result.regions.append(copy)
+	result.commands = []
+	for command in commands:
+		result.commands.append(AlphaCommand.from_dict(command.to_dict()))
 	return result
 
 
@@ -233,6 +240,12 @@ func next_event_id() -> String:
 	return result
 
 
+func next_command_id() -> String:
+	var result := "C%d" % _next_command_id
+	_next_command_id += 1
+	return result
+
+
 func refresh_ids() -> void:
 	var max_note := 0
 	for note in notes:
@@ -248,6 +261,12 @@ func refresh_ids() -> void:
 		if digits.is_valid_int():
 			max_event = maxi(max_event, int(digits))
 	_next_event_id = max_event + 1
+	var max_command := 0
+	for command in commands:
+		var digits := command.id.trim_prefix("C")
+		if digits.is_valid_int():
+			max_command = maxi(max_command, int(digits))
+	_next_command_id = max_command + 1
 
 
 func notes_at(beat: float, tolerance: float = 0.001) -> Array[Note]:
@@ -256,6 +275,37 @@ func notes_at(beat: float, tolerance: float = 0.001) -> Array[Note]:
 		if absf(note.beat - beat) <= tolerance:
 			result.append(note)
 	return result
+
+
+func sorted_commands() -> Array[AlphaCommand]:
+	var result := commands.duplicate()
+	result.sort_custom(func(a: AlphaCommand, b: AlphaCommand) -> bool: return a.beat < b.beat)
+	return result
+
+
+func commands_in(category: String) -> Array[AlphaCommand]:
+	var result: Array[AlphaCommand] = []
+	for command in commands:
+		if command.category() == category:
+			result.append(command)
+	result.sort_custom(func(a: AlphaCommand, b: AlphaCommand) -> bool: return a.beat < b.beat)
+	return result
+
+
+## 在工作区里放一条指令：自动编号、夹在合法范围内。
+func add_command(command_name: String, beat: float) -> AlphaCommand:
+	var command := AlphaCommand.new(command_name, maxf(0.0, beat))
+	command.id = next_command_id()
+	commands.append(command)
+	return command
+
+
+func remove_command(command: AlphaCommand) -> bool:
+	var index := commands.find(command)
+	if index < 0:
+		return false
+	commands.remove_at(index)
+	return true
 
 
 func regions_at(beat: float) -> Array[Region]:
@@ -282,6 +332,8 @@ func duration_beats() -> float:
 		last = maxf(last, region.end_beat)
 	for event in events:
 		last = maxf(last, event.end_beat + maxf(0.0, event.restore_duration))
+	for command in commands:
+		last = maxf(last, command.end_beat())
 	return last
 
 
