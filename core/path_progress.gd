@@ -182,8 +182,21 @@ func reset_motion() -> void:
 	_away_since = -INF
 
 
+## 判定区变细之后，尾判的“接上”条件不能跟着变严：
+## 允许最后 2 段还没扫到就算接上（粗分区时代，容差半径本来就会顺手带过 1 段）。
+## 段数 ≤3 时保持老行为（必须全清），细分区才会放宽，粗细切换不改变手感。
 func body_ready() -> bool:
-	return group_count > 0 and next_gate >= group_count
+	if group_count <= 0:
+		return false
+	return next_gate >= group_count - body_grace()
+
+
+static func body_grace_for(groups: int) -> int:
+	return 0 if groups <= 3 else mini(2, groups - 3)
+
+
+func body_grace() -> int:
+	return body_grace_for(group_count)
 
 
 ## The tail was actually reached/judged; only then may the visual erase the
