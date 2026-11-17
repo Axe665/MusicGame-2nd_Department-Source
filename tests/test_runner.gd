@@ -4089,10 +4089,10 @@ func test_bpm_snap_multipliers() -> bool:
 	return true
 
 
-## 每段判定区缩短后：1.4R 的星至少 5 段，长星的分段也按 0.5R 走。
-## 判定只看轨迹参数，不读任何“飞行时长”设置——视觉快慢不该改变判定。
+## 判定区回到细分之前：0.85R 一段，短星最少 3 段；判定只看轨迹参数，
+## 不读任何“飞行时长”设置——视觉快慢不该改变判定。
 func test_path_zone_granularity() -> bool:
-	ok(PathProgress.GATE_SPACING <= 0.55, "each judgement zone is at most 0.55R long")
+	near(PathProgress.GATE_SPACING, 0.85, 0.0001, "judgement zones are back to 0.85R")
 	var short_path := PackedVector2Array()
 	for i in 41:
 		short_path.append(Vector2(0.7 * float(i) / 40.0, 0.0))
@@ -4100,21 +4100,14 @@ func test_path_zone_granularity() -> bool:
 	tracker.configure(short_path)
 	var projected := tracker.points
 	tracker.confirm_head()
-	eq(tracker.group_count, 5, "a 0.7R slide splits into 5 judgement zones")
-	eq(tracker.remaining_groups(), 4, "the head counts as the first cleared zone")
+	eq(tracker.group_count, 3, "a 0.7R slide splits into 3 judgement zones again")
+	eq(tracker.remaining_groups(), 2, "the head counts as the first cleared zone")
 	# 沿轨迹喂一串点：进度必须跟着走，而不是一口气算完整条。
 	for i in projected.size():
 		tracker.feed(projected[i], 100.0 + float(i) * 5.0, projected, tracker.contact_radius * 2.0, 0.0)
 	ok(tracker.fraction > 0.0, "tracing the slide builds progress")
-	ok(tracker.remaining_groups() < 4, "tracing clears judgement zones")
-	# 细分判定区不能连带把尾判变严：允许最后 2 段没扫到。
-	eq(PathProgress.body_grace_for(3), 0, "three zones keep the old all-clear rule")
-	eq(PathProgress.body_grace_for(5), 2, "five zones forgive the last two")
-	eq(PathProgress.body_grace_for(8), 2, "long slides forgive the last two")
-	tracker.next_gate = tracker.group_count - 2
-	ok(tracker.body_ready(), "a slide is connected two zones before the end")
-	tracker.next_gate = tracker.group_count - 3
-	ok(not tracker.body_ready(), "stopping three zones early is not a connection")
+	ok(tracker.remaining_groups() < 2, "tracing clears judgement zones")
+	ok(tracker.body_ready(), "the tail connects once every zone is traced")
 	# 判定器不接收 BPM / 飞行时长：同一段轨迹在任何设置下结果一致（结构性保证）。
 	var replayed := PathProgress.new()
 	replayed.configure(short_path)

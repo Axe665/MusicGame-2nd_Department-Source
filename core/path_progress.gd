@@ -5,9 +5,7 @@ extends RefCounted
 ## Groups come from the path geometry (arc length + corners), not from maimai's
 ## physical sensor layout, so any plane curve or deformed ring works.
 const SAMPLE_SPACING := 0.06
-## 每一段（判定区）沿轨迹的最大长度，单位是“环半径 = 1”。
-## 0.5R 一段：1.4R 的星拆成 5 段，比原来的 0.85R / 3 段细。
-const GATE_SPACING := 0.5
+const GATE_SPACING := 0.85
 const CONTACT_RADIUS := 0.25
 const CORNER_RADIUS := 0.34
 ## How many groups a single movement may skip. AstroDX uses one by default.
@@ -112,7 +110,7 @@ func configure(source: PackedVector2Array, source_parameters := PackedFloat32Arr
 		if a.length_squared() > 0.000001 and b.length_squared() > 0.000001 and a.normalized().dot(b.normalized()) < 0.8:
 			corners.append(float(cumulative[i]))
 	var gate_targets: Array[float] = [0.0, length]
-	var gate_step := minf(GATE_SPACING, length / 5.0)
+	var gate_step := minf(GATE_SPACING, length / 3.0)
 	var d := gate_step
 	while d < length - 0.00001:
 		var close_to_corner := false
@@ -182,21 +180,8 @@ func reset_motion() -> void:
 	_away_since = -INF
 
 
-## 判定区变细之后，尾判的“接上”条件不能跟着变严：
-## 允许最后 2 段还没扫到就算接上（粗分区时代，容差半径本来就会顺手带过 1 段）。
-## 段数 ≤3 时保持老行为（必须全清），细分区才会放宽，粗细切换不改变手感。
 func body_ready() -> bool:
-	if group_count <= 0:
-		return false
-	return next_gate >= group_count - body_grace()
-
-
-static func body_grace_for(groups: int) -> int:
-	return 0 if groups <= 3 else mini(2, groups - 3)
-
-
-func body_grace() -> int:
-	return body_grace_for(group_count)
+	return group_count > 0 and next_gate >= group_count
 
 
 ## The tail was actually reached/judged; only then may the visual erase the
