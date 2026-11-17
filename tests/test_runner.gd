@@ -60,6 +60,8 @@ func _initialize() -> void:
 		"test_video_export_sfx_capture",
 		"test_note_fall_time",
 		"test_aim_angle_fallback",
+		"test_inspector_wheel_scrolls_page",
+		"test_preview_note_drag_angle",
 		"test_bpm_snap_multipliers",
 		"test_path_zone_granularity",
 		"test_bpm_lock_scales_following",
@@ -2171,12 +2173,12 @@ func test_bpm_lock_scales_following() -> bool:
 	return true
 
 
-## 滚轮方向：往上滚，画布内容一定往上走。
+## 滚轮方向：往上滚 = 页面往上走（回到更早的拍），往下滚 = 继续往后。
 func test_wheel_direction_matches_screen() -> bool:
-	eq(ChartCanvas.wheel_step(true, false), -3.0, "flow up: wheel up moves content up")
-	eq(ChartCanvas.wheel_step(true, true), 3.0, "flow down: wheel up moves content up")
-	eq(ChartCanvas.wheel_step(false, false), 3.0, "flow up: wheel down moves content down")
-	eq(ChartCanvas.wheel_step(false, true), -3.0, "flow down: wheel down moves content down")
+	eq(ChartCanvas.wheel_step(true, true), -3.0, "flow down: wheel up goes back in time")
+	eq(ChartCanvas.wheel_step(false, true), 3.0, "flow down: wheel down goes forward in time")
+	eq(ChartCanvas.wheel_step(true, false), 3.0, "flow up: wheel up goes back in time")
+	eq(ChartCanvas.wheel_step(false, false), -3.0, "flow up: wheel down goes forward in time")
 	return true
 
 
@@ -4074,6 +4076,23 @@ func test_aim_angle_fallback() -> bool:
 	var on_point := {"mouse": Vector2(320, 105), "angle": 300.0, "valid": true}
 	ok(bool(run._match_press(on_point, target).get("ok", false)), "a close pixel hit still works")
 	run.free()
+	return true
+
+
+## 检查器滚轮：向上滚动条变小（页面上移），向下变大；方向不能反。
+func test_inspector_wheel_scrolls_page() -> bool:
+	ok(Inspector.wheel_delta(true) < 0.0, "wheel up scrolls the page up")
+	ok(Inspector.wheel_delta(false) > 0.0, "wheel down scrolls the page down")
+	near(Inspector.wheel_delta(true) + Inspector.wheel_delta(false), 0.0, 0.0001, "both directions use the same step")
+	return true
+
+
+## 环预览拖动音符：只按光标绕环心转过的角度旋转，跨 0°/360° 连续。
+func test_preview_note_drag_angle() -> bool:
+	near(Preview3D.dragged_angle(10.0, 90.0, 100.0), 20.0, 0.0001, "dragging right rotates by the same amount")
+	near(Preview3D.dragged_angle(10.0, 100.0, 90.0), 0.0, 0.0001, "dragging back returns to the start")
+	near(Preview3D.dragged_angle(350.0, 10.0, 350.0), 330.0, 0.0001, "crossing 0 degrees stays continuous")
+	near(Preview3D.dragged_angle(0.0, 0.0, 359.0), 359.0, 0.0001, "a small left drag does not jump")
 	return true
 
 

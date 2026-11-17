@@ -1431,10 +1431,11 @@ static func _snap_modifier(event: InputEventWithModifiers) -> bool:
 	return event.shift_pressed and not event.alt_pressed
 
 
-## 滚轮一小格的 beat 位移。规则只有一条：往上滚，画布内容往上走。
-## 时间轴朝下（flow_down）时 beat 越大越靠下，往上要加 beat；朝上时反过来。
+## 滚轮一小格的 beat 位移。规则只有一条：往上滚 = 页面往上走（回到更早的拍），
+## 往下滚 = 继续往后。时间轴朝下时 scroll_beat 是顶边拍，要减小；
+## 朝上时它是底边拍，要增大。
 static func wheel_step(up: bool, flow_down: bool, steps: float = 3.0) -> float:
-	return steps if up == flow_down else -steps
+	return steps if up != flow_down else -steps
 
 
 func _snap_beat_to_subdivision(raw_beat: float, bypass: bool = true) -> float:
@@ -1530,6 +1531,7 @@ func _on_left_press(event: InputEventMouseButton) -> void:
 		var hit := _hit_test(event.position)
 		if String(hit.get("kind", "")) == "note":
 			_app.select_note(int(hit["id"]), event.shift_pressed)
+			_begin_note_drag(event.position)
 			return
 	if _app.tool in NOTE_TOOLS:
 		var placement := _snap_note_placement(event.position, not _snap_modifier(event))

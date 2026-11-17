@@ -45,6 +45,7 @@ var _offset_peaks_path: String = ""
 
 func _ready() -> void:
 	_app = get_node_or_null("/root/App")
+	set_process_input(true)
 	size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_build_tabs()
@@ -71,7 +72,37 @@ func _build_tabs() -> void:
 		scroll.add_child(page)
 		add_child(scroll)
 		_pages[title] = page
+		page.set_meta("scroll", scroll)
 		_page_list.append(page)
+
+
+## 检查器里滚轮一律翻页（向上 = 页面上移），数字框/滑条/下拉不再把它吞掉。
+static func wheel_delta(up: bool, step: float = 48.0) -> float:
+	return -step if up else step
+
+
+## 检查器里的滚轮只翻页：数字框/滑条/下拉不会再把它吞掉或偷偷改值。
+## 在 _input（早于 GUI 分发）里处理，才抢得到这些控件自己的滚轮。
+func _input(event: InputEvent) -> void:
+	if not (event is InputEventMouseButton) or not event.pressed:
+		return
+	var button := (event as InputEventMouseButton).button_index
+	if button != MOUSE_BUTTON_WHEEL_UP and button != MOUSE_BUTTON_WHEEL_DOWN:
+		return
+	if not get_global_rect().has_point((event as InputEventMouseButton).position):
+		return
+	var hovered := get_viewport().gui_get_hovered_control()
+	if hovered == null or not is_ancestor_of(hovered):
+		return
+	# 这两个自己就要滚（BPM 点列表、可编辑文本），别抢。
+	if hovered is ItemList or hovered is TextEdit or hovered is Tree:
+		return
+	var page: VBoxContainer = _page_list[clampi(current_tab, 0, _page_list.size() - 1)]
+	var scroll: ScrollContainer = page.get_meta("scroll", null)
+	if scroll == null:
+		return
+	scroll.scroll_vertical = int(float(scroll.scroll_vertical) + wheel_delta(button == MOUSE_BUTTON_WHEEL_UP))
+	get_viewport().set_input_as_handled()
 
 
 func _on_selection_changed() -> void:
@@ -1357,13 +1388,15 @@ func _build_offset_strip(page: VBoxContainer, chart: Chart) -> void:
 			if event.pressed:
 				strip.set_meta("start_x", event.position.x)
 				strip.set_meta("start_offset", chart.offset_ms)
+			strip.accept_event()
 		elif event is InputEventMouseMotion and bool(strip.get_meta("dragging")):
 			var width := maxf(40.0, strip.size.x)
 			var ms_per_px := OFFSET_STRIP_SEC * 1000.0 / width
 			var dx: float = event.position.x - float(strip.get_meta("start_x"))
 			_set_offset(clampf(float(strip.get_meta("start_offset")) - dx * ms_per_px, -10000.0, 10000.0))
-		strip.accept_event()
+			strip.accept_event()
 	)
+	# 滚轮不归波形条管：留给外层 ScrollContainer 翻页。
 	page.add_child(strip)
 	_offset_strip = strip
 
