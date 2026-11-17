@@ -49,6 +49,9 @@ var _drag_width_start: float = 0.0
 var _drag_tail_note: Note = null
 var _drag_tail_start: float = 0.0
 var _drag_tail_origin: float = 0.0
+var _drag_head_note: Note = null
+var _drag_head_start: float = 0.0
+var _drag_head_origin: float = 0.0
 var _marquee: Rect2 = Rect2()
 var _marquee_start_beat: float = 0.0
 var _marquee_start_u: float = 0.0
@@ -1036,6 +1039,10 @@ func _draw_path(note: Note) -> void:
 	_draw_width_band(tail_draw_angle, note.tail_width, y1, tail_color)
 	_draw_star(Vector2(x0, y0), 9.0 if selected else 8.0, head_color)
 	_draw_donut(Vector2(x1, y1), 7.0, tail_color)
+	if selected:
+		# 头/尾都能拖：白圈标出可抓的位置（宽度手柄只在 Tap/Hold 上）。
+		draw_arc(Vector2(x0, y0), 11.0, 0.0, TAU, 24, UITheme.INK, 1.5, true)
+		draw_arc(Vector2(x1, y1), 11.0, 0.0, TAU, 24, UITheme.INK, 1.5, true)
 	if _show_type_label(note):
 		_draw_type_label("PATH", Vector2(x0 + 11.0, y0 + 12.0), UITheme.CYAN)
 
@@ -1322,6 +1329,8 @@ func _gui_input(event: InputEvent) -> void:
 			_drag_width_update(event.position)
 		elif _drag_mode == "path_tail":
 			_drag_path_tail_update(event.position, event)
+		elif _drag_mode == "path_head":
+			_drag_path_head_update(event.position, event)
 		elif _drag_mode == "limit":
 			_drag_red_update(event.position, event)
 		elif _drag_mode == "hold_end":
@@ -1584,7 +1593,7 @@ func _on_left_release(event: InputEventMouseButton) -> void:
 		return
 	if _drag_mode == "note":
 		_snap_dragged_notes(not _snap_modifier(event))
-	if _drag_mode in ["note", "width", "limit", "hold_end", "path_tail"]:
+	if _drag_mode in ["note", "width", "limit", "hold_end", "path_tail", "path_head"]:
 		_app.finish_edit()
 	if _drag_mode == "marquee":
 		_finish_marquee()
@@ -1594,6 +1603,7 @@ func _on_left_release(event: InputEventMouseButton) -> void:
 	_drag_region = null
 	_drag_width_note = null
 	_drag_tail_note = null
+	_drag_head_note = null
 	queue_redraw()
 	if _overlay != null:
 		_overlay.queue_redraw()
@@ -1643,6 +1653,8 @@ func _select_press(event: InputEventMouseButton) -> void:
 			_app.select_note(note_id, event.shift_pressed)
 			if hit.get("part", "") == "width":
 				_begin_width_drag(note_id, event.position)
+			elif hit.get("part", "") == "head":
+				_begin_head_drag(note_id, event.position)
 			elif hit.get("part", "") == "tail":
 				_begin_tail_drag(note_id, event.position)
 			else:
@@ -1677,11 +1689,16 @@ func _hit_test(pos: Vector2) -> Dictionary:
 				if String(best.get("part", "")) != "width":
 					return {"kind": "note", "id": note.id, "part": "body"}
 		if note.type == "path":
-			# 尾巴优先：它就长在轨迹末端，不先判的话会被 body 抢走。
+			# 头/尾优先：它们长在轨迹两端，不先判的话会被 body 抢走。
 			if positions.size() > 1:
 				var tail_point: Vector2 = positions[1]["point"]
 				if tail_point.distance_to(pos) <= 10.0:
 					return {"kind": "note", "id": note.id, "part": "tail"}
+			# part>0 的头是上一段的接力点，不能单独挪。
+			if note.path_part == 0:
+				var head_point: Vector2 = positions[0]["point"]
+				if head_point.distance_to(pos) <= 10.0:
+					return {"kind": "note", "id": note.id, "part": "head"}
 			# The whole drawn Path is selectable, not just its head/tail or
 			# the column at the start angle.
 			if _path_body_hit(note, pos):
@@ -1859,6 +1876,41 @@ func _drag_path_tail_update(screen: Vector2, event: InputEventMouseMotion) -> vo
 	_drag_tail_note.end_beat = maxf(_drag_tail_note.beat + 0.25,
 		_snap_beat_to_subdivision(_y_to_beat(screen.y), not _snap_modifier(event)))
 	_app.touch_chart()
+
+
+## Path 头：横向改头角、纵向改起始拍；头永远贴在环上（半径 1.0）。
+## 头与尾都不做宽度手柄——Path 的宽度是判定带，继续走检查器。
+func _begin_head_drag(note_id: int, screen: Vector2) -> void:
+	var note := _find_note(note_id)
+	if note == null or note.type != "path" or note.path_part > 0:
+		return
+	_drag_head_note = note
+	_drag_head_start = note.angle
+	_drag_head_origin = _x_to_u(screen.x)
+	_drag_mode = "path_head"
+	_app.begin_edit()
+
+
+func _drag_path_head_update(screen: Vector2, event: InputEventMouseMotion) -> void:
+	if _drag_head_note == null:
+		return
+	var note := _drag_head_note
+	note.angle = fposmod(_drag_head_start + (_x_to_u(screen.x) - _drag_head_origin) * 360.0, 360.0)
+	note.beat = path_head_beat(
+		_snap_beat_to_subdivision(_y_to_beat(screen.y), not _snap_modifier(event)), note.end_beat)
+	if note.path_controls_set:
+		# 参数化 Path 的 head 由 angle 推出来，重建一次才看得到。
+		note.set_path_axis(note.path_axis)
+	elif not note.trace_pts.is_empty():
+		# 手绘 Path：只挪头那一点，中间形状不动。
+		note.trace_pts[0]["x"] = cos(deg_to_rad(note.angle))
+		note.trace_pts[0]["y"] = sin(deg_to_rad(note.angle))
+	_app.touch_chart()
+
+
+## 头不能越过尾巴：至少留 0.25 拍。
+static func path_head_beat(desired: float, end_beat: float) -> float:
+	return clampf(desired, 0.0, maxf(0.0, end_beat - 0.25))
 
 
 func _begin_width_drag(note_id: int, screen: Vector2) -> void:

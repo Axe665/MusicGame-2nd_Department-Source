@@ -64,6 +64,7 @@ func _initialize() -> void:
 		"test_preview_note_drag_angle",
 		"test_canvas_width_drag",
 		"test_path_axis_drag",
+		"test_path_head_beat",
 		"test_path_smoothing",
 		"test_seek_limit_animation_curves",
 		"test_limit_dwell_once",
@@ -4099,6 +4100,15 @@ func test_canvas_width_drag() -> bool:
 	ok(ChartCanvas.dragged_width(60.0, 0.02, -1, 0.5) < 60.0, "dragging the left edge grows outward")
 	near(ChartCanvas.dragged_width(60.0, 10.0, 1, 1.5) * 1.5, 360.0, 0.001, "sized taps stop at a full ring")
 	near(ChartCanvas.dragged_width(1.0, -10.0, 1, 1.0), 5.0, 0.001, "width never goes below 5 degrees")
+	return true
+
+
+## Path 头手柄：起始拍只能在 0 与“尾巴前 0.25 拍”之间。
+func test_path_head_beat() -> bool:
+	near(ChartCanvas.path_head_beat(4.0, 8.0), 4.0, 0.0001, "a normal head move keeps the beat")
+	near(ChartCanvas.path_head_beat(-3.0, 8.0), 0.0, 0.0001, "the head never goes before beat 0")
+	near(ChartCanvas.path_head_beat(9.0, 8.0), 7.75, 0.0001, "the head stops 0.25 beats before the tail")
+	near(ChartCanvas.path_head_beat(2.0, 2.1), 1.85, 0.0001, "a short path still keeps a 0.25 beat body")
 	return true
 
 
