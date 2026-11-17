@@ -187,6 +187,8 @@ func export_chart(chart: Chart, start_ms: float, end_ms: float, out_path: String
 	playtest.replay_source = replay
 	playtest.next_playback_rate = 1.0
 	playtest.mirror_mode = mirror_mode
+	# 打击音不能让整机静音吃掉：收集事件，导出时合成一条 SFX 音轨。
+	playtest.sfx_capture = []
 	add_child(playtest)
 	# 引擎自己也会每帧调 _process；离线导出必须只由帧循环驱动，
 	# 否则真实帧率一变，特效和判定就多走几步。
@@ -257,6 +259,8 @@ func export_chart(chart: Chart, start_ms: float, end_ms: float, out_path: String
 		"miss": playtest._miss_count,
 		"combo": playtest._max_combo,
 	}
+	var sfx_events: Array = playtest.sfx_capture if playtest.sfx_capture != null else []
+	var sfx_style := String(playtest._sfx.style) if playtest._sfx != null else "default"
 	playtest.queue_free()
 	viewport.queue_free()
 	_running = false
@@ -277,14 +281,20 @@ func export_chart(chart: Chart, start_ms: float, end_ms: float, out_path: String
 	# 直接把音源塞进录制管道会和逐帧写 rawvideo 抢节奏，失败时整段都没了。
 	var audio_note := ""
 	var muxed := ""
+	var sfx := ""
+	if not sfx_events.is_empty():
+		sfx = out_path.get_basename() + ".sfx.wav"
+		if not _render_sfx(sfx_events, sfx_style, start_ms, span, sfx):
+			sfx = ""
 	var audio := _audio_source(chart)
-	if not audio.is_empty():
+	if not audio.is_empty() or not sfx.is_empty():
 		muxed = out_path.get_basename() + ".mux.mp4"
-		if _mux_audio(temp, audio, muxed, start_ms, span, chart.offset_ms):
-			audio_note = " · 含音轨"
+		if _mux_audio(temp, audio, sfx, muxed, start_ms, span, chart.offset_ms):
+			audio_note = " · 含音轨" + ("（含打击音）" if not sfx.is_empty() else "")
 		else:
 			_remove_quietly(muxed)
 			audio_note = " · 音轨封装失败（仅视频）"
+	_remove_quietly(sfx)
 	var source := muxed if not muxed.is_empty() and FileAccess.file_exists(muxed) else temp
 	_remove_quietly(out_path)
 	var err := DirAccess.rename_absolute(ProjectSettings.globalize_path(source),
@@ -345,8 +355,8 @@ func _audio_source(chart: Chart) -> String:
 
 ## 把音源按谱面 offset 对齐后封进视频。时间基准和预览一致：
 ## chart_ms = audio_ms + offset_ms，所以音频起点 = start_ms - offset_ms。
-func _mux_audio(video: String, audio: String, out: String, start_ms: float, span_ms: float,
-		offset_ms: float) -> bool:
+func _mux_audio(video: String, audio: String, sfx: String, out: String, start_ms: float,
+		span_ms: float, offset_ms: float) -> bool:
 	var ffmpeg := _ffmpeg()
 	if ffmpeg.is_empty():
 		return false
@@ -354,12 +364,122 @@ func _mux_audio(video: String, audio: String, out: String, start_ms: float, span
 	var span_s := maxf(0.05, span_ms / 1000.0)
 	# 不要 -shortest：音源比故事板短时会连带把视频截短，正是「提示已导出但时长偏短」的来源。
 	var args: Array = ["-hide_banner", "-loglevel", "error", "-y",
-		"-i", ProjectSettings.globalize_path(video),
-		"-ss", "%.3f" % audio_start, "-t", "%.3f" % span_s, "-i", audio,
-		"-map", "0:v:0", "-map", "1:a:0",
-		"-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+		"-i", ProjectSettings.globalize_path(video)]
+	if not audio.is_empty():
+		args += ["-ss", "%.3f" % audio_start, "-t", "%.3f" % span_s, "-i", audio]
+	if not sfx.is_empty():
+		args += ["-i", ProjectSettings.globalize_path(sfx)]
+	args += ["-map", "0:v:0"]
+	if not audio.is_empty() and not sfx.is_empty():
+		# 打击音是离线合成的 44.1k 单声道 wav：先统一格式再和音乐求和。
+		args += ["-filter_complex",
+			"[1:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[m];"
+			+ "[2:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[s];"
+			+ "[m][s]amix=inputs=2:duration=first:normalize=0[a]",
+			"-map", "[a]"]
+	elif not audio.is_empty() or not sfx.is_empty():
+		# 只有一条音轨：没有音乐时它是打击音，没有打击音时它是音乐。
+		args += ["-map", "1:a:0"]
+	args += ["-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
 		"-movflags", "+faststart", ProjectSettings.globalize_path(out)]
 	return OS.execute(ffmpeg, args, [], true, false) == 0 and FileAccess.file_exists(out)
+
+
+## 离线判定不发声：把捕获到的打击音事件按 HitSfx 的音量/音高混成一条 wav 音轨。
+## 源素材统一交给 ffmpeg 转成 44.1k 单声道（.ogg 在 GDScript 里没法解码）。
+func _render_sfx(events: Array, style: String, start_ms: float, span_ms: float, out_path: String) -> bool:
+	# 「打击音效 → 静音」在游戏里就是不播，导出也要一致。
+	if style == "mute":
+		return false
+	var rate := 44100
+	var total := maxi(1, int(ceil(span_ms / 1000.0 * float(rate))))
+	var samples := {}
+	for event in events:
+		var kind := String(event.get("k", ""))
+		if samples.has(kind):
+			continue
+		samples[kind] = _sfx_pcm(kind)
+	var mix := PackedFloat32Array()
+	mix.resize(total)
+	var played := false
+	for event in events:
+		var kind := String(event.get("k", ""))
+		var buf: PackedFloat32Array = samples.get(kind, PackedFloat32Array())
+		if buf.size() < 2:
+			continue
+		var step := maxf(0.05, float(event.get("p", 1.0)) * float(HitSfx.STYLE_PITCH.get(style, 1.0)))
+		var gain := db_to_linear(float(HitSfx.KIND_DB.get(kind, HitSfx.VOLUME_DB))
+			+ float(HitSfx.STYLE_DB.get(style, 0.0)))
+		var start := int(round((float(event.get("t", 0.0)) - start_ms) / 1000.0 * float(rate)))
+		var pos := 0.0
+		var i := 0
+		while pos < float(buf.size() - 1) and start + i < total:
+			if start + i >= 0:
+				var index := int(pos)
+				mix[start + i] += lerpf(buf[index], buf[index + 1], pos - float(index)) * gain
+			pos += step
+			i += 1
+		played = true
+	if not played:
+		return false
+	var data := PackedByteArray()
+	data.resize(total * 2)
+	for i in total:
+		data.encode_s16(i * 2, int(clampf(mix[i], -1.0, 1.0) * 32767.0))
+	var header := PackedByteArray()
+	header.resize(44)
+	header.encode_u32(0, 0x46464952)  # RIFF
+	header.encode_u32(4, 36 + data.size())
+	header.encode_u32(8, 0x45564157)  # WAVE
+	header.encode_u32(12, 0x20746D66)  # "fmt "
+	header.encode_u32(16, 16)
+	header.encode_u16(20, 1)
+	header.encode_u16(22, 1)
+	header.encode_u32(24, rate)
+	header.encode_u32(28, rate * 2)
+	header.encode_u16(32, 2)
+	header.encode_u16(34, 16)
+	header.encode_u32(36, 0x61746164)  # data
+	header.encode_u32(40, data.size())
+	var file := FileAccess.open(ProjectSettings.globalize_path(out_path), FileAccess.WRITE)
+	if file == null:
+		return false
+	file.store_buffer(header)
+	file.store_buffer(data)
+	file.close()
+	return true
+
+
+## 打击音的 PCM 数据（-1..1）。导出本来就要外部 ffmpeg，借它统一采样率/声道。
+func _sfx_pcm(kind: String) -> PackedFloat32Array:
+	var path := String(HitSfx.PATHS.get(kind, ""))
+	var ffmpeg := _ffmpeg()
+	if path.is_empty() or ffmpeg.is_empty():
+		return PackedFloat32Array()
+	var tmp := "user://.sfx_%s.wav" % kind
+	var code := OS.execute(ffmpeg, ["-hide_banner", "-loglevel", "error", "-y",
+		"-i", ProjectSettings.globalize_path(path), "-ac", "1", "-ar", "44100",
+		ProjectSettings.globalize_path(tmp)], [], true, false)
+	if code != 0 or not FileAccess.file_exists(ProjectSettings.globalize_path(tmp)):
+		return PackedFloat32Array()
+	var bytes := FileAccess.get_file_as_bytes(ProjectSettings.globalize_path(tmp))
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(tmp))
+	if bytes.size() < 44 or bytes.slice(0, 4).get_string_from_ascii() != "RIFF":
+		return PackedFloat32Array()
+	var offset := 12
+	var data := PackedByteArray()
+	while offset + 8 <= bytes.size():
+		var id := bytes.slice(offset, offset + 4).get_string_from_ascii()
+		var chunk := bytes.decode_u32(offset + 4)
+		var body := offset + 8
+		if id == "data":
+			data = bytes.slice(body, mini(body + chunk, bytes.size()))
+		offset = body + chunk + (chunk & 1)
+	var out := PackedFloat32Array()
+	out.resize(data.size() / 2)
+	for i in out.size():
+		out[i] = float(data.decode_s16(i * 2)) / 32768.0
+	return out
 
 
 ## 成片时长（秒）。ffprobe 不在就返回 0，跳过校验。

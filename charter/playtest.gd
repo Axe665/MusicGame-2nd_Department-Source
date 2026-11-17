@@ -192,6 +192,8 @@ var _replay_total_ms: float = 0.0
 var _sim_silent: bool = false
 ## 离线导出：时间由导出器按帧号推进，不读音频时钟、不放声音、不结算。
 var offline_mode: bool = false
+## 离线导出时非 null：收集打击音事件（t 为谱面 ms），导出器混进音轨。
+var sfx_capture: Variant = null
 var offline_ms: float = 0.0
 var _replay_seeking: bool = false
 var _replay_bar: Control = null
@@ -1369,7 +1371,13 @@ func _seek_audio_to(ms: float) -> void:
 
 ## 快进模拟时静音：seek 会重跑几千步，不能把音效全放出来。
 func _play_hit(kind: String, pitch: float = 1.0) -> void:
-	if _sim_silent or _sfx == null:
+	if _sfx == null:
+		return
+	if sfx_capture != null:
+		# 离线导出整局静音，听不到声音：把事件连同时间收集起来，导出器混成音轨。
+		sfx_capture.append({"t": _chart_ms(), "k": kind, "p": pitch})
+		return
+	if _sim_silent:
 		return
 	_sfx.play(kind, pitch)
 
@@ -2306,7 +2314,7 @@ func _judge_anchor_pairs(ms: float, beat: float) -> void:
 			if aim_mouse.distance_to(pb) < aim_mouse.distance_to(pa):
 				aim_angle = partner_note.angle
 			_pulse_at(aim_angle, beat, _tier_color(tier), tier, 70.0, "tap", _timing_detail(worse, tier))
-			_sfx.play("anchor", 1.0)
+			_play_hit("anchor")
 			_record_error(worse, "ANCHOR PAIR #%d/#%d %s" % [owner_id, partner_id, tier], tier,
 				float(picked["time"]))
 			continue
@@ -3260,7 +3268,7 @@ func _export_video() -> void:
 		_video_warning.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		box.add_child(_video_warning)
 		var hint := Label.new()
-		hint.text = "导出时整机静音，完成后按谱面 offset 封入音乐音轨；画面由真实回放判定驱动。"
+		hint.text = "导出时整机静音，完成后按谱面 offset 封入音乐 + 打击音音轨；画面由真实回放判定驱动。"
 		hint.add_theme_font_size_override("font_size", 11)
 		box.add_child(hint)
 		_video_options.add_child(box)
@@ -3461,5 +3469,6 @@ func _notification(what: int) -> void:
 		Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
 	elif what == NOTIFICATION_APPLICATION_FOCUS_OUT:
 		# 切出窗口时自动暂停，避免切走的几秒把谱面打空。
-		if _running and not _paused and not _finished:
+		# 离线导出由帧循环驱动，暂停会让剩下的帧全冻在同一画面直到曲子结束。
+		if _running and not _paused and not _finished and not offline_mode:
 			_set_paused(true)

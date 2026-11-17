@@ -57,6 +57,8 @@ func _initialize() -> void:
 		"test_lbp_package",
 		"test_video_export_cursor",
 		"test_video_export_plan_hits",
+		"test_video_export_sfx_capture",
+		"test_offline_focus_out_keeps_running",
 		"test_storyboard_clamps_first_command",
 		"test_storyboard_editor_fit_size",
 		"test_ring_tilt_target",
@@ -2124,6 +2126,58 @@ func test_video_export_plan_hits() -> bool:
 	eq(exporter.plan_hits(chart, late).size(), 0, "late presses do not hit")
 	eq(exporter.plan_hits(chart, flipped).size(), 0, "wrong-angle presses do not hit")
 	exporter.free()
+	return true
+
+
+## 导出视频里的打击音：离线整局静音，必须把 SFX 事件收集起来混进音轨，
+## 否则成片只剩音乐（和现在的 bug 一致）。
+func test_video_export_sfx_capture() -> bool:
+	var run := Playtest.new()
+	run._sfx = HitSfx.new()
+	run.offline_mode = true
+	run._sim_silent = true
+	run.offline_ms = 1234.0
+	run.sfx_capture = []
+	run._play_hit("don", 1.02)
+	eq(run.sfx_capture.size(), 1, "offline silent run still captures hit sfx")
+	if not run.sfx_capture.is_empty():
+		var event: Dictionary = run.sfx_capture[0]
+		near(float(event.get("t", 0.0)), 1234.0, 0.001, "captured sfx keeps the chart time")
+		eq(String(event.get("k", "")), "don", "captured sfx keeps the kind")
+		near(float(event.get("p", 0.0)), 1.02, 0.001, "captured sfx keeps the pitch")
+	run.sfx_capture = null
+	run.free()
+	# 合成音轨：第一次命中之前必须彻底安静，命中之后必须有声音。
+	var exporter := VideoExport.new()
+	var wav := "user://test_export_sfx.wav"
+	var events := [{"t": 1000.0, "k": "don", "p": 1.0}]
+	eq(exporter._render_sfx(events, "default", 0.0, 3000.0, wav), true, "sfx track renders")
+	var bytes := FileAccess.get_file_as_bytes(ProjectSettings.globalize_path(wav))
+	eq(bytes.size(), 44 + 132300 * 2, "sfx track is exactly the export span long")
+	if bytes.size() > 48:
+		var head := 44
+		var peak_before := 0
+		for i in 44100:
+			peak_before = maxi(peak_before, absi(bytes.decode_s16(head + i * 2)))
+		eq(peak_before, 0, "nothing is audible before the first hit")
+		var peak_after := 0
+		for i in range(44100, 48510):
+			peak_after = maxi(peak_after, absi(bytes.decode_s16(head + i * 2)))
+		ok(peak_after > 1000, "hit sfx is audible after the first hit")
+	eq(exporter._render_sfx([], "default", 0.0, 1000.0, wav), false, "no events means no sfx track")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(wav))
+	exporter.free()
+	return true
+
+
+## 切出窗口会自动暂停，但离线导出是逐帧驱动的：暂停会把剩下的帧全冻住。
+func test_offline_focus_out_keeps_running() -> bool:
+	var run := Playtest.new()
+	run.offline_mode = true
+	run._running = true
+	run._notification(Node.NOTIFICATION_APPLICATION_FOCUS_OUT)
+	eq(run._paused, false, "export playtest ignores focus-out")
+	run.free()
 	return true
 
 
