@@ -34,11 +34,13 @@ var _note_groups: Dictionary = {}
 var _note_rows: Dictionary = {}
 var _note_widgets: Dictionary = {}
 var _note_empty_label: Label = null
-var _tap_times: Array[int] = []
-var _tap_label: Label
 var _timing_base_spin: SpinBox
 var _timing_list: ItemList
 var _timing_chart: Chart
+var _offset_spin: SpinBox
+var _offset_strip: Control
+var _offset_peaks: PackedFloat32Array = PackedFloat32Array()
+var _offset_peaks_path: String = ""
 
 
 func _ready() -> void:
@@ -1134,6 +1136,10 @@ func _build_chart_page(page: VBoxContainer) -> void:
 	_text(page, "难度", chart.difficulty, func(value: String) -> void: chart.difficulty = value)
 	_text(page, "音频路径", chart.audio_path, func(value: String) -> void: chart.audio_path = value)
 	_text(page, "视频路径", chart.video_path, func(value: String) -> void: chart.video_path = value)
+	_text(page, "曲绘 / 背景图", String(chart.metadata.get("background", "")), func(value: String) -> void:
+		chart.metadata["background"] = value.strip_edges()
+	)
+	_buttons(page, [{"text": "选择曲绘图片…", "callback": _pick_cover}])
 	_label(page, "时间/BPM/offset 已统一移到“时间”页。", 11, UITheme.MUTED)
 	_buttons(page, [
 		{"text": "选择音频并识别 BPM", "callback": func() -> void: _app.request_audio_import()},
@@ -1180,6 +1186,32 @@ func _build_chart_page(page: VBoxContainer) -> void:
 	}])
 
 
+## 选一张图当曲绘：复制到 user://covers/ 再写进 metadata.background，
+## 这样换机器 / 打包时路径仍然有效（外部绝对路径会被打包进谱面包）。
+func _pick_cover() -> void:
+	var dialog := FileDialog.new()
+	dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
+	dialog.access = FileDialog.ACCESS_FILESYSTEM
+	dialog.filters = PackedStringArray(["*.png,*.jpg,*.jpeg,*.webp ; 图片"])
+	dialog.title = "选择曲绘 / 背景图"
+	dialog.file_selected.connect(func(path: String) -> void:
+		var name := path.get_file().validate_filename()
+		var target := "user://covers/%s" % name
+		DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path("user://covers"))
+		DirAccess.copy_absolute(ProjectSettings.globalize_path(path), ProjectSettings.globalize_path(target))
+		_app.mutate(func() -> void:
+			var chart: Chart = _app.chart
+			if chart != null:
+				chart.metadata["background"] = target
+		)
+		_rebuild()
+	)
+	dialog.canceled.connect(func() -> void: dialog.queue_free())
+	dialog.file_selected.connect(func(_path: String) -> void: dialog.queue_free())
+	add_child(dialog)
+	dialog.popup_centered_ratio(0.55)
+
+
 ## 列表里的位置写成「小节:拍:分音」；format_beat 已经是 1 起的小节号。
 func _timing_pos_text(chart: Chart, beat: float) -> String:
 	return chart.timing.format_beat(beat)
@@ -1193,7 +1225,7 @@ func _timing_row_text(chart: Chart, index: int, point: TimingPoint) -> String:
 func _build_timing_page(page: VBoxContainer) -> void:
 	var chart: Chart = _app.chart
 	_section(page, "速度与偏移")
-	_label(page, "BPM 点按“拍”定位；offset 是音频偏移（正数=音频整体延后）。两者只改拍↔毫秒换算，不改音符的拍位。", 11, UITheme.MUTED)
+	_label(page, "BPM 点按拍定位；offset = 第 0 拍对应的音频时刻（正数 = 音频整体延后）。", 11, UITheme.MUTED)
 	var points := chart.timing.points
 	if points.is_empty():
 		_label(page, "没有 BPM 点，先添加一个。", 12, UITheme.RED)
@@ -1202,22 +1234,26 @@ func _build_timing_page(page: VBoxContainer) -> void:
 	_timing_chart = chart
 	var base: TimingPoint = points[0]
 	_timing_base_spin = _spin(page, "基准 BPM", base.bpm, 20.0, 600.0, 0.1, func(value: float) -> void:
-		var first: TimingPoint = chart.timing.points[0]
-		first.bpm = value
-		chart.timing.sort_points()
-		_refresh_timing_list_text()
+		_apply_timing_bpm(chart.timing.points[0], value)
 	)
-	var offset_spin := _spin(page, "音频 offset (ms)", chart.offset_ms, -10000.0, 10000.0, 1.0, func(value: float) -> void:
-		chart.offset_ms = value
-		chart.timing.offset_ms = value
-	)
-	offset_spin.tooltip_text = "正数：音频整体延后。改动只移动音频与拍线的对齐，不移动音符。"
-	_spin(page, "固定预读 ms", chart.pre_read_ms, 100.0, 3000.0, 10.0, func(value: float) -> void: chart.pre_read_ms = value)
 	_buttons(page, [
-		{"text": "Tap Tempo", "callback": _tap_tempo},
-		{"text": "重置 Tap", "callback": _reset_taps},
+		{"text": "×2", "callback": func() -> void: _scale_timing_bpm(chart.timing.points[0], 2.0)},
+		{"text": "÷2", "callback": func() -> void: _scale_timing_bpm(chart.timing.points[0], 0.5)},
 	])
-	_tap_label = _label(page, "Tap Tempo：连点至少 2 次；结果写入第 1 个 BPM 点（基准）。", 11, UITheme.MUTED)
+	_offset_spin = _spin(page, "音频 offset (ms)", chart.offset_ms, -10000.0, 10000.0, 1.0, func(value: float) -> void:
+		_set_offset(value)
+	)
+	_offset_spin.tooltip_text = "正数：音频整体延后。改动只移动音频与拍线的对齐，不移动音符。"
+	_build_offset_strip(page, chart)
+	var lock := CheckButton.new()
+	lock.text = "改 BPM 时保持后续内容的毫秒位置"
+	lock.button_pressed = bool(_app.bpm_lock_ms)
+	lock.tooltip_text = "开：换 BPM 后，后面的音符/事件仍落在原来的毫秒时刻（拍位会重新换算）。\n关：保持拍位不变，只有时间换算跟着变。"
+	lock.toggled.connect(func(on: bool) -> void:
+		_app.bpm_lock_ms = on
+		_app.save_settings()
+	)
+	page.add_child(lock)
 	if base.beat > 0.0001:
 		_label(page, "第 1 个 BPM 点在第 1 小节之后：它之前的拍会用默认 120 BPM，请把第 1 个点放到 1:0:4 或更前。", 11, UITheme.RED)
 
@@ -1266,8 +1302,7 @@ func _build_timing_page(page: VBoxContainer) -> void:
 			refresh_item.call()
 		)
 		_spin(page, "BPM", point.bpm, 20.0, 600.0, 0.1, func(value: float) -> void:
-			point.bpm = value
-			chart.timing.sort_points()
+			_apply_timing_bpm(point, value)
 			refresh_item.call()
 		)
 		_buttons(page, [
@@ -1288,46 +1323,118 @@ func _build_timing_page(page: VBoxContainer) -> void:
 	_label(page, "列表按拍排序；双击一行跳到该点。逐点改 BPM 不会移动已放置的音符（音符存的是拍位）。", 11, UITheme.MUTED)
 
 
-func _scale_timing_bpm(point: TimingPoint, factor: float) -> void:
+## 改 offset：只动音频与拍线的对齐，不动音符拍位。
+func _set_offset(value: float) -> void:
+	if _app == null or _app.chart == null:
+		return
+	_app.chart.offset_ms = value
+	_app.chart.timing.offset_ms = value
+	_app.touch_chart()
+	if _offset_spin != null and not is_equal_approx(_offset_spin.value, value):
+		_offset_spin.set_value_no_signal(value)
+	_offset_redraw()
+
+
+## 时间页里的迷你波形：拖它 = 改 offset（波形跟着鼠标走，拍线不动）。
+func _build_offset_strip(page: VBoxContainer, chart: Chart) -> void:
+	if chart.audio_path.is_empty():
+		return
+	if _offset_peaks.is_empty() or _offset_peaks_path != chart.audio_path:
+		_offset_peaks = _offset_peaks_for(chart.audio_path)
+		_offset_peaks_path = chart.audio_path
+	var strip := Control.new()
+	strip.custom_minimum_size = Vector2(0, 64)
+	strip.clip_contents = true
+	strip.mouse_default_cursor_shape = Control.CURSOR_HSIZE
+	strip.tooltip_text = "左右拖动波形：波形跟着鼠标走，拍线不动（等于改 offset）"
+	strip.set_meta("dragging", false)
+	strip.set_meta("start_x", 0.0)
+	strip.set_meta("start_offset", 0.0)
+	strip.draw.connect(func() -> void: _draw_offset_strip(strip, chart))
+	strip.gui_input.connect(func(event: InputEvent) -> void:
+		if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
+			strip.set_meta("dragging", event.pressed)
+			if event.pressed:
+				strip.set_meta("start_x", event.position.x)
+				strip.set_meta("start_offset", chart.offset_ms)
+		elif event is InputEventMouseMotion and bool(strip.get_meta("dragging")):
+			var width := maxf(40.0, strip.size.x)
+			var ms_per_px := OFFSET_STRIP_SEC * 1000.0 / width
+			var dx: float = event.position.x - float(strip.get_meta("start_x"))
+			_set_offset(clampf(float(strip.get_meta("start_offset")) - dx * ms_per_px, -10000.0, 10000.0))
+		strip.accept_event()
+	)
+	page.add_child(strip)
+	_offset_strip = strip
+
+
+const OFFSET_STRIP_SEC := 20.0
+
+
+func _offset_redraw() -> void:
+	if _offset_strip != null:
+		_offset_strip.queue_redraw()
+
+
+## 波形峰值（0..1），按 OFFSET_STRIP_SEC 秒窗口取；解码走 AudioPCM 的缓存。
+func _offset_peaks_for(path: String) -> PackedFloat32Array:
+	var samples := AudioPCM.load_mono(path)
+	if samples.is_empty():
+		return PackedFloat32Array()
+	var rate := float(AudioPCM.DEFAULT_RATE)
+	var limit := mini(samples.size(), int(rate * OFFSET_STRIP_SEC))
+	var bins := 320
+	var step := maxi(1, limit / bins)
+	var out := PackedFloat32Array()
+	for i in range(0, limit, step):
+		var peak := 0.0
+		for j in range(i, mini(limit, i + step)):
+			peak = maxf(peak, absf(samples[j]))
+		out.append(peak)
+	return out
+
+
+func _draw_offset_strip(strip: Control, chart: Chart) -> void:
+	var bounds := strip.size
+	if bounds.x < 8.0 or bounds.y < 8.0:
+		return
+	strip.draw_rect(Rect2(Vector2.ZERO, bounds), Color(0.05, 0.06, 0.08, 0.9))
+	var mid := bounds.y * 0.5
+	var width := bounds.x
+	var ms_per_px := OFFSET_STRIP_SEC * 1000.0 / width
+	var px_per_ms := 1.0 / ms_per_px
+	var offset := chart.offset_ms
+	# 拍 0 的竖线固定在 40% 处；波形按 offset 平移。
+	var zero_x := width * 0.4
+	strip.draw_line(Vector2(zero_x, 0.0), Vector2(zero_x, bounds.y), Color(UITheme.ACCENT.r, UITheme.ACCENT.g, UITheme.ACCENT.b, 0.85), 2.0)
+	if not _offset_peaks.is_empty():
+		var bins := _offset_peaks.size()
+		var ms_per_bin := OFFSET_STRIP_SEC * 1000.0 / float(bins)
+		for i in bins:
+			var audio_ms := float(i) * ms_per_bin
+			var x := zero_x + (audio_ms - offset) * px_per_ms
+			if x < 0.0 or x > width:
+				continue
+			var amp := _offset_peaks[i] * bounds.y * 0.42
+			strip.draw_line(Vector2(x, mid - amp), Vector2(x, mid + amp), Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.55), 1.0)
+	strip.draw_string(UITheme.mono_font(), Vector2(6.0, bounds.y - 6.0), "offset %+.0f ms" % offset, HORIZONTAL_ALIGNMENT_LEFT, -1, 10, UITheme.MUTED)
+
+
+## 改某一拍上的 BPM；“保持毫秒位置”开着时，后面的内容按新旧 BPM 比例重排拍位。
+func _apply_timing_bpm(point: TimingPoint, value: float) -> void:
+	var target := clampf(value, 20.0, 600.0)
 	_apply(func() -> void:
-		point.bpm = clampf(point.bpm * factor, 20.0, 600.0)
+		var old := point.bpm
+		point.bpm = target
+		if _app.bpm_lock_ms and old > 0.0 and not is_equal_approx(old, target):
+			_app.chart.scale_beats_after(point.beat, target / old)
 		_app.chart.timing.sort_points()
 	)
 	_refresh_timing_list_text()
 
 
-func _reset_taps() -> void:
-	_tap_times.clear()
-	if _tap_label != null:
-		_tap_label.text = "Tap Tempo：连点至少 2 次；结果写入第 1 个 BPM 点（基准）。"
-
-
-func _tap_tempo() -> void:
-	var now := Time.get_ticks_msec()
-	if not _tap_times.is_empty() and now - _tap_times[-1] > 2500:
-		_tap_times.clear()
-	_tap_times.append(now)
-	if _tap_times.size() > 8:
-		_tap_times.remove_at(0)
-	if _tap_times.size() < 2:
-		if _tap_label != null:
-			_tap_label.text = "Tap Tempo：再点 %d 次（已计 %d 次）。" % [2 - _tap_times.size(), _tap_times.size()]
-		return
-	var total := 0.0
-	for i in range(1, _tap_times.size()):
-		total += float(_tap_times[i] - _tap_times[i - 1])
-	var bpm := clampf(60000.0 / maxf(1.0, total / float(_tap_times.size() - 1)), 20.0, 600.0)
-	if _timing_chart != null and not _timing_chart.timing.points.is_empty():
-		_apply(func() -> void:
-			_timing_chart.timing.points[0].bpm = bpm
-			_timing_chart.timing.sort_points()
-		)
-		if _timing_base_spin != null:
-			_timing_base_spin.set_value_no_signal(bpm)
-		if _timing_list != null and _timing_list.item_count > 0:
-			_timing_list.set_item_text(0, _timing_row_text(_timing_chart, 0, _timing_chart.timing.points[0]))
-	if _tap_label != null:
-		_tap_label.text = "Tap Tempo：%.1f BPM（%d 次，已写入第 1 个点）。" % [bpm, _tap_times.size()]
+func _scale_timing_bpm(point: TimingPoint, factor: float) -> void:
+	_apply_timing_bpm(point, point.bpm * factor)
 
 
 func _set_timing_beat(point: TimingPoint) -> void:

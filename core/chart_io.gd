@@ -92,8 +92,11 @@ static func chart_to_dict(chart: Chart) -> Dictionary:
 		if note.lock:
 			note_flags[str(note.id)] = {"lock": true}
 	var meta := {}
-	for key in ["title", "artist", "creator", "version", "tags", "license", "background"]:
+	for key in ["title", "artist", "creator", "version", "tags", "license", "background", "storyboard"]:
 		meta[key] = String(chart.metadata.get(key, ""))
+	# 宽屏故事板标志：不存的话重开谱面会退回按内容猜（854/640 混判）。
+	if bool(chart.metadata.get("widescreen", false)):
+		meta["widescreen"] = 1
 	# 紧凑代码丢不掉的字段旁挂在这里；旧版本读到会直接忽略。
 	var note_extras := {}
 	for note in chart.notes:
@@ -131,7 +134,6 @@ static func chart_to_dict(chart: Chart) -> Dictionary:
 			"video_offset_ms": snappedf(chart.video_offset_ms, 0.001),
 			"video_fps": snappedf(chart.video_fps, 0.001),
 			"video_opacity": snappedf(chart.video_opacity, 0.001),
-			"pre_read_ms": snappedf(chart.pre_read_ms, 0.001),
 			"offset_ms": snappedf(chart.offset_ms, 0.001),
 			"difficulty": chart.difficulty,
 		},
@@ -324,12 +326,15 @@ static func chart_from_dict(data: Dictionary) -> Chart:
 	chart.video_offset_ms = float(general.get("video_offset_ms", 0.0))
 	chart.video_fps = float(general.get("video_fps", 60.0))
 	chart.video_opacity = float(general.get("video_opacity", 0.35))
-	chart.pre_read_ms = float(general.get("pre_read_ms", 1000.0))
+	# 旧文件里的 general.pre_read_ms 读进来直接忽略：飞行时长固定 1 秒（Chart.NOTE_FALL_MS）。
 	chart.offset_ms = float(general.get("offset_ms", 0.0))
 	chart.difficulty = String(general.get("difficulty", "Normal"))
 	var meta: Dictionary = data.get("metadata", {})
-	for key in ["title", "artist", "creator", "version", "tags", "license", "background"]:
+	for key in ["title", "artist", "creator", "version", "tags", "license", "background", "storyboard"]:
 		chart.metadata[key] = String(meta.get(key, ""))
+	# 兼容旧存档：没有这个键就交给故事板内容启发式判断。
+	if meta.has("widescreen"):
+		chart.metadata["widescreen"] = int(meta.get("widescreen", 0)) != 0
 	var timing_data: Dictionary = data.get("timing", {})
 	chart.timing = TimingMap.new()
 	chart.timing.points.clear()

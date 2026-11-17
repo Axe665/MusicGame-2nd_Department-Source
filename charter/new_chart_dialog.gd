@@ -8,6 +8,9 @@ var _artist: LineEdit
 var _creator: LineEdit
 var _difficulty: LineEdit
 var _bpm: SpinBox
+var _bpm_multiplier: OptionButton
+var _detected_bpm: float = 0.0
+const BPM_MULTIPLIER_LABELS := [["÷4", 0.25], ["÷2", 0.5], ["÷1.5", 2.0 / 3.0], ["原值", 1.0], ["×1.5", 1.5], ["×2", 2.0], ["×4", 4.0]]
 var _offset: SpinBox
 var _beats_per_bar: SpinBox
 var _audio: LineEdit
@@ -40,6 +43,24 @@ func _ready() -> void:
 	_difficulty = _line(page, "难度", "Normal")
 	_bpm = _spin(page, "BPM", 120.0, 20.0, 600.0, 0.001)
 	_offset = _spin(page, "offset ms", 0.0, -10000.0, 10000.0, 0.001)
+	_bpm_multiplier = OptionButton.new()
+	for entry in BPM_MULTIPLIER_LABELS:
+		_bpm_multiplier.add_item(String(entry[0]))
+	_bpm_multiplier.select(3)
+	_bpm_multiplier.tooltip_text = "检测器偶尔会把 3 拍当 2 拍（或反之）：换一个倍数，BPM 按检测值重算，offset 不动"
+	_bpm_multiplier.item_selected.connect(func(index: int) -> void:
+		var factor := float(BPM_MULTIPLIER_LABELS[clampi(index, 0, BPM_MULTIPLIER_LABELS.size() - 1)][1])
+		var base := _detected_bpm if _detected_bpm > 0.0 else _bpm.value
+		_bpm.value = clampf(base * factor, 20.0, 600.0)
+	)
+	var multiplier_row := HBoxContainer.new()
+	multiplier_row.add_child(_bpm_multiplier)
+	var multiplier_hint := Label.new()
+	multiplier_hint.text = "节拍倍数"
+	multiplier_hint.add_theme_font_size_override("font_size", 11)
+	multiplier_hint.add_theme_color_override("font_color", UITheme.MUTED)
+	multiplier_row.add_child(multiplier_hint)
+	page.add_child(multiplier_row)
 	_beats_per_bar = _spin(page, "拍号分子", 4.0, 1.0, 16.0, 1.0)
 	_audio = _line(page, "音频（必填）", "")
 	var audio_button := Button.new()
@@ -222,7 +243,10 @@ func _apply_analysis(result: Dictionary) -> void:
 		_analysis_label.text = "自动测量失败：%s；可手动填写 BPM / offset。" % String(result.get("error", "未知原因"))
 		_analysis_label.add_theme_color_override("font_color", UITheme.RED)
 		return
-	var bpm := TimingMap.normalize_bpm(float(result.get("bpm", _bpm.value)))
+	_detected_bpm = float(result.get("bpm", _bpm.value))
+	if _bpm_multiplier != null:
+		_bpm_multiplier.select(3)
+	var bpm := TimingMap.normalize_bpm(_detected_bpm)
 	var offset := TimingMap.normalize_offset_ms(float(result.get("offset_ms", _offset.value)))
 	_bpm.step = _bpm_step(bpm)
 	_bpm.value = clampf(bpm, _bpm.min_value, _bpm.max_value)

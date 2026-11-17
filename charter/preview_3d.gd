@@ -10,6 +10,7 @@ signal ring_rotate(degrees: float)
 const RING_WIDTH := 4.0
 const GLOW_WIDTH := 18.0
 const PREVIEW_MARGIN := 1.24
+## 鼠标视差的最大倾斜角（度）。试玩固定 7°，编辑器预览用这个值。
 const MOUSE_TILT_DEGREES := 11.0
 ## Path / Trace 的视觉尺寸：相对旧版 ×2。只放大笔画与头尾，不改轨迹几何与判定。
 const PATH_SIZE_SCALE := 2.0
@@ -42,6 +43,10 @@ var playing: bool = false
 var interactive: bool = true
 var playtest_mode: bool = false
 var show_hud: bool = true
+## 仅轨迹导出时关掉：不画音符/轨迹条/判定特效，只留背景与鼠标轨迹。
+var show_notes: bool = true
+## 仅轨迹导出时关掉：不显示 3D 判定环。
+var show_playfield: bool = true
 var show_debug: bool = false
 ## Dedicated input overlay: geometry and progress come from live playtest states.
 var show_path_judgement := false
@@ -53,6 +58,10 @@ var custom_cursor_visible: bool = true
 ## 光标大小倍率（1.0 = 默认）。
 var cursor_scale: float = 1.0
 var mouse_tilt: bool = true
+## 倾斜幅度（度）；由设置页写入，0 视为关闭。
+## 注入光标（回放/导出）是按哪个尺寸录的。导出视口固定 1280x720，
+## 而回放录的是 1600x900 的光标，不换算的话右侧的点会被判成「跑到画面外」。
+var auto_cursor_bounds: Vector2 = Vector2.ZERO
 var use_3d_ring: bool = true:
 	set(value):
 		if use_3d_ring == value:
@@ -86,6 +95,8 @@ var hud_ms: float = 0.0
 var hud_total_ms: float = 0.0
 
 var cursor_u: float = 0.0
+## path 身体画法："tread"（粗 chevron 履带）/ "ribbon"（半透明丝带，Arcaea 式）。
+var path_style: String = "tread"
 var cursor_valid: bool = false
 var mouse_screen: Vector2 = Vector2.ZERO
 var mouse_inside: bool = false
@@ -95,6 +106,67 @@ var auto_cursor: Vector2 = Vector2.INF
 var _bg: TextureRect
 var _background_image: TextureRect
 var _last_background_path: String = ""
+## osu! storyboard（.osb）：按谱面缓存一次，贴图按需载入。
+var _storyboard: Storyboard = null
+var _storyboard_dir := ""
+var _storyboard_chart: Chart = null
+var _storyboard_textures: Dictionary = {}   # 兼容旧代码的实例级视图；真实数据在 _tex_cache
+## 每次试玩都会新建一套 Preview3D，解析结果和贴图放类级缓存里共享：
+## 3936 sprite 的 .osb 实测 parse 232ms，135 张图解码更久，重建一次就是一次卡顿。
+static var _board_cache: Dictionary = {}
+static var _tex_cache: Dictionary = {}
+## 解码放后台线程：135 张 2560x1440 的图同步解码 = 几秒卡死。
+## 主线程只做 ImageTexture 上传（必须主线程），其余在 WorkerThreadPool 里跑。
+static var _tex_pending: Dictionary = {}
+## 超长边压到 1024 后，绘制时要按原尺寸放大回来，否则大背景会缩水成一半。
+static var _tex_boost: Dictionary = {}
+## .osb 解析也放后台：3936 sprite 的谱实测 parse 232ms，放在首帧 draw 里就是一次卡死。
+static var _parse_pending: Dictionary = {}
+static var _parse_done: Dictionary = {}
+static var _parse_mutex := Mutex.new()
+static var _tex_decoded: Dictionary = {}
+static var _tex_mutex := Mutex.new()
+## 预览最大也就屏幕那么高，超长边超过这个数只会白吃显存和解码时间。
+const STORYBOARD_TEX_MAX := 1024
+var show_storyboard := true
+## 只画 Foreground/Overlay 层（关掉 storyboard 的背景层，让谱面背景图露出来）。
+var show_storyboard_background := true
+## 编辑器的窄预览里把整块 storyboard 等比缩到装得下（试玩保持按高度铺满）。
+var storyboard_fit := false
+## storyboard 采样按 30Hz 走（60fps 下每帧重算 700+ 对象太贵），中间帧复用同一份结果。
+## 故事板每帧都重采样，间隔跟「画质 → 帧率上限」：60/120 跟满，144/240/vsync/不限封顶 120。
+var _sb_sample_interval := 1000.0 / 60.0
+## 0 = 跟随帧率上限；视频导出设成导出 fps，保证每一帧都重采样。
+var storyboard_sample_hz := 0
+var _sb_sample_ms := -1.0e9
+var _sb_queued_ms := -1.0e9
+var _sb_waiting_dir := ""
+var _sb_wide_detected := false
+var _sb_render_items: Array[Dictionary] = []
+## 采样后按图层分桶：每层只遍历自己的对象，不用 7 个层各扫一遍全部 items。
+var _sb_layer_items: Dictionary = {}
+var _sb_additive_layer_items: Dictionary = {}
+## 贴图预取队列：storyboard 一次几百张图，全在用到的那一帧读会卡一下，
+## 改成每帧后台预取几张。
+var _sb_prefetch: Array[String] = []
+## storyboard 的 Background 层里有谱面背景图时，静态背景层要关掉（对照 lazer ReplacesBackground）。
+var _storyboard_replaces_background := false
+## 背景层（Background/Video）单独一层，垫在 3D 判定环下面。
+## 每个故事板绘制层外面套一个裁剪容器：只显示 854×480 / 640×480 安全框，
+## 超宽背景不再从左右两侧漏出来。绘制节点仍是 _storyboard_bg 等。
+var _storyboard_bg_clip: Control = null
+var _storyboard_add_bg_clip: Control = null
+var _storyboard_fg_clip: Control = null
+var _storyboard_top_clip: Control = null
+var _storyboard_add_fg_clip: Control = null
+var _storyboard_bg: Control = null
+## 加色（P,A）元素单独一层：粒子/光晕走 BLEND_MODE_ADD，叠在普通层上面。
+var _storyboard_add_bg: Control = null
+var _storyboard_add_fg: Control = null
+## Foreground 在判定环之上、音符之下；Overlay 在音符之上（osu 的层序）。
+var _storyboard_fg: Control = null
+var _storyboard_top: Control = null
+## 背景调暗层：盖住背景和 storyboard，但压在 3D 判定环下面（osu 的 Background dim）。
 var _video: VideoStreamPlayer
 var _viewport_container: SubViewportContainer
 var _subviewport: SubViewport
@@ -130,7 +202,9 @@ var _last_chart_ref: Chart = null
 var _last_video_path: String = ""
 var _video_load_failed: bool = false
 ## 静图默认 32% 不透明度；改成全局系数后由设置推动。
-const BACKGROUND_ALPHA := 0.32
+## 谱面背景（静图/BGA）的基准不透明度。osu 里背景是实心的，暗度只由「背景明暗」控制，
+## 所以这里不再乘一个 0.32 的基准值——那个值会让默认设置下背景几乎看不见。
+const BACKGROUND_ALPHA := 1.0
 ## 背景明暗系数（1.0 = 现在观感）；静图和 BGA 共用。
 var background_brightness: float = 1.0
 ## 暂停时把 BGA 一起停住，恢复后由 _update_video 重新对齐位置。
@@ -353,6 +427,50 @@ func current_view() -> Dictionary:
 	return BoundaryRuntime.eval_view(chart, get_time_beat())
 
 
+## 建一个故事板绘制节点：外层裁剪容器由调用方建，这里只负责铺满 + 脚本。
+func _make_storyboard_draw(clip: Control, node_name: String, flag: String, material: Material) -> Control:
+	var draw := Control.new()
+	draw.name = node_name
+	draw.set_script(load("res://charter/preview_overlay.gd"))
+	draw.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	draw.set("preview", self)
+	draw.set(flag, true)
+	if material != null:
+		draw.material = material
+	clip.add_child(draw)
+	draw.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	return draw
+
+
+## 安全框（854×480 或 640×480）在预览里的矩形：宽屏场按高度铺满，编辑器预览用 contain。
+func _storyboard_field_rect() -> Rect2:
+	var field := _storyboard_field_width()
+	var scale := size.y / Storyboard.FIELD_HEIGHT
+	if storyboard_fit:
+		scale = minf(size.x / field, size.y / Storyboard.FIELD_HEIGHT)
+	var field_size := Vector2(field, Storyboard.FIELD_HEIGHT) * scale
+	return Rect2((size - field_size) * 0.5, field_size)
+
+
+## 把 5 个裁剪容器摆到安全框上；绘制子节点铺满容器（坐标从安全框左上角算）。
+func _update_storyboard_clip_rects() -> void:
+	var rect := _storyboard_field_rect()
+	for clip in [_storyboard_bg_clip, _storyboard_add_bg_clip, _storyboard_fg_clip,
+			_storyboard_top_clip, _storyboard_add_fg_clip]:
+		if clip == null:
+			continue
+		clip.set_anchors_preset(Control.PRESET_TOP_LEFT)
+		clip.position = rect.position
+		clip.size = rect.size
+		for child in clip.get_children():
+			(child as Control).set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_RESIZED and is_node_ready():
+		_update_storyboard_clip_rects()
+
+
 func _build_layers() -> void:
 	_bg = TextureRect.new()
 	_bg.name = "StageBackground"
@@ -427,6 +545,59 @@ func _build_layers() -> void:
 	add_child(_cursor_layer)
 	_cursor_layer.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_viewport_container.visible = use_3d_ring
+	# storyboard 的 Background 层要垫在 3D 判定环下面，Foreground/Overlay 走 _overlay。
+	# 故事板统一裁到安全框：裁剪容器 = 安全框，绘制子节点铺满它。
+	# 背景/加色背景在 3D 判定环下面；Foreground 在环上面、音符下面；
+	# Overlay 在音符上面、光标下面；加色前景沿用原来的最上层。
+	_storyboard_bg_clip = Control.new()
+	_storyboard_bg_clip.name = "StoryboardBackgroundClip"
+	_storyboard_bg_clip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_storyboard_bg_clip.clip_contents = true
+	add_child(_storyboard_bg_clip)
+	move_child(_storyboard_bg_clip, _viewport_container.get_index())
+	_storyboard_bg = _make_storyboard_draw(_storyboard_bg_clip, "StoryboardBackground", "storyboard_background", null)
+
+	var add_material := CanvasItemMaterial.new()
+	add_material.blend_mode = CanvasItemMaterial.BLEND_MODE_ADD
+	_storyboard_add_bg_clip = Control.new()
+	_storyboard_add_bg_clip.name = "StoryboardAdditiveClip"
+	_storyboard_add_bg_clip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_storyboard_add_bg_clip.clip_contents = true
+	add_child(_storyboard_add_bg_clip)
+	move_child(_storyboard_add_bg_clip, _viewport_container.get_index())
+	_storyboard_add_bg = _make_storyboard_draw(_storyboard_add_bg_clip, "StoryboardAdditive", "storyboard_additive", add_material)
+
+	var add_fg_material := CanvasItemMaterial.new()
+	add_fg_material.blend_mode = CanvasItemMaterial.BLEND_MODE_ADD
+	_storyboard_add_fg_clip = Control.new()
+	_storyboard_add_fg_clip.name = "StoryboardAdditiveFrontClip"
+	_storyboard_add_fg_clip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_storyboard_add_fg_clip.clip_contents = true
+	add_child(_storyboard_add_fg_clip)
+	_storyboard_add_fg = _make_storyboard_draw(_storyboard_add_fg_clip, "StoryboardAdditiveFront", "storyboard_additive", add_fg_material)
+	_storyboard_add_fg.set("additive_front", true)
+
+	# Foreground：盖住判定环，但在音符下面。
+	_storyboard_fg_clip = Control.new()
+	_storyboard_fg_clip.name = "StoryboardForegroundClip"
+	_storyboard_fg_clip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_storyboard_fg_clip.clip_contents = true
+	add_child(_storyboard_fg_clip)
+	move_child(_storyboard_fg_clip, _viewport_container.get_index())
+	_storyboard_fg = _make_storyboard_draw(_storyboard_fg_clip, "StoryboardForeground", "storyboard_front", null)
+
+	# Overlay：压在音符上面，光标层下面。
+	_storyboard_top_clip = Control.new()
+	_storyboard_top_clip.name = "StoryboardOverlayClip"
+	_storyboard_top_clip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_storyboard_top_clip.clip_contents = true
+	add_child(_storyboard_top_clip)
+	move_child(_storyboard_top_clip, _viewport_container.get_index())
+	_storyboard_top = _make_storyboard_draw(_storyboard_top_clip, "StoryboardOverlay", "storyboard_overlay", null)
+
+	_update_storyboard_clip_rects()
+	# 图层是在 _ready 里建的，构造期间可能已经设过明暗，这里补一次。
+	set_background_brightness(background_brightness)
 
 
 func _build_3d() -> void:
@@ -610,6 +781,7 @@ func _process(_delta: float) -> void:
 		_mesh_dirty = false
 	_update_background(chart)
 	_update_video(chart, t)
+	_prefetch_storyboard_textures()
 	var beat_phase := fposmod(t, 1.0)
 	_glow_material.albedo_color = Color(0.37, 0.92, 0.86, 0.10 + 0.09 * exp(-beat_phase * 7.0))
 	if playtest_mode:
@@ -649,8 +821,25 @@ func _process(_delta: float) -> void:
 	var needs_overlay := time_changed or view_changed or flat_dirty or not _pulses.is_empty() or not _arc_flashes.is_empty() or not _note_pops.is_empty()
 	if needs_overlay:
 		_overlay.queue_redraw()
+		# 采样间隔跟帧率上限/导出 fps；只有采样时刻变化（或几何/尺寸变了）才重绘。
+		var sb_ms := chart.timing.beat_to_chart_ms(t) - chart.offset_ms
+		_sb_sample_interval = _storyboard_sample_interval()
+		if view_changed or flat_dirty or absf(sb_ms - _sb_queued_ms) >= maxf(0.0001, _sb_sample_interval):
+			_sb_queued_ms = sb_ms
+			if _storyboard_bg != null:
+				_storyboard_bg.queue_redraw()
+			if _storyboard_add_bg != null:
+				_storyboard_add_bg.queue_redraw()
+			if _storyboard_fg != null:
+				_storyboard_fg.queue_redraw()
+			if _storyboard_top != null:
+				_storyboard_top.queue_redraw()
+			if _storyboard_add_fg != null:
+				_storyboard_add_fg.queue_redraw()
 	if mouse_moved or time_changed or view_changed or not _cursor_trail.is_empty():
 		_cursor_layer.queue_redraw()
+	if _viewport_container != null:
+		_viewport_container.visible = show_playfield
 	if use_3d_ring:
 		var animate_3d := playing or playtest_mode or _tilt.distance_to(_tilt_target) > 0.01
 		# 形变时每帧都要重画：UPDATE_ONCE 渲染完会被引擎改回 DISABLED，
@@ -687,18 +876,47 @@ func _update_3d_mode(animate: bool, changed: bool) -> void:
 
 
 func _update_mouse_tilt(delta: float) -> void:
-	if not mouse_tilt or not (mouse_inside or playtest_mode):
+	var amount := 7.0 if playtest_mode else MOUSE_TILT_DEGREES
+	# 导出回放时没有真实鼠标：用注入的回放光标，否则会跟着窗口鼠标乱抖。
+	var from_auto := auto_cursor.is_finite()
+	var local := auto_cursor if from_auto else get_local_mouse_position()
+	var bounds := size
+	if from_auto and auto_cursor_bounds.x > 1.0 and auto_cursor_bounds.y > 1.0:
+		bounds = auto_cursor_bounds
+	var source_ok := (mouse_inside or playtest_mode) and Rect2(Vector2.ZERO, bounds).has_point(local)
+	# 无头/基准里 get_local_mouse_position() 恒为 (0,0)，不能把它当成「鼠标在左上角」。
+	if DisplayServer.get_name() == "headless" and not from_auto:
+		source_ok = false
+	if not mouse_tilt or amount <= 0.001 or not source_ok:
 		_tilt_target = Vector2.ZERO
-	elif size.x > 1.0 and size.y > 1.0:
-		var local := get_local_mouse_position()
-		var nx := clampf((local.x - size.x * 0.5) / (size.x * 0.5), -1.0, 1.0)
-		var ny := clampf((local.y - size.y * 0.5) / (size.y * 0.5), -1.0, 1.0)
-		var amount := 7.0 if playtest_mode else MOUSE_TILT_DEGREES
-		_tilt_target = Vector2(-ny * amount, nx * amount)
+	else:
+		_tilt_target = tilt_target_for(local, bounds, amount)
 	var weight := 1.0 - exp(-maxf(0.0, delta) * 10.0)
 	_tilt = _tilt.lerp(_tilt_target, weight)
 	if _tilt_target == Vector2.ZERO and _tilt.length() < 0.01:
 		_tilt = Vector2.ZERO
+
+
+## 环的最终变换：绕 X/Y 旋转，并按倾斜量轻微平移环心（每度 2.8 设计单位）。
+static func ring_transform(rotation: float, tilt_x: float, tilt_y: float,
+		zoom: float, ellipse: float, tilt: Vector2) -> Transform3D:
+	var basis := Basis(Vector3(0, 0, 1), deg_to_rad(rotation))
+	basis = basis * Basis(Vector3(1, 0, 0), deg_to_rad(tilt_x + tilt.x))
+	basis = basis * Basis(Vector3(0, 1, 0), deg_to_rad(tilt_y + tilt.y))
+	# 远端那版会随倾斜把环心轻轻推一点（每度 2.8 设计单位），
+	# 「只绕环心转」看起来反而平；这里按原样保留。
+	return Transform3D(basis.scaled(Vector3(zoom * ellipse, zoom, zoom)),
+		Vector3(-tilt.y * 2.8, -tilt.x * 2.8, 0.0))
+
+
+## 鼠标位置 → 两轴倾斜角。鼠标那一侧的环靠近镜头（近大远小）：
+## X 用 -ny 让上边靠近，Y 必须用 -nx 才是同一方向；用 +nx 会左右上下反着歪。
+static func tilt_target_for(local: Vector2, bounds: Vector2, degrees: float) -> Vector2:
+	if bounds.x <= 1.0 or bounds.y <= 1.0 or degrees <= 0.001:
+		return Vector2.ZERO
+	var nx := clampf((local.x - bounds.x * 0.5) / (bounds.x * 0.5), -1.0, 1.0)
+	var ny := clampf((local.y - bounds.y * 0.5) / (bounds.y * 0.5), -1.0, 1.0)
+	return Vector2(-ny * degrees, nx * degrees)
 
 
 func _update_transform(beat: float) -> bool:
@@ -725,27 +943,33 @@ func _update_transform(beat: float) -> bool:
 	if key == _last_view_key:
 		return false
 	_last_view_key = key
-	var basis := Basis(Vector3(0, 0, 1), deg_to_rad(rotation))
-	basis = basis * Basis(Vector3(1, 0, 0), deg_to_rad(tilt_x + _tilt.x))
-	basis = basis * Basis(Vector3(0, 1, 0), deg_to_rad(tilt_y + _tilt.y))
-	_ring_root.transform = Transform3D(basis.scaled(Vector3(zoom * ellipse, zoom, zoom)), Vector3(-_tilt.y * 2.8, -_tilt.x * 2.8, 0.0))
-	var fit_key := "%.3f|%.3f|%d|%.0f|%.0f" % [zoom, ellipse, 1 if playtest_mode else 0, size.x, size.y]
+	_ring_root.transform = ring_transform(rotation, tilt_x, tilt_y, zoom, ellipse, _tilt)
+	var fit_key := "%.3f|%.3f|%d|%.0f|%.0f|%.1f" % [zoom, ellipse, 1 if playtest_mode else 0, size.x, size.y,
+		0.0]
 	if fit_key != _last_fit_key:
 		_last_fit_key = fit_key
 		_update_camera_fit(chart, zoom, ellipse)
 	return true
 
 
+## 谱面里最大的形状半径（舞台读数 / 相机取景共用）。
+## 换谱（重试会重建 chart）时会被置 -1；两个使用者都必须能自己补算，
+## 否则 HUD 会掉进另一条测量分支、两侧列突然往里缩。
+func _ensure_design_radius(chart: Chart) -> float:
+	if _max_design_radius > 0.0 or chart == null:
+		return _max_design_radius
+	_max_design_radius = 520.0
+	for shape in chart.sorted_shapes():
+		for data in shape.sample_points(32):
+			_max_design_radius = maxf(_max_design_radius, (data.point as Vector2).length())
+	return _max_design_radius
+
+
 func _update_camera_fit(chart: Chart, zoom: float, ellipse: float) -> void:
 	# 环工作区开关会把预览在两个容器间搬动，搬家途中 resized 先到、节点还没入树。
 	if not is_inside_tree() or _camera == null or not _camera.is_inside_tree():
 		return
-	if _max_design_radius < 0.0:
-		_max_design_radius = 520.0
-		for shape in chart.sorted_shapes():
-			for data in shape.sample_points(32):
-				var point: Vector2 = data.point
-				_max_design_radius = maxf(_max_design_radius, point.length())
+	_ensure_design_radius(chart)
 	var aspect := maxf(0.2, size.x / maxf(1.0, size.y))
 	# 试玩时把环放大到接近 Estella 的满屏比例；编辑器保持原来的留白。
 	var margin := 1.06 if playtest_mode else PREVIEW_MARGIN
@@ -976,12 +1200,20 @@ static func video_alpha(chart_opacity: float, brightness: float) -> float:
 	return clampf(chart_opacity, 0.0, 1.0) * maxf(0.0, brightness)
 
 
-## 背景明暗：静图和 BGA 共用一个系数（1.0 = 默认观感）。
+## 背景明暗（0–1）：曲绘 / BGA / 整张故事板共用一个系数。
 func set_background_brightness(value: float) -> void:
 	# 设置项封顶 100%；这里再钳一次，防止别处直接赋值绕过上限。
 	background_brightness = clampf(value, 0.0, 1.0)
 	if _background_image != null:
 		_background_image.modulate = Color(1, 1, 1, background_alpha(background_brightness))
+	# 故事板当作一个整体压暗：同一个系数乘到全部图层上。
+	# 前景/覆盖层画在判定环上面，不能盖黑遮罩（会把环和音符一起压掉），
+	# 所以统一用 self_modulate 乘自身像素，环和 HUD 亮度不变。
+	var keep := background_brightness
+	var tint := Color(keep, keep, keep, 1.0)
+	for layer in [_storyboard_bg, _storyboard_add_bg, _storyboard_fg, _storyboard_top, _storyboard_add_fg]:
+		if layer != null:
+			(layer as CanvasItem).self_modulate = tint
 
 
 ## 暂停时连 BGA 一起停；恢复后 _update_video 会把播放位置重新对齐。
@@ -1036,6 +1268,18 @@ func _update_video(chart: Chart, beat: float) -> void:
 
 ## 有 BGA 时不叠加谱面背景图：两张背景一起画既脏又浪费。
 func _refresh_background_layering() -> void:
+	# 有 storyboard 时舞台底层（渐变星空）也要关：osu 里故事板背后就是纯黑，
+	# 否则开场几秒会看到一块灰亮的渐变底色，像「亮屏」。
+	var sb_active := show_storyboard and _storyboard != null
+	if _bg != null:
+		# 不能直接隐藏：底下的面板是浅色的，会露出白色。改成把渐变底色压成纯黑。
+		_bg.visible = true
+		_bg.modulate = Color(0.0, 0.0, 0.0, 1.0) if sb_active else Color.WHITE
+	# 和 lazer 的 Storyboard.ReplacesBackground 一致：storyboard 的 Background 层里有谱面背景图时，
+	# 静态背景层要关掉——否则故事板想做的「黑屏 / 淡入」永远被一张不漏的底图垫住。
+	if sb_active and _storyboard_replaces_background and show_storyboard_background:
+		_background_image.visible = false
+		return
 	_background_image.visible = background_image_visible(_background_image.texture != null, _video.stream != null)
 
 
@@ -1648,22 +1892,24 @@ func _split_segment() -> void:
 
 
 func _pre_read_beats(chart: Chart, beat: float) -> float:
-	return chart.pre_read_ms / maxf(0.1, flow_scale) / 60000.0 * chart.timing.bpm_at(beat)
+	# 飞行时长换算成拍：只用于取窗口/画箭头，判定仍按毫秒。
+	return _pre_read_ms(chart, beat) / 60000.0 * chart.timing.bpm_at(beat)
 
 
-## 预读时长（毫秒）。和 BPM 无关，所以变 BPM 时不会跳。
-func _pre_read_ms(chart: Chart) -> float:
-	return maxf(30.0, chart.pre_read_ms / maxf(0.1, flow_scale))
+## 音符从出现到该打的时间（毫秒）：固定 1 秒 ÷ 音符速度倍率。
+## 不随 BPM 变——高 BPM 只代表谱面更密，不代表要读得更快。
+func _pre_read_ms(chart: Chart, _beat: float = 0.0) -> float:
+	return maxf(30.0, chart.note_fall_ms() / maxf(0.05, flow_scale))
 
 
 ## 这个音符开始从圆心飞出的拍号（毫秒反推，变 BPM 处连续）。
 func _spawn_beat(chart: Chart, target_beat: float) -> float:
-	return chart.timing.spawn_beat(target_beat, _pre_read_ms(chart))
+	return chart.timing.spawn_beat(target_beat, _pre_read_ms(chart, target_beat))
 
 
 ## 0..1 的接近进度（毫秒恒速，不会在变 BPM 时忽然跳到一半）。
 func _approach(chart: Chart, target_beat: float, current_beat: float) -> float:
-	return chart.timing.approach(target_beat, current_beat, _pre_read_ms(chart))
+	return chart.timing.approach(target_beat, current_beat, _pre_read_ms(chart, target_beat))
 
 
 ## 星星从圆心落到环上的时长（固定 0.5 秒，换算成拍；不超过预读）。
@@ -1691,7 +1937,7 @@ func _radial_scale(point: Vector2, min_scale: float, max_scale: float, beat: flo
 
 ## 星星开始下落（落到环上 0.5 秒前）的拍号。
 func _fall_beat(chart: Chart, target_beat: float) -> float:
-	return chart.timing.spawn_beat(target_beat, minf(_pre_read_ms(chart), 500.0))
+	return chart.timing.spawn_beat(target_beat, minf(_pre_read_ms(chart, target_beat), 500.0))
 
 
 func _flying_position(chart: Chart, angle: float, target_beat: float, current_beat: float, _pre: float) -> Vector2:
@@ -1814,6 +2060,7 @@ func _frame_for(chart: Chart, beat: float) -> BoundaryFrame:
 	if _boundary_frame_cache == null or _boundary_frame_cache.chart != chart or _boundary_frame_cache.beat != beat:
 		if _boundary_frame_cache != null and _boundary_frame_cache.chart != chart:
 			_max_design_radius = -1.0
+			_last_fit_key = ""
 			_path_local_cache.clear()
 		_boundary_frame_cache = BoundaryFrame.new(chart, beat, _boundary_frame_cache)
 	return _boundary_frame_cache
@@ -1854,19 +2101,24 @@ func draw_overlay(canvas: Control) -> void:
 	if playtest_mode and show_hud:
 		_draw_play_combo_layer(canvas)
 	var sec_usec := Time.get_ticks_usec()
-	_draw_seeks(canvas, chart, t)
+	if show_notes:
+		_draw_seeks(canvas, chart, t)
 	var sec2 := Time.get_ticks_usec()
 	_perf_sections[0] += sec2 - sec_usec
-	_draw_paths(canvas, chart, t, pre)
+	if show_notes:
+		_draw_paths(canvas, chart, t, pre)
 	sec_usec = Time.get_ticks_usec()
 	_perf_sections[1] += sec_usec - sec2
-	_draw_holds(canvas, chart, t, pre)
+	if show_notes:
+		_draw_holds(canvas, chart, t, pre)
 	sec2 = Time.get_ticks_usec()
 	_perf_sections[2] += sec2 - sec_usec
-	_draw_notes(canvas, chart, t, pre)
-	if show_path_judgement:
+	if show_notes:
+		_draw_notes(canvas, chart, t, pre)
+	if show_path_judgement and show_notes:
 		_draw_path_judgement(canvas, chart, t, pre)
-	_draw_note_pops(canvas)
+	if show_notes:
+		_draw_note_pops(canvas)
 	sec_usec = Time.get_ticks_usec()
 	_perf_sections[3] += sec_usec - sec2
 	var t_hud := Time.get_ticks_usec()
@@ -1956,6 +2208,412 @@ func _affine_point(point: Vector2, affine: Array) -> Vector2:
 	var x_axis: Vector2 = affine[1]
 	var y_axis: Vector2 = affine[2]
 	return center + x_axis * point.x + y_axis * point.y
+
+
+## 统一开关所有故事板图层（画布 + 加色 + 前景 + Overlay）。
+func set_storyboard_visible(on: bool) -> void:
+	show_storyboard = on
+	for layer in [_storyboard_bg, _storyboard_add_bg, _storyboard_fg, _storyboard_top, _storyboard_add_fg]:
+		if layer != null:
+			layer.visible = on
+	refresh_storyboard_layers()
+
+
+## 编辑 / 换谱后重画所有故事板层（暂停时没有 time_changed，不会自动重绘）。
+func refresh_storyboard_layers() -> void:
+	# 宽屏/普通场是解析完才确定的，安全框矩形要跟着重算，否则会停在 640×480。
+	_update_storyboard_clip_rects()
+	# 换谱/解析完成时相机取景半径可能还没算过，这里补一次（和故事板开关无关）。
+	var chart := get_chart()
+	if chart != null:
+		var view := current_view()
+		_update_camera_fit(chart, float(view.get("zoom", 1.0)), float(view.get("ellipse", 1.0)))
+	for layer in [_storyboard_bg, _storyboard_add_bg, _storyboard_fg, _storyboard_top, _storyboard_add_fg]:
+		if layer != null:
+			layer.queue_redraw()
+
+
+## 谱面切换时重建 storyboard 缓存。
+## 换谱/切标签后把故事板缓存清掉并重画（否则会一直显示上一个谱的故事板层）。
+func invalidate_storyboard() -> void:
+	_storyboard_chart = null
+	_storyboard = null
+	_storyboard_dir = ""
+	_sb_waiting_dir = ""
+	_storyboard_textures.clear()
+	_storyboard_replaces_background = false
+	_sb_sample_ms = -1.0e9
+	_sb_render_items = []
+	_refresh_background_layering()
+	_update_storyboard_clip_rects()
+	if _storyboard_bg != null:
+		_storyboard_bg.queue_redraw()
+	if _storyboard_add_bg != null:
+		_storyboard_add_bg.queue_redraw()
+	if _storyboard_fg != null:
+		_storyboard_fg.queue_redraw()
+	if _storyboard_top != null:
+		_storyboard_top.queue_redraw()
+	if _overlay != null:
+		_overlay.queue_redraw()
+
+
+func _ensure_storyboard(chart: Chart) -> void:
+	if chart == _storyboard_chart:
+		return
+	_storyboard_chart = chart
+	_storyboard = null
+	_storyboard_dir = ""
+	_sb_waiting_dir = ""
+	_storyboard_textures.clear()
+	_storyboard_replaces_background = false
+	_sb_sample_ms = -1.0e9
+	_sb_render_items = []
+	_sb_prefetch.clear()
+	if chart == null:
+		_refresh_background_layering()
+		return
+	var dir := String(chart.metadata.get("storyboard", ""))
+	if dir.is_empty():
+		_refresh_background_layering()
+		return
+	var board: Storyboard = _board_cache.get(dir)
+	if board == null:
+		# 后台解析：解析完在 _prefetch_storyboard_textures 里换上来。
+		_start_parse(dir)
+		_sb_waiting_dir = dir
+		_refresh_background_layering()
+		return
+	_storyboard = board
+	_storyboard_dir = dir
+	_sb_wide_detected = _detect_wide(board)
+	_update_storyboard_clip_rects()
+	_storyboard_replaces_background = _storyboard.replaces_background(String(chart.metadata.get("background", "")))
+	if _sb_prefetch.is_empty():
+		for ref in _storyboard.referenced_files:
+			if not _tex_cache.has(dir + "/" + String(ref).get_file()):
+				_sb_prefetch.append(ref)
+	_refresh_background_layering()
+
+func _prefetch_storyboard_textures() -> void:
+	if _storyboard == null:
+		_take_parsed_board()
+		if _storyboard == null:
+			return
+	# 先把后台解码完的图上传成贴图：一张 1024² 就是 4MB 显存，每帧最多 2 张。
+	var budget := 2
+	var uploaded := 0
+	_tex_mutex.lock()
+	var ready_keys: Array = _tex_decoded.keys()
+	_tex_mutex.unlock()
+	for key in ready_keys:
+		if budget <= 0:
+			break
+		_tex_mutex.lock()
+		var entry: Array = _tex_decoded.get(key, [])
+		_tex_decoded.erase(key)
+		_tex_mutex.unlock()
+		var image: Image = entry[0] if entry.size() > 0 else null
+		if image == null:
+			_tex_cache[key] = null
+			continue
+		_tex_cache[key] = ImageTexture.create_from_image(image)
+		_tex_boost[key] = float(entry[1]) if entry.size() > 1 else 1.0
+		uploaded += 1
+		budget -= 1
+	# 刚上传的贴图要重画一次：暂停/编辑器里没有 time_changed，否则会一直空着。
+	if uploaded > 0:
+		refresh_storyboard_layers()
+	# 还没排队的引用文件，趁早丢给后台线程。
+	for ref in _storyboard.referenced_files:
+		var full := _storyboard_dir + "/" + String(ref).get_file()
+		if _storyboard == null:
+			break
+		_request_texture(full)
+
+
+## 后台解析：同一目录只排一次。
+func _start_parse(dir: String) -> void:
+	if _board_cache.has(dir) or _parse_pending.has(dir):
+		return
+	_parse_pending[dir] = true
+	WorkerThreadPool.add_task(_parse_board.bind(dir), false, "storyboard parse")
+
+
+static func _parse_board(dir: String) -> void:
+	var board: Storyboard = null
+	var text := FileAccess.get_file_as_string(dir + "/storyboard.osb")
+	if not text.is_empty():
+		board = Storyboard.parse(text, "storyboard.osb")
+		if board.sprites.is_empty():
+			board = null
+	_parse_mutex.lock()
+	_parse_done[dir] = board
+	_parse_pending.erase(dir)
+	_parse_mutex.unlock()
+
+
+## 主线程把解析结果换上来（只在同一个谱面/目录还在等的时候）。
+func _take_parsed_board() -> void:
+	if _sb_waiting_dir.is_empty():
+		return
+	# 解析结果在静态表里只留一份：另一个预览（主界面/试玩）先拿走时，
+	# 这边 _parse_done 永远是空的，只看它就会一直等不到故事板。
+	var board: Storyboard = _board_cache.get(_sb_waiting_dir)
+	var has := board != null
+	if not has:
+		_parse_mutex.lock()
+		has = _parse_done.has(_sb_waiting_dir)
+		board = _parse_done.get(_sb_waiting_dir) if has else null
+		if has:
+			_parse_done.erase(_sb_waiting_dir)
+		_parse_mutex.unlock()
+	if not has:
+		return
+	var dir := _sb_waiting_dir
+	_sb_waiting_dir = ""
+	if board == null:
+		return
+	_board_cache[dir] = board
+	_storyboard = board
+	_storyboard_dir = dir
+	_sb_wide_detected = _detect_wide(board)
+	var chart := get_chart()
+	if chart != null:
+		_storyboard_replaces_background = _storyboard.replaces_background(String(chart.metadata.get("background", "")))
+	_refresh_background_layering()
+	if _storyboard_bg != null:
+		_storyboard_bg.queue_redraw()
+	if _storyboard_add_bg != null:
+		_storyboard_add_bg.queue_redraw()
+
+
+## 把一张图排进后台解码队列（同一张只排一次）。
+func _request_texture(full: String) -> void:
+	if _tex_cache.has(full) or _tex_pending.has(full):
+		return
+	# 同时在飞的解码任务限到 8 个：135 张一起丢进线程池会把主线程也挤饿。
+	if _tex_pending.size() >= 2:
+		return
+	_tex_pending[full] = true
+	WorkerThreadPool.add_task(_decode_texture.bind(full), false, "storyboard texture")
+
+
+static func _decode_texture(full: String) -> void:
+	var image: Image = null
+	var boost := 1.0
+	if FileAccess.file_exists(full):
+		image = Image.load_from_file(ProjectSettings.globalize_path(full))
+		if image != null and not image.is_empty():
+			var longest := maxi(image.get_width(), image.get_height())
+			if longest > STORYBOARD_TEX_MAX:
+				boost = float(longest) / float(STORYBOARD_TEX_MAX)
+				var ratio := float(STORYBOARD_TEX_MAX) / float(longest)
+				image.resize(maxi(1, roundi(float(image.get_width()) * ratio)),
+					maxi(1, roundi(float(image.get_height()) * ratio)), Image.INTERPOLATE_BILINEAR)
+		else:
+			image = null
+	_tex_mutex.lock()
+	# [图, 放大倍率]：贴图被缩小了 ratio 倍，绘制时乘回去才是 osu 的原始尺寸。
+	_tex_decoded[full] = [image, boost]
+	_tex_pending.erase(full)
+	_tex_mutex.unlock()
+
+
+func _storyboard_texture(path: String) -> Texture2D:
+	var full := _storyboard_dir + "/" + path.get_file()
+	var texture: Texture2D = _tex_cache.get(full)
+	if texture == null:
+		_request_texture(full)
+	return texture
+
+
+## 把 storyboard 的 640x480 坐标场映射到预览区域：
+## osu 是按 **高度** 缩放、场中心对齐屏幕中心（宽屏只是左右多露出来），
+## 不是 cover——之前用 max() 会把 1920x540 这种横条撑满整屏，把背景图盖死。
+func _storyboard_sample_interval() -> float:
+	if storyboard_sample_hz > 0:
+		return 1000.0 / float(storyboard_sample_hz)
+	var cap := int(Engine.max_fps)
+	if cap <= 0:
+		cap = 60
+	cap = clampi(cap, 30, 120)
+	return 1000.0 / float(cap)
+
+
+func _storyboard_layout(view_size: Vector2) -> Dictionary:
+	var field := _storyboard_field_width()
+	# 绘制节点就是安全框：按高度缩放，场心 320,240 对齐自己的中心。
+	var scale := view_size.y / Storyboard.FIELD_HEIGHT
+	var field_center := Vector2(Storyboard.FIELD_WIDTH, Storyboard.FIELD_HEIGHT) * 0.5
+	var offset := view_size * 0.5 - field_center * scale
+	return {"scale": scale, "offset": offset}
+
+
+## osu 的宽屏故事板是 854x480，普通的是 640x480；用错会让整张图右移 107 单位。
+func _storyboard_field_width() -> float:
+	var chart := get_chart()
+	if chart != null and bool(chart.metadata.get("widescreen", false)):
+		return Storyboard.FIELD_WIDTH_WIDE
+	return Storyboard.FIELD_WIDTH_WIDE if _sb_wide_detected else Storyboard.FIELD_WIDTH
+
+
+## 老谱面导入时没存 WidescreenStoryboard：按内容猜一次。
+## 854 场的故事板一定有 x > 640 的元素（4:3 的不会超过 640）。
+## 老谱面导入时没存 WidescreenStoryboard：按内容猜一次。
+## 注意解析后的命令名是 move/x，不是文件里的 M/MX；只查大写字母会永远判成 4:3，
+## 结果试玩按 640×480 裁、把宽屏故事板两侧切掉。
+static func _detect_wide(board: Storyboard) -> bool:
+	for sprite in board.sprites:
+		if sprite.pos.x > 641.0 or sprite.pos.x < -1.0:
+			return true
+		for command in sprite.commands:
+			if command.kind_name in ["move", "x"]:
+				for side in [command.from, command.to]:
+					if side.size() > 0 and (float(side[0]) > 641.0 or float(side[0]) < -1.0):
+						return true
+			# shortcut: 没有 WidescreenStoryboard 的旧谱只能猜。
+			# 宽屏故事板用 2×2 白点 + V 拉到 427（=854 设计宽）；4:3 的会拉 320。
+			if command.kind_name == "vector":
+				for side in [command.from, command.to]:
+					if side.size() > 0 and float(side[0]) > 400.0:
+						return true
+	return false
+
+
+##
+## Background/Fail/Pass 在判定环下面，用一层黑色遮罩；
+## Foreground/Overlay 在判定环上面，加黑色遮罩会把环也一起压掉，
+## 所以这三层改成把自身颜色乘暗（self_modulate），只影响故事板自己的像素。
+func draw_storyboard_background(canvas: Control) -> void:
+	var chart := get_chart()
+	if chart == null:
+		return
+	_draw_storyboard_layers(canvas, chart, get_time_beat(), ["Video", "Background", "Fail", "Pass"], false)
+
+
+## 背景层的加色元素（粒子 / 光晕）。
+func draw_storyboard_additive_background(canvas: Control) -> void:
+	var chart := get_chart()
+	if chart == null:
+		return
+	_draw_storyboard_layers(canvas, chart, get_time_beat(), ["Video", "Background", "Fail", "Pass"], true)
+
+
+## Foreground 层：判定环之上、音符之下。
+func draw_storyboard_front(canvas: Control) -> void:
+	var chart := get_chart()
+	if chart == null:
+		return
+	_draw_storyboard_layers(canvas, chart, get_time_beat(), ["Foreground"], false)
+
+
+## Overlay 层：压在音符上面。
+func draw_storyboard_overlay(canvas: Control) -> void:
+	var chart := get_chart()
+	if chart == null:
+		return
+	_draw_storyboard_layers(canvas, chart, get_time_beat(), ["Overlay"], false)
+
+
+## 前景的加色元素。
+func draw_storyboard_additive_front(canvas: Control) -> void:
+	var chart := get_chart()
+	if chart == null:
+		return
+	_draw_storyboard_layers(canvas, chart, get_time_beat(), ["Foreground", "Overlay"], true)
+
+
+## osu! storyboard 图层：按图层名过滤后绘制。
+func _draw_storyboard_layers(canvas: Control, chart: Chart, t: float, layers: Array, additive_only: bool = false) -> void:
+	if not show_storyboard:
+		return
+	_ensure_storyboard(chart)
+	if _storyboard == null:
+		return
+	var skip_background := not show_storyboard_background
+	var ms := chart.timing.beat_to_chart_ms(t) - chart.offset_ms
+	if absf(ms - _sb_sample_ms) >= maxf(0.0001, _sb_sample_interval):
+		_sb_sample_ms = ms
+		_sb_render_items = _storyboard.sample(ms)
+		_sb_layer_items.clear()
+		_sb_additive_layer_items.clear()
+		for entry in _sb_render_items:
+			var key := String(entry["layer"])
+			var target := _sb_additive_layer_items if bool(entry.get("additive", false)) else _sb_layer_items
+			if not target.has(key):
+				target[key] = []
+			(target[key] as Array).append(entry)
+	var view_size := canvas.size
+	var layout := _storyboard_layout(view_size)
+	var scale: float = layout["scale"]
+	var offset: Vector2 = layout["offset"]
+	var source: Dictionary = _sb_additive_layer_items if additive_only else _sb_layer_items
+	for layer_name in layers:
+		var group: Array = source.get(layer_name, [])
+		if skip_background and (layer_name == "Background" or layer_name == "Video"):
+			continue
+		for item in group:
+			var tex_path := String(item["path"])
+			var full := _storyboard_dir + "/" + tex_path.get_file()
+			var texture: Texture2D = _tex_cache.get(full)
+			if texture == null:
+				_request_texture(full)
+				continue
+			var sprite_size := Vector2(texture.get_width(), texture.get_height())
+			var anchor := _storyboard_anchor(int(item["origin"]), sprite_size)
+			var pos: Vector2 = offset + (item["pos"] as Vector2) * scale
+			var sprite_scale: Vector2 = item["scale"] * scale * float(_tex_boost.get(full, 1.0))
+			var rotation := deg_to_rad(float(item["rotation"]))
+			# 屏幕外的 sprite 直接丢掉：storyboard 里数百张图会一直“可见”，
+			# 大部分已经被 M 命令挪出画面，不剔除的话每帧白画几百次。
+			var local_center := sprite_size * 0.5 - anchor
+			var world_center := pos + local_center.rotated(rotation) * sprite_scale
+			var radius := local_center.length() * maxf(sprite_scale.x, sprite_scale.y) + 4.0
+			if world_center.x + radius < 0.0 or world_center.y + radius < 0.0 \
+					or world_center.x - radius > view_size.x or world_center.y - radius > view_size.y:
+				continue
+			var colour := storyboard_item_colour(item, sprite_size, sprite_scale, view_size)
+			canvas.draw_set_transform(pos, rotation, sprite_scale)
+			canvas.draw_texture(texture, -anchor, colour)
+			canvas.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+
+## 故事板对象的最终颜色（画布和预览必须共用这一份，否则两边观感对不上）。
+## osu 里 P,A 是真正的加色；这里统一压到 35%，否则几百张全屏图叠加会把画面刷白。
+## shortcut: 加色统一 0.35 增益，osu 精确混合后再调；等有人反馈“闪光不够亮”再改。
+static func storyboard_item_colour(item: Dictionary, sprite_size: Vector2, sprite_scale: Vector2, canvas_size: Vector2) -> Color:
+	var colour: Color = item["colour"]
+	if colour.r > 0.94 and colour.g > 0.94 and colour.b > 0.94:
+		# 2x2 的白点放大铺满屏幕：原本是纯白遮罩，按纯白画会在转场时刺眼。
+		if sprite_size.x * sprite_size.y <= 16.0 and sprite_scale.x > canvas_size.x * 0.5:
+			colour = Color(0.0, 0.0, 0.0, colour.a)
+	colour.a = clampf(float(item["alpha"]), 0.0, 1.0) * colour.a
+	if bool(item.get("additive", false)):
+		colour.a *= 0.35
+	return colour
+
+
+static func _storyboard_anchor(origin: int, sprite_size: Vector2) -> Vector2:
+	match origin:
+		0:
+			return Vector2.ZERO
+		1:
+			return Vector2(sprite_size.x * 0.5, 0.0)
+		2:
+			return Vector2(sprite_size.x, 0.0)
+		3:
+			return Vector2(0.0, sprite_size.y * 0.5)
+		4:
+			return sprite_size * 0.5
+		5:
+			return Vector2(sprite_size.x, sprite_size.y * 0.5)
+		6:
+			return Vector2(0.0, sprite_size.y)
+		7:
+			return Vector2(sprite_size.x * 0.5, sprite_size.y)
+		8:
+			return sprite_size
+	return Vector2.ZERO
 
 
 func _draw_flat_stage(canvas: Control, chart: Chart, t: float) -> void:
@@ -2356,20 +3014,28 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 			# 不再缩成细线，否则多条星先后出现时后一条完全读不出路径。
 			var path_band := float(_skin()["band"])
 			var band_width := 5.0 * PATH_SIZE_SCALE * ns * path_band
-			canvas.draw_polyline(piece, Color(0, 0, 0, 0.50 * trail_dim), band_width + 4.0, false)
-			canvas.draw_polyline(piece, Color(accent.r, accent.g, accent.b, 0.95 * trail_dim), band_width, false)
-			# 箭头链也画在所有星上：后面的星和前面的星同形，只靠 dim 压暗。
-			var piece_length := 0.0
-			for i in piece.size() - 1:
-				piece_length += piece[i].distance_to(piece[i + 1])
-			var chevron_cap := 10 if visible_count < 4 else (8 if visible_count < 8 else 6)
-			var chevron_count := clampi(int(piece_length / maxf(40.0, 52.0 * ns)), 2, chevron_cap)
-			for k in chevron_count:
-				var fraction := (float(k) + 0.5) / float(chevron_count)
+			# 同押（同屏还有别的 path）时先垫一圈白描边，重叠加起来的带子才数得清。
+			if visible_count > 1:
+				canvas.draw_polyline(piece, Color(1, 1, 1, 0.34 * trail_dim), band_width * 1.7 + 8.0, false)
+			canvas.draw_polyline(piece, Color(0, 0, 0, 0.55 * trail_dim), band_width * 1.7 + 4.0, false)
+			if path_style == "ribbon":
+				# B 半透明丝带：宽而透的身体 + 一道亮边（Arcaea 式）。
+				canvas.draw_polyline(piece, Color(accent.r, accent.g, accent.b, 0.40 * trail_dim), band_width * 1.55, false)
+				canvas.draw_polyline(piece, Color(accent.r, accent.g, accent.b, 0.95 * trail_dim), band_width * 0.42, false)
+			else:
+				# A 粗 chevron 履带：实心带 + 内部箭头纹，方向一眼可读。
+				canvas.draw_polyline(piece, Color(accent.r, accent.g, accent.b, 0.95 * trail_dim), band_width * 1.7, false)
+				_draw_tread_marks(canvas, piece, band_width * 1.7, Color(0.04, 0.05, 0.08, 0.45 * trail_dim))
+			# 方向箭头：丝带靠它读方向；履带本身已经带纹，只在远处留少量箭头。
+			var chevron_size := 12.0 * ns * PATH_SIZE_SCALE
+			var chevron_spacing := maxf(36.0, chevron_size * 2.3)
+			if path_style == "tread":
+				chevron_spacing *= 2.2
+			for fraction in chevron_fractions(piece, chevron_spacing, chevron_size * 1.9):
 				var sample: Dictionary = _polyline_sample(piece, fraction)
 				# 试玩时轨迹已经被擦到光标处，剩下的每一段都在前方，不该再按“piece 内比例”压暗。
 				var chevron_color := future if playtest_mode else (passed if fraction < progress else future)
-				_draw_chevron(canvas, sample["point"], sample["direction"], chevron_color, 12.0 * ns * PATH_SIZE_SCALE)
+				_draw_chevron(canvas, sample["point"], sample["direction"], chevron_color, chevron_size)
 	var selected_note: Note = _app.get_selected_note() if _app != null else null
 	var selected := selected_note != null and selected_note.id == note.id
 	if selected:
@@ -2403,6 +3069,28 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 	var tail := _path_screen_point(chart, note, total, t, true, 1.0)
 	# 尾点倒计时环：距尾判定 2 拍内从大圈收到尾环，贴合时正是尾判定时刻。
 	# 多条星同时在场时，环先缩满的那条就是要先划完的。
+	if _valid_point(tail) and trail_fade > 0.01 and end_fade > 0.01:
+		# 终点端子：圆头短杠收住轨迹，密集时不会被误读成另一条的起点。
+		var dir := (tail - _path_screen_point(chart, note, total - 0.05, t, true, 1.0)).normalized()
+		if dir.length_squared() < 0.1:
+			dir = Vector2.UP
+		var normal := Vector2(-dir.y, dir.x)
+		var half := 7.0 * ns * PATH_SIZE_SCALE
+		var cap_a := tail + normal * half
+		var cap_b := tail - normal * half
+		canvas.draw_line(cap_a, cap_b, Color(0, 0, 0, 0.55 * trail_dim), 7.0 * ns)
+		canvas.draw_line(cap_a, cap_b, Color(accent.r, accent.g, accent.b, 0.95 * trail_dim), 4.0 * ns)
+		canvas.draw_circle(cap_a, 2.4 * ns, Color(accent.r, accent.g, accent.b, 0.95 * trail_dim))
+		canvas.draw_circle(cap_b, 2.4 * ns, Color(accent.r, accent.g, accent.b, 0.95 * trail_dim))
+		# 多颗星同时在场时，终点再补 3 个反向箭头：一眼看出这条往哪儿结束。
+		if visible_count > 1:
+			for k in 3:
+				var at := tail - dir * float(k + 1) * 11.0 * ns
+				_draw_chevron(canvas, at, -dir, Color(1, 1, 1, 0.75 * trail_dim), 9.0 * ns)
+	if _valid_point(ring_head) and t >= spawn_beat and fall_progress < 1.0:
+		# 发车环：星头落到环上之前，一圈由大到小收进来。
+		var head_ring := lerpf(46.0, 13.0, clampf(fall_progress, 0.0, 1.0)) * ns
+		canvas.draw_arc(ring_head, head_ring, 0.0, TAU, 32, Color(1, 1, 1, 0.55 * trail_fade * end_fade), 2.2, false)
 	if _valid_point(tail) and t >= note.beat - 0.15:
 		var remain := note.end_beat - t
 		if remain <= 2.0 and remain > -end_span:
@@ -3187,7 +3875,7 @@ func _draw_holds(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 	var next_lead := INF
 	for note in visible:
 		var state := note_state(note.id)
-		var tint := _note_tint(note, UITheme.GOLD)
+		var tint := _note_tint(note, UITheme.HOLD)
 		var fade_beats := end_fade_beats(chart.timing.bpm_at(note.beat))
 		var fade := 1.0
 		if state == "hit":
@@ -3470,7 +4158,7 @@ func _draw_player_cursor(canvas: Control) -> void:
 		canvas.draw_circle(point, radius, Color(accent.r, accent.g, accent.b, 0.26 * life))
 		canvas.draw_circle(point, radius * 0.45, Color(1, 1, 1, 0.16 * life))
 	var m := mouse_screen
-	var spin := Time.get_ticks_msec() / 1000.0 * 2.2
+	var spin := _anim_ms() / 1000.0 * 2.2
 	canvas.draw_circle(m, 27.0 * cs, Color(accent.r, accent.g, accent.b, 0.035))
 	canvas.draw_circle(m, 20.0 * cs, Color(accent.r, accent.g, accent.b, 0.06))
 	canvas.draw_arc(m, 19.5 * cs, spin, spin + PI * 0.85, 22, Color(accent.r, accent.g, accent.b, 0.72), 1.7 * cs, false)
@@ -3487,6 +4175,14 @@ func _draw_player_cursor(canvas: Control) -> void:
 		canvas.draw_string(UITheme.mono_font(), m + Vector2(18, -16), "环外", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, UITheme.MUTED)
 
 
+## 装饰动画的时钟：用谱面时间而不是墙钟，否则同一份 replay 两次导出像素不同。
+func _anim_ms() -> float:
+	var chart := get_chart()
+	if chart == null:
+		return 0.0
+	return chart.timing.beat_to_chart_ms(get_time_beat())
+
+
 func request_redraw() -> void:
 	_mesh_dirty = true
 	if _overlay != null:
@@ -3497,8 +4193,9 @@ func add_hit_pulse(point: Vector2, color: Color, label: String = "HIT", kind: St
 	if not _valid_point(point):
 		return
 	var sparks: Array[float] = []
+	# 固定螺旋角：导出要逐帧可复现，不能用全局随机源。
 	for i in 6:
-		sparks.append(randf_range(0.0, TAU))
+		sparks.append(fposmod(float(i) * 2.399963 + point.x * 0.017 + point.y * 0.031, TAU))
 	# 同一位置连续判定时把文字错开，避免完全叠在一起。
 	var stack := 0
 	for other in _pulses:
@@ -4123,14 +4820,13 @@ func _draw_play_hud(canvas: Control, chart: Chart, t: float) -> void:
 	var margin := 14.0 * s
 	var bold := UITheme.bold_font()
 	var mono := UITheme.mono_font()
-	var center := project_design(Vector2.ZERO)
-	if not _valid_point(center):
-		center = bounds * 0.5
+	var layout := _hud_layout()
+	var center: Vector2 = layout["center"]
 	var accuracy := hud_accuracy
 	var progress := clampf(t / maxf(1.0, chart.duration_beats()), 0.0, 1.0)
 	_draw_ring_gauge(canvas, progress, accuracy, s, op)
 	# 舞台外圈刻度大约在判定环的 1.19×；HUD 再退到 1.2×，避免压到装饰环。
-	var ring_r := _hud_ring_radius(t) * 1.2
+	var ring_r: float = float(layout["ring"]) * 1.2
 	var gap := 20.0 * s
 	var side := minf(center.x, bounds.x - center.x) - ring_r - margin - gap
 	var col_w := clampf(side, 90.0 * s, 320.0 * s)
@@ -4205,7 +4901,57 @@ func _draw_hud_score_column(canvas: Control, x: float, col_w: float, center_y: f
 
 
 ## 环的横向像素半径（取进度带所在的那一圈）；侧栏据此贴住环的切线。
+## HUD 左右列要贴着环，但相机带鼠标倾斜/视差，同一帧的投影会有几个 % 的漂移，
+## 直接用当帧投影会让「曲名省略成几个字」跟着鼠标来回跳。
+## 按「设计半径 + 视口尺寸」缓存一次布局：尺寸不变就不重算。
+var _hud_layout_cache: Dictionary = {}
+
+
+func _hud_layout() -> Dictionary:
+	var key := "%d|%dx%d|%s" % [int(_max_design_radius), roundi(size.x), roundi(size.y), _last_view_key]
+	if _hud_layout_cache.has(key):
+		return _hud_layout_cache[key]
+	var center := project_design(Vector2.ZERO)
+	if not _valid_point(center):
+		center = size * 0.5
+	var ring := _hud_ring_radius(0.0)
+	if ring <= 1.0:
+		ring = minf(size.x, size.y) * 0.44
+	var layout := {"center": center, "ring": ring}
+	# 只留一份：换谱面 / 改窗口尺寸会生成新 key，旧的直接丢掉。
+	_hud_layout_cache = {key: layout}
+	return layout
+
+
+## 诊断/测试用：HUD 左右列相对环心与半径的位置（单位 px）。
+## 和 _draw_play_hud 用同一组常数，改了那边要同步改这里。
+func hud_metrics() -> Dictionary:
+	var bounds := size
+	var hs := clampf(bounds.y / 900.0, 0.8, 1.8)
+	var s := hs * clampf(float(hud_options.get("scale", 100)) / 100.0, 0.5, 2.0)
+	var margin := 14.0 * s
+	var layout := _hud_layout()
+	var center: Vector2 = layout["center"]
+	var ring_r: float = float(layout["ring"]) * 1.2
+	var gap := 20.0 * s
+	var side := minf(center.x, bounds.x - center.x) - ring_r - margin - gap
+	var col_w := clampf(side, 90.0 * s, 320.0 * s)
+	return {
+		"size": bounds,
+		"s": s,
+		"gap": gap,
+		"center": center,
+		"live_center": project_design(Vector2.ZERO),
+		"ring": ring_r,
+		"live_ring": _hud_ring_radius(0.0) * 1.2,
+		"left_edge": center.x - ring_r - gap,
+		"right_edge": center.x + ring_r + gap,
+		"col_w": col_w,
+	}
+
+
 func _hud_ring_radius(t: float) -> float:
+	_ensure_design_radius(get_chart())
 	if _max_design_radius > 0.0:
 		var affine := _screen_affine()
 		return _max_design_radius * (affine[1] as Vector2).length()
@@ -4287,7 +5033,7 @@ func _draw_rank_chip(canvas: Control, right_x: float, top_y: float, rank: String
 
 ## 连击：≥2 才出现；命中轻微放大，断连变红、下沉、淡出。
 func _draw_combo(canvas: Control, font: Font, anchor: Vector2, s: float, base_px: float, align: int, op: float) -> void:
-	var now := Time.get_ticks_msec()
+	var now := int(_anim_ms())
 	if hud_combo > _hud_combo_prev:
 		_hud_combo_pop_at = now
 	elif hud_combo < _hud_combo_prev and _hud_combo_prev >= 2:
@@ -4391,7 +5137,7 @@ func _draw_debug(canvas: Control, chart: Chart, t: float) -> void:
 	canvas.draw_string(mono, Vector2(18, 28), "u %.2f°  |  beat %.2f" % [cursor_u * 360.0, t], HORIZONTAL_ALIGNMENT_LEFT, -1, 11, UITheme.INK)
 	canvas.draw_string(mono, Vector2(18, 44), "time %.0f ms  |  %s" % [chart.timing.beat_to_chart_ms(t), "有效" if cursor_valid else "无位置"], HORIZONTAL_ALIGNMENT_LEFT, -1, 11, UITheme.MUTED)
 	canvas.draw_string(mono, Vector2(18, 60), "shape %s  |  zoom %.2f" % [chart.default_shape_id, float(current_view().get("zoom", 1.0))], HORIZONTAL_ALIGNMENT_LEFT, -1, 11, UITheme.MUTED)
-	canvas.draw_string(mono, Vector2(18, 76), "branch 0  |  D %.0f ms ×%.2f  |  %d fps" % [chart.pre_read_ms, flow_scale, Engine.get_frames_per_second()], HORIZONTAL_ALIGNMENT_LEFT, -1, 11, UITheme.MUTED)
+	canvas.draw_string(mono, Vector2(18, 76), "branch 0  |  fall %.0f ms ×%.2f  |  %d fps" % [_pre_read_ms(chart, t), flow_scale, Engine.get_frames_per_second()], HORIZONTAL_ALIGNMENT_LEFT, -1, 11, UITheme.MUTED)
 	for i in 12:
 		var u := float(i) / 12.0
 		var p := project_u(u, t)
@@ -4425,6 +5171,61 @@ func _draw_arrowhead(canvas: Control, point: Vector2, direction: Vector2, color:
 		point - dir * 5.0 - normal * 5.0,
 	])
 	canvas.draw_colored_polygon(points, color)
+
+
+## 方向箭头按「固定弧长间隔」排布：所有 Path 共用同一个间距；
+## 折得很厉害的轨迹（锯齿 / 来回折返）弧长很长但占的面积很小，
+## 再按屏幕距离去一次重，避免同一片区域堆一堆箭头。
+## 返回 0..1 的相对长度比例，调用方按比例取点画箭头。
+static func chevron_fractions(points: PackedVector2Array, spacing: float, min_gap: float) -> Array[float]:
+	var fractions: Array[float] = []
+	if points.size() < 2 or spacing <= 0.1:
+		return fractions
+	var lengths: Array[float] = []
+	var total := 0.0
+	for i in points.size() - 1:
+		var span := points[i].distance_to(points[i + 1])
+		lengths.append(span)
+		total += span
+	if total < spacing * 0.9:
+		return fractions
+	# 性能上限：箭头上限是 48 只；超出时整体把间距拉开，
+	# 而不是只铺满前面一段（否则长轨迹会在中途突然没有箭头）。
+	var wanted := maxi(1, int(total / spacing))
+	var count := mini(wanted, 48)
+	var step := total / float(count)
+	var placed: Array[Vector2] = []
+	for k in count:
+		var target := (float(k) + 0.5) * step
+		var cursor := 0.0
+		var spot := points[0]
+		for i in lengths.size():
+			if cursor + lengths[i] >= target:
+				var q := 0.0 if lengths[i] <= 0.0001 else (target - cursor) / lengths[i]
+				spot = points[i].lerp(points[i + 1], q)
+				break
+			cursor += lengths[i]
+		var crowded := false
+		for previous in placed:
+			if previous.distance_to(spot) < min_gap:
+				crowded = true
+				break
+		if crowded:
+			continue
+		placed.append(spot)
+		fractions.append(clampf(target / total, 0.0, 1.0))
+	return fractions
+
+
+## 履带纹：沿轨迹按固定弧长盖一串暗色 V 纹，读方向、也把实心带区分成“一节一节”。
+func _draw_tread_marks(canvas: Control, piece: PackedVector2Array, width: float, color: Color) -> void:
+	if piece.size() < 2 or width < 3.0:
+		return
+	var spacing := maxf(10.0, width * 0.75)
+	var size := width * 0.42
+	for fraction in chevron_fractions(piece, spacing, spacing * 0.8):
+		var sample: Dictionary = _polyline_sample(piece, fraction)
+		_draw_chevron(canvas, sample["point"], sample["direction"], color, size)
 
 
 func _draw_chevron(canvas: Control, point: Vector2, direction: Vector2, color: Color, size: float) -> void:
@@ -4538,7 +5339,7 @@ func _draw_diamond(canvas: Control, point: Vector2, radius: float, color: Color)
 func _draw_bell(canvas: Control, chart: Chart, note: Note, t: float) -> void:
 	var q := lerpf(Note.SPAWN_LENGTH_RATIO, 1.0, _approach(chart, note.beat, t))
 	var half := BELL_BAND_HALF * _note_scale() * float(_skin()["scale"])
-	var breathe := 0.5 + 0.5 * sin(float(Time.get_ticks_msec()) / 1000.0 * 2.4)
+	var breathe := 0.5 + 0.5 * sin(_anim_ms() / 1000.0 * 2.4)
 	# 和 Tap / Hold 同一套语言：白色外壳 + 彩色核心，两端圆头。
 	_bell_capsule(canvas, note, t, q, -half - 5.0, half + 5.0,
 		Color(UITheme.KEY_YELLOW.r, UITheme.KEY_YELLOW.g, UITheme.KEY_YELLOW.b, 0.07 + 0.05 * breathe))
@@ -4734,6 +5535,13 @@ func note_head_screen(note: Note, beat: float) -> Vector2:
 	return _flying_position(chart, note.angle, note.beat, beat, _star_fall_beats(chart, beat))
 
 
+## Path 头在环上的落点弧（宽度 = note.width 度）。
+## 判定按整段弧给点，不能只认弧中点：红弧两端到中点的距离远超容差，
+## 玩家点在“看起来就是目标”的弧上却吃 MISS。
+func path_head_arc(note: Note, beat: float, pad: float = 0.0) -> PackedVector2Array:
+	return note_band_points(note.angle, note.width + pad, beat, 1.0)
+
+
 ## 音符图形自身的屏幕半径（位置判定容差用）。
 func note_graphic_radius(kind: String) -> float:
 	var ns := _note_scale() * float(_skin()["scale"])
@@ -4754,7 +5562,7 @@ func _design_radius_to_screen(point: Vector2, radius: float) -> float:
 ## 变 BPM 时同一个预读在拍号上会变宽/变窄，按拍号取窗口会让音符提前进/提前出；
 ## 这里先把 t±pre_ms 换成拍号，窗口在时间上永远是同一个长度。
 func _notes_around(chart: Chart, t: float, back: float = 0.0, ahead: float = 0.0) -> Array[Note]:
-	var pre_ms := _pre_read_ms(chart)
+	var pre_ms := _pre_read_ms(chart, t)
 	var t_ms := chart.timing.beat_to_chart_ms(t)
 	var from_beat := chart.timing.chart_ms_to_beat(t_ms - pre_ms) - back
 	var to_beat := chart.timing.chart_ms_to_beat(t_ms + pre_ms) + ahead

@@ -3,6 +3,8 @@ extends Control
 
 signal exit_requested
 signal settings_requested
+## 结算页点「回放本局」时把本局录制发出去，由主场景重开一局回放。
+signal replay_requested(data: Replay)
 signal playtest_settings_requested
 
 const PERFECT_MS := 65.0
@@ -54,6 +56,9 @@ const TAIL_GOOD_MS := 350.0
 const TAIL_EXT_MAX_MS := 366.6667
 ## 位置判定：鼠标到音符图形边缘外还有这么多像素也算命中。
 ## Tap / Hold 头 / Path 头 / Anchor 共用这一把尺子（再各自加上图形半径）。
+## 瞄准辅助：像素距离超了，但鼠标落在音符角度 ±12° 内也算命中
+## （环形谱上角度比像素更贴近“我瞄准了它”，斜着挪鼠标也能打上）。
+const AIM_ANGLE_TOLERANCE_DEG := 12.0
 const POSITION_TOLERANCE_PX := 120.0
 ## 光标离图形中线这么近就算“指着这颗”：分配按键时优先于时间更近的邻键。
 const ON_SHAPE_PX := 20.0
@@ -105,7 +110,10 @@ var _loaded_audio: AudioStream = null
 var _audio_stream_rate: float = 1.0
 ## 时间轴退到音频 0 秒之前时，音频要等这么久再起播（ms）。
 var _audio_delay_ms: float = 0.0
-const COUNTDOWN_SEC := 2.0
+## 准备阶段的倒计时 = 开头这一小节（拍号拍数），滴答落在拍上，最后一拍就是第一颗音符。
+var _countdown_sec: float = 2.0
+var _countdown_beats: int = 4
+var _countdown_bpm: float = 120.0
 var _ready_layer: Control = null
 var _ready_phase: String = "idle"     # load / fill / countdown / done
 var _ready_progress: float = 0.0
@@ -134,6 +142,8 @@ var _slow_windows: int = 0
 ## 每个键上一次按下的时间，用来吃掉手抖双击。
 var _last_press_ms: Dictionary = {}
 var _keys_held: Dictionary = {}
+## 每个键最后一次松手的时刻（录制/回放都写）：Hold 尾判用它而不是「发现松手的这一帧」。
+var _release_ms: Dictionary = {}
 var _red_states: Dictionary = {}
 
 var _hit_count: int = 0
@@ -161,6 +171,42 @@ var _path_motion_samples: Array[Dictionary] = []
 var path_input_logging := true
 var _path_input_log: FileAccess
 var _path_input_log_path := ""
+## 回放：录制本局输入；播放时把录制的事件按时间喂回同一套判定。
+var _record: Replay = null
+var _recording: bool = false
+var replay_source: Replay = null
+var replay_mode: bool = false
+var _replay_events: Array = []
+var _replay_index: int = 0
+var _replay_ms: float = 0.0
+var _replay_cursor: Vector2 = Vector2.INF
+## replay 里的光标坐标系：v2 = 0..1 归一化，v1 = 录制窗口像素。
+var _replay_coords := Replay.COORDS_PIXELS
+var _replay_recorded_size := Vector2.ZERO
+var _record_offset: float = 0.0
+## 回放用录制里的 offset 序列，不去动用户的设置。
+var _offset_override: float = NAN
+## 回放快慢（1.0 = 原速）。只影响画面，不影响判定。
+var replay_rate: float = 1.0
+## seek 重算的时间步长：太小慢，太大会让路径判定丢采样。
+const SEEK_STEP_MS := 16.0
+## 回放的起点/终点（chart ms），进度条按这个区间算比例。
+var _replay_start_ms: float = 0.0
+var _replay_start_offset: float = 0.0
+var _replay_total_ms: float = 0.0
+## seek 会重跑几千步判定，期间静音。
+var _sim_silent: bool = false
+## 离线导出：时间由导出器按帧号推进，不读音频时钟、不放声音、不结算。
+var offline_mode: bool = false
+## 离线导出时非 null：收集打击音事件（t 为谱面 ms），导出器混进音轨。
+var sfx_capture: Variant = null
+var offline_ms: float = 0.0
+var _replay_seeking: bool = false
+var _replay_bar: Control = null
+var _replay_slider: HSlider = null
+var _replay_play_button: Button = null
+var _replay_exit_button: Button = null
+var _replay_time_label: Label = null
 const AUTO_LEAD_MS := 8.0              # 比判定时间早这么多就按下（吃掉帧量化误差）
 const AUTO_RELEASE_MS := 60.0          # Hold 尾判之后再松手，避免被判成提前松开
 const AUTO_PREVIEW_MS := 900.0         # 光标提前多久开始预判下一个要点
@@ -194,6 +240,28 @@ var _judge_ms_now: float = 0.0
 var _bias_label: Label
 ## 结算页：把本局平均偏差写进这张谱面的 offset（一次修一张，别的谱面不受影响）。
 var _apply_bias_button: Button
+## 结算页：重放本局录制。
+var _replay_button: Button
+## 截帧按当前窗口分辨率来，
+## 成品统一缩到 720p：缩小等于超采样，比直接低分辨率渲染更清楚。
+const EXPORT_VIDEO_SIZE := Vector2i(1280, 720)
+## 逐帧截取的帧率；视频时间轴 = 帧号 / 帧率。
+var _export_button: Button
+var _export_replay_button: Button
+## 静默视频导出（SubViewport 逐帧 → ffmpeg 管道，无音轨、优先硬件编码）。
+var _export_video_button: Button = null
+var _video_dialog: FileDialog = null
+var _video_options: AcceptDialog = null
+var _video_size_option: OptionButton = null
+var _video_fps_option: OptionButton = null
+var _video_warning: Label = null
+var _video_export: VideoExport = null
+var _video_progress: AcceptDialog = null
+var _video_bar: ProgressBar = null
+## 导出回放文件（.replay，gzip JSON；仿 osu 的 .osr）。
+var _replay_export_dialog: FileDialog = null
+var _toast_label: Label = null
+var _toast_tween: Tween = null
 ## 暂停菜单（ESC）。
 var _pause_overlay: Control = null
 var _pause_status: Label
@@ -226,6 +294,8 @@ func _sync_sfx_style() -> void:
 func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	_close_path_input_log()
 	_source_chart = p_chart
+	# 回放自带录制时的镜像：不能沿用「当前设置」，否则镜像局回放/导出的音符和输入全对不上。
+	mirror_mode = replay_mirror(replay_source, mirror_mode, p_chart)
 	chart = p_chart.mirrored_copy(mirror_mode) if p_chart != null else null
 	start_beat = p_start_beat
 	chart_path = p_chart_path
@@ -243,7 +313,7 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	if _pause_overlay != null:
 		_pause_overlay.visible = false
 	var flow := float(_app.flow_scale if _app != null else 1.0)
-	var pre_ms := chart.pre_read_ms / maxf(0.1, flow)
+	var pre_ms := chart.note_fall_ms() / maxf(0.05, flow)
 	# 从读头起手时也先退一个预读 + 0.5s；倒计时结束后第一颗音符不会贴脸。
 	_timeline_start_beat = timeline_start_beat(chart, start_beat, pre_ms)
 	_timeline_start_ms = chart.timing.beat_to_chart_ms(_timeline_start_beat)
@@ -257,6 +327,7 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	_preview.custom_cursor_visible = true
 	_preview.show_hud = true
 	_preview.use_3d_ring = true
+	# 环随鼠标倾斜（远端原版：绕 X/Y 旋转 + 环心轻微平移）。
 	_preview.mouse_tilt = true
 	_preview.show_debug = false
 	_preview.flow_scale = flow
@@ -275,16 +346,25 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	if _app != null:
 		_preview.note_detail_fine = bool(_app.note_detail_fine)
 		_preview.note_glow = bool(_app.note_glow)
+		_preview.path_style = String(_app.path_style)
 		_preview.cursor_trail_mode = String(_app.cursor_trail)
 		_preview.fx_budget = String(_app.fx_budget)
 		_preview.ring_3d_scale = String(_app.ring_3d_scale)
 		_preview.ring_3d_hz = int(_app.ring_3d_hz)
 		_preview.bar_lines_visible = bool(_app.bar_lines)
-		_preview.set_background_brightness(float(_app.background_brightness) / 100.0)
 		_preview.apply_ring_quality()
 	_preview.auto_cursor = Vector2.INF
 	if auto_play:
 		_preview.auto_cursor = _preview.project_design(Vector2.ZERO)
+	if replay_source != null:
+		_enter_replay(replay_source)
+	elif auto_play and offline_mode:
+		# 离线 AUTO 也把合成输入记下来，让「自动演奏」和「回放」走同一套画面。
+		_record = Replay.new()
+		_record.coords = Replay.COORDS_UNIT
+		_record.chart_path = chart_path
+	elif _app != null and not offline_mode:
+		_start_recording()
 	Input.set_use_accumulated_input(false)
 	# 关键：先把 3D 环/音符画在时间轴起点并显示准备层，让玩家看到加载/READY，
 	# 再读音频；音频解码可能阻塞一两百毫秒，正好藏在这一层后面。
@@ -295,7 +375,11 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	_preview.prepare_playtest_frame(_timeline_start_beat, 0.0)
 	modulate.a = 1.0
 	# 无头测试/无头基准直接开打：没有屏幕可看，倒计时只会拖慢用例。
-	if DisplayServer.get_name() == "headless":
+	# 回放同样不倒计时：没有「准备」这回事，点了就直接开演。
+	if offline_mode:
+		_start_play()
+		return
+	if DisplayServer.get_name() == "headless" or replay_mode:
 		await _prepare_audio()
 		_open_path_input_log()
 		_start_play()
@@ -346,8 +430,22 @@ func _start_play() -> void:
 	_ready_phase = "done"
 	_ready_layer.visible = false
 	_running = true
+	if offline_mode:
+		_sim_silent = true
+		return
 	_start_audio()
 	Input.set_mouse_mode(Input.MOUSE_MODE_HIDDEN)
+
+
+func _start_countdown() -> void:
+	# 用开始拍所在小节的拍号与 BPM：4/4 就是 4 拍，滴答和歌曲同一拍速。
+	_countdown_beats = maxi(2, chart.timing.beats_per_bar_at(start_beat))
+	_countdown_bpm = maxf(20.0, chart.timing.bpm_at(start_beat))
+	_countdown_sec = float(_countdown_beats) * 60.0 / _countdown_bpm
+	_countdown_left = _countdown_sec
+	_ready_phase = "countdown"
+	_tick_index = 0
+	_play_tick(_countdown_beats)
 
 
 func _process_ready(delta: float) -> void:
@@ -360,18 +458,17 @@ func _process_ready(delta: float) -> void:
 	if _ready_phase == "fill":
 		_ready_progress = minf(1.0, _ready_progress + delta / maxf(0.05, _ready_delay))
 		if _ready_progress >= 1.0:
-			_ready_phase = "countdown"
-			_countdown_left = COUNTDOWN_SEC
-			_tick_index = 3
-			_play_tick(3)
+			_start_countdown()
 		_ready_layer.queue_redraw()
 		return
 	if _ready_phase == "countdown":
 		_countdown_left = maxf(0.0, _countdown_left - delta)
-		var n := countdown_number(_countdown_left, COUNTDOWN_SEC)
-		if n != _tick_index:
-			_tick_index = n
-			_play_tick(n)
+		# 滴答按拍走：elapsed 跨过第 k 拍就响一次，最后一拍正好是 GO。
+		var elapsed := _countdown_sec - _countdown_left
+		var beat_index := int(floor(elapsed * _countdown_bpm / 60.0))
+		if beat_index != _tick_index:
+			_tick_index = beat_index
+			_play_tick(maxi(0, _countdown_beats - beat_index))
 		if _countdown_left <= 0.0:
 			_start_play()
 			return
@@ -447,7 +544,8 @@ func _draw_ready_layer() -> void:
 		_ready_layer.draw_string(bold, Vector2(0.0, center.y + 14.0), "准备中",
 			HORIZONTAL_ALIGNMENT_CENTER, bounds.x, int(minf(54.0, radius * 0.7)), _ready_tint(UITheme.INK, 0.95))
 	else:
-		var number := str(_tick_index) if _tick_index > 0 else "GO"
+		var remaining := _countdown_beats - _tick_index
+		var number := str(maxi(0, remaining)) if remaining > 0 else "GO"
 		var size := int(minf(120.0, radius * 1.15))
 		_ready_layer.draw_string(bold, Vector2(0.0, center.y + size * 0.34), number,
 			HORIZONTAL_ALIGNMENT_CENTER, bounds.x, size, _ready_tint(UITheme.INK, 0.98))
@@ -524,7 +622,10 @@ func _build_pause_overlay() -> void:
 	_add_pause_button(box, "继续游玩", func() -> void: _set_paused(false))
 	_add_pause_button(box, "重新开始", func() -> void:
 		_set_paused(false)
-		setup(chart, 0.0, chart_path)
+		if replay_mode:
+			_seek_replay(0.0)
+		else:
+			setup(chart, 0.0, chart_path)
 	)
 	_add_pause_button(box, "退出游玩", func() -> void: _exit())
 	_add_pause_button(box, "试玩设置", func() -> void: playtest_settings_requested.emit())
@@ -566,6 +667,100 @@ func _add_pause_button(parent: VBoxContainer, text: String, callback: Callable) 
 	parent.add_child(button)
 
 
+## 回放控制条：回到开头 / 暂停 / 进度条 / 时间。只在回放模式下出现。
+func _build_replay_bar() -> void:
+	_replay_bar = PanelContainer.new()
+	_replay_bar.name = "ReplayBar"
+	_replay_bar.visible = false
+	_replay_bar.mouse_filter = Control.MOUSE_FILTER_STOP
+	add_child(_replay_bar)
+	_replay_bar.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
+	_replay_bar.offset_left = 72
+	_replay_bar.offset_right = -72
+	_replay_bar.offset_top = -66
+	_replay_bar.offset_bottom = -18
+
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 10)
+	_replay_bar.add_child(row)
+
+	var rewind := Button.new()
+	rewind.text = "回到开头"
+	rewind.tooltip_text = "回到开头（Home）"
+	rewind.focus_mode = Control.FOCUS_NONE
+	rewind.pressed.connect(func() -> void: _seek_replay(0.0))
+	row.add_child(rewind)
+
+	_replay_play_button = Button.new()
+	_replay_play_button.text = "暂停"
+	_replay_play_button.tooltip_text = "暂停 / 继续（空格）"
+	_replay_play_button.focus_mode = Control.FOCUS_NONE
+	_replay_play_button.custom_minimum_size = Vector2(64, 0)
+	_replay_play_button.pressed.connect(func() -> void: _set_paused(not _paused))
+	row.add_child(_replay_play_button)
+
+	_replay_slider = HSlider.new()
+	_replay_slider.min_value = 0.0
+	_replay_slider.max_value = 1.0
+	_replay_slider.step = 0.0005
+	_replay_slider.focus_mode = Control.FOCUS_NONE
+	_replay_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_replay_slider.custom_minimum_size = Vector2(320, 0)
+	# 拖动中只更新时间文字，松手才真正重算，否则每像素都要跑一遍模拟。
+	_replay_slider.drag_started.connect(func() -> void: _replay_seeking = true)
+	_replay_slider.drag_ended.connect(func(_changed: bool) -> void:
+		_replay_seeking = false
+		_seek_replay(_replay_slider.value))
+	_replay_slider.value_changed.connect(func(value: float) -> void:
+		if _replay_seeking:
+			if _replay_time_label != null:
+				_replay_time_label.text = "%s / %s" % [
+					_format_ms(_replay_start_ms + value * maxf(0.0, _replay_total_ms - _replay_start_ms)),
+					_format_ms(_replay_total_ms)]
+		else:
+			_seek_replay(value))
+	row.add_child(_replay_slider)
+
+	_replay_time_label = Label.new()
+	UITheme.style_mono(_replay_time_label, 12, UITheme.MUTED)
+	_replay_time_label.custom_minimum_size = Vector2(130, 0)
+	row.add_child(_replay_time_label)
+
+	# 进度条最右边：直接退回这一局的结算界面。
+	_replay_exit_button = Button.new()
+	_replay_exit_button.text = "退出"
+	_replay_exit_button.tooltip_text = "退出回放，回到结算界面"
+	_replay_exit_button.focus_mode = Control.FOCUS_NONE
+	_replay_exit_button.custom_minimum_size = Vector2(64, 0)
+	_replay_exit_button.pressed.connect(_exit_replay)
+	row.add_child(_replay_exit_button)
+
+
+func _update_replay_bar() -> void:
+	if _replay_bar == null or not replay_mode:
+		return
+	if _replay_play_button != null:
+		_replay_play_button.text = "继续" if _paused else "暂停"
+	if _replay_seeking:
+		return
+	if _replay_slider != null:
+		_replay_slider.set_value_no_signal(_replay_fraction())
+	if _replay_time_label != null:
+		_replay_time_label.text = "%s / %s" % [_format_ms(_replay_ms), _format_ms(_replay_total_ms)]
+
+
+func _replay_fraction() -> float:
+	var span := maxf(1.0, _replay_total_ms - _replay_start_ms)
+	return clampf((_replay_ms - _replay_start_ms) / span, 0.0, 1.0)
+
+
+func _seek_relative(delta_ms: float) -> void:
+	if not replay_mode:
+		return
+	var span := maxf(1.0, _replay_total_ms - _replay_start_ms)
+	_seek_replay(clampf((_replay_ms + delta_ms - _replay_start_ms) / span, 0.0, 1.0))
+
+
 func _set_path_judgement_visible(value: bool) -> void:
 	_preview.set_path_judgement_visible(value)
 	_path_judgement_toggle.set_pressed_no_signal(value)
@@ -576,9 +771,13 @@ func _set_paused(value: bool) -> void:
 	if _finished:
 		return
 	_paused = value
-	_key_presses.clear()
-	_last_hit_press_ms = -1.0e9
+	if not replay_mode:
+		# 回放里清空队列会丢掉「已分派、还没被判定消费」的按键，判定就漂了。
+		_key_presses.clear()
+		_last_hit_press_ms = -1.0e9
 	_reset_path_motion()
+	if _replay_play_button != null:
+		_replay_play_button.text = "继续" if _paused else "暂停"
 	if _pause_overlay != null:
 		_pause_overlay.visible = value
 	if _audio_available and _audio != null:
@@ -605,6 +804,8 @@ func _build_ui() -> void:
 	_preview.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_preview.notice.connect(func(message: String, level: String) -> void: _add_log("[%s] %s" % [level, message]))
 
+
+	_build_replay_bar()
 
 	_results = PanelContainer.new()
 	_results.visible = false
@@ -635,11 +836,38 @@ func _build_ui() -> void:
 	_bias_label = Label.new()
 	UITheme.style_mono(_bias_label, 12, UITheme.CYAN)
 	box.add_child(_bias_label)
+	var action_row := HBoxContainer.new()
+	action_row.add_theme_constant_override("separation", 8)
+	box.add_child(action_row)
 	_apply_bias_button = Button.new()
 	_apply_bias_button.text = "把本局偏差写进本谱面"
 	_apply_bias_button.tooltip_text = "把平均判定偏差加进这张谱面的 offset 并存盘；只影响这一张，别的谱面不动"
 	_apply_bias_button.pressed.connect(_apply_bias_to_chart)
-	box.add_child(_apply_bias_button)
+	_apply_bias_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_apply_bias_button.clip_text = true
+	_apply_bias_button.size_flags_stretch_ratio = 2.0
+	action_row.add_child(_apply_bias_button)
+	_replay_button = Button.new()
+	_replay_button.text = "回放本局"
+	_replay_button.tooltip_text = "用刚录下的输入重放这一局；判定结果与刚才一致（回放中再点 = 从头再放一遍）"
+	_replay_button.pressed.connect(_request_replay)
+	_replay_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_replay_button.size_flags_stretch_ratio = 1.0
+	action_row.add_child(_replay_button)
+	_export_replay_button = Button.new()
+	_export_replay_button.text = "导出回放"
+	_export_replay_button.tooltip_text = "把这一局存成 .replay 文件（输入流 + 判定偏移 + 设置），以后可以导入回来重放"
+	_export_replay_button.pressed.connect(_export_replay_file)
+	_export_replay_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_export_replay_button.size_flags_stretch_ratio = 1.0
+	action_row.add_child(_export_replay_button)
+	_export_video_button = Button.new()
+	_export_video_button.text = "导出视频"
+	_export_video_button.tooltip_text = "逐帧渲染 mp4：按录制起点导出，完成后按谱面 offset 封入音乐音轨；优先用 NVENC / QSV / VideoToolbox / VAAPI，找不到再退回 libx264（需要外部 ffmpeg）"
+	_export_video_button.pressed.connect(_export_video)
+	_export_video_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_export_video_button.size_flags_stretch_ratio = 1.0
+	action_row.add_child(_export_video_button)
 	_results_text = RichTextLabel.new()
 	_results_text.bbcode_enabled = false
 	_results_text.fit_content = false
@@ -660,6 +888,7 @@ func _build_ui() -> void:
 	_results_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_results_button.pressed.connect(func() -> void: _exit())
 	result_buttons.add_child(_results_button)
+
 
 
 
@@ -684,7 +913,7 @@ func _init_states() -> void:
 	_errors.clear()
 	_scatter.clear()
 	_error_sum = 0.0
-	_auto_origin_ms = float(_app.playtest_offset_ms if _app != null else 0.0)
+	_auto_origin_ms = _active_offset()
 	_press_assignments.clear()
 	_log.clear()
 	_combo = 0
@@ -774,7 +1003,7 @@ func _init_states() -> void:
 				state["arm_from"] = float(previous.get("arm_from", float(previous["target_ms"]) - BELL_WINDOW_MS))
 		previous_bell = note
 	for region in chart.regions:
-		_red_states[region.id] = {"time": 0.0, "broken": false}
+		_red_states[region.id] = {"time": 0.0, "broken": false, "last_ms": -INF}
 
 
 ## Chains are drawn as one Path (one head, one guide ball, one tail), so they
@@ -860,7 +1089,8 @@ func _start_audio() -> void:
 	_clock = AudioClock.new()
 	_audio_delay_ms = 0.0
 	var bench_audio := bench_mode and "--bench-audio" in OS.get_cmdline_user_args()
-	_start_chart_ms = chart.timing.beat_to_chart_ms(_timeline_start_beat)
+	# 回放从录制起点开始，不加预读：否则音频会比判定早一大截。
+	_start_chart_ms = _replay_start_ms if replay_mode else chart.timing.beat_to_chart_ms(_timeline_start_beat)
 	# 重开/重进时先停掉旧播放器，避免音频叠加。
 	if _audio != null:
 		_audio.stop()
@@ -908,16 +1138,18 @@ func _process(delta: float) -> void:
 		_audio_delay_ms = 0.0
 		_audio.play(0.0)
 	_last_frame_ms = clampf(delta * 1000.0, 1.0, 200.0)
-	var judge_ms := chart_ms + float(_app.playtest_offset_ms if _app != null else 0.0)
+	var judge_ms := chart_ms + _active_offset()
 	_judge_ms_now = judge_ms
 	var beat := chart.timing.chart_ms_to_beat(chart_ms)
 	_preview.playing = true
 	_preview.prepare_playtest_frame(beat, delta)
-	if auto_play:
+	if replay_mode:
+		_apply_replay_input(judge_ms)
+	elif auto_play:
 		_auto_step(judge_ms, beat, delta)
 		_preview.mouse_screen = _auto_cursor
 		_preview._update_cursor()
-	_judge_all(judge_ms, beat, delta)
+	_judge_all(judge_ms, beat)
 	_path_motion_samples.clear()
 	if bench_mode:
 		_bench_tick(judge_ms, beat)
@@ -925,7 +1157,9 @@ func _process(delta: float) -> void:
 		if "--bench-tilt" in OS.get_cmdline_user_args():
 			# 模拟鼠标持续移动带来的镜头视差（get_local_mouse_position 无法在基准里伪造）。
 			_preview._tilt_target = Vector2(sin(beat * 3.0), cos(beat * 2.3)) * 7.0
-	_probe_frame_time()
+	# 离线导出时不能按墙钟降画质：两次导出会因为机器忙闲得到不同画面。
+	if not offline_mode:
+		_probe_frame_time()
 	if _frame_last_beat >= 0.0:
 		if absf(beat - _frame_last_beat) < 0.000001:
 			_beat_stalls += 1
@@ -934,13 +1168,354 @@ func _process(delta: float) -> void:
 	if _ui_accum >= 0.05:
 		_ui_accum = 0.0
 		_update_hud_state()
-	if beat > chart.duration_beats() + 2.0:
-		_finish()
+		_update_replay_bar()
+	if beat > chart.duration_beats() + 2.0 and not offline_mode:
+		# osu 口径：对局和回放都在「最后一颗 +2 拍」结束，结果页立刻出来；
+		# 音乐不在这里停，继续放到尾（见 _finish），离开时淡出。
+		if replay_mode:
+			_exit_replay()
+		else:
+			_finish()
+	_prune_input_queues(judge_ms)
+	if _recording and _record != null:
+		var offset_now := _active_offset()
+		if absf(offset_now - _record_offset) > 0.01:
+			_record_offset = offset_now
+			_record.add_offset(judge_ms, offset_now)
+
+
+## 开始录制本局输入。
+func _start_recording() -> void:
+	if auto_play:
+		# AUTO 不需要输入，回放也就是再跑一遍 AUTO，不必录。
+		_record = null
+		return
+	_record = Replay.new()
+	_record.coords = Replay.COORDS_UNIT
+	_record.chart_path = chart_path
+	# hash 按原谱算：镜像只是本局的副本，拿镜像后的音符算会让回放永远匹配不上原谱。
+	_record.chart_hash = Replay.hash_chart(_source_chart if _source_chart != null else chart)
+	_record.start_beat = start_beat
+	_record.settings = {
+		"offset_ms": _active_offset(),
+		# 录制时的镜像，回放/导出时原样还原。
+		"mirror": mirror_mode,
+		"flow": _preview.flow_scale,
+		"star_speed": _preview.star_speed,
+		"cursor_scale": _preview.cursor_scale,
+		"note_skin": _preview.note_skin,
+		"hit_fx": _preview.hit_fx_style,
+		# 上游新加的「打击音色」：回放时沿用录制时的，声音才对得上。
+		"hit_sfx": String(_app.hit_sfx_style) if _app != null else "default",
+		"rate": 1.0,
+		# 光标坐标是相对试玩窗口记的；导出 1280x720 时要用它换算倾斜。
+		"cursor_size": [_preview.size.x, _preview.size.y],
+		# 报错/匹配时用：「这张回放是哪首曲子的哪个难度」。
+		"title": String(chart.metadata.get("title", "")) if chart != null else "",
+		"version": String(chart.metadata.get("version", "")) if chart != null else "",
+	}
+	_record_offset = _active_offset()
+	_recording = true
+func _enter_replay(data: Replay) -> void:
+	replay_mode = true
+	_recording = false
+	_record = null
+	# 关键：清掉上一局残留的输入状态。「回放本局」复用的是同一个 Playtest，
+	# 上一局按住的键还在 _keys_held 里，Hold 尾判会直接按「一直按住」结算，
+	# 结果就和本局 / 导入回放对不上（实测 HOLD 尾判误差 +146ms vs +0ms）。
+	_keys_held.clear()
+	_release_ms.clear()
+	_last_press_ms.clear()
+	_key_presses.clear()
+	_seek_presses.clear()
+	_path_motion_samples.clear()
+	_last_seek_orien = -1
+	_last_seek_ms = -INF
+	_replay_events = data.events
+	_replay_coords = data.coords
+	var recorded_size: Array = data.settings.get("cursor_size", [])
+	if recorded_size.size() >= 2:
+		_replay_recorded_size = Vector2(float(recorded_size[0]), float(recorded_size[1]))
+	_replay_index = 0
+	_replay_ms = chart.timing.beat_to_chart_ms(start_beat)
+	_replay_start_ms = _replay_ms
+	_offset_override = float(data.settings.get("offset_ms", 0.0))
+	_replay_start_offset = _offset_override
+	# 回放跨度 = 谱面长度（和对局一致；片尾音乐照常放，但不占进度条）。
+	_replay_total_ms = chart.timing.beat_to_chart_ms(chart.duration_beats())
+	_timeline_start_beat = start_beat
+	_replay_cursor = Vector2.INF
+	_preview.flow_scale = float(data.settings.get("flow", _preview.flow_scale))
+	_preview.star_speed = float(data.settings.get("star_speed", _preview.star_speed))
+	_preview.cursor_scale = float(data.settings.get("cursor_scale", _preview.cursor_scale))
+	if data.settings.has("note_skin"):
+		_preview.note_skin = String(data.settings["note_skin"])
+	if data.settings.has("hit_fx"):
+		_preview.hit_fx_style = String(data.settings["hit_fx"])
+	if data.settings.has("hit_sfx") and _sfx != null:
+		_sfx.set_style(String(data.settings["hit_sfx"]))
+	for event in _replay_events:
+		if String(event.get("k", "")) == "move":
+			_replay_cursor = _replay_point(float(event.get("x", 0.0)), float(event.get("y", 0.0)))
+			break
+	# 关键：回放时让 preview 用「录制里的光标」。auto_cursor 是 INF 时，
+	# _draw 会退回 get_local_mouse_position()，玩家的真实鼠标会顶掉回放光标，
+	# Path/金键这类靠光标位置的判定就会和本局不一致（普遍偏低）。
+	if _replay_cursor.is_finite():
+		_preview.auto_cursor = _replay_cursor
+		_preview.mouse_screen = _replay_cursor
+		_preview._update_cursor()
+	if _replay_bar != null:
+		_replay_bar.visible = true
+	_update_replay_bar()
+	_add_log("REPLAY 载入 %d 个事件" % _replay_events.size())
+
+
+## 把到时间的事件全部重放；判定拿到的时间戳就是录制时的那个。
+func _dispatch_replay(judge_ms: float) -> void:
+	while _replay_index < _replay_events.size():
+		var event: Dictionary = _replay_events[_replay_index]
+		if float(event.get("t", 0.0)) > judge_ms:
+			break
+		_replay_index += 1
+		_apply_replay_event(event)
+
+
+func _apply_replay_event(event: Dictionary) -> void:
+	var stamp := float(event.get("t", 0.0))
+	match String(event.get("k", "")):
+		"move":
+			var point := _replay_point(float(event.get("x", 0.0)), float(event.get("y", 0.0)))
+			_replay_cursor = point
+			if _preview != null:
+				_preview.auto_cursor = point
+			_queue_path_motion(point, stamp)
+		"press":
+			var key := int(event.get("key", 0))
+			_key_presses.append({
+				"time": stamp,
+				"lo": float(event.get("lo", stamp)),
+				"hi": float(event.get("hi", stamp)),
+				"mouse": _replay_point(float(event.get("x", 0.0)), float(event.get("y", 0.0))),
+				"angle": float(event.get("a", 0.0)),
+				"u": float(event.get("u", 0.0)),
+				"valid": bool(event.get("v", false)),
+				"key": key,
+			})
+			_keys_held[key] = true
+			_release_ms.erase(key)
+		"release":
+			var released := int(event.get("key", 0))
+			_keys_held.erase(released)
+			_release_ms[released] = stamp
+		"seek":
+			_seek_presses.append({
+				"time": stamp,
+				"lo": float(event.get("lo", stamp)),
+				"hi": float(event.get("hi", stamp)),
+				"orien": int(event.get("dir", 0)),
+			})
+		"offset":
+			_offset_override = float(event.get("v", 0.0))
+
+
+## 丢掉已经过了判定窗口的按键/滚轮事件，_process 和 seek 共用。
+func _prune_input_queues(judge_ms: float) -> void:
 	var keep_ms := PRESS_KEEP_MS
 	while not _key_presses.is_empty() and float(_key_presses[0].get("hi", _key_presses[0].get("time", -INF))) < judge_ms - keep_ms:
 		_key_presses.pop_front()
 	while not _seek_presses.is_empty() and float(_seek_presses[0].get("hi", _seek_presses[0].get("time", -INF))) < judge_ms - keep_ms:
 		_seek_presses.pop_front()
+
+
+## 喂事件 + 把光标摆到录制位置。_process 和 seek 共用。
+func _apply_replay_input(judge_ms: float) -> void:
+	_dispatch_replay(judge_ms)
+	if _replay_cursor.is_finite():
+		_preview.mouse_screen = _replay_cursor
+		_preview._update_cursor()
+
+
+## 拖动进度条：回放是确定性的，所以「跳到某处」= 从头快进重算到那里。
+## 2 分钟的谱约 7500 步，实测几百毫秒；判定结果与慢放时完全一致。
+func _seek_replay(fraction: float) -> void:
+	if not replay_mode or chart == null or not _running or _finished:
+		return
+	var span := maxf(1.0, _replay_total_ms - _replay_start_ms)
+	var target := _replay_start_ms + clampf(fraction, 0.0, 1.0) * span
+	if absf(target - _replay_ms) < 2.0:
+		return
+	_sim_silent = true
+	_replay_index = 0
+	_replay_cursor = Vector2.INF
+	_offset_override = _replay_start_offset
+	_init_states()
+	_replay_ms = _replay_start_ms
+	var guard := 0
+	while _replay_ms < target and guard < 400000:
+		guard += 1
+		_replay_ms = minf(_replay_ms + SEEK_STEP_MS, target)
+		var judge_ms := _replay_ms + _active_offset()
+		_apply_replay_input(judge_ms)
+		_judge_all(judge_ms, chart.timing.chart_ms_to_beat(_replay_ms))
+		_path_motion_samples.clear()
+		_prune_input_queues(judge_ms)
+	_sim_silent = false
+	_last_chart_ms = _replay_ms
+	_judge_ms_now = _replay_ms + _active_offset()
+	var beat_now := chart.timing.chart_ms_to_beat(_replay_ms)
+	# 暂停中拖动时 _process 不跑，这里手动把画面刷新到目标时刻。
+	_preview.playing = true
+	_preview.time_beat = beat_now
+	_preview.prepare_playtest_frame(beat_now, 0.0)
+	_update_hud_state()
+	_update_replay_bar()
+	_seek_audio_to(_replay_ms)
+	# 时钟重新从目标位置起锚：AudioClock 会把大跨度回跳当坏数据丢掉，
+	# 不重置的话往回拖之后进度条会卡在原处。
+	_clock = AudioClock.new()
+	_clock.start(_replay_ms, Time.get_ticks_usec())
+	_last_chart_ms = _replay_ms
+	if target >= _replay_total_ms - 1.0:
+		_finish()
+
+
+## 快进后把音频也挪到同一位置，否则画面对了、声音还在原地。
+func _seek_audio_to(ms: float) -> void:
+	if not _audio_available or _audio == null or _paused:
+		return
+	_audio.play(maxf(0.0, (ms - float(chart.offset_ms)) / 1000.0))
+
+
+## 快进模拟时静音：seek 会重跑几千步，不能把音效全放出来。
+func _play_hit(kind: String, pitch: float = 1.0) -> void:
+	if _sfx == null:
+		return
+	if sfx_capture != null:
+		# 离线导出整局静音，听不到声音：把事件连同时间收集起来，导出器混成音轨。
+		sfx_capture.append({"t": _chart_ms(), "k": kind, "p": pitch})
+		return
+	if _sim_silent:
+		return
+	_sfx.play(kind, pitch)
+
+
+## 回放时用录制里的 offset，不去改用户设置。
+func _active_offset() -> float:
+	if not is_nan(_offset_override):
+		return _offset_override
+	return float(_app.playtest_offset_ms if _app != null else 0.0)
+func _export_replay_file() -> void:
+	var data := _current_replay()
+	if data == null:
+		_notify_result("这一局没有可导出的回放（AUTO 演示不录制输入）")
+		return
+	if _replay_export_dialog == null:
+		_replay_export_dialog = FileDialog.new()
+		_replay_export_dialog.use_native_dialog = true
+		_replay_export_dialog.file_mode = FileDialog.FILE_MODE_SAVE_FILE
+		_replay_export_dialog.access = FileDialog.ACCESS_FILESYSTEM
+		_replay_export_dialog.title = "导出回放"
+		_replay_export_dialog.add_filter("*.replay", "Tamaki 回放")
+		_replay_export_dialog.file_selected.connect(_export_replay_to)
+		add_child(_replay_export_dialog)
+	_replay_export_dialog.current_dir = OS.get_system_dir(OS.SYSTEM_DIR_DOWNLOADS)
+	var title := String(chart.metadata.get("title", "replay")) if chart != null else "replay"
+	var diff := String(chart.metadata.get("version", "")) if chart != null else ""
+	var suggest := title + ("" if diff.is_empty() else " [" + diff + "]")
+	_replay_export_dialog.current_file = suggest.validate_filename() + ".replay"
+	_replay_export_dialog.popup_centered_ratio(0.7)
+
+
+## 真正写盘（抽出来便于测试）。
+func _export_replay_to(path: String) -> void:
+	var data := _current_replay()
+	if data == null:
+		_notify_result("这一局没有可导出的回放")
+		return
+	if not path.to_lower().ends_with(".replay"):
+		path += ".replay"
+	var err := data.save_to(path)
+	if err != OK:
+		_notify_result("导出回放失败（错误码 %d）" % err)
+		return
+	var size := 0
+	if FileAccess.file_exists(path):
+		size = FileAccess.get_file_as_bytes(path).size()
+	_notify_result("已导出回放：%s（%d 个事件，%.1f KB）" % [
+		path.get_file(), data.event_count(), float(size) / 1024.0])
+func _current_replay() -> Replay:
+	if replay_mode:
+		return replay_source
+	return _record
+
+
+func _replay_file_name() -> String:
+	var title := "回放"
+	if chart != null:
+		var meta_title := String(chart.metadata.get("title", ""))
+		if not meta_title.is_empty():
+			title = meta_title
+	var version := String(chart.metadata.get("version", "")) if chart != null else ""
+	var stamp := Time.get_datetime_string_from_system().replace(":", "").replace("-", "").replace("T", "-")
+	var name := title
+	if not version.is_empty():
+		name += "_" + version
+	return _sanitize_file_name(name + "_" + stamp) + ".tmkrpl"
+
+
+## Windows 不允许这几个字符出现在文件名里。
+func _sanitize_file_name(text: String) -> String:
+	var out := ""
+	for ch in text:
+		out += "_" if ch in "/\\:*?\"<>|" else ch
+	out = out.strip_edges()
+	return out if not out.is_empty() else "replay"
+
+
+func _show_toast(message: String) -> void:
+	if _toast_label == null:
+		_toast_label = Label.new()
+		_toast_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		_toast_label.add_theme_font_size_override("font_size", 13)
+		_toast_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		add_child(_toast_label)
+		_toast_label.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
+		_toast_label.offset_left = -420
+		_toast_label.offset_right = 420
+		_toast_label.offset_top = -96
+		_toast_label.offset_bottom = -66
+	_toast_label.text = message
+	_toast_label.modulate.a = 1.0
+	if _toast_tween != null and _toast_tween.is_valid():
+		_toast_tween.kill()
+	_toast_tween = create_tween()
+	_toast_tween.tween_interval(2.5)
+	_toast_tween.tween_property(_toast_label, "modulate:a", 0.0, 0.6)
+
+
+## 退出回放：停在这里，把结算界面放回来（和这一局打完时看到的是同一个）。
+func _exit_replay() -> void:
+	if not replay_mode:
+		return
+	if not _finished:
+		_finish()
+	if _replay_bar != null:
+		_replay_bar.visible = false
+	if _results != null:
+		_results.visible = true
+	Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
+
+
+func _request_replay() -> void:
+	if replay_mode:
+		# 回放结束后再点一次 = 用同一份录制重头再放一遍。
+		if replay_source != null:
+			replay_requested.emit(replay_source)
+		return
+	if _record == null or _record.event_count() == 0:
+		return
+	replay_requested.emit(_record)
 
 
 ## 驱动报告 0 的平台上用设置里的回退值（Android/Web 常见）。
@@ -959,6 +1534,11 @@ func _chart_ms() -> float:
 
 
 func _chart_ms_inner() -> float:
+	# 离线导出：第 k 帧的时间由导出器给定，和机器快慢、音频时钟都无关。
+	if offline_mode:
+		_last_chart_ms = offline_ms
+		_replay_ms = offline_ms
+		return offline_ms
 	if _paused:
 		return _last_chart_ms
 	var now_usec := Time.get_ticks_usec()
@@ -979,6 +1559,10 @@ func _chart_ms_inner() -> float:
 	if _last_chart_ms > -INF:
 		ms = maxf(ms, _last_chart_ms)
 	_last_chart_ms = ms
+	if replay_mode:
+		# 回放（非导出）跟随音频时钟，和正常游玩同一套：
+		# 之前用「每帧累加 delta」的虚拟时钟，起播延迟和采样率差异会一路累积成音画错位。
+		_replay_ms = ms
 	return ms
 
 
@@ -1017,6 +1601,8 @@ func _auto_step(ms: float, beat: float, _delta: float) -> void:
 		return
 	_auto_cursor = _auto_cursor_target(ms, beat)
 	_preview.auto_cursor = _auto_cursor
+	if _record != null:
+		_record.add_move(ms, _unit_point(_auto_cursor))
 	while _auto_index < _ordered_notes.size():
 		var note := _ordered_notes[_auto_index]
 		var state: Dictionary = _states[note.id]
@@ -1043,6 +1629,12 @@ func _auto_press_note(note: Note, state: Dictionary, beat: float) -> void:
 	if not point.is_finite():
 		point = _auto_cursor
 	_key_presses.append(auto_press_payload(float(state["target_ms"]), point, note.angle, key))
+	if _record != null:
+		var target := float(state["target_ms"])
+		var unit := _unit_point(point)
+		_record.add_move(target, unit)
+		_record.add_press(target, target, target, key, unit, note.angle,
+			fposmod(note.angle, 360.0) / 360.0, true)
 	if note.type == "hold":
 		_keys_held[key] = true
 		_auto_hold_keys[note.id] = {"key": key, "end_ms": float(state["end_ms"])}
@@ -1054,6 +1646,8 @@ func _auto_release_holds(ms: float) -> void:
 		if ms < float(info["end_ms"]) + AUTO_RELEASE_MS:
 			continue
 		_keys_held.erase(int(info["key"]))
+		if _record != null:
+			_record.add_release(ms, int(info["key"]))
 		_auto_hold_keys.erase(note_id)
 
 
@@ -1178,7 +1772,7 @@ func _toggle_auto() -> void:
 		_update_hud_state()
 
 
-func _judge_all(ms: float, beat: float, delta: float) -> void:
+func _judge_all(ms: float, beat: float) -> void:
 	_judge_anchor_pairs(ms, beat)
 	_assign_presses(ms, beat)
 	var mouse: Vector2 = _preview.mouse_screen
@@ -1218,7 +1812,7 @@ func _judge_all(ms: float, beat: float, delta: float) -> void:
 				_judge_anchor(note, ms, beat)
 			"bell":
 				_judge_bell(note, ms, beat, mouse)
-	_judge_red(ms, beat, delta, mouse)
+	_judge_red(ms, beat, mouse)
 	_press_assignments.clear()
 
 
@@ -1250,7 +1844,7 @@ func _judge_seek(note: Note, ms: float, beat: float) -> void:
 		_register_hit("PERFECT")
 		var color := UITheme.SEEK_IN if note.seek_orien == 1 else UITheme.SEEK_OUT
 		_pulse_at(0.0, beat, color, "PERFECT", 360.0, "seek", "SEEK", _preview.project_design(Vector2.ZERO))
-		_sfx.play("bell", randf_range(0.98, 1.02))
+		_play_hit("bell", randf_range(0.98, 1.02))
 		_record_error(float(press["time"]) - target, "Seek #%d PERFECT" % note.id, "PERFECT", float(press["time"]))
 		return
 	if ms > target + HIT_WINDOW_MS:
@@ -1277,7 +1871,7 @@ func _judge_tap(note: Note, ms: float, beat: float) -> void:
 		_preview.add_note_pop("tap", note, beat)
 		_register_hit(tier)
 		_pulse_at(note.angle, beat, _tier_color(tier), tier, note.arc_width(), "tap", _timing_detail(error, tier))
-		_sfx.play(HitSfx.kind_for_note(note), randf_range(0.98, 1.02))
+		_play_hit(HitSfx.kind_for_note(note), randf_range(0.98, 1.02))
 		_record_error(float(press["time"]) - target, "Tap #%d %s" % [note.id, tier], tier, float(press["time"]))
 		return
 	if ms > target + HIT_WINDOW_MS:
@@ -1308,7 +1902,7 @@ func _judge_hold(note: Note, ms: float, beat: float) -> void:
 			_preview.set_note_state(note.id, "holding")
 			_preview.add_note_pop("hold", note, beat)
 			_pulse_at(note.angle, beat, _tier_color(head_tier), head_tier, note.arc_width(), "hold", _timing_detail(head_error, head_tier))
-			_sfx.play("don")
+			_play_hit("don")
 			_add_log("HOLD #%d HEAD %s" % [note.id, head_tier])
 			return
 		if ms > target + HIT_WINDOW_MS:
@@ -1325,7 +1919,9 @@ func _judge_hold(note: Note, ms: float, beat: float) -> void:
 	if hold_key != 0 and not _keys_held.has(hold_key):
 		# 短暂松手不算断：补按窗口内继续按住；超时才按已按住的比例结算。
 		if not state.has("release_ms"):
-			state["release_ms"] = ms
+			# 用「真正松手的时刻」（录制/回放都有），而不是发现松手的这一帧：
+			# 否则回放会因为帧边界不同得出和本局不一样的尾判误差。
+			state["release_ms"] = float(_release_ms.get(hold_key, ms))
 			# 变暗提示玩家：手松了，但还有时间按回来。
 			_preview.set_note_state(note.id, "slip")
 		var release_ms := float(state["release_ms"])
@@ -1375,12 +1971,12 @@ func _judge_path(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 	var head_point: Vector2 = _preview.note_head_screen(note, beat)
 	# 星星头开始沿轨迹移动的那一刻（beat + wait）才是“起划”，在这里响提示音。
 	if not bool(state.get("slide_cued", false)):
-		var slide_ms := slide_start_ms(chart, note, float(_app.playtest_offset_ms if _app != null else 0.0))
+		var slide_ms := slide_start_ms(chart, note, _active_offset())
 		if ms >= slide_ms:
 			state["slide_cued"] = true
 			# 错过太久（跳转/卡帧）就不再补播。
 			if ms - slide_ms <= 400.0:
-				_sfx.play("slide", randf_range(0.99, 1.01))
+				_play_hit("slide", randf_range(0.99, 1.01))
 				_add_log("PATH #%d SLIDE START @%.0fms (expect %.0fms)" % [note.id, ms, slide_ms])
 	if not state["head_judged"]:
 		if ms >= head_ms - EARLY_MS:
@@ -1394,7 +1990,7 @@ func _judge_path(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 				_write_path_input_log({"kind": "head", "note": note.id, "time_ms": ms,
 					"error_ms": head_error, "mouse": _path_log_point(press.get("mouse", Vector2.INF))})
 				_register_hit(tier)
-				_sfx.play(HitSfx.kind_for_note(note), randf_range(0.98, 1.02))
+				_play_hit(HitSfx.kind_for_note(note), randf_range(0.98, 1.02))
 				# 星头用实际的星头屏幕位置，平面星星（V / 折线）也能炸在正确的位置。
 				_pulse_at(note.angle, beat, _tier_color(tier), tier, note.arc_width(), "path", _timing_detail(head_error, tier), head_point)
 				# 星头是按键时机，和 Tap 同源，可以喂给动态校准与散布图。
@@ -1431,7 +2027,7 @@ func _judge_path(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 			state["tail_hit"] = true
 			_register_hit(tier)
 			_pulse_at(note.tail_angle, beat, _tier_color(tier), tier, note.tail_width, "path", _timing_detail(tail_error, tier))
-			_sfx.play("tail", randf_range(0.98, 1.02))
+			_play_hit("tail", randf_range(0.98, 1.02))
 			_add_log("PATH #%d TAIL %s" % [note.id, tier])
 			state["tail_judged"] = true
 			tracker.mark_complete()
@@ -1473,7 +2069,7 @@ func _judge_path(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 func _update_path_progress(note: Note, state: Dictionary, tracker: PathProgress, ms: float, beat: float, mouse: Vector2, tail_radius: float) -> void:
 	# Samples carry scoring-adjusted timestamps. Transform the visual start into
 	# that same clock; a negative offset must not discard the start of a slide.
-	var offset_ms := float(_app.playtest_offset_ms if _app != null else 0.0)
+	var offset_ms := _active_offset()
 	var head_start := chart.timing.beat_to_chart_ms(note.beat) + offset_ms
 	var start_ms := maxf(head_start, chart.timing.beat_to_chart_ms(note.beat + clampf(note.wait_beat, 0.0, note.duration())) + offset_ms - 120.0)
 	var tail_ms := float(state["end_ms"])
@@ -1548,7 +2144,7 @@ func _queue_path_motion(point: Vector2, ms: float) -> void:
 
 
 func _open_path_input_log() -> void:
-	if not path_input_logging or chart == null:
+	if not path_input_logging or chart == null or replay_mode:
 		return
 	_close_path_input_log()
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path("user://logs"))
@@ -1559,7 +2155,7 @@ func _open_path_input_log() -> void:
 		return
 	_write_path_input_log({"kind": "session", "schema": 2, "chart": chart_path,
 		"title": chart.metadata.get("title", ""), "difficulty": chart.metadata.get("version", ""),
-		"offset_ms": float(_app.playtest_offset_ms if _app != null else 0.0),
+		"offset_ms": _active_offset(),
 		"preview_size": _path_log_point(_preview.size), "start_beat": start_beat, "auto": auto_play})
 	print("[path-input-log] ", ProjectSettings.globalize_path(_path_input_log_path))
 
@@ -1608,7 +2204,7 @@ func _record_path_input_frame(note: Note, state: Dictionary, tracker: PathProgre
 	var distance := mouse.distance_to(target)
 	var reason := "before_body_start" if ms < start_ms else ("approaching_region" if distance > target_radius else "inside_region")
 	var record := {"kind": "frame", "note": note.id, "time_ms": snappedf(ms, 0.01),
-		"beat": beat, "start_ms": start_ms, "offset_ms": float(_app.playtest_offset_ms if _app != null else 0.0),
+		"beat": beat, "start_ms": start_ms, "offset_ms": _active_offset(),
 		"head_hit": state["head_hit"], "coverage": tracker.coverage, "progress": tracker.progress,
 		"next": tracker.next_index, "next_gate": tracker.next_gate, "gate_count": tracker.group_count,
 		"tolerance": tracker.tolerance, "remaining": tracker.remaining_groups(), "body_ready": tracker.body_ready(),
@@ -1651,7 +2247,7 @@ func _judge_bell(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 		if not bell.is_empty():
 			_preview.add_hit_pulse(bell["center"], UITheme.KEY_YELLOW, "PERFECT", "bell")
 		# 结算发生在判定线上，声音天然和音乐对齐。
-		_sfx.play("bell", randf_range(0.99, 1.01))
+		_play_hit("bell", randf_range(0.99, 1.01))
 		_add_log("BELL #%d PERFECT" % note.id)
 		return
 	if ms > target + BELL_WINDOW_MS:
@@ -1736,7 +2332,7 @@ func _judge_anchor_pairs(ms: float, beat: float) -> void:
 			if aim_mouse.distance_to(pb) < aim_mouse.distance_to(pa):
 				aim_angle = partner_note.angle
 			_pulse_at(aim_angle, beat, _tier_color(tier), tier, 70.0, "tap", _timing_detail(worse, tier))
-			_sfx.play("anchor", 1.0)
+			_play_hit("anchor")
 			_record_error(worse, "ANCHOR PAIR #%d/#%d %s" % [owner_id, partner_id, tier], tier,
 				float(picked["time"]))
 			continue
@@ -1807,18 +2403,28 @@ func _judge_anchor(note: Note, ms: float, beat: float) -> void:
 		_add_log("MISS Anchor #%d (unpaired)" % note.id)
 
 
-func _judge_red(ms: float, beat: float, delta: float, mouse: Vector2) -> void:
+func _judge_red(ms: float, beat: float, mouse: Vector2) -> void:
 	for region in chart.regions:
 		var state: Dictionary = _red_states[region.id]
+		var last := float(state.get("last_ms", ms))
+		var step_sec := 0.0 if not is_finite(last) else maxf(0.0, (ms - last) * 0.001)
+		state["last_ms"] = ms
 		if not region.active_at(beat):
 			state["time"] = 0.0
 			state["broken"] = false
+			state["was_inside"] = false
 			continue
 		# 红区按可见多边形判定：鼠标实际落在红区里才算。
 		var polygon := _preview.red_region_polygon(region, beat)
 		var inside := polygon.size() >= 3 and Geometry2D.is_point_in_polygon(mouse, polygon)
 		if inside:
-			state["time"] = float(state["time"]) + delta
+			# 停留时间按时间轴算，不累加帧长：拖动进度条时 delta 是 0，
+			# 累加帧长会让红区在回放里永远不断（回放和实时走同一套判定）。
+			# 刚进入的那一帧不算：否则会把进区之前的那段时间也记成停留。
+			if not bool(state.get("was_inside", false)):
+				step_sec = 0.0
+				state["was_inside"] = true
+			state["time"] = float(state["time"]) + step_sec
 			if float(state["time"]) >= RED_LIMIT_SEC and not bool(state["broken"]):
 				state["broken"] = true
 				_red_breaks += 1
@@ -1835,6 +2441,7 @@ func _judge_red(ms: float, beat: float, delta: float, mouse: Vector2) -> void:
 		else:
 			state["time"] = 0.0
 			state["broken"] = false
+			state["was_inside"] = false
 
 
 func _pulse_at(angle_degrees: float, beat: float, color: Color, label: String, width: float = 60.0, kind: String = "tap", detail: String = "", screen_point: Vector2 = Vector2.INF) -> void:
@@ -1971,7 +2578,7 @@ func _press_target(note: Note, ms: float, beat: float) -> Dictionary:
 			if bool(state.get("head_judged", false)) or ms < target - EARLY_MS:
 				return {}
 			return _shape_target(note, target - EARLY_MS, target + HIT_WINDOW_MS, target,
-				PackedVector2Array([_preview.note_head_screen(note, beat)]),
+				_preview.path_head_arc(note, beat),
 				POSITION_TOLERANCE_PX + float(_preview.note_graphic_radius("path")), 0.0)
 		"anchor":
 			# 成对 Anchor 由 _judge_anchor_pairs 整对收键，不走单键分配。
@@ -2000,7 +2607,8 @@ func _match_press(press: Dictionary, target: Dictionary) -> Dictionary:
 	var pad := float(target["pad"])
 	if bool(target["dense"]):
 		var slack := rad_to_deg(tolerance / maxf(1.0, float(target.get("ring_radius", 1.0))))
-		var half := maxf(24.0, (0.0 if points.size() <= 1 else note.arc_width() + pad + 2.0 * slack) * 0.5)
+		var span := note.width if note.type == "path" else note.arc_width()
+		var half := maxf(24.0, (0.0 if points.size() <= 1 else span + pad + 2.0 * slack) * 0.5)
 		if not bool(press.get("valid", true)):
 			return {}
 		var press_angle := float(press.get("angle", NAN))
@@ -2012,9 +2620,18 @@ func _match_press(press: Dictionary, target: Dictionary) -> Dictionary:
 		return {"ok": true, "distance": delta}
 	var mouse: Vector2 = press.get("mouse", Vector2.ZERO)
 	var distance := _distance_to_polyline(mouse, points)
-	if distance > tolerance:
+	if distance <= tolerance:
+		return {"ok": true, "distance": distance}
+	# 像素距离不够近，但瞄准角度对了：允许按 ±12° 命中（只对合法的环上光标生效）。
+	if not bool(press.get("valid", true)):
 		return {}
-	return {"ok": true, "distance": distance}
+	var press_angle := float(press.get("angle", NAN))
+	if is_nan(press_angle):
+		return {}
+	var angular := absf(JudgeMath.angle_delta(press_angle, note.angle))
+	if angular <= AIM_ANGLE_TOLERANCE_DEG:
+		return {"ok": true, "distance": distance, "angular": angular}
+	return {}
 
 
 func _take_assigned_press(note_id: int) -> Dictionary:
@@ -2048,7 +2665,7 @@ func _record_error(error_ms: float, label: String, tier: String = "", time_ms: f
 		})
 	_error_sum += error_ms
 	_add_log("%s  %+.0fms" % [label, error_ms])
-	if _app == null or not bool(_app.dynamic_offset) or _errors.size() < DYNAMIC_SAMPLE_MIN:
+	if _app == null or replay_mode or not bool(_app.dynamic_offset) or _errors.size() < DYNAMIC_SAMPLE_MIN:
 		return
 	# 动态 offset：每次命中往消除当前偏差的方向挪 5%，自动部分最多 ±50ms。
 	var next := float(_app.playtest_offset_ms) - error_ms * DYNAMIC_STEP
@@ -2073,7 +2690,7 @@ func _unstable_rate() -> float:
 
 ## 退出/结算时把自动调过的偏移写回设置。
 func _flush_offset() -> void:
-	if _app == null:
+	if _app == null or replay_mode:
 		return
 	_app.last_bias_ms = _mean_error()
 	_app.save_settings()
@@ -2320,6 +2937,26 @@ func _input_interval(now_ms: float) -> Vector2:
 	return Vector2(now_ms - span, now_ms)
 
 
+## 屏幕像素 → 0..1 归一化坐标（v2 replay 用，和窗口大小无关）。
+func _unit_point(point: Vector2) -> Vector2:
+	var size := _preview.size
+	if size.x <= 1.0 or size.y <= 1.0:
+		return point
+	return Vector2(point.x / size.x, point.y / size.y)
+
+
+## replay 里的坐标 → 当前窗口像素。v1 按录制时的窗口尺寸缩放。
+func _replay_point(x: float, y: float) -> Vector2:
+	if _preview == null:
+		return Vector2(x, y)
+	if _replay_coords == Replay.COORDS_UNIT:
+		return Vector2(x * _preview.size.x, y * _preview.size.y)
+	if _replay_recorded_size.x > 1.0 and _replay_recorded_size.y > 1.0:
+		return Vector2(x / _replay_recorded_size.x * _preview.size.x,
+			y / _replay_recorded_size.y * _preview.size.y)
+	return Vector2(x, y)
+
+
 ## 鼠标按钮 → 合成键位；不是左右键返回 0。
 static func mouse_button_key(button_index: int) -> int:
 	match button_index:
@@ -2334,11 +2971,12 @@ static func mouse_button_key(button_index: int) -> int:
 ## point 为 INF 时用当前光标位置。
 func _register_press(key: int, point: Vector2 = Vector2.INF) -> void:
 	var at := _preview.mouse_screen if not point.is_finite() else point
-	var span := _input_interval(_chart_ms() + float(_app.playtest_offset_ms if _app != null else 0.0))
+	var span := _input_interval(_chart_ms() + _active_offset())
 	var stamp := (span.x + span.y) * 0.5
 	# 同一个键的手抖双击只算一次；和弦用不同键，不受影响。
 	var repeated := stamp - float(_last_press_ms.get(key, -INF)) < KEY_DEBOUNCE_MS
 	_last_press_ms[key] = stamp
+	_release_ms.erase(key)
 	if not repeated:
 		_key_presses.append({
 			"time": stamp,
@@ -2350,6 +2988,9 @@ func _register_press(key: int, point: Vector2 = Vector2.INF) -> void:
 			"valid": _preview.cursor_valid,
 			"key": key,
 		})
+		if _recording and _record != null:
+			_record.add_press(stamp, span.x, span.y, key, _unit_point(at), _preview.screen_angle_deg(at),
+				_preview.cursor_u, _preview.cursor_valid)
 	_keys_held[key] = true
 
 
@@ -2361,21 +3002,26 @@ func _input(event: InputEvent) -> void:
 			get_viewport().set_input_as_handled()
 		return
 	if event is InputEventMouseMotion:
-		if _running and not _paused and not _finished and not auto_play:
+		if _running and not _paused and not _finished and not auto_play and not replay_mode:
 			var point: Vector2 = _preview.get_global_transform_with_canvas().affine_inverse() * event.position
-			_queue_path_motion(point, _chart_ms() + float(_app.playtest_offset_ms if _app != null else 0.0))
+			var move_ms := _chart_ms() + _active_offset()
+			_queue_path_motion(point, move_ms)
+			if _recording and _record != null:
+				_record.add_move(move_ms, _unit_point(point))
 		return
 	if event is InputEventMouseButton and event.pressed and (event.button_index == MOUSE_BUTTON_WHEEL_UP or event.button_index == MOUSE_BUTTON_WHEEL_DOWN):
 		var now_ms := _chart_ms() + float(_app.playtest_offset_ms if _app != null else 0.0)
 		var span := _input_interval(now_ms)
 		var orien := 0 if event.button_index == MOUSE_BUTTON_WHEEL_UP else 1
-		if seek_tick_allowed(orien, _last_seek_orien, now_ms - _last_seek_ms):
+		if not replay_mode and seek_tick_allowed(orien, _last_seek_orien, now_ms - _last_seek_ms):
 			_seek_presses.append({
 				"time": (span.x + span.y) * 0.5,
 				"lo": span.x,
 				"hi": span.y,
 				"orien": orien,
 			})
+			if _recording and _record != null:
+				_record.add_seek((span.x + span.y) * 0.5, span.x, span.y, orien)
 		# 被丢弃的那一笔也要记账，否则上下交替时每一笔都被上一次同向放行。
 		_last_seek_orien = orien
 		_last_seek_ms = now_ms
@@ -2388,8 +3034,8 @@ func _input(event: InputEvent) -> void:
 		# 「禁用鼠标按键」：左右键不算 Tap，但鼠标移动 / 滚轮照常。
 		if _app != null and not bool(_app.mouse_keys):
 			return
-		if not _running or _paused or _finished or auto_play:
-			# 暂停/结算/自动演示时，点击交给 UI 或忽略。
+		if not _running or _paused or _finished or auto_play or replay_mode:
+			# 暂停/结算/回放/自动演示时，点击交给 UI 或忽略。
 			return
 		if event.pressed and get_viewport().gui_get_hovered_control() is BaseButton:
 			# HUD 上的按钮（试玩设置、HUD 开关）自己处理这次点击。
@@ -2401,6 +3047,10 @@ func _input(event: InputEvent) -> void:
 			_queue_path_motion(point, _chart_ms() + float(_app.playtest_offset_ms if _app != null else 0.0))
 		else:
 			_keys_held.erase(click)
+			var mouse_span := _input_interval(_chart_ms() + _active_offset())
+			_release_ms[click] = (mouse_span.x + mouse_span.y) * 0.5
+			if _recording and _record != null:
+				_record.add_release((mouse_span.x + mouse_span.y) * 0.5, click)
 		get_viewport().set_input_as_handled()
 		return
 	if not (event is InputEventKey):
@@ -2416,6 +3066,24 @@ func _input(event: InputEvent) -> void:
 			else:
 				_set_paused(true)
 			get_viewport().set_input_as_handled()
+			return
+		if event.keycode == KEY_SPACE and event.pressed and not event.echo:
+			if not _finished:
+				_set_paused(not _paused)
+			get_viewport().set_input_as_handled()
+			return
+		if replay_mode:
+			if event.pressed and not event.echo and not _paused and not _finished:
+				match event.keycode:
+					KEY_HOME:
+						_seek_replay(0.0)
+					KEY_LEFT:
+						_seek_relative(-5000.0)
+					KEY_RIGHT:
+						_seek_relative(5000.0)
+					_:
+						return
+				get_viewport().set_input_as_handled()
 			return
 		if event.pressed and not event.echo:
 			if event.keycode == KEY_F6:
@@ -2458,6 +3126,10 @@ func _input(event: InputEvent) -> void:
 		elif not event.pressed:
 			var key: int = event.physical_keycode if event.physical_keycode != 0 else event.keycode
 			_keys_held.erase(key)
+			var release_span := _input_interval(_chart_ms() + _active_offset())
+			_release_ms[key] = (release_span.x + release_span.y) * 0.5
+			if _recording and _record != null:
+				_record.add_release((release_span.x + release_span.y) * 0.5, key)
 			get_viewport().set_input_as_handled()
 
 
@@ -2465,10 +3137,20 @@ func _finish() -> void:
 	if _finished:
 		return
 	_finished = true
+	if _replay_bar != null:
+		_replay_bar.visible = false
+	if _record != null and not replay_mode:
+		_record.result = {
+			"hit": _hit_count,
+			"miss": _miss_count,
+			"max_combo": _max_combo,
+			"tiers": _tier_counts.duplicate(),
+		}
 	_close_path_input_log()
 	_running = false
-	if _audio != null:
-		_audio.stop()
+	# 结算页立刻出来，但音乐继续放到尾（osu 也是进结果页后音乐还在响）：
+	# 谱面最后一颗通常早于音乐结束，这里直接 stop() 会把片尾切掉。
+	# 真正的停止在 _exit()（淡出）或重试（_start_audio 换播放器）里做。
 	_preview.playing = false
 	_preview.set_process(true)
 	_preview.custom_cursor_visible = false
@@ -2501,18 +3183,25 @@ func _finish() -> void:
 	if _scatter_chart != null:
 		var span := 0.0
 		if chart != null:
-			span = chart.timing.beat_to_chart_ms(chart.duration_beats()) + float(_app.playtest_offset_ms if _app != null else 0.0)
+			span = chart.timing.beat_to_chart_ms(chart.duration_beats()) + _active_offset()
 		_scatter_chart.set_hits(_scatter, span)
 	if _bias_label != null:
 		_bias_label.text = "平均判定偏差 %+.2f 毫秒    不稳定率 (UR) %.2f    样本 %d    当前 offset %+.0fms" % [
 			average_error,
 			_unstable_rate(),
 			_errors.size(),
-			float(_app.playtest_offset_ms if _app != null else 0.0),
+			_active_offset(),
 		]
+	if _replay_button != null:
+		var can_replay := false
+		if replay_mode:
+			can_replay = replay_source != null
+		else:
+			can_replay = _record != null and _record.event_count() > 0
+		_replay_button.disabled = not can_replay
 	if _apply_bias_button != null:
 		var delta := -average_error
-		var can_apply: bool = not auto_play and _errors.size() >= 8 and absf(delta) >= 1.0 \
+		var can_apply: bool = not auto_play and not replay_mode and _errors.size() >= 8 and absf(delta) >= 1.0 \
 			and _app != null and (not _app.set_path.is_empty() or not _app.chart_path.is_empty())
 		_apply_bias_button.disabled = not can_apply
 		_apply_bias_button.text = ("把本局偏差写进本谱面（offset %+.0fms）" % delta) if can_apply else "把本局偏差写进本谱面"
@@ -2526,6 +3215,18 @@ func _finish() -> void:
 	_results_text.text = "\n".join(lines)
 	_results.visible = true
 	Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
+
+
+## 离开试玩/回放时淡出音乐（osu 进结果页后音乐继续，退出时渐变而不是硬切）。
+func _fade_out_audio(seconds: float = 1.2) -> void:
+	if _audio == null or not _audio.playing:
+		return
+	var player := _audio
+	var tween := create_tween()
+	tween.tween_property(player, "volume_db", -40.0, seconds)
+	tween.tween_callback(func() -> void:
+		if is_instance_valid(player):
+			player.stop())
 
 
 ## 一次修一张：把「本局平均偏差」反向加到这张谱面的 offset 并存盘。
@@ -2554,6 +3255,168 @@ func _apply_bias_to_chart() -> void:
 ## 把本局偏差换算成谱面 offset（纯函数，符号有回归测试）。
 static func chart_offset_for_bias(current_offset_ms: float, bias_ms: float) -> float:
 	return clampf(current_offset_ms - bias_ms, -10000.0, 10000.0)
+
+
+## ── 回放视频导出 ────────────────────────────────────────────────
+## 分辨率与帧率先选，再选保存路径；导出走 Playtest 离线固定步长 + ffmpeg 硬件编码。
+const VIDEO_SIZES := [["1280×720", Vector2i(1280, 720)], ["1920×1080", Vector2i(1920, 1080)],
+	["2560×1440", Vector2i(2560, 1440)], ["3840×2160", Vector2i(3840, 2160)]]
+const VIDEO_FPS := [30, 60, 120, 240]
+## 实测 get_image() 回读上限（帧/秒）；超过它就会慢于实时。
+const VIDEO_READBACK_FPS := [[1280, 720, 186], [1920, 1080, 130], [2560, 1440, 95], [3840, 2160, 55]]
+
+
+func _export_video() -> void:
+	if _video_options == null:
+		_video_options = AcceptDialog.new()
+		_video_options.title = "导出设置"
+		_video_options.ok_button_text = "选保存位置…"
+		var box := VBoxContainer.new()
+		box.custom_minimum_size = Vector2(360, 0)
+		box.add_theme_constant_override("separation", 6)
+		var size_row := HBoxContainer.new()
+		size_row.add_child(_video_label("分辨率"))
+		_video_size_option = OptionButton.new()
+		for entry in VIDEO_SIZES:
+			_video_size_option.add_item(String(entry[0]))
+		_video_size_option.selected = 1
+		size_row.add_child(_video_size_option)
+		box.add_child(size_row)
+		var fps_row := HBoxContainer.new()
+		fps_row.add_child(_video_label("帧率"))
+		_video_fps_option = OptionButton.new()
+		for value in VIDEO_FPS:
+			_video_fps_option.add_item("%d fps" % int(value))
+		_video_fps_option.selected = 1
+		fps_row.add_child(_video_fps_option)
+		box.add_child(fps_row)
+		_video_warning = Label.new()
+		_video_warning.add_theme_font_size_override("font_size", 11)
+		_video_warning.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		box.add_child(_video_warning)
+		var hint := Label.new()
+		hint.text = "导出时整机静音，完成后按谱面 offset 封入音乐 + 打击音音轨；画面由真实回放判定驱动。"
+		hint.add_theme_font_size_override("font_size", 11)
+		box.add_child(hint)
+		_video_options.add_child(box)
+		_video_options.confirmed.connect(_open_video_dialog)
+		_video_size_option.item_selected.connect(func(_i: int) -> void: _update_video_warning())
+		_video_fps_option.item_selected.connect(func(_i: int) -> void: _update_video_warning())
+		add_child(_video_options)
+	_update_video_warning()
+	_video_options.popup_centered()
+
+
+func _video_label(text: String) -> Label:
+	var label := Label.new()
+	label.text = text
+	return label
+
+
+func _selected_video_size() -> Vector2i:
+	return VIDEO_SIZES[clampi(_video_size_option.selected, 0, VIDEO_SIZES.size() - 1)][1]
+
+
+func _selected_video_fps() -> int:
+	return int(VIDEO_FPS[clampi(_video_fps_option.selected, 0, VIDEO_FPS.size() - 1)])
+
+
+func _update_video_warning() -> void:
+	if _video_warning == null:
+		return
+	var chosen := _selected_video_size()
+	var limit := 60
+	for entry in VIDEO_READBACK_FPS:
+		if int(entry[0]) == chosen.x and int(entry[1]) == chosen.y:
+			limit = int(entry[2])
+	if _selected_video_fps() > limit:
+		_video_warning.text = "注意：%d×%d 的回读上限约 %d fps，%d fps 导出会比实时慢（帧数仍然准确）。" % [
+			chosen.x, chosen.y, limit, _selected_video_fps()]
+		_video_warning.add_theme_color_override("font_color", UITheme.CORAL)
+	else:
+		_video_warning.text = ""
+
+
+func _open_video_dialog() -> void:
+	if _video_dialog == null:
+		_video_dialog = FileDialog.new()
+		_video_dialog.file_mode = FileDialog.FILE_MODE_SAVE_FILE
+		_video_dialog.access = FileDialog.ACCESS_FILESYSTEM
+		_video_dialog.filters = PackedStringArray(["*.mp4 ; MP4 视频"])
+		_video_dialog.title = "导出回放视频"
+		_video_dialog.file_selected.connect(_start_video_export)
+		add_child(_video_dialog)
+	_video_dialog.current_dir = OS.get_system_dir(OS.SYSTEM_DIR_DOWNLOADS)
+	_video_dialog.current_file = "replay.mp4"
+	_video_dialog.popup_centered()
+
+
+func _start_video_export(path: String) -> void:
+	if chart == null:
+		return
+	if not path.to_lower().ends_with(".mp4"):
+		path += ".mp4"
+	if _video_export == null:
+		_video_export = VideoExport.new()
+		_video_export.finished.connect(_on_video_finished)
+		_video_export.progress.connect(func(done: int, total: int) -> void:
+			if _video_bar != null:
+				_video_bar.value = 100.0 * float(done) / float(maxi(1, total))
+		)
+		add_child(_video_export)
+	_video_export.encoder_pref = String(_app.video_encoder if _app != null else "auto")
+	_video_export.background_brightness = float(_app.background_brightness) / 100.0 if _app != null else 1.0
+	_video_export.size = _selected_video_size()
+	_video_export.fps = _selected_video_fps()
+	# 自动演奏（AUTO）没有输入事件，仍然用同一套离线管线跑自动演奏。
+	_video_export.auto_play = auto_play
+	_video_export.mirror_mode = mirror_mode
+	_video_export._chosen = {}
+	_ensure_video_progress()
+	_video_bar.value = 0.0
+	_video_progress.popup_centered()
+	var data := _current_replay()
+	# 到谱面内容结束（音符/区域/事件/音频长度取大）再多 2s：
+	# 只用 duration_beats 会把长尾歌曲和故事板收尾整段切掉，导出看起来「时长偏短」。
+	var end_ms := maxf(1000.0, chart.timing.beat_to_chart_ms(chart.content_end_beat()) + 2000.0)
+	# 本局从播放头起手时也从那里导出：从 0 重跑会把前面没玩到的段全判成 MISS，
+	# 导出的准确率/连击就和实际游玩对不上了。
+	var start_ms := VideoExport.start_ms_for(chart, data)
+	# 传原谱 + 回放自带的镜像，让导出内部的 Playtest 自己翻一次；
+	# 直接传镜像副本会被翻两次（镜像局的导出又变回原谱）。
+	var source_chart: Chart = _source_chart if _source_chart != null else chart
+	_video_export.export_chart(source_chart, start_ms, end_ms, path, data,
+		_app.show_storyboard if _app != null else true)
+
+
+func _ensure_video_progress() -> void:
+	if _video_progress != null:
+		return
+	_video_progress = AcceptDialog.new()
+	_video_progress.title = "导出视频"
+	_video_progress.ok_button_text = "取消"
+	var box := VBoxContainer.new()
+	box.custom_minimum_size = Vector2(360, 0)
+	_video_bar = ProgressBar.new()
+	_video_bar.min_value = 0.0
+	_video_bar.max_value = 100.0
+	box.add_child(_video_bar)
+	var hint := Label.new()
+	hint.text = "导出时不播放声音；完成后会按谱面 offset 封入音轨。"
+	hint.add_theme_font_size_override("font_size", 11)
+	box.add_child(hint)
+	_video_progress.add_child(box)
+	_video_progress.canceled.connect(func() -> void:
+		if _video_export != null:
+			_video_export.cancel()
+	)
+	add_child(_video_progress)
+
+
+func _on_video_finished(_path: String, message: String) -> void:
+	if _video_progress != null:
+		_video_progress.hide()
+	_notify_result(message)
 
 
 ## 结算页已经在显示，往上补一行，而不是只写进看不到的 _log。
@@ -2592,6 +3455,20 @@ func _mirror_label() -> String:
 	return "关闭"
 
 
+## 回放文件里记录的镜像；没有/不认识就先用 hash 反推，再退回当前设置。
+static func replay_mirror(data: Replay, fallback: String = "off", chart: Chart = null) -> String:
+	if data == null:
+		return fallback
+	var saved := String(data.settings.get("mirror", ""))
+	if saved in ["off", "lr", "rot180"]:
+		return saved
+	if chart != null:
+		var inferred := Replay.infer_mirror(data, chart)
+		if not inferred.is_empty():
+			return inferred
+	return fallback
+
+
 func _retry() -> void:
 	if chart == null:
 		_exit()
@@ -2605,8 +3482,7 @@ func _exit() -> void:
 	if _ready_layer != null:
 		_ready_layer.visible = false
 	_close_path_input_log()
-	if _audio != null:
-		_audio.stop()
+	_fade_out_audio()
 	_flush_offset()
 	Input.set_use_accumulated_input(true)
 	Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
@@ -2620,5 +3496,6 @@ func _notification(what: int) -> void:
 		Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
 	elif what == NOTIFICATION_APPLICATION_FOCUS_OUT:
 		# 切出窗口时自动暂停，避免切走的几秒把谱面打空。
-		if _running and not _paused and not _finished:
+		# 离线导出由帧循环驱动，暂停会让剩下的帧全冻在同一画面直到曲子结束。
+		if _running and not _paused and not _finished and not offline_mode:
 			_set_paused(true)

@@ -31,6 +31,7 @@ var audio_latency_ms: float = 0.0
 ## Music / SFX 总线音量（0–100），编辑器「音频」弹窗和试玩设置共用。
 var music_volume: float = 100.0
 var sfx_volume: float = 100.0
+## 音符速度倍率：飞行时长 = Chart.NOTE_FALL_MS / flow_scale（和 BPM 无关）。
 var flow_scale: float = 1.0
 var ffmpeg_path: String = "ffmpeg"
 var star_speed: float = 1.0
@@ -50,6 +51,10 @@ var msaa_3d_level: int = 1
 var ring_pad_rect: Array = []
 var note_detail_fine: bool = true
 var note_glow: bool = true
+## path 身体画法："tread"（粗 chevron 履带，默认）/ "ribbon"（半透明丝带）。
+var path_style: String = "tread"
+## 时间页：改 BPM 时让后面的音符/事件保持真实毫秒位置（而不是保持拍位）。
+var bpm_lock_ms: bool = false
 ## long / short / off
 var cursor_trail: String = "long"
 ## full / light / off
@@ -76,11 +81,17 @@ var hud_show_percent: bool = false
 var hud_show_time: bool = false
 var hud_show_watermark: bool = false
 ## 背景明暗（百分比，100 = 默认观感）：静图和 BGA 共用。
-var background_brightness: int = 100
+
 ## 试玩时鼠标左右键是否算 Tap（关掉后移动/滚轮照常）。
 var mouse_keys: bool = true
+## 试玩/预览里是否绘制 osu! storyboard。
+var show_storyboard: bool = true
+## storyboard 的背景层（Background/Video）是否绘制。
+var show_storyboard_background: bool = true
 ## 右侧预览宽度与折叠状态（编辑器布局记忆）。
 var preview_width: float = 340.0
+## 检查器（右栏）宽度；两条分割线都可拖，宽度跨会话记住。
+var inspector_width: float = 310.0
 var preview_collapsed: bool = false
 var hit_fx_style: String = "burst"
 var hit_sfx_style: String = "default"
@@ -89,6 +100,8 @@ var cursor_scale: float = 1.0
 ## 帧率上限："60" / "120" / "144" / "240" / "vsync" / "unlimited"。
 ## 默认 120：240Hz 屏上跑不满 240 会按 240/120 交替出帧，反而比稳定 120 更抖。
 var frame_cap: String = "120"
+## 视频导出编码器：auto 按 nvenc → qsv → videotoolbox → vaapi → libx264 探测。
+var video_encoder: String = "auto"
 ## 音频缓冲（ms）。Godot 只在启动时读它，改动写进 override.cfg，重启生效。
 var audio_buffer_ms: int = 3
 ## 局内动态校准判定偏移（默认关）。
@@ -97,6 +110,11 @@ var dynamic_offset: bool = false
 var playtest_auto: bool = false
 ## 试玩镜像：off / lr（左右翻转）/ rot180（旋转 180°），只影响试玩，不改谱面。
 var playtest_mirror: String = "off"
+## 背景明暗（0/25/50/75/100）：曲绘、BGA、整张故事板共用一个系数。
+var background_brightness: int = 100
+## 环随鼠标倾斜的最大角度（0–20 度，0 = 关闭）。
+## 启动时默认打开的标签页（set.json 绝对/用户路径列表）。
+var startup_tabs: Array[String] = []
 ## 上一局的平均判定偏差，供试玩设置显示。
 var last_bias_ms: float = 0.0
 
@@ -114,7 +132,8 @@ var selected_view_index: int = -1
 var tool: String = "select"
 var snap_division: int = GridDivisions.DEFAULT_DIVISION
 var beat_subdivisions: int = 4
-var vertical_lines: int = 11
+## 角度格线的等分数（360 必须能被它整除）；u = i/N 处画出格线。
+var angle_divisions: int = 12
 var vertical_stretch: float = 0.0
 var zoom_px_per_beat: float = 28.0
 var time_flows_down: bool = true
@@ -174,6 +193,16 @@ func _ready() -> void:
 	if child_window:
 		# 新开的转谱窗口默认最大化：编辑器三栏 + 顶部工具在 1600×900 以下会挤掉右侧控件。
 		DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_MAXIMIZED)
+	var tabs_arg := cmdline_value("--open-tabs=")
+	if tabs_arg.is_empty() and not startup_tabs.is_empty() \
+			and cmdline_value("--open-set=").is_empty() and cmdline_value("--import-source=").is_empty():
+		# 没带命令行参数时，按设置里记着的默认标签页开机。
+		tabs_arg = "|".join(startup_tabs)
+	if not tabs_arg.is_empty():
+		# 多标签启动：第一个当主标签，其余每个都开成新标签页。
+		set_chart(Chart.new(), "", false)
+		call_deferred("_boot_tabs_window", tabs_arg)
+		return
 	var set_arg := cmdline_value("--open-set=")
 	if not set_arg.is_empty():
 		# 转谱窗口：先放一张空谱占位，等主界面建好再载入套组。
@@ -206,6 +235,37 @@ static func cmdline_value(prefix: String) -> String:
 		if arg.begins_with(prefix):
 			return arg.substr(prefix.length())
 	return ""
+
+
+## 多标签启动：--open-tabs=a.set.json|b.set.json|...
+func _boot_tabs_window(paths_arg: String) -> void:
+	var paths := paths_arg.split("|", false)
+	var opened := 0
+	for path in paths:
+		if path.is_empty() or not FileAccess.file_exists(path):
+			continue
+		var ok := false
+		if path.ends_with(".set.json"):
+			ok = open_set_file(path)
+		else:
+			ok = load_chart(path)
+		if not ok:
+			continue
+		var title := path.get_file().get_basename()
+		if opened == 0:
+			ensure_tab()
+			if not tabs.is_empty():
+				tabs[tabs.size() - 1].title = title
+				tabs_changed.emit()
+		else:
+			add_tab_from_current(title)
+		opened += 1
+	if opened == 0:
+		notice.emit("多标签启动：一个都没打开", "error")
+		set_chart(DemoChart.make_demo(), "user://charts/demo.json", false)
+		ensure_tab()
+		return
+	activate_tab(0)
 
 
 ## 转谱窗口的启动流程：解析来源 → 建难度列表 → 导入第一份。
@@ -515,8 +575,13 @@ func _load_settings() -> void:
 			msaa_3d_level = clampi(int(data.get("msaa_3d_level", 1)), 0, 7)
 			if data.get("ring_pad_rect") is Array:
 				ring_pad_rect = data["ring_pad_rect"]
+			var divisions := int(data.get("angle_divisions", angle_divisions))
+			angle_divisions = divisions if TimingMap.is_angle_division(divisions) else 12
 			note_detail_fine = bool(data.get("note_detail_fine", note_detail_fine))
 			note_glow = bool(data.get("note_glow", note_glow))
+			var style_mode := String(data.get("path_style", path_style))
+			path_style = style_mode if style_mode in ["tread", "ribbon"] else "tread"
+			bpm_lock_ms = bool(data.get("bpm_lock_ms", bpm_lock_ms))
 			var trail_mode := String(data.get("cursor_trail", cursor_trail))
 			cursor_trail = trail_mode if trail_mode in ["long", "short", "off"] else "long"
 			var fx_mode := String(data.get("fx_budget", fx_budget))
@@ -542,14 +607,17 @@ func _load_settings() -> void:
 			hud_show_percent = bool(data.get("hud_show_percent", hud_show_percent))
 			hud_show_time = bool(data.get("hud_show_time", hud_show_time))
 			hud_show_watermark = bool(data.get("hud_show_watermark", hud_show_watermark))
-			background_brightness = clampi(int(data.get("background_brightness", background_brightness)), 0, 100)
 			mouse_keys = bool(data.get("mouse_keys", mouse_keys))
+			show_storyboard = bool(data.get("show_storyboard", show_storyboard))
+			show_storyboard_background = bool(data.get("show_storyboard_background", show_storyboard_background))
 			preview_width = clampf(float(data.get("preview_width", preview_width)), 280.0, 720.0)
+			inspector_width = clampf(float(data.get("inspector_width", inspector_width)), 260.0, 720.0)
 			preview_collapsed = bool(data.get("preview_collapsed", preview_collapsed))
 			hit_fx_style = String(data.get("hit_fx_style", hit_fx_style))
 			hit_sfx_style = String(data.get("hit_sfx_style", hit_sfx_style))
 			ffmpeg_path = String(data.get("ffmpeg", ffmpeg_path))
 			frame_cap = String(data.get("frame_cap", frame_cap))
+			video_encoder = String(data.get("video_encoder", video_encoder))
 			audio_buffer_ms = clampi(int(data.get("audio_buffer_ms", audio_buffer_ms)), 3, 40)
 			playtest_offset_ms = float(data.get("playtest_offset_ms", playtest_offset_ms))
 			audio_latency_ms = clampf(float(data.get("audio_latency_ms", audio_latency_ms)), 0.0, 250.0)
@@ -569,6 +637,11 @@ func _load_settings() -> void:
 				time_flows_down = true
 			else:
 				playback_scroll = scroll_mode if scroll_mode in ["page", "pin"] else "pin"
+			background_brightness = clampi(int(data.get("background_brightness", background_brightness)), 0, 100)
+			mouse_tilt = bool(data.get("mouse_tilt", mouse_tilt))
+			startup_tabs.clear()
+			for item in data.get("startup_tabs", []):
+				startup_tabs.append(String(item))
 			osu_favorites.clear()
 			for value in data.get("osu_favorites", []):
 				osu_favorites.append(int(value))
@@ -722,14 +795,14 @@ func effective_latency_sec() -> float:
 
 
 func save_settings() -> void:
-	var data := {"path_wait_indicator": path_wait_indicator, "note_skin": note_skin, "hit_fx_style": hit_fx_style, "hit_sfx_style": hit_sfx_style, "ffmpeg": ffmpeg_path, "frame_cap": frame_cap, "audio_buffer_ms": audio_buffer_ms, "playtest_offset_ms": playtest_offset_ms, "audio_latency_ms": audio_latency_ms, "music_volume": music_volume, "sfx_volume": sfx_volume, "dynamic_offset": dynamic_offset, "playtest_auto": playtest_auto, "playtest_mirror": playtest_mirror, "playback_scroll": playback_scroll, "osu_favorites": osu_favorites, "last_bias_ms": last_bias_ms, "cursor_scale": cursor_scale, "flow_scale": flow_scale, "star_speed": star_speed, "aa_2d_level": aa_2d_level, "msaa_3d_level": msaa_3d_level, "ring_pad_rect": ring_pad_rect, "note_detail_fine": note_detail_fine, "note_glow": note_glow, "cursor_trail": cursor_trail, "fx_budget": fx_budget, "ring_3d_scale": ring_3d_scale, "ring_3d_hz": ring_3d_hz, "bar_lines": bar_lines, "quality_preset": quality_preset,
+	var data := {"settings_version": 1, "path_wait_indicator": path_wait_indicator, "note_skin": note_skin, "hit_fx_style": hit_fx_style, "hit_sfx_style": hit_sfx_style, "ffmpeg": ffmpeg_path, "frame_cap": frame_cap, "video_encoder": video_encoder, "audio_buffer_ms": audio_buffer_ms, "playtest_offset_ms": playtest_offset_ms, "audio_latency_ms": audio_latency_ms, "music_volume": music_volume, "sfx_volume": sfx_volume, "dynamic_offset": dynamic_offset, "playtest_auto": playtest_auto, "playtest_mirror": playtest_mirror, "playback_scroll": playback_scroll, "background_brightness": background_brightness, "mouse_tilt": mouse_tilt, "startup_tabs": startup_tabs, "osu_favorites": osu_favorites, "last_bias_ms": last_bias_ms, "cursor_scale": cursor_scale, "flow_scale": flow_scale, "star_speed": star_speed, "aa_2d_level": aa_2d_level, "msaa_3d_level": msaa_3d_level, "ring_pad_rect": ring_pad_rect, "angle_divisions": angle_divisions, "note_detail_fine": note_detail_fine, "note_glow": note_glow, "path_style": path_style, "bpm_lock_ms": bpm_lock_ms, "cursor_trail": cursor_trail, "fx_budget": fx_budget, "ring_3d_scale": ring_3d_scale, "ring_3d_hz": ring_3d_hz, "bar_lines": bar_lines, "quality_preset": quality_preset,
 		"hud_scale": hud_scale, "hud_combo_mode": hud_combo_mode, "hud_progress_style": hud_progress_style,
 		"hud_judge_position": hud_judge_position, "hud_opacity": hud_opacity,
 		"hud_show_title": hud_show_title, "hud_show_difficulty": hud_show_difficulty,
 		"hud_show_percent": hud_show_percent, "hud_show_time": hud_show_time,
 		"hud_show_watermark": hud_show_watermark,
-		"background_brightness": clampi(background_brightness, 0, 100), "mouse_keys": mouse_keys,
-		"preview_width": preview_width, "preview_collapsed": preview_collapsed}
+		"mouse_keys": mouse_keys, "show_storyboard": show_storyboard, "show_storyboard_background": show_storyboard_background,
+		"preview_width": preview_width, "inspector_width": inspector_width, "preview_collapsed": preview_collapsed}
 	var file := FileAccess.open(SETTINGS_PATH, FileAccess.WRITE)
 	if file != null:
 		file.store_string(JSON.stringify(data, "\t"))
@@ -972,6 +1045,15 @@ func load_chart(path: String) -> bool:
 	# .set.json 是难度套组：走套组流程，顶部会出现难度下拉。
 	if _is_set_file(path):
 		return open_set_file(path)
+	# .lbp 包：单个 zip（谱面 JSON + 音频/曲绘/视频/故事板）。
+	if path.to_lower().ends_with(".lbp") and LBPIO.is_package(path):
+		var packed := LBPIO.import_package(path)
+		if packed == null:
+			notice.emit("打开失败：%s" % LBPIO.last_error, "error")
+			return false
+		set_chart(packed, path)
+		notice.emit("已打开谱面包 %s" % path.get_file(), "info")
+		return true
 	var loaded := ChartIO.load_chart(path)
 	if loaded == null:
 		notice.emit("打开失败：%s" % ChartIO.last_error, "error")
@@ -1156,7 +1238,7 @@ func import_maimai(path: String, difficulty_index: int = 0) -> bool:
 func export_lbp(path: String) -> bool:
 	if chart == null:
 		return false
-	var err := LBPIO.export_to_file(chart, path)
+	var err := LBPIO.export_package(chart, path)
 	if err != OK:
 		notice.emit("导出 .lbp 失败：%s" % LBPIO.last_error, "error")
 		return false

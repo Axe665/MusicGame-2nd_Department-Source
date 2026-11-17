@@ -13,6 +13,10 @@ var _main_row: Control
 var _ring_workspace: Control
 var _view_menu: MenuButton
 var _preview_panel: PanelContainer
+var _inspector_grip: Control
+var _inspector_dragging := false
+var _inspector_drag_start_x := 0.0
+var _inspector_drag_width := 310.0
 var _preview_grip: Control
 var _preview_reopen: Button
 var _preview_gear: MenuButton
@@ -34,12 +38,16 @@ const QUALITY_OPTIONS := [
 	{"key": "use_3d_ring", "label": "3D 环", "choices": [["开", 158], ["关", 159]]},
 	{"key": "note_detail_fine", "label": "音符精细度", "choices": [["全画质", 63], ["省电", 64]]},
 	{"key": "note_glow", "label": "音符光晕", "choices": [["开", 65], ["关", 66]]},
+	{"key": "path_style", "label": "Path 画法", "choices": [["履带（粗，默认）", 180], ["丝带（半透明）", 181]]},
 	{"key": "cursor_trail", "label": "光标拖尾", "choices": [["长", 67], ["短", 68], ["关", 69]]},
 	{"key": "fx_budget", "label": "命中特效", "choices": [["完整", 70], ["精简", 71], ["关", 72]]},
 	{"key": "ring_3d_scale", "label": "3D 环分辨率", "choices": [["原生", 160], ["超采样 1.25×", 161], ["超采样 1.5×", 162], ["高 0.85", 163], ["中 0.65", 164], ["低 0.5", 165]]},
 	{"key": "ring_3d_hz", "label": "3D 环刷新", "choices": [["60Hz", 76], ["30Hz", 77]]},
 	{"key": "bar_lines", "label": "小节线", "choices": [["开", 78], ["关", 79]]},
 	{"key": "background_brightness", "label": "背景明暗", "choices": [["关", 96], ["25%", 97], ["50%", 98], ["75%", 99], ["100%（默认）", 100]]},
+	{"key": "show_storyboard", "label": "故事板", "choices": [["开", 166], ["关", 167]]},
+	{"key": "show_storyboard_background", "label": "故事板背景层", "choices": [["开", 168], ["关", 169]]},
+	{"key": "video_encoder", "label": "视频导出编码器", "choices": [["自动（优先硬件）", 170], ["NVENC", 171], ["QSV", 172], ["VideoToolbox", 173], ["VAAPI（Linux）", 174], ["libx264（软件）", 175]]},
 ]
 
 ## 界面（HUD）选项：和 视图 → 画质 同样的菜单结构，只影响显示。
@@ -134,6 +142,10 @@ var _import_dir_dialog: FileDialog
 var _audio_dialog: FileDialog
 var _song_dialog: SongImportDialog
 var _chart_browser: ChartBrowser
+var _sb_dialog: FileDialog = null
+## 故事板编辑器（新建/编辑 .osb）。
+const StoryboardEditorScript := preload("res://charter/storyboard_editor.gd")
+var _sb_editor: Control = null
 ## 独立的“在线 osu! 谱面”窗口（卡片式，只列 osu!std）。
 var _osu_browser: OsuBrowser
 ## 设置里「转码缓存」体积显示。
@@ -143,7 +155,7 @@ var _import_progress_label: Label = null
 var _import_progress_bar: ProgressBar = null
 var _new_dialog: NewChartDialog
 var _playtest: Playtest
-## 试玩前的设置窗口：倍速 / 流速 / 星速 / 星显。
+## 试玩前的设置窗口：倍速 / 音符速度 / 星速 / 星显。
 var _playtest_dialog: AcceptDialog = null
 var _playtest_rate: SpinBox = null
 var _playtest_flow: SpinBox = null
@@ -163,7 +175,7 @@ var _calibration_dialog: CalibrationDialog = null
 ## 校准窗口关掉后要回到哪里："" / "settings" / "playtest"。
 var _calibration_return := ""
 var _playtest_from_start: bool = false
-## 制谱界面保留的流速输入框（试玩设置改流速后要同步回来）。
+## 制谱界面保留的音符速度输入框（试玩设置改完要同步回来）。
 var _editor_flow_spin: SpinBox = null
 ## 制谱界面保留的「星显」输入框，和试玩设置共用同一个值。
 var _cursor_u: float = 0.0
@@ -224,6 +236,9 @@ func _ready() -> void:
 	set_process(true)
 	if "--bench" in OS.get_cmdline_user_args():
 		call_deferred("_run_bench")
+	for arg in OS.get_cmdline_user_args():
+		if arg.begins_with("--replay="):
+			call_deferred("_open_replay_file", arg.get_slice("=", 1))
 
 
 ## 无人值守性能基准：载入 Apollo 谱，从扫圈段自动打 25 秒后退出。
@@ -329,6 +344,46 @@ func _set_preview_collapsed(value: bool, manual: bool) -> void:
 		_app.save_settings()
 
 
+## 检查器在画布右边：往右拖 = 检查器变窄，往左拖 = 变宽。
+func _on_inspector_grip_input(event: InputEvent) -> void:
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
+		if event.pressed and event.double_click:
+			_set_inspector_width(310.0)
+			return
+		if event.pressed:
+			_inspector_dragging = true
+			_inspector_drag_start_x = event.global_position.x
+			_inspector_drag_width = _inspector_wrap_width()
+		else:
+			_inspector_dragging = false
+			if _app != null:
+				_app.inspector_width = _inspector_wrap_width()
+				_app.save_settings()
+	elif event is InputEventMouseMotion and _inspector_dragging:
+		_set_inspector_width(_inspector_drag_width - (event.global_position.x - _inspector_drag_start_x))
+
+
+func _inspector_wrap_width() -> float:
+	var wrap := _main_row.get_node_or_null("InspectorWrap") as Control
+	if wrap == null:
+		# 没命名时退回第一层里带 inspector 子节点的那个 VBox。
+		for child in _main_row.get_children():
+			if child is VBoxContainer and child.get_node_or_null("Inspector") != null:
+				return child.custom_minimum_size.x
+		return 310.0
+	return wrap.custom_minimum_size.x
+
+
+func _set_inspector_width(width: float) -> void:
+	var wrap := _main_row.get_node_or_null("InspectorWrap") as Control if _main_row != null else null
+	if wrap == null:
+		return
+	var clamped := clampf(width, 260.0, 720.0)
+	wrap.custom_minimum_size.x = clamped
+	if _app != null:
+		_app.inspector_width = clamped
+
+
 func _on_preview_grip_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
 		if event.pressed:
@@ -421,7 +476,7 @@ func _build_ui() -> void:
 	# 文件 0–9 / 15–19、编辑 10–14、视图 20–25、插入 30–38、事件 40–41、试玩 50–51。
 	brand_row.add_child(_menu("文件", [
 		["新建", 0], ["打开", 1], ["保存", 2], ["另存为", 3], ["-", 0],
-		["导入", [["歌曲 / 识别 BPM…", 9], ["导入视频…", 19], ["谱面 (.osz/.zip/.txt)", 6], ["舞萌文件夹", 8], ["在线舞萌谱面…", 15], ["在线 osu! 谱面…", 18]]],
+		["导入", [["歌曲 / 识别 BPM…", 9], ["导入视频…", 19], ["谱面 (.osz/.zip/.txt)", 6], ["舞萌文件夹", 8], ["在线舞萌谱面…", 15], ["故事板 (.osb)…", 28], ["在线 osu! 谱面…", 18], ["回放 (.replay)…", 57]]],
 		["导出", [["导出 .lbp", 7]]],
 		["-", 0], ["恢复自动保存", 4], ["-", 0], ["退出", 5],
 	]))
@@ -431,11 +486,12 @@ func _build_ui() -> void:
 	]))
 	_view_menu = _menu("视图", [
 		["显示/隐藏 HUD", 20], ["调试叠层", 21], ["波形", 22], ["从上往下写入", 25], ["-", 0],
-		["环编辑…", 39], ["时间 / BPM (F6)", 24],
+		["环编辑…", 39], ["时间 / BPM (F6)", 24], ["-", 0], ["故事板", 27],
 	])
 	brand_row.add_child(_view_menu)
 	brand_row.add_child(_menu("插入", [
 		["Tap", 30], ["Hold", 31], ["Path", 32], ["Seek", 33], ["Anchor", 34], ["Bell", 35], ["Limit", 36],
+		["-", 0], ["故事板编辑器…", 29],
 	]))
 	# 试玩只保留一个黄色按钮；F5 / Shift+F5 快捷键照旧生效。
 	var playtest_button := Button.new()
@@ -507,19 +563,19 @@ func _build_ui() -> void:
 	var vertical_divider := VSeparator.new()
 	tool_row.add_child(vertical_divider)
 	var vertical_label := Label.new()
-	vertical_label.text = "竖线"
+	vertical_label.text = "角度等分"
 	vertical_label.add_theme_font_size_override("font_size", 11)
 	vertical_label.add_theme_color_override("font_color", UITheme.MUTED)
 	vertical_label.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	tool_row.add_child(vertical_label)
 	_vertical_lines_edit = LineEdit.new()
-	_vertical_lines_edit.text = str(_app.vertical_lines if _app != null else 11)
+	_vertical_lines_edit.text = str(_app.angle_divisions if _app != null else 12)
 	_vertical_lines_edit.custom_minimum_size = Vector2(48, 26)
 	_vertical_lines_edit.max_length = 3
 	_vertical_lines_edit.alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_vertical_lines_edit.select_all_on_focus = true
 	_vertical_lines_edit.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	_vertical_lines_edit.tooltip_text = "竖线数量（1–%d），等距分布在编辑区；放置音符靠近时自动吸附" % TimingMap.MAX_VERTICAL_LINES
+	_vertical_lines_edit.tooltip_text = "角度等分数 N（360÷N 必须是整数，12 → 每格 30°）；放置/拖动音符时按住 Shift 才吸附到格线"
 	_vertical_lines_edit.text_changed.connect(_on_vertical_lines_changed)
 	_vertical_lines_edit.text_submitted.connect(_on_vertical_lines_submitted)
 	_vertical_lines_edit.focus_exited.connect(_on_vertical_lines_focus_exited)
@@ -648,6 +704,10 @@ func _build_ui() -> void:
 	gear_popup.id_pressed.connect(_on_preview_menu)
 	preview_header.add_child(_preview_gear)
 	_preview = Preview3D.new()
+	_preview.show_storyboard = _app.show_storyboard if _app != null else true
+	_preview.set_background_brightness(float(_app.background_brightness) / 100.0 if _app != null else 1.0)
+	_preview.storyboard_fit = true
+	_preview.show_storyboard_background = _app.show_storyboard_background if _app != null else true
 	_preview.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_preview.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_preview.cursor_changed.connect(_on_cursor_changed)
@@ -673,12 +733,20 @@ func _build_ui() -> void:
 	_event_track.canvas = _canvas
 
 	var inspector_wrap := VBoxContainer.new()
-	inspector_wrap.custom_minimum_size = Vector2(310, 0)
+	inspector_wrap.name = "InspectorWrap"
+	inspector_wrap.custom_minimum_size = Vector2(clampf(float(_app.inspector_width) if _app != null else 310.0, 260.0, 720.0), 0)
 	inspector_wrap.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	inspector_wrap.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	inspector_wrap.size_flags_stretch_ratio = 24.0
 	inspector_wrap.add_theme_constant_override("separation", 4)
 	main_row.add_child(inspector_wrap)
+	_inspector_grip = Control.new()
+	_inspector_grip.name = "InspectorGrip"
+	_inspector_grip.custom_minimum_size = Vector2(6, 0)
+	_inspector_grip.mouse_default_cursor_shape = Control.CURSOR_HSIZE
+	_inspector_grip.tooltip_text = "拖动调整检查器宽度（双击恢复默认）"
+	_inspector_grip.gui_input.connect(_on_inspector_grip_input)
+	main_row.add_child(_inspector_grip)
 	_preview_grip = Control.new()
 	_preview_grip.name = "PreviewGrip"
 	_preview_grip.custom_minimum_size = Vector2(6, 0)
@@ -707,10 +775,11 @@ func _build_ui() -> void:
 	_inspector.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	inspector_wrap.add_child(_inspector)
 	main_row.move_child(center, 0)
-	main_row.move_child(inspector_wrap, 1)
-	main_row.move_child(_preview_grip, 2)
-	main_row.move_child(_preview_panel, 3)
-	main_row.move_child(_preview_reopen, 4)
+	main_row.move_child(_inspector_grip, 1)
+	main_row.move_child(inspector_wrap, 2)
+	main_row.move_child(_preview_grip, 3)
+	main_row.move_child(_preview_panel, 4)
+	main_row.move_child(_preview_reopen, 5)
 	_main_row = main_row
 	_ring_workspace = preload("res://charter/ring_workspace.gd").new()
 	add_child(_ring_workspace)
@@ -764,10 +833,10 @@ func _build_ui() -> void:
 	_bpm_label = Label.new()
 	UITheme.style_mono(_bpm_label, 12, UITheme.MUTED)
 	transport_row.add_child(_bpm_label)
-	# 制谱界面单独保留「流速」，只影响编辑预览的预读速度；试玩里另有同名设置。
+	# 制谱界面单独保留「音符速度」，只影响编辑预览；试玩里另有同名设置。
 	var flow_label := Label.new()
 	UITheme.style_mono(flow_label, 11, UITheme.MUTED)
-	flow_label.text = "流速"
+	flow_label.text = "音符速度"
 	transport_row.add_child(flow_label)
 	var flow_spin := SpinBox.new()
 	flow_spin.min_value = 0.05
@@ -776,7 +845,7 @@ func _build_ui() -> void:
 	flow_spin.value = _app.flow_scale
 	flow_spin.suffix = "×"
 	flow_spin.custom_minimum_size = Vector2(92, 0)
-	flow_spin.tooltip_text = "编辑预览的预读速度（0.05–3.0，步进 0.01）；试玩流速在「试玩设置」里单独设"
+	flow_spin.tooltip_text = "音符从出现到判定环的时间 = 1 秒 ÷ 这个倍率（0.05–3.0）。不随 BPM 变；试玩在「试玩设置」里单独设"
 	flow_spin.focus_mode = Control.FOCUS_NONE
 	flow_spin.get_line_edit().focus_mode = Control.FOCUS_NONE
 	flow_spin.value_changed.connect(func(value: float) -> void:
@@ -898,18 +967,18 @@ func _set_beat_subdivision_error(has_error: bool) -> void:
 
 
 func _on_vertical_lines_changed(text: String) -> void:
-	var value := TimingMap.parse_vertical_lines(text)
+	var value := TimingMap.parse_angle_divisions(text)
 	if value > 0:
 		_set_vertical_lines_error(false)
-		if _app != null and _app.vertical_lines != value:
-			_app.vertical_lines = value
+		if _app != null and _app.angle_divisions != value:
+			_app.angle_divisions = value
 			if _canvas != null:
 				_canvas.queue_redraw()
 		return
 	if text.strip_edges().is_empty():
 		_set_vertical_lines_error(false)
 		return
-	_set_vertical_lines_error(true)
+	_set_vertical_lines_error(true, text)
 
 
 func _on_vertical_lines_submitted(text: String) -> void:
@@ -924,23 +993,32 @@ func _on_vertical_lines_focus_exited() -> void:
 func _commit_vertical_lines(text: String) -> void:
 	if _vertical_lines_edit == null:
 		return
-	var value := TimingMap.parse_vertical_lines(text)
+	var value := TimingMap.parse_angle_divisions(text)
 	if value > 0:
 		_vertical_lines_edit.text = str(value)
 		_set_vertical_lines_error(false)
-		if _app != null and _app.vertical_lines != value:
-			_app.vertical_lines = value
+		if _app != null and _app.angle_divisions != value:
+			_app.angle_divisions = value
+			_app.save_settings()
 			if _canvas != null:
 				_canvas.queue_redraw()
 		return
-	_set_vertical_lines_error(true)
-	_show_toast("竖线数据有误：请输入 1–%d 的整数。" % TimingMap.MAX_VERTICAL_LINES, "error")
+	var hint := 0
+	if text.strip_edges().is_valid_int():
+		hint = TimingMap.nearest_angle_divisions(int(text.strip_edges()))
+	_set_vertical_lines_error(true, text)
+	if hint > 0:
+		_show_toast("角度等分必须是 360 的约数：%d 不行，最近的合法值是 %d（每格 %.2f°）。" % [int(text.strip_edges()), hint, 360.0 / float(hint)], "error")
+	else:
+		_show_toast("角度等分请填 2–%d 且能整除 360 的整数（如 8 / 12 / 24）。" % TimingMap.MAX_ANGLE_DIVISIONS, "error")
 
 
-func _set_vertical_lines_error(has_error: bool) -> void:
+func _set_vertical_lines_error(has_error: bool, text: String = "") -> void:
 	if _vertical_lines_error == null or _vertical_lines_edit == null:
 		return
 	_vertical_lines_error.text = "数据有误" if has_error else ""
+	if has_error and text.strip_edges().is_valid_int():
+		_vertical_lines_error.text = str(TimingMap.nearest_angle_divisions(int(text.strip_edges())))
 	_vertical_lines_error.visible = has_error
 	if has_error:
 		_vertical_lines_edit.add_theme_color_override("font_color", UITheme.RED)
@@ -1118,6 +1196,8 @@ func _quality_index(key: String) -> int:
 			return 0 if _app.note_detail_fine else 1
 		"note_glow":
 			return 0 if _app.note_glow else 1
+		"path_style":
+			return 0 if _app.path_style == "tread" else 1
 		"cursor_trail":
 			return ["long", "short", "off"].find(_app.cursor_trail)
 		"fx_budget":
@@ -1130,6 +1210,12 @@ func _quality_index(key: String) -> int:
 			return 0 if _app.bar_lines else 1
 		"background_brightness":
 			return [0, 25, 50, 75, 100].find(_app.background_brightness)
+		"show_storyboard":
+			return 0 if _app.show_storyboard else 1
+		"show_storyboard_background":
+			return 0 if _app.show_storyboard_background else 1
+		"video_encoder":
+			return ["auto", "nvenc", "qsv", "videotoolbox", "vaapi", "libx264"].find(_app.video_encoder)
 	return -1
 
 
@@ -1152,6 +1238,11 @@ func _set_quality_index(key: String, index: int) -> void:
 			_app.note_detail_fine = index == 0
 		"note_glow":
 			_app.note_glow = index == 0
+		"path_style":
+			_app.path_style = "tread" if index == 0 else "ribbon"
+			# 画法只影响画面，不该把「预设」打成自定义。
+			_apply_visual_options()
+			return
 		"cursor_trail":
 			_app.cursor_trail = ["long", "short", "off"][clampi(index, 0, 2)]
 		"fx_budget":
@@ -1164,7 +1255,20 @@ func _set_quality_index(key: String, index: int) -> void:
 			_app.bar_lines = index == 0
 		"background_brightness":
 			_app.background_brightness = [0, 25, 50, 75, 100][clampi(index, 0, 4)]
+			_preview.set_background_brightness(float(_app.background_brightness) / 100.0)
+			if _playtest != null and _playtest._preview != null:
+				_playtest._preview.set_background_brightness(float(_app.background_brightness) / 100.0)
 			# 背景明暗不是画质参数，别把预设打成「自定义」。
+			return
+		"show_storyboard":
+			_app.show_storyboard = index == 0
+			# 故事板开关也不是画质参数，不参与预设。
+			return
+		"show_storyboard_background":
+			_app.show_storyboard_background = index == 0
+			return
+		"video_encoder":
+			_app.video_encoder = ["auto", "nvenc", "qsv", "videotoolbox", "vaapi", "libx264"][clampi(index, 0, 5)]
 			return
 	_app.quality_preset = "custom"
 
@@ -1179,14 +1283,18 @@ func _apply_visual_options() -> void:
 	_preview.use_3d_ring = _app.use_3d_ring
 	_preview.note_detail_fine = _app.note_detail_fine
 	_preview.note_glow = _app.note_glow
+	_preview.path_style = _app.path_style
 	_preview.cursor_trail_mode = _app.cursor_trail
 	_preview.fx_budget = _app.fx_budget
 	_preview.ring_3d_scale = _app.ring_3d_scale
 	_preview.msaa_3d_level = _app.msaa_3d_level
 	_preview.ring_3d_hz = _app.ring_3d_hz
 	_preview.bar_lines_visible = _app.bar_lines
-	_preview.set_background_brightness(float(_app.background_brightness) / 100.0)
 	_preview.hud_options = _app.hud_options()
+	_preview.show_storyboard = _app.show_storyboard
+	_preview.show_storyboard_background = _app.show_storyboard_background
+	_preview.set_storyboard_visible(_app.show_storyboard)
+	_preview._refresh_background_layering()
 	_preview.apply_ring_quality()
 	_preview.request_redraw()
 	# 试玩里有自己的 Preview3D：局内改画质要同时推给它。
@@ -1194,13 +1302,16 @@ func _apply_visual_options() -> void:
 		var inner: Preview3D = _playtest._preview
 		inner.note_detail_fine = _app.note_detail_fine
 		inner.note_glow = _app.note_glow
+		inner.path_style = _app.path_style
 		inner.cursor_trail_mode = _app.cursor_trail
 		inner.fx_budget = _app.fx_budget
 		inner.ring_3d_scale = _app.ring_3d_scale
 		inner.ring_3d_hz = _app.ring_3d_hz
 		inner.bar_lines_visible = _app.bar_lines
-		inner.set_background_brightness(float(_app.background_brightness) / 100.0)
 		inner.hud_options = _app.hud_options()
+		inner.show_storyboard = _app.show_storyboard
+		inner.show_storyboard_background = _app.show_storyboard_background
+		inner._refresh_background_layering()
 		inner.apply_ring_quality()
 		inner.request_redraw()
 
@@ -1456,7 +1567,7 @@ func _build_dialogs() -> void:
 	_open_dialog = FileDialog.new()
 	_open_dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
 	_open_dialog.access = FileDialog.ACCESS_FILESYSTEM
-	_open_dialog.filters = PackedStringArray(["*.json ; Tamaki 谱面"])
+	_open_dialog.filters = PackedStringArray(["*.json,*.lbp ; Tamaki 谱面 / 谱面包"])
 	_open_dialog.title = "打开谱面"
 	_open_dialog.file_selected.connect(func(path: String) -> void:
 		_app.ensure_tab()
@@ -1527,8 +1638,8 @@ func _build_dialogs() -> void:
 	_lbp_dialog = FileDialog.new()
 	_lbp_dialog.file_mode = FileDialog.FILE_MODE_SAVE_FILE
 	_lbp_dialog.access = FileDialog.ACCESS_FILESYSTEM
-	_lbp_dialog.filters = PackedStringArray(["*.lbp ; Tamaki LBP v2"])
-	_lbp_dialog.title = "导出 .lbp"
+	_lbp_dialog.filters = PackedStringArray(["*.lbp ; Tamaki 谱面包（zip）"])
+	_lbp_dialog.title = "导出 .lbp 谱面包"
 	_lbp_dialog.current_file = "chart.lbp"
 	_lbp_dialog.file_selected.connect(func(path: String) -> void:
 		if not path.to_lower().ends_with(".lbp"):
@@ -1585,6 +1696,8 @@ func _sync_appearance() -> void:
 
 
 func _sync_from_app() -> void:
+	if _preview != null and _app != null and _preview.get_chart() != _app.chart:
+		_preview.invalidate_storyboard()
 	if _app == null or _app.chart == null:
 		return
 	_refresh_import_difficulty()
@@ -1605,7 +1718,7 @@ func _sync_from_app() -> void:
 		_beat_subdiv_edit.text = str(_app.beat_subdivisions)
 		_set_beat_subdivision_error(false)
 	if _vertical_lines_edit != null:
-		_vertical_lines_edit.text = str(_app.vertical_lines)
+		_vertical_lines_edit.text = str(_app.angle_divisions)
 		_set_vertical_lines_error(false)
 	if _stretch_edit != null:
 		_stretch_syncing = true
@@ -1965,7 +2078,8 @@ func _process(_delta: float) -> void:
 					_beat_label.add_theme_color_override("font_color", UITheme.GOLD)
 			)
 		var audio_playing := _audio.stream != null and _audio.playing
-		if beat >= _app.chart_content_end_beats() + 2.0 and not audio_playing:
+		var storyboard_editor_open := _sb_editor != null and _sb_editor.visible
+		if beat >= _app.chart_content_end_beats() + 2.0 and not audio_playing and not storyboard_editor_open:
 			_stop_play()
 
 
@@ -2141,6 +2255,200 @@ func _close_tab_now(index: int) -> void:
 	_app.close_tab(index)
 	_sync_from_app()
 	_refresh_tabs()
+
+
+## 把 osu! 的 .osb 和同目录素材搬进 user://，挂到当前谱面上。
+## 谱师可以直接用 osu! 的 storyboard 编辑器（或手写 .osb）做完再导进来。
+func _import_storyboard_dialog() -> void:
+	if _app == null or _app.chart == null:
+		_show_toast("先打开一张谱面再导入故事板", "error")
+		return
+	if _sb_dialog == null:
+		_sb_dialog = FileDialog.new()
+		_sb_dialog.title = "导入 osu! 故事板 (.osb)"
+		_sb_dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
+		_sb_dialog.access = FileDialog.ACCESS_FILESYSTEM
+		_sb_dialog.filters = PackedStringArray(["*.osb ; osu! storyboard"])
+		_sb_dialog.file_selected.connect(_attach_storyboard)
+		add_child(_sb_dialog)
+	_sb_dialog.popup_centered_ratio(0.7)
+
+
+## 故事板编辑器：直接在当前谱面上新建 / 修改 storyboard。
+func _open_storyboard_editor() -> void:
+	if _app == null or _app.chart == null:
+		return
+	if _sb_editor == null:
+		_sb_editor = StoryboardEditorScript.new()
+		_sb_editor.saved.connect(_on_storyboard_saved)
+		_sb_editor.seek_requested.connect(_on_storyboard_seek)
+		_sb_editor.edited.connect(_on_storyboard_edited)
+		_sb_editor.play_requested.connect(_on_storyboard_play)
+		_sb_editor.pause_requested.connect(_on_storyboard_pause)
+		_sb_editor.mute_changed.connect(_set_sb_preview_silent)
+		_sb_editor.opened.connect(_on_storyboard_opened)
+		_sb_editor.closed.connect(_on_storyboard_closed)
+		add_child(_sb_editor)
+	_sb_editor.open_for(_app.chart)
+
+
+## 全屏工作区：把主编辑区藏起来，并停掉 3D 预览的逐帧重绘/采样。
+## 编辑器自己画故事板，隐藏的预览再跑一遍纯属白烧 CPU（实测占掉一截帧时间）。
+func _on_storyboard_opened() -> void:
+	if _main_row != null:
+		_main_row.visible = false
+	if _preview != null:
+		_preview.set_suspended(true)
+
+
+func _on_storyboard_closed() -> void:
+	_stop_play()
+	if _preview != null:
+		_preview.set_suspended(false)
+	if _main_row != null:
+		_main_row.visible = true
+	_sync_from_app()
+
+
+## 故事板编辑器用它判断主界面是不是正在播放（双向联动）。
+func is_playing() -> bool:
+	return _playing
+
+
+## 编辑器里按播放：用主界面同一条音频时间线，画布才跟得上动画。
+func _on_storyboard_play(ms: float, silent: bool) -> void:
+	if _app == null or _app.chart == null:
+		return
+	_set_sb_preview_silent(silent)
+	var beat: float = _app.chart.timing.chart_ms_to_beat(maxf(0.0, ms + _app.chart.offset_ms))
+	_app.set_playhead(beat)
+	_start_play(beat)
+
+
+func _on_storyboard_pause() -> void:
+	_stop_play()
+	_set_sb_preview_silent(false)
+
+
+## 只改播放器自己的音量，不动设置里的母线音量。
+func _set_sb_preview_silent(silent: bool) -> void:
+	if _audio != null:
+		_audio.volume_db = -80.0 if silent else 0.0
+
+
+## 时间轴拖播放头：直接跳到该时刻，预览跟着动。
+func _on_storyboard_seek(ms: float) -> void:
+	if _app == null or _app.chart == null:
+		return
+	# 时间轴是 osb 时间，谱面是 chart 时间：ReDIVE 的 offset 是 -8ms，不能直接当 beat。
+	var beat: float = _app.chart.timing.chart_ms_to_beat(maxf(0.0, ms + _app.chart.offset_ms))
+	# 播放中拖播放头要把音频时钟一起挪，否则声音和画面对不上。
+	if _playing:
+		_rebase_playback(beat)
+	_app.set_playhead(beat)
+	_sync_from_app()
+	_preview._sb_sample_ms = -1.0e9
+	_preview._sb_queued_ms = -1.0e9
+	_preview.refresh_storyboard_layers()
+	_preview._overlay.queue_redraw()
+
+
+## 编辑器里改了东西（还没存盘）：把编辑中的 board 直接塞给预览，边拖边看。
+func _on_storyboard_edited() -> void:
+	if _sb_editor == null or _app == null or _app.chart == null:
+		return
+	var board = _sb_editor._board
+	if board == null:
+		return
+	var dir := String(_sb_editor._dir)
+	if dir.is_empty():
+		dir = String(_app.chart.metadata.get("storyboard", ""))
+	_preview._storyboard = board
+	_preview._storyboard_chart = _app.chart
+	_preview._storyboard_dir = dir
+	_preview._sb_wide_detected = Preview3D._detect_wide(board)
+	_preview._storyboard_textures.clear()
+	board.invalidate()
+	_preview._sb_sample_ms = -1.0e9
+	_preview._sb_queued_ms = -1.0e9
+	_preview._sb_render_items = []
+	_preview._refresh_background_layering()
+	_preview._update_storyboard_clip_rects()
+	_preview.refresh_storyboard_layers()
+
+
+func _on_storyboard_saved(path: String) -> void:
+	if _app == null:
+		return
+	_app.begin_edit()
+	_app.chart.metadata["storyboard"] = path.get_base_dir()
+	_app.finish_edit()
+	# 第二次保存到同一目录时，缓存里还是上一版解析结果，预览会停在旧画面。
+	_preview._board_cache.erase(path.get_base_dir())
+	_preview._storyboard = null
+	_preview._storyboard_chart = null
+	_preview._ensure_storyboard(_app.chart)
+	_preview._refresh_background_layering()
+	_preview._overlay.queue_redraw()
+	if _preview._storyboard_bg != null:
+		_preview._storyboard_bg.queue_redraw()
+	_show_toast("故事板已保存：%s" % path.get_file(), "info")
+
+
+func _attach_storyboard(osb_path: String) -> void:
+	var text := FileAccess.get_file_as_string(osb_path)
+	if text.is_empty():
+		_show_toast("读不到 %s" % osb_path, "error")
+		return
+	var board := Storyboard.parse(text, osb_path.get_file())
+	if board.sprites.is_empty():
+		_show_toast("这个 .osb 里没有 sprite", "error")
+		return
+	var dir := osb_path.get_base_dir()
+	var target := "user://storyboards/%s" % osb_path.md5_text().substr(0, 10)
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(target))
+	# 素材：osb 同目录（含 sb/ 这类子目录）里的所有图片，按文件名拍平。
+	var copied := 0
+	for file_name in DirAccess.get_files_at(dir):
+		if not _is_storyboard_image(file_name):
+			continue
+		if _copy_file(dir + "/" + file_name, target + "/" + file_name):
+			copied += 1
+	for sub_dir in DirAccess.get_directories_at(dir):
+		var sub_path := dir + "/" + sub_dir
+		for file_name in DirAccess.get_files_at(sub_path):
+			if not _is_storyboard_image(file_name):
+				continue
+			if _copy_file(sub_path + "/" + file_name, target + "/" + file_name):
+				copied += 1
+	_copy_file(osb_path, target + "/storyboard.osb")
+	_app.begin_edit()
+	_app.chart.metadata["storyboard"] = target
+	_app.finish_edit()
+	_preview._storyboard_chart = null
+	_preview._ensure_storyboard(_app.chart)
+	_preview._refresh_background_layering()
+	_preview._overlay.queue_redraw()
+	if _preview._storyboard_bg != null:
+		_preview._storyboard_bg.queue_redraw()
+	_show_toast("故事板已导入：%d 个对象 / %d 张图" % [board.sprites.size(), copied], "info")
+
+
+static func _is_storyboard_image(file_name: String) -> bool:
+	var ext := file_name.get_extension().to_lower()
+	return ext in ["png", "jpg", "jpeg", "webp", "bmp"]
+
+
+static func _copy_file(from: String, to: String) -> bool:
+	var data := FileAccess.get_file_as_bytes(from)
+	if data.is_empty():
+		return false
+	var handle := FileAccess.open(to, FileAccess.WRITE)
+	if handle == null:
+		return false
+	handle.store_buffer(data)
+	handle.close()
+	return true
 
 
 func _on_import_osz_selected(path: String, include_video: bool = true, star_hints: Dictionary = {}) -> void:
@@ -2450,8 +2758,14 @@ func _on_menu(id: int) -> void:
 				_inspector.open_video_picker()
 		15:
 			_chart_browser.popup_centered_ratio(0.8)
+		28:
+			_import_storyboard_dialog()
+		29:
+			_open_storyboard_editor()
 		18:
 			_osu_browser.popup_centered_ratio(0.8)
+		57:
+			_import_replay_dialog()
 		7:
 			_lbp_dialog.popup_centered_ratio(0.75)
 		5:
@@ -2482,6 +2796,14 @@ func _on_menu(id: int) -> void:
 			_open_ring_workspace()
 		24:
 			_inspector.current_tab = 3
+		27:
+			_preview.show_storyboard = not _preview.show_storyboard
+			_app.show_storyboard = _preview.show_storyboard
+			_app.save_settings()
+			_preview._refresh_background_layering()
+			_preview.set_storyboard_visible(_preview.show_storyboard)
+			_preview._overlay.queue_redraw()
+			_show_toast("故事板：%s" % ("显示" if _preview.show_storyboard else "隐藏"), "info")
 		30, 31, 32, 33, 34, 35, 36:
 			_set_tool(["tap", "hold", "path", "seek", "anchor", "bell", "limit"][id - 30])
 		40:
@@ -2752,7 +3074,8 @@ func _build_playtest_dialog() -> void:
 	scroll.add_child(box)
 	_playtest_rate = _playtest_spin_row(box, "倍速", 0.5, 2.0, 0.05, 1.0, "×")
 	_playtest_rate.tooltip_text = "试玩和编辑器试听都按这个速度走；声音不变调（每个新倍速首次生成缓存）；局中修改在重开本局后生效；只对本次运行有效"
-	_playtest_flow = _playtest_spin_row(box, "流速", 0.05, 3.0, 0.01, 1.0, "×")
+	_playtest_flow = _playtest_spin_row(box, "音符速度", 0.05, 3.0, 0.01, 1.0, "×")
+	_playtest_flow.tooltip_text = "音符从出现到该打的时间 = 1 秒 ÷ 这个倍率；和 BPM 无关，越高越快"
 	_playtest_star = _playtest_spin_row(box, "星速", 0.5, 2.0, 0.05, 1.0, "×")
 	_playtest_cursor = _playtest_spin_row(box, "光标大小", 0.5, 2.0, 0.05, 1.0, "×")
 	var mirror_row := HBoxContainer.new()
@@ -2873,6 +3196,9 @@ func _commit_playtest_settings() -> void:
 	if _app == null:
 		return
 	_rate = _playtest_rate.value
+	_preview.set_background_brightness(float(_app.background_brightness) / 100.0)
+	if _playtest != null and _playtest._preview != null:
+		_playtest._preview.set_background_brightness(float(_app.background_brightness) / 100.0)
 	if _playtest_latency != null:
 		_app.audio_latency_ms = clampf(_playtest_latency.value, 0.0, 250.0)
 	_app.flow_scale = _playtest_flow.value
@@ -2906,6 +3232,99 @@ func _commit_playtest_settings() -> void:
 	if _editor_flow_spin != null:
 		_editor_flow_spin.value = _app.flow_scale
 
+## 命令行打开一个 .tmkrpl：载入它记的谱面，然后直接进回放。
+## 文件 → 导入 → 回放 (.replay)…
+func _import_replay_dialog() -> void:
+	var dialog := FileDialog.new()
+	dialog.use_native_dialog = true
+	dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
+	dialog.access = FileDialog.ACCESS_FILESYSTEM
+	dialog.title = "导入回放 (.replay)"
+	dialog.add_filter("*.replay", "Tamaki 回放")
+	dialog.file_selected.connect(func(path: String) -> void:
+		_open_replay_file(path)
+		dialog.queue_free())
+	dialog.canceled.connect(func() -> void: dialog.queue_free())
+	add_child(dialog)
+	dialog.popup_centered_ratio(0.7)
+
+
+func _open_replay_file(path: String) -> void:
+	if _app == null:
+		return
+	var data := Replay.load_from(path)
+	if data == null:
+		_show_toast("读不出回放文件：%s" % path.get_file(), "error")
+		return
+	var chart_path := data.chart_path
+	if chart_path.is_empty() or not FileAccess.file_exists(chart_path):
+		_show_toast("回放对应的谱面不存在：%s\n（没有谱面就没法回放，请先打开/导入那张谱）" % chart_path, "error")
+		return
+	# 套组：按内容 hash 匹配到具体难度，而不是「用当前页面那张谱」。
+	if chart_path.to_lower().ends_with(".set.json"):
+		_open_replay_from_set(data, chart_path)
+		return
+	var chart: Chart = ChartIO.load_chart(chart_path)
+	if chart == null:
+		_show_toast("回放对应的谱面读不出来：%s" % chart_path, "error")
+		return
+	if not data.chart_hash.is_empty() and data.chart_hash != Replay.hash_chart(chart):
+		# 旧回放可能记的是镜像副本的 hash，先反推镜像；推不出来才拒绝。
+		var inferred := Replay.infer_mirror(data, chart)
+		if inferred.is_empty():
+			_show_toast("谱面和录制时不一致（被改过或版本不同），无法回放", "error")
+			return
+		data.settings["mirror"] = inferred
+	_app.set_chart(chart, chart_path, false)
+	_sync_from_app()
+	_start_replay(data)
+
+
+## 从难度套组里按 hash 找对应的难度再回放；找不到就报错，不拿别的难度凑合。
+## 注意顺序：先只读取套组做匹配，匹配成功才切换编辑器，
+## 否则匹配失败时预览已经被换成那张谱了（用户看到的「报了错却打开了别的谱」）。
+func _open_replay_from_set(data: Replay, set_path: String) -> void:
+	var loaded := ChartIO.load_set(set_path)
+	if not bool(loaded.get("ok", false)):
+		_show_toast("回放对应的难度套组打不开：%s" % String(loaded.get("error", "")), "error")
+		return
+	var entries: Array = loaded.get("entries", [])
+	var matched := -1
+	var names: Array[String] = []
+	for i in entries.size():
+		var chart: Chart = (entries[i] as Dictionary).get("chart", null)
+		if chart == null:
+			continue
+		names.append(String(chart.metadata.get("version", "?")))
+		if matched < 0 and data.chart_hash == Replay.hash_chart(chart):
+			matched = i
+	# 旧镜像回放的 hash 是按镜像副本算的：按原谱找不到时反推镜像再匹配一次。
+	if matched < 0:
+		for i in entries.size():
+			var chart: Chart = (entries[i] as Dictionary).get("chart", null)
+			if chart == null:
+				continue
+			var inferred := Replay.infer_mirror(data, chart)
+			if not inferred.is_empty():
+				matched = i
+				data.settings["mirror"] = inferred
+				break
+	if matched < 0:
+		var want_title := String(data.settings.get("title", ""))
+		var want_diff := String(data.settings.get("version", ""))
+		var want := want_title if want_diff.is_empty() else ("%s [%s]" % [want_title, want_diff])
+		_show_toast("回放对应的难度在套组里找不到%s\n套组里的难度：%s" % [
+			("" if want.is_empty() else "（录制时是 %s）" % want), ", ".join(names)], "error")
+		return
+	if not _app.open_set_file(set_path):
+		_show_toast("回放对应的难度套组打不开：%s" % set_path.get_file(), "error")
+		return
+	if not _app.switch_difficulty(matched):
+		_show_toast("切换到难度 %d 失败" % matched, "error")
+		return
+	_sync_from_app()
+	_start_replay(data)
+
 
 func _start_playtest(from_start: bool) -> void:
 	if _app == null or _app.chart == null or _playtest != null:
@@ -2927,11 +3346,47 @@ func _start_playtest(from_start: bool) -> void:
 	_playtest.next_playback_rate = _rate
 	_playtest.mirror_mode = String(_app.playtest_mirror)
 	add_child(_playtest)
+	_playtest._preview.show_storyboard = _app.show_storyboard
+	_playtest._preview.show_storyboard_background = _app.show_storyboard_background
+	_playtest._preview.set_background_brightness(float(_app.background_brightness) / 100.0)
 	_playtest.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_playtest.setup(_app.chart, 0.0 if from_start else _app.playhead_beat, _app.chart_path)
 	_playtest.exit_requested.connect(_end_playtest)
 	_playtest.settings_requested.connect(_open_settings)
 	_playtest.playtest_settings_requested.connect(func() -> void: _open_playtest_setup(false))
+	_playtest.replay_requested.connect(func(data: Replay) -> void: _start_replay.call_deferred(data))
+
+
+## 结算页点「回放本局」：按同一份谱面重开一局，输入全部来自录制。
+func _start_replay(data: Replay) -> void:
+	if data == null or _app == null or _app.chart == null:
+		return
+	if _playtest != null:
+		_end_playtest()
+	var editor_root := get_node("Root") as Control
+	editor_root.hide()
+	editor_root.process_mode = Node.PROCESS_MODE_DISABLED
+	_preview.set_suspended(true)
+	if not data.chart_hash.is_empty() and data.chart_hash != Replay.hash_chart(_app.chart):
+		# 旧镜像回放的 hash 记的是镜像副本；能反推就按那个镜像播，别弹「被改过」。
+		var inferred := Replay.infer_mirror(data, _app.chart)
+		if not inferred.is_empty():
+			data.settings["mirror"] = inferred
+		else:
+			_show_toast("谱面在录制之后被改过，回放结果可能和当时不同", "error")
+	_playtest = Playtest.new()
+	_playtest.replay_source = data
+	add_child(_playtest)
+	# 回放以前漏了这三项：故事板恒开、暗度恒 0，和首次试玩的画面不一致。
+	_playtest._preview.show_storyboard = _app.show_storyboard
+	_playtest._preview.show_storyboard_background = _app.show_storyboard_background
+	_playtest._preview.set_background_brightness(float(_app.background_brightness) / 100.0)
+	_playtest.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_playtest.setup(_app.chart, data.start_beat, _app.chart_path)
+	_playtest.exit_requested.connect(_end_playtest)
+	_playtest.settings_requested.connect(_open_settings)
+	_playtest.playtest_settings_requested.connect(func() -> void: _open_playtest_setup(false))
+	_playtest.replay_requested.connect(func(next: Replay) -> void: _start_replay.call_deferred(next))
 
 
 func _end_playtest() -> void:

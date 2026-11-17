@@ -54,6 +54,41 @@ func _initialize() -> void:
 		"test_playability_validator",
 		"test_media_formats",
 		"test_lbp_export",
+		"test_lbp_package",
+		"test_video_export_cursor",
+		"test_video_export_plan_hits",
+		"test_video_export_sfx_capture",
+		"test_note_fall_time",
+		"test_aim_angle_fallback",
+		"test_bpm_snap_multipliers",
+		"test_path_zone_granularity",
+		"test_bpm_lock_scales_following",
+		"test_wheel_direction_matches_screen",
+		"test_offline_focus_out_keeps_running",
+		"test_storyboard_clamps_first_command",
+		"test_storyboard_editor_fit_size",
+		"test_ring_tilt_target",
+		"test_storyboard_editor_transport",
+		"test_storyboard_build_recomputes_bounds",
+		"test_storyboard_command_cursor",
+		"test_storyboard_timeline_rows",
+		"test_storyboard_timeline_snap_offset",
+		"test_storyboard_timeline_mouse",
+		"test_storyboard_layer_toggle_reversible",
+		"test_storyboard_escape_cancels",
+		"test_storyboard_drag_cancel_restores",
+		"test_storyboard_close_dialog_unique",
+		"test_storyboard_wide_detection",
+		"test_replay_mirror_restore",
+		"test_replay_infer_mirror",
+		"test_video_export_start_from_replay",
+		"test_ring_timeline_clock",
+		"test_background_brightness_applies",
+		"test_storyboard_roundtrip_lossless",
+		"test_storyboard_loop_indent_scope",
+		"test_replay_normalized_coords",
+		"test_video_export_frame_total",
+		"test_ring_tilt_keeps_center",
 		"test_note_color_palette",
 		"test_note_color_contrast",
 		"test_note_color_round_trip",
@@ -138,13 +173,24 @@ func _initialize() -> void:
 		"test_import_label_stars",
 		"test_difficulty_star_label",
 		"test_difficulty_stars_round_trip",
+		"test_storyboard_parse",
+		"test_storyboard_loops_and_easing",
+		"test_storyboard_serialize",
+		"test_storyboard_editor_model",
+		"test_storyboard_layers",
 		"test_osu_pill_rows",
+		"test_path_chevron_spacing",
 		"test_audio_clock",
 		"test_audio_clock_rate",
 		"test_calibration_offset",
 		"test_chart_offset_for_bias",
 		"test_audio_buffer_override",
 		"test_bell_center_merges",
+		"test_replay_round_trip",
+		"test_replay_dispatch",
+		"test_replay_scrub",
+		"test_replay_file_name",
+		"test_playtest_ui_builds",
 	]
 	for test_name in tests:
 		if call(test_name) != true:
@@ -205,19 +251,23 @@ func test_timing() -> bool:
 	near(offsets[1], 0.5, 0.00001, "beat subdivision offset 1")
 	near(offsets[2], 0.75, 0.00001, "beat subdivision offset 2")
 	eq(TimingMap.beat_subdivision_offsets(1).size(), 0, "beat subdivision 1 draws no thin line")
-	eq(TimingMap.parse_vertical_lines("21"), 21, "vertical lines parse 21")
-	eq(TimingMap.parse_vertical_lines("64"), 64, "vertical lines parse max 64")
-	eq(TimingMap.parse_vertical_lines("65"), 0, "vertical lines reject over max")
-	eq(TimingMap.parse_vertical_lines("0"), 0, "vertical lines reject zero")
-	eq(TimingMap.parse_vertical_lines("2.5"), 0, "vertical lines reject fraction")
-	eq(TimingMap.parse_vertical_lines("abc"), 0, "vertical lines reject text")
-	var vlines := TimingMap.vertical_line_offsets(21)
-	eq(vlines.size(), 21, "vertical lines 21 has 21 lines")
-	near(vlines[0], 1.0 / 22.0, 0.00001, "vertical lines first at 1/22")
-	near(vlines[20], 21.0 / 22.0, 0.00001, "vertical lines last at 21/22")
-	near(vlines[1] - vlines[0], 1.0 / 22.0, 0.00001, "vertical lines are evenly spaced")
-	near(TimingMap.nearest_vertical_line_u(0.51, 21), 11.0 / 22.0, 0.00001, "vertical lines snap to nearest interior line")
-	eq(TimingMap.vertical_line_offsets(0).size(), 0, "vertical lines 0 draws nothing")
+	eq(TimingMap.parse_angle_divisions("12"), 12, "angle divisions parse 12")
+	eq(TimingMap.parse_angle_divisions("8"), 8, "angle divisions parse 8")
+	eq(TimingMap.parse_angle_divisions("360"), 360, "angle divisions parse 360")
+	eq(TimingMap.parse_angle_divisions("7"), 0, "angle divisions reject values that do not divide 360")
+	eq(TimingMap.parse_angle_divisions("361"), 0, "angle divisions reject over max")
+	eq(TimingMap.parse_angle_divisions("1"), 0, "angle divisions reject one")
+	eq(TimingMap.parse_angle_divisions("2.5"), 0, "angle divisions reject fraction")
+	eq(TimingMap.parse_angle_divisions("abc"), 0, "angle divisions reject text")
+	eq(TimingMap.nearest_angle_divisions(7), 8, "angle divisions suggest the nearest legal value")
+	var alines := TimingMap.angle_line_offsets(12)
+	eq(alines.size(), 11, "angle divisions 12 has 11 interior lines")
+	near(alines[0], 1.0 / 12.0, 0.00001, "angle divisions first at 1/12")
+	near(alines[10], 11.0 / 12.0, 0.00001, "angle divisions last at 11/12")
+	near(TimingMap.nearest_angle_u(0.51, 12), 6.0 / 12.0, 0.00001, "angle lines snap to nearest line")
+	near(TimingMap.nearest_angle_u(0.01, 12), 0.0, 0.00001, "the 0 degree edge is a snap target")
+	near(TimingMap.nearest_angle_u(0.99, 12), 1.0, 0.00001, "the 360 degree edge is a snap target")
+	eq(TimingMap.angle_line_offsets(2).size(), 1, "two divisions draw one interior line")
 	near(TimingMap.nearest_beat_subdivision(1.13, 4), 1.25, 0.00001, "subdivision 4 snaps to 1.25")
 	near(TimingMap.nearest_beat_subdivision(1.12, 4), 1.0, 0.00001, "subdivision 4 snaps to 1.0")
 	near(TimingMap.nearest_beat_subdivision(2.4, 3), 7.0 / 3.0, 0.00001, "subdivision 3 snaps to 7/3")
@@ -1231,7 +1281,7 @@ func test_nearest_u() -> bool:
 
 func _preview_point(chart: Chart, u: float, target_beat: float, current_beat: float) -> Vector2:
 	var c: Vector2 = BoundaryRuntime.eval_point(chart, u, current_beat).point
-	var beats := chart.pre_read_ms / 60000.0 * chart.timing.bpm_at(current_beat)
+	var beats := chart.note_fall_ms() / 60000.0 * chart.timing.bpm_at(current_beat)
 	var q := clampf((current_beat - (target_beat - beats)) / maxf(0.001, beats), 0.0, 1.0)
 	return c * q
 
@@ -1359,12 +1409,12 @@ func test_shrink_example() -> bool:
 		{"beat": 0.0, "shape_id": "S0", "easing": "linear"},
 		{"beat": 1.0, "shape_id": "S1", "easing": "linear"},
 	]
-	chart.pre_read_ms = 1000.0
+	# 飞行时长 1 秒（60 BPM = 1 拍）：从 0 拍到 1 拍走完。
 	var u := 0.0
 	var p_mid := _preview_point(chart, u, 1.0, 0.5)
-	near(p_mid.x, 127.5, 0.5, "1s shrink midpoint 127.5px")
+	near(p_mid.x, 127.5, 0.5, "1s fall midpoint is halfway")
 	var p_end := _preview_point(chart, u, 1.0, 1.0)
-	near(p_end.x, 180.0, 0.5, "1s shrink end 180px")
+	near(p_end.x, 180.0, 0.5, "1s fall ends on the boundary")
 	return true
 
 
@@ -1506,6 +1556,694 @@ func test_lbp_export() -> bool:
 	eq(LBPIO.export_to_file(chart, path), OK, "lbp write")
 	var read := FileAccess.get_file_as_string(path)
 	eq(read, text, "lbp file matches string")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	return true
+
+
+## 回放视频：光标按录制点插值，超出末尾就停在最后。
+func test_video_export_cursor() -> bool:
+	var moves := [{"t": 0.0, "x": 0.0, "y": 0.0}, {"t": 100.0, "x": 100.0, "y": 50.0}]
+	var mid := VideoExport._cursor_at(moves, 50.0)
+	eq(int(mid.x), 50, "cursor interpolation x")
+	eq(int(mid.y), 25, "cursor interpolation y")
+	var after := VideoExport._cursor_at(moves, 500.0)
+	eq(int(after.x), 100, "cursor clamps to last point")
+	return true
+
+
+## 早于第一条命令时取第一条的值（osu 的「夹到第一关键帧」规则）。
+## 白 px.png 遮幅先 F 后 C 变黑的写法，在 C 之前必须是黑的，不能先刷白。
+func test_storyboard_clamps_first_command() -> bool:
+	var text := "\n".join([
+		"[Events]",
+		"Sprite,Foreground,TopCentre,\"px.png\",320,0",
+		" F,0,0,,1",
+		" C,0,876,,0,0,0",
+		" F,0,2000,,0",
+	])
+	var board := Storyboard.parse(text, "test.osb")
+	eq(board.sprites.size(), 1, "clamp test sprite parsed")
+	var items := board.sample(0.0)
+	eq(items.size(), 1, "sprite visible at 0ms")
+	if items.size() == 1:
+		var colour: Color = items[0]["colour"]
+		eq(int(round(colour.r * 255.0)), 0, "colour before first C is the first keyframe, not white")
+		eq(int(round(colour.g * 255.0)), 0, "green clamped")
+		eq(int(round(colour.b * 255.0)), 0, "blue clamped")
+	var late := board.sample(900.0)
+	eq(late.size(), 1, "sprite still visible at 900ms")
+	if late.size() == 1:
+		eq(int(round((late[0]["colour"] as Color).r * 255.0)), 0, "colour after C is black")
+	return true
+
+
+## 环随鼠标倾斜：鼠标那一侧靠近镜头（近大远小），0 度 = 关闭。
+func test_ring_tilt_target() -> bool:
+	var bounds := Vector2(1600, 900)
+	eq(Preview3D.tilt_target_for(Vector2(800, 450), bounds, 7.0), Vector2.ZERO, "tilt zero at centre")
+	eq(Preview3D.tilt_target_for(Vector2(800, 450), bounds, 0.0), Vector2.ZERO, "tilt zero at 0 degrees")
+	var right := Preview3D.tilt_target_for(Vector2(1600, 450), bounds, 7.0)
+	ok(right.y > 6.9 and absf(right.x) < 0.01, "mouse right tilts the right side (remote sign)")
+	var top := Preview3D.tilt_target_for(Vector2(800, 0), bounds, 7.0)
+	ok(top.x > 6.9 and absf(top.y) < 0.01, "mouse top tilts the top side near")
+	# 线性映射：半程就是半幅度（远端口径，没有曲线）
+	var half := Preview3D.tilt_target_for(Vector2(1200, 450), bounds, 7.0)
+	near(half.y, 3.5, 0.01, "tilt is linear across the screen")
+	var corner := Preview3D.tilt_target_for(Vector2(2400, -900), bounds, 7.0)
+	ok(corner.y <= 7.0 and corner.y >= -7.0, "tilt clamps horizontally")
+	ok(corner.x > 0.0 and corner.x <= 7.0, "tilt clamps vertically")
+	return true
+
+
+## 故事板编辑器播放：播到末尾要么回到开头，要么停住，不能卡在末尾。
+func test_storyboard_editor_transport() -> bool:
+	eq(StoryboardEditor.transport_action(1000.0, 5000.0, true), StoryboardEditor.TRANSPORT_KEEP, "mid play keeps going")
+	eq(StoryboardEditor.transport_action(5000.0, 5000.0, true), StoryboardEditor.TRANSPORT_RESTART, "loop restarts at the end")
+	eq(StoryboardEditor.transport_action(5000.0, 5000.0, false), StoryboardEditor.TRANSPORT_STOP, "no loop stops at the end")
+	eq(StoryboardEditor.transport_action(6000.0, 5000.0, false), StoryboardEditor.TRANSPORT_STOP, "past the end still stops")
+	return true
+
+
+## 拖时间轴/改命令后必须重算 first_ms/last_ms（否则分桶和快速路径用旧边界）。
+func test_storyboard_build_recomputes_bounds() -> bool:
+	var text := "[Events]\nSprite,Background,Centre,\"a.png\",320,240\n F,0,0,1000,,1\n M,0,1000,2000,0,0,100,100\n"
+	var board := Storyboard.parse(text, "t.osb")
+	eq(board.sprites.size(), 1, "one sprite")
+	var sprite := board.sprites[0] as Storyboard.Sprite
+	eq(sprite.first_ms, 0.0, "first command starts at 0")
+	eq(sprite.last_ms, 2000.0, "last command ends at 2000")
+	sprite.commands[1].end = 5000.0
+	sprite.build()
+	eq(sprite.last_ms, 5000.0, "moving a command updates the last bound")
+	sprite.commands[0].start = 200.0
+	sprite.build()
+	eq(sprite.first_ms, 200.0, "moving the first command updates the first bound")
+	return true
+
+
+## 命令查找的游标：前进、后退、跳转都要落到正确的关键帧。
+func test_storyboard_command_cursor() -> bool:
+	var text := "[Events]\nSprite,Background,Centre,\"a.png\",320,240\n F,0,0,1000,,1\n F,0,1000,2000,,0\n F,0,2000,3000,,1\n"
+	var board := Storyboard.parse(text, "t.osb")
+	var sprite := board.sprites[0] as Storyboard.Sprite
+	eq((sprite.command_at("alpha", 500.0) as Storyboard.Command).start, 0.0, "cursor starts at the first")
+	eq((sprite.command_at("alpha", 1500.0) as Storyboard.Command).start, 1000.0, "cursor moves forward")
+	eq((sprite.command_at("alpha", 2500.0) as Storyboard.Command).start, 2000.0, "cursor moves forward again")
+	eq((sprite.command_at("alpha", 900.0) as Storyboard.Command).start, 0.0, "seek backward leaves the cursor")
+	eq((sprite.command_at("alpha", 9000.0) as Storyboard.Command).start, 2000.0, "past the end clamps to the last")
+	return true
+
+
+## 时间轴：默认一层一行；展开后追加这一层的 sprite 行。
+func test_storyboard_timeline_rows() -> bool:
+	var board := Storyboard.create_blank()
+	var sprite := board.add_sprite("a.png", "Background", 4, Vector2(320, 240))
+	board.add_command(sprite, "alpha", 0, 0.0, 1000.0, [0.0], [1.0])
+	var timeline := StoryboardTimeline.new()
+	timeline.set_board(board)
+	eq(timeline._rows.size(), 6, "six layer rows by default")
+	timeline.expanded["Background"] = true
+	timeline._rebuild_rows()
+	eq(timeline._rows.size(), 7, "expanding a layer adds its sprite rows")
+	timeline.expanded["Background"] = false
+	timeline._rebuild_rows()
+	eq(timeline._rows.size(), 6, "collapsing removes them again")
+	return true
+
+
+## 时间轴是 osb 时间，吸附要先把 offset 加回谱面时间。
+func test_storyboard_timeline_snap_offset() -> bool:
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	chart.offset_ms = -8.0
+	var timeline := StoryboardTimeline.new()
+	timeline.set_chart(chart)
+	timeline.snap_divisor = 4.0
+	near(timeline.snap_ms(1000.0), 1008.0, 0.6, "snap converts osb ms through the chart offset")
+	return true
+
+
+## 时间轴鼠标：以前 `InputEventMouseButton.index` 写错，任何点击都在第一行抛错，
+## 标尺/眼睛/锁/展开/拖动全失效；这里直接喂一帧鼠标事件，回归到能跳转。
+func test_storyboard_timeline_mouse() -> bool:
+	var board := Storyboard.create_blank()
+	var sprite := board.add_sprite("a.png", "Background", 4, Vector2(320, 240))
+	board.add_command(sprite, "alpha", 0, 0.0, 1000.0, [0.0], [1.0])
+	var timeline := StoryboardTimeline.new()
+	timeline.size = Vector2(800, 250)
+	timeline.set_board(board)
+	var seeks: Array[float] = []
+	timeline.seek.connect(func(ms: float) -> void: seeks.append(ms))
+	var click := InputEventMouseButton.new()
+	click.button_index = MOUSE_BUTTON_LEFT
+	click.pressed = true
+	click.position = Vector2(timeline.GUTTER + 80.0, timeline.HEADER_H + 10.0)
+	timeline._gui_input(click)
+	eq(seeks.size(), 1, "clicking the ruler seeks")
+	ok(timeline.playhead_ms > 0.0, "ruler click moves the playhead")
+	click.position = Vector2(13.0, timeline._rows_top() + 9.0)
+	timeline._gui_input(click)
+	ok(timeline.hidden_layers.has("Video"), "clicking the eye hides that layer")
+	var release := InputEventMouseButton.new()
+	release.button_index = MOUSE_BUTTON_LEFT
+	release.pressed = false
+	release.position = click.position
+	timeline._gui_input(release)
+	# 点命令条只选中，不把播放头拽走；双击才跳到命令起点。
+	timeline.expanded["Background"] = true
+	timeline._rebuild_rows()
+	timeline.set_playhead(500.0)
+	seeks.clear()
+	var bar := click.duplicate() as InputEventMouseButton
+	bar.position = Vector2(timeline._ms_to_x(500.0), timeline._rows_top() + 2.0 * timeline.ROW_H + 9.0)
+	timeline._gui_input(bar)
+	eq(seeks.size(), 0, "clicking a command bar does not seek")
+	near(timeline.playhead_ms, 500.0, 0.01, "clicking a command bar keeps the playhead")
+	bar.double_click = true
+	timeline._gui_input(bar)
+	eq(seeks.size(), 1, "double-clicking a command bar seeks")
+	near(timeline.playhead_ms, 0.0, 0.01, "double-click jumps to the command start")
+	timeline.free()
+	return true
+
+
+## 回放自带录制镜像：加载/导出时按文件里的 mirror 翻，而不是当前设置。
+func test_replay_mirror_restore() -> bool:
+	var replay := Replay.new()
+	replay.settings = {"mirror": "lr"}
+	eq(Playtest.replay_mirror(replay, "rot180"), "lr", "replay mirror wins over the current setting")
+	replay.settings = {}
+	eq(Playtest.replay_mirror(replay, "rot180"), "rot180", "missing mirror falls back to the setting")
+	eq(Playtest.replay_mirror(null, "off"), "off", "no replay keeps the setting")
+	# 镜像只是本局副本：录制时的 hash 必须按原谱算，否则回放永远匹配不上。
+	var chart := DemoChart.make_demo()
+	var mirrored := chart.mirrored_copy("lr")
+	ok(Replay.hash_chart(chart) != Replay.hash_chart(mirrored),
+		"mirrored chart has a different hash")
+	near(mirrored.notes[0].angle, fposmod(180.0 - chart.notes[0].angle, 360.0), 0.01,
+		"lr mirror flips note angles")
+	return true
+
+
+## 旧镜像回放没有 settings.mirror：靠 hash 反推。两种模式都要能认出来。
+func test_replay_infer_mirror() -> bool:
+	var chart := DemoChart.make_demo()
+	var replay := Replay.new()
+	replay.chart_hash = Replay.hash_chart(chart)
+	eq(Replay.infer_mirror(replay, chart), "off", "original hash infers off")
+	for mode in ["lr", "rot180"]:
+		replay.chart_hash = Replay.hash_chart(chart.mirrored_copy(mode))
+		eq(Replay.infer_mirror(replay, chart), mode, "mirrored hash infers %s" % mode)
+	replay.chart_hash = "not-a-chart"
+	eq(Replay.infer_mirror(replay, chart), "", "unknown hash does not guess")
+	var export := VideoExport.new()
+	eq(export.mirror_mode, "off", "AUTO export defaults to no mirror")
+	export.mirror_mode = "rot180"
+	eq(export.mirror_mode, "rot180", "AUTO export carries the current mirror")
+	export.free()
+	return true
+
+
+## 导出从录制起点开始：从 0 重跑会把本局没玩到的段全判成 MISS。
+func test_video_export_start_from_replay() -> bool:
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	var replay := Replay.new()
+	replay.start_beat = 8.0
+	near(VideoExport.start_ms_for(chart, replay), chart.timing.beat_to_chart_ms(8.0), 0.01,
+		"export starts at the recorded beat")
+	eq(VideoExport.start_ms_for(chart, null), 0.0, "AUTO export still starts at zero")
+	return true
+
+
+## 故事板编辑器测试夹具：建一个带单个 sprite/命令的编辑器（不依赖主界面）。
+func _storyboard_editor_for_test() -> StoryboardEditor:
+	var editor := StoryboardEditor.new()
+	root.add_child(editor)
+	editor.open_for(DemoChart.make_empty({"title": "sb"}))
+	editor._timeline.size = Vector2(800, 250)
+	var sprite := editor._board.add_sprite("a.png", "Background", 4, Vector2(320, 240))
+	editor._board.add_command(sprite, "alpha", 0, 0.0, 1000.0, [0.0], [1.0])
+	editor._refresh_objects()
+	editor._timeline.set_board(editor._board)
+	editor._timeline.expanded["Background"] = true
+	editor._timeline._rebuild_rows()
+	editor._timeline.set_zoom(0.0, 2000.0)
+	editor._seek_to(500.0)
+	editor._select_sprite(0)
+	return editor
+
+
+static func _storyboard_click(timeline, pos: Vector2) -> void:
+	var press := InputEventMouseButton.new()
+	press.button_index = MOUSE_BUTTON_LEFT
+	press.pressed = true
+	press.position = pos
+	timeline._gui_input(press)
+	var release := InputEventMouseButton.new()
+	release.button_index = MOUSE_BUTTON_LEFT
+	release.pressed = false
+	release.position = pos
+	timeline._gui_input(release)
+
+
+static func _storyboard_escape(editor: StoryboardEditor) -> void:
+	editor._handle_escape()
+
+
+static func _storyboard_close_dialogs(editor: StoryboardEditor) -> Array:
+	var found: Array = []
+	for child in editor.get_children():
+		if child is ConfirmationDialog and not (child is FileDialog):
+			found.append(child)
+	return found
+
+
+## 眼睛/锁必须可逆：第二次点击要恢复。旧实现写入 false 但 has() 仍为真，永远取消不掉。
+func test_storyboard_layer_toggle_reversible() -> bool:
+	var editor := _storyboard_editor_for_test()
+	var timeline = editor._timeline
+	var y: float = timeline._rows_top() + 9.0
+	_storyboard_click(timeline, Vector2(13.0, y))
+	ok(timeline.hidden_layers.has("Video"), "first eye click hides the layer")
+	_storyboard_click(timeline, Vector2(13.0, y))
+	ok(not timeline.hidden_layers.has("Video"), "second eye click shows it again")
+	ok(not editor._canvas.hidden_layers.has("Video"), "canvas follows the un-hide")
+	var lock_y: float = timeline._rows_top() + timeline.ROW_H + 9.0
+	_storyboard_click(timeline, Vector2(33.0, lock_y))
+	ok(timeline.locked_layers.has("Background"), "first lock click locks the layer")
+	_storyboard_click(timeline, Vector2(33.0, lock_y))
+	ok(not timeline.locked_layers.has("Background"), "second lock click unlocks it")
+	ok(not editor._canvas.locked_layers.has("Background"), "canvas follows the unlock")
+	eq(editor._undo.size(), 0, "view toggles do not create undo entries")
+	editor.free()
+	return true
+
+
+## Esc 先取消命令编辑/选中，最后才关闭；关闭提示不能叠。
+func test_storyboard_escape_cancels() -> bool:
+	var editor := _storyboard_editor_for_test()
+	editor._on_command_selected(0)
+	eq(editor._cmd_editing, 0, "command is in edit mode")
+	ok(editor._cancel_edit_button.visible, "cancel-edit button is visible")
+	_storyboard_escape(editor)
+	eq(editor._cmd_editing, -1, "Esc exits command editing first")
+	ok(editor.visible, "Esc does not close the editor while editing")
+	eq(editor._selected, 0, "Esc keeps the object selected after leaving command editing")
+	ok(not editor._cancel_edit_button.visible, "cancel-edit button hides after leaving edit mode")
+	_storyboard_escape(editor)
+	eq(editor._selected, -1, "next Esc clears the selection")
+	ok(editor.visible, "selection cancel does not close the editor")
+	ok(not editor._inspector.visible, "selection cancel hides the inspector")
+	_storyboard_escape(editor)
+	ok(not editor.visible, "third Esc closes an unmodified editor")
+	editor.free()
+	return true
+
+
+## 拖命令条后 Esc：时间回滚、dirty 回滚、undo 不留下半截记录。
+func test_storyboard_drag_cancel_restores() -> bool:
+	var editor := _storyboard_editor_for_test()
+	var timeline = editor._timeline
+	editor._undo.clear()
+	editor._set_dirty(false)
+	var y: float = timeline._rows_top() + 2.0 * timeline.ROW_H + 9.0
+	var x: float = timeline._ms_to_x(500.0)
+	var press := InputEventMouseButton.new()
+	press.button_index = MOUSE_BUTTON_LEFT
+	press.pressed = true
+	press.position = Vector2(x, y)
+	timeline._gui_input(press)
+	var motion := InputEventMouseMotion.new()
+	motion.position = Vector2(x + 100.0, y)
+	motion.relative = Vector2(100.0, 0.0)
+	timeline._gui_input(motion)
+	var command := editor._board.sprites[0].commands[0] as Storyboard.Command
+	ok(absf(command.start) > 1.0, "drag moved the command start")
+	ok(editor._dirty, "drag marks the editor dirty")
+	eq(editor._undo.size(), 1, "first drag movement pushes one undo snapshot")
+	ok(editor._cancel_current(), "Esc finds an active drag to cancel")
+	eq(timeline._drag_mode, 0, "drag mode is reset")
+	var restored := editor._board.sprites[0].commands[0] as Storyboard.Command
+	near(restored.start, 0.0, 0.01, "cancelled drag restores the command start")
+	near(restored.end, 1000.0, 0.01, "cancelled drag restores the command end")
+	ok(not editor._dirty, "cancelled drag restores the dirty flag")
+	eq(editor._undo.size(), 0, "cancelled drag removes its undo snapshot")
+	# 正常拖动仍要留下 undo，并能撤销回去。
+	var release := InputEventMouseButton.new()
+	release.button_index = MOUSE_BUTTON_LEFT
+	release.pressed = false
+	release.position = Vector2(x, y)
+	timeline._gui_input(release)
+	var press2 := InputEventMouseButton.new()
+	press2.button_index = MOUSE_BUTTON_LEFT
+	press2.pressed = true
+	press2.position = Vector2(x, y)
+	timeline._gui_input(press2)
+	var motion2 := InputEventMouseMotion.new()
+	motion2.position = Vector2(x + 100.0, y)
+	motion2.relative = Vector2(100.0, 0.0)
+	timeline._gui_input(motion2)
+	release.position = Vector2(x + 100.0, y)
+	timeline._gui_input(release)
+	ok(absf((editor._board.sprites[0].commands[0] as Storyboard.Command).start) > 1.0,
+		"normal drag still moves the command")
+	eq(editor._undo.size(), 1, "normal drag keeps its undo snapshot")
+	editor._on_undo()
+	near((editor._board.sprites[0].commands[0] as Storyboard.Command).start, 0.0, 0.01,
+		"undo restores a normal drag")
+	editor.free()
+	return true
+
+
+## 关闭提示只有一个；取消=继续编辑；不保存立即关闭。
+func test_storyboard_close_dialog_unique() -> bool:
+	var editor := _storyboard_editor_for_test()
+	editor._set_dirty(true)
+	editor._request_close()
+	editor._request_close()
+	var dialogs := _storyboard_close_dialogs(editor)
+	eq(dialogs.size(), 1, "repeated close requests keep one dialog")
+	if not dialogs.is_empty():
+		var dialog := dialogs[0] as ConfirmationDialog
+		eq(dialog.get_cancel_button().text, "继续编辑", "cancel button says continue editing")
+		dialog.get_cancel_button().pressed.emit()
+		ok(editor.visible, "continue editing keeps the editor open")
+	editor.free()
+
+	var discard_editor := _storyboard_editor_for_test()
+	discard_editor._set_dirty(true)
+	discard_editor._request_close()
+	var discard_dialogs := _storyboard_close_dialogs(discard_editor)
+	if not discard_dialogs.is_empty():
+		var discard_dialog := discard_dialogs[0] as ConfirmationDialog
+		for button in discard_dialog.get_ok_button().get_parent().get_children():
+			if button is Button and button.text == "不保存并关闭":
+				button.pressed.emit()
+				break
+	ok(not discard_editor.visible, "discard closes the editor immediately")
+	discard_editor.free()
+	return true
+
+
+## 宽屏判定：解析后的命令名是 move/x（不是文件里的 M/MX），
+## 只查大写字母会把宽屏故事板判成 4:3、试玩按 640 裁掉两侧。
+func test_storyboard_wide_detection() -> bool:
+	var narrow := Storyboard.parse("[Events]\nSprite,Background,Centre,\"a.png\",320,240\n F,0,0,1000,,1\n", "t.osb")
+	ok(not Preview3D._detect_wide(narrow), "4:3 storyboard is not wide")
+	var moved := Storyboard.parse("[Events]\nSprite,Background,Centre,\"a.png\",320,240\n M,0,0,1000,320,240,700,240\n", "t.osb")
+	ok(Preview3D._detect_wide(moved), "a move command reaching x > 641 marks it wide")
+	var vectored := Storyboard.parse("[Events]\nSprite,Foreground,Centre,\"a.png\",320,240\n V,0,0,,427,240\n", "t.osb")
+	ok(Preview3D._detect_wide(vectored), "vector scale 427 is the 854-wide letterbox trick")
+	return true
+
+
+## 环编辑时间轴页脚：拍/ms/总长/帧率。
+func test_ring_timeline_clock() -> bool:
+	eq(RingWorkspace._fmt_clock(120657.7), "2:00.657", "ring footer minutes and millis")
+	eq(RingWorkspace._fmt_clock(0.0), "0:00.000", "ring footer zero")
+	eq(RingWorkspace._fmt_clock(657.7), "0:00.657", "ring footer sub-minute")
+	return true
+
+
+## 背景明暗：画质页 5 档，曲绘 / BGA / 故事板共用同一个系数。
+func test_background_brightness_applies() -> bool:
+	# 画质页 5 档：关 / 25 / 50 / 75 / 100
+	var steps := [0, 25, 50, 75, 100]
+	for value in steps:
+		var keep := float(value) / 100.0
+		near(Preview3D.background_alpha(keep), Preview3D.BACKGROUND_ALPHA * keep, 0.0001,
+			"background alpha follows brightness %d" % value)
+	# BGA 用同一个系数
+	near(Preview3D.video_alpha(0.8, 0.5), 0.4, 0.0001, "bga alpha follows brightness")
+	var export := VideoExport.new()
+	eq(export.background_brightness, 1.0, "export defaults to full brightness")
+	export.background_brightness = 0.5
+	eq(export.background_brightness, 0.5, "export carries brightness into the frame")
+	return true
+
+
+## 故事板保存必须无损：P,* / L / T / Animation / 背景行 / [Variables] 原样回写。
+func test_storyboard_roundtrip_lossless() -> bool:
+	var text := """[Events]
+0,0,"bg.jpg",0,0
+1,0,"v.mp4"
+Sprite,Background,Centre,"s0.png",320,240
+ P,0,0,1000,A
+ F,0,0,1000,0,1
+ L,0,2
+  M,0,0,500,0,0,100,100
+  C,0,0,100,255,0,0,0,255,0
+ F,0,5000,6000,1,0
+ T,BlueSky,0,1000
+  F,0,0,500,1,0
+Animation,Foreground,Centre,"a0.png",320,240,2,2,1
+ F,0,0,100,1,0
+
+[Variables]
+$x=1
+"""
+	var board := Storyboard.parse(text)
+	eq(board.sprites.size(), 2, "roundtrip: both objects parsed")
+	var anim: Storyboard.Sprite = board.sprites[1]
+	eq(anim.frames, 2, "roundtrip: animation frame count kept")
+	ok(anim.animation, "roundtrip: Animation stays Animation")
+	eq((board.sprites[0] as Storyboard.Sprite).loops.size(), 1, "roundtrip: loop block kept")
+	eq(board.event_lines.size(), 2, "roundtrip: background/video event lines kept")
+	# T 块内容不能当普通命令播放，否则触发效果会变成全程
+	var t_alpha := 0
+	for command in (board.sprites[0] as Storyboard.Sprite).commands:
+		if (command as Storyboard.Command).kind_name == "alpha" and absf((command as Storyboard.Command).end - 500.0) < 0.01:
+			t_alpha += 1
+	eq(t_alpha, 0, "roundtrip: trigger commands are not rendered unconditionally")
+
+	var out := board.to_osb_text()
+	ok(out.contains("P,0,0,1000,A"), "roundtrip: additive parameter is the last field")
+	ok(out.contains("Animation,Foreground"), "roundtrip: Animation written back as Animation")
+	ok(out.contains(" L,0,2"), "roundtrip: loop header kept")
+	ok(out.contains(" T,BlueSky,0,1000"), "roundtrip: trigger header kept")
+	ok(out.contains("0,0," + char(34) + "bg.jpg" + char(34) + ",0,0"), "roundtrip: background line kept")
+	ok(out.contains("[Variables]"), "roundtrip: variables section kept")
+
+	var again := Storyboard.parse(out)
+	eq(again.sprites.size(), board.sprites.size(), "roundtrip: object count stable")
+	eq((again.sprites[1] as Storyboard.Sprite).frames, 2, "roundtrip: animation survives reparse")
+	eq((again.sprites[0] as Storyboard.Sprite).loops.size(), 1, "roundtrip: loop survives reparse")
+	eq(again.to_osb_text(), out, "roundtrip: writing is idempotent")
+	return true
+
+
+## L 块只吃到同缩进为止：sprite 级命令不能被吞进循环。
+func test_storyboard_loop_indent_scope() -> bool:
+	var text := """[Events]
+Sprite,Foreground,TopLeft,"p.png",0,0
+ L,0,2
+  F,0,0,100,1,0
+ F,0,5000,6000,1,0
+"""
+	var board := Storyboard.parse(text)
+	var sprite: Storyboard.Sprite = board.sprites[0]
+	# 循环体只有一条 F，展开 2 份；外面那条 F 只算一条
+	eq(sprite.commands.size(), 3, "loop only swallows indented commands")
+	eq((sprite.timeline.get("alpha", []) as Array).size(), 3, "timeline has loop copies + one normal")
+	ok(absf(sprite.sample_float("alpha", 5500.0, -1.0) - 0.5) < 0.01, "command after the loop still animates")
+	# 编辑器不该把循环展开出的副本当成独立命令列出来
+	var visible := 0
+	for command in sprite.commands:
+		if not (command as Storyboard.Command).in_block:
+			visible += 1
+	eq(visible, 1, "editor only lists commands outside loop blocks")
+	return true
+
+
+## replay v2：坐标归一化到 0..1，换分辨率不改变光标相对位置。
+func test_replay_normalized_coords() -> bool:
+	var replay := Replay.new()
+	replay.coords = Replay.COORDS_UNIT
+	replay.add_move(100.0, Vector2(0.25, 0.5))
+	replay.add_move(100.4, Vector2(0.30, 0.5))
+	replay.add_press(120.0, 116.0, 124.0, 65, Vector2(0.75, 0.5), 90.0, 0.25, true)
+	# 同一毫秒内的移动合并成一条（高回报率鼠标不会把文件撑爆）
+	eq(replay.events.size(), 2, "moves within the same ms collapse")
+	near(float(replay.events[0]["x"]), 0.30, 0.0001, "collapsed move keeps the last position")
+	var restored := Replay.from_dict(replay.to_dict())
+	eq(restored.coords, Replay.COORDS_UNIT, "coords survive the file roundtrip")
+	near(float(restored.events[1]["x"]), 0.75, 0.0001, "press cursor stays normalized")
+	# 旧文件（v1、没有 coords 字段）仍按像素读
+	var legacy := replay.to_dict()
+	legacy.erase("coords")
+	legacy["version"] = 1
+	eq(Replay.from_dict(legacy).coords, Replay.COORDS_PIXELS, "v1 replay still reads as pixels")
+	return true
+
+
+## 导出帧数是硬约定：nb_frames == ceil(span/1000*fps)。
+func test_video_export_frame_total() -> bool:
+	eq(VideoExport.frame_total(3000.0, 60), 180, "3s @60 = 180 frames")
+	eq(VideoExport.frame_total(3000.0, 120), 360, "3s @120 = 360 frames")
+	eq(VideoExport.frame_total(1000.0, 30), 30, "1s @30 = 30 frames")
+	eq(VideoExport.frame_total(1.0, 60), 1, "tiny span still produces one frame")
+	eq(VideoExport.frame_total(0.0, 60), 1, "empty span still produces one frame")
+	return true
+
+
+## 倾斜只能绕环心旋转：_ring_root 的 origin 必须是 0（旧实现平移了最多 20 单位，
+## 这就是「环不在正中心」的来源）。
+func test_ring_tilt_keeps_center() -> bool:
+	var flat := Preview3D.ring_transform(0.0, 0.0, 0.0, 1.0, 1.0, Vector2.ZERO)
+	ok(flat.basis.y.normalized().dot(Vector3.UP) > 0.9999, "no tilt keeps the ring face on")
+	eq(flat.origin, Vector3.ZERO, "no tilt leaves the ring at the origin")
+	var tilted := Preview3D.ring_transform(0.0, 0.0, 0.0, 1.0, 1.0, Vector2(6.0, -5.0))
+	# 远端原版：倾斜时环心会跟着轻轻推一点（每度 2.8 设计单位），不是严格不动。
+	near(tilted.origin.x, 5.0 * 2.8, 0.001, "tilt nudges the ring horizontally")
+	near(tilted.origin.y, -6.0 * 2.8, 0.001, "tilt nudges the ring vertically")
+	ok(tilted.basis.y.normalized().dot(Vector3.UP) < 0.999, "tilt actually rotates the ring")
+	ok(absf(tilted.basis.x.length() - 1.0) < 0.001, "tilt keeps the basis length")
+	return true
+
+
+## 故事板编辑器窗口不能超出窗口/屏幕：小屏要缩到 720 内并且仍可滚动到全部元素。
+func test_storyboard_editor_fit_size() -> bool:
+	var small := StoryboardEditor.fit_size(Vector2(1280, 720))
+	ok(small.x <= 1220, "editor width fits 1280 window")
+	ok(small.y <= 640, "editor height fits 720 window")
+	ok(small.x >= 640 and small.y >= 420, "editor keeps a usable minimum size")
+	var large := StoryboardEditor.fit_size(Vector2(1920, 1080))
+	ok(large.y >= small.y, "bigger screen gets a taller dialog")
+	return true
+
+
+## 回放视频：按键事件要真的配到音符上；时间/角度不对就不该出命中反馈。
+func test_video_export_plan_hits() -> bool:
+	var chart := DemoChart.make_demo()
+	var exporter := VideoExport.new()
+	var events: Array = []
+	var late: Array = []
+	var flipped: Array = []
+	for note in chart.notes:
+		if not (note.type in ["tap", "hold", "path"]):
+			continue
+		var target := chart.timing.beat_to_chart_ms(note.beat)
+		if target > 3000.0:
+			continue
+		events.append({"t": target, "k": "press", "a": note.angle})
+		late.append({"t": target + 500.0, "k": "press", "a": note.angle})
+		flipped.append({"t": target, "k": "press", "a": fposmod(note.angle + 180.0, 360.0)})
+		if events.size() >= 3:
+			break
+	ok(not events.is_empty(), "demo chart has notes in the first 3s")
+	eq(exporter.plan_hits(chart, events).size(), events.size(), "on-time presses all hit")
+	eq(exporter.plan_hits(chart, late).size(), 0, "late presses do not hit")
+	eq(exporter.plan_hits(chart, flipped).size(), 0, "wrong-angle presses do not hit")
+	exporter.free()
+	return true
+
+
+## 飞行时长固定 1 秒，不随 BPM 变：高 BPM 曲不该因此更难读。
+func test_note_fall_time() -> bool:
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	near(chart.note_fall_ms(), 1000.0, 0.001, "fall time is one second at 120 BPM")
+	chart.timing.points.append(TimingPoint.new(8.0, 240.0, 4))
+	near(chart.note_fall_ms(), 1000.0, 0.001, "fall time does not shrink at 240 BPM")
+	near(chart.mirrored_copy("lr").note_fall_ms(), 1000.0, 0.001, "mirror keeps the same fall time")
+	return true
+
+
+## 「改 BPM 保持毫秒位置」：锚点之后的拍位按 新/旧 缩放，锚点之前不动。
+func test_bpm_lock_scales_following() -> bool:
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	var before := Note.new("tap", 2.0, 0.0, 60.0)
+	before.id = 1
+	var after := Note.new("hold", 12.0, 0.0, 60.0)
+	after.id = 2
+	after.end_beat = 16.0
+	chart.notes = [before, after]
+	chart.shape_keys = [{"beat": 20.0, "shape_id": "S0", "easing": "linear"}]
+	chart.scale_beats_after(8.0, 2.0)
+	near(before.beat, 2.0, 0.0001, "notes before the anchor keep their beat")
+	near(after.beat, 16.0, 0.0001, "notes after the anchor scale with the ratio")
+	near(after.end_beat, 24.0, 0.0001, "hold end scales too")
+	near(float(chart.shape_keys[0]["beat"]), 32.0, 0.0001, "shape keys scale too")
+	chart.scale_beats_after(8.0, 1.0)
+	near(after.beat, 16.0, 0.0001, "factor 1 is a no-op")
+	return true
+
+
+## 滚轮方向：往上滚，画布内容一定往上走。
+func test_wheel_direction_matches_screen() -> bool:
+	eq(ChartCanvas.wheel_step(true, false), -3.0, "flow up: wheel up moves content up")
+	eq(ChartCanvas.wheel_step(true, true), 3.0, "flow down: wheel up moves content up")
+	eq(ChartCanvas.wheel_step(false, false), 3.0, "flow up: wheel down moves content down")
+	eq(ChartCanvas.wheel_step(false, true), -3.0, "flow down: wheel down moves content down")
+	return true
+
+
+## 导出视频里的打击音：离线整局静音，必须把 SFX 事件收集起来混进音轨，
+## 否则成片只剩音乐（和现在的 bug 一致）。
+func test_video_export_sfx_capture() -> bool:
+	var run := Playtest.new()
+	run._sfx = HitSfx.new()
+	run.offline_mode = true
+	run._sim_silent = true
+	run.offline_ms = 1234.0
+	run.sfx_capture = []
+	run._play_hit("don", 1.02)
+	eq(run.sfx_capture.size(), 1, "offline silent run still captures hit sfx")
+	if not run.sfx_capture.is_empty():
+		var event: Dictionary = run.sfx_capture[0]
+		near(float(event.get("t", 0.0)), 1234.0, 0.001, "captured sfx keeps the chart time")
+		eq(String(event.get("k", "")), "don", "captured sfx keeps the kind")
+		near(float(event.get("p", 0.0)), 1.02, 0.001, "captured sfx keeps the pitch")
+	run.sfx_capture = null
+	run.free()
+	# 合成音轨：第一次命中之前必须彻底安静，命中之后必须有声音。
+	var exporter := VideoExport.new()
+	var wav := "user://test_export_sfx.wav"
+	var events := [{"t": 1000.0, "k": "don", "p": 1.0}]
+	eq(exporter._render_sfx(events, "default", 0.0, 3000.0, wav), true, "sfx track renders")
+	var bytes := FileAccess.get_file_as_bytes(ProjectSettings.globalize_path(wav))
+	eq(bytes.size(), 44 + 132300 * 2, "sfx track is exactly the export span long")
+	if bytes.size() > 48:
+		var head := 44
+		var peak_before := 0
+		for i in 44100:
+			peak_before = maxi(peak_before, absi(bytes.decode_s16(head + i * 2)))
+		eq(peak_before, 0, "nothing is audible before the first hit")
+		var peak_after := 0
+		for i in range(44100, 48510):
+			peak_after = maxi(peak_after, absi(bytes.decode_s16(head + i * 2)))
+		ok(peak_after > 1000, "hit sfx is audible after the first hit")
+	eq(exporter._render_sfx([], "default", 0.0, 1000.0, wav), false, "no events means no sfx track")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(wav))
+	exporter.free()
+	return true
+
+
+## 切出窗口会自动暂停，但离线导出是逐帧驱动的：暂停会把剩下的帧全冻住。
+func test_offline_focus_out_keeps_running() -> bool:
+	var run := Playtest.new()
+	run.offline_mode = true
+	run._running = true
+	run._notification(Node.NOTIFICATION_APPLICATION_FOCUS_OUT)
+	eq(run._paused, false, "export playtest ignores focus-out")
+	run.free()
+	return true
+
+
+## .lbp 包：单个 zip、能读回、音符与判定数据不丢。
+func test_lbp_package() -> bool:
+	var chart := DemoChart.make_demo()
+	var path := "user://test_package.lbp"
+	var err := LBPIO.export_package(chart, path)
+	eq(err, OK, "lbp package export ok")
+	ok(LBPIO.is_package(path), "lbp package is a zip")
+	var back := LBPIO.import_package(path)
+	ok(back != null, "lbp package imports")
+	if back != null:
+		eq(back.notes.size(), chart.notes.size(), "lbp package keeps notes")
+		eq(back.timing.points.size(), chart.timing.points.size(), "lbp package keeps timing")
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
 	return true
 
@@ -1967,7 +2705,6 @@ func test_playtest_countdown() -> bool:
 	eq(Playtest.countdown_number(0.0, 2.0), 0, "zero means GO")
 	var chart := Chart.new()
 	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
-	chart.pre_read_ms = 1000.0
 	near(Playtest.timeline_start_beat(chart, 8.0, 1000.0), 5.0, 0.26,
 		"a mid-chart start rewinds one pre-read plus half a second")
 	near(Playtest.timeline_start_beat(chart, 0.0, 1000.0), -3.0, 0.001,
@@ -2003,8 +2740,8 @@ func test_osu_browser_alignment() -> bool:
 
 
 func test_background_layering() -> bool:
-	near(Preview3D.background_alpha(1.0), 0.32, 0.001, "default background keeps 32% alpha")
-	near(Preview3D.background_alpha(0.5), 0.16, 0.001, "brightness scales the still image")
+	near(Preview3D.background_alpha(1.0), 1.0, 0.001, "background is fully opaque at 100% brightness")
+	near(Preview3D.background_alpha(0.5), 0.5, 0.001, "brightness scales the still image")
 	near(Preview3D.background_alpha(0.0), 0.0, 0.001, "zero brightness hides the image")
 	ok(not Preview3D.background_image_visible(true, true), "BGA hides the chart background image")
 	ok(Preview3D.background_image_visible(true, false), "still image returns without BGA")
@@ -3321,6 +4058,66 @@ func test_path_tail_judge() -> bool:
 	return true
 
 
+## 瞄准辅助：像素距离超了但角度对（±12°）也算命中；角度不对或光标不合法仍拒绝。
+func test_aim_angle_fallback() -> bool:
+	var run := Playtest.new()
+	var note := Note.new("tap", 0.0, 90.0, 60.0)
+	var band := PackedVector2Array([Vector2(300, 100), Vector2(340, 100)])
+	var target := {"note": note, "points": band, "tolerance": 120.0, "pad": 0.0,
+		"dense": false, "ring_radius": 330.0}
+	var far_away := {"mouse": Vector2(1200, 900), "angle": 95.0, "valid": true}
+	ok(bool(run._match_press(far_away, target).get("ok", false)), "12 degrees of aim still hits")
+	var off_angle := {"mouse": Vector2(1200, 900), "angle": 130.0, "valid": true}
+	ok(run._match_press(off_angle, target).is_empty(), "40 degrees off does not hit")
+	var invalid := {"mouse": Vector2(1200, 900), "angle": 95.0, "valid": false}
+	ok(run._match_press(invalid, target).is_empty(), "an invalid cursor never gets aim assist")
+	var on_point := {"mouse": Vector2(320, 105), "angle": 300.0, "valid": true}
+	ok(bool(run._match_press(on_point, target).get("ok", false)), "a close pixel hit still works")
+	run.free()
+	return true
+
+
+## 倍数校正：2/3 与 3/2 的错位能被谱面 BPM 拉回来，误差太大则不动。
+func test_bpm_snap_multipliers() -> bool:
+	ok(BpmDetect.MULTIPLIERS.has(1.5), "a 3:2 multiplier exists")
+	ok(BpmDetect.MULTIPLIERS.has(4.0), "a 4x multiplier exists")
+	near(BpmDetect.snap_to_reference(100.1, 150.0), 150.15, 0.001, "2/3 detection snaps up to the chart tempo")
+	near(BpmDetect.snap_to_reference(158.3, 238.0), 237.45, 0.001, "238 with a 2/3 detection snaps back")
+	near(BpmDetect.snap_to_reference(65.3, 257.0), 261.2, 0.001, "a quarter-tempo detection snaps with x4")
+	near(BpmDetect.snap_to_reference(193.0, 193.0), 193.0, 0.001, "an exact match stays exact")
+	near(BpmDetect.snap_to_reference(140.0, 200.0), 140.0, 0.001, "an unrelated value is left alone")
+	return true
+
+
+## 判定区回到细分之前：0.85R 一段，短星最少 3 段；判定只看轨迹参数，
+## 不读任何“飞行时长”设置——视觉快慢不该改变判定。
+func test_path_zone_granularity() -> bool:
+	near(PathProgress.GATE_SPACING, 0.85, 0.0001, "judgement zones are back to 0.85R")
+	var short_path := PackedVector2Array()
+	for i in 41:
+		short_path.append(Vector2(0.7 * float(i) / 40.0, 0.0))
+	var tracker := PathProgress.new()
+	tracker.configure(short_path)
+	var projected := tracker.points
+	tracker.confirm_head()
+	eq(tracker.group_count, 3, "a 0.7R slide splits into 3 judgement zones again")
+	eq(tracker.remaining_groups(), 2, "the head counts as the first cleared zone")
+	# 沿轨迹喂一串点：进度必须跟着走，而不是一口气算完整条。
+	for i in projected.size():
+		tracker.feed(projected[i], 100.0 + float(i) * 5.0, projected, tracker.contact_radius * 2.0, 0.0)
+	ok(tracker.fraction > 0.0, "tracing the slide builds progress")
+	ok(tracker.remaining_groups() < 2, "tracing clears judgement zones")
+	ok(tracker.body_ready(), "the tail connects once every zone is traced")
+	# 判定器不接收 BPM / 飞行时长：同一段轨迹在任何设置下结果一致（结构性保证）。
+	var replayed := PathProgress.new()
+	replayed.configure(short_path)
+	replayed.confirm_head()
+	for i in projected.size():
+		replayed.feed(projected[i], 100.0 + float(i) * 5.0, projected, replayed.contact_radius * 2.0, 0.0)
+	near(replayed.fraction, tracker.fraction, 0.0001, "judgement is independent of fall time")
+	return true
+
+
 ## 转谱窗口：一个来源里列出所有难度，能切换，且不碰当前窗口的谱面。
 func test_import_window_set() -> bool:
 	var path := "user://test_import_set.txt"
@@ -3704,6 +4501,140 @@ func test_judge_scatter() -> bool:
 	chart.free()
 	return true
 
+func test_replay_round_trip() -> bool:
+	var replay := Replay.new()
+	replay.chart_path = "user://demo.json"
+	replay.chart_hash = "abc123"
+	replay.start_beat = 4.0
+	replay.settings = {"offset_ms": 12.5, "flow": 1.0}
+	replay.add_move(100.0, Vector2(10.5, 20.25))
+	replay.add_press(120.0, 116.0, 124.0, 65, Vector2(1.0, 2.0), 33.5, 0.25, true)
+	replay.add_release(160.0, 65)
+	replay.add_seek(200.0, 196.0, 204.0, 1)
+	replay.add_offset(240.0, -8.5)
+	replay.result = {"hit": 3, "tiers": {"PERFECT": 3}}
+	eq(replay.event_count(), 5, "replay records five events")
+	eq(String(replay.events[1]["k"]), "press", "replay keeps event kind")
+	near(float(replay.events[1]["t"]), 120.0, 0.001, "replay keeps press time")
+
+	var data := replay.to_dict()
+	eq(String(data["format"]), Replay.FORMAT, "replay dict carries format tag")
+	var loaded := Replay.from_dict(data)
+	ok(loaded != null, "replay dict loads")
+	if loaded == null:
+		return true
+	eq(loaded.event_count(), 5, "replay events survive round trip")
+	eq(loaded.chart_hash, "abc123", "replay keeps chart hash")
+	near(float(loaded.events[0]["x"]), 10.5, 0.01, "replay keeps move x")
+	eq(bool(loaded.events[1]["v"]), true, "replay keeps press validity")
+	eq(int(loaded.events[3]["dir"]), 1, "replay keeps seek direction")
+	near(float(loaded.events[4]["v"]), -8.5, 0.01, "replay keeps offset value")
+	eq(int(loaded.result["hit"]), 3, "replay keeps result summary")
+
+	# 格式/版本不符时拒绝加载，别把坏文件当成回放播出去。
+	var bad_format := data.duplicate(true)
+	bad_format["format"] = "something-else"
+	ok(Replay.from_dict(bad_format) == null, "replay rejects foreign format")
+	var bad_version := data.duplicate(true)
+	bad_version["version"] = 99
+	ok(Replay.from_dict(bad_version) == null, "replay rejects newer version")
+
+	var path := "user://test_replay_roundtrip.tmkrpl"
+	eq(replay.save_to(path), OK, "replay saves as gzip")
+	var from_file := Replay.load_from(path)
+	ok(from_file != null, "replay loads from gzip")
+	if from_file != null:
+		eq(from_file.event_count(), 5, "replay file keeps events")
+		near(float(from_file.events[1]["lo"]), 116.0, 0.01, "replay file keeps press window")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+
+	# 谱面哈希：同一张谱面稳定，改一个音符就变。
+	var chart := DemoChart.make_demo()
+	var hash_a := Replay.hash_chart(chart)
+	ok(not hash_a.is_empty(), "chart hash is not empty")
+	eq(Replay.hash_chart(chart), hash_a, "chart hash is stable")
+	if not chart.notes.is_empty():
+		chart.notes[0].beat += 0.5
+		ok(Replay.hash_chart(chart) != hash_a, "chart hash changes after edit")
+	return true
+
+
+## 回放分派：事件按时间喂回判定队列，按键带着录制时的光标和区间。
+func test_replay_dispatch() -> bool:
+	var run := Playtest.new()
+	var replay := Replay.new()
+	replay.add_move(100.0, Vector2(5.0, 6.0))
+	replay.add_press(120.0, 116.0, 124.0, 65, Vector2(7.0, 8.0), 45.0, 0.5, true)
+	replay.add_release(150.0, 65)
+	replay.add_seek(160.0, 156.0, 164.0, 1)
+	replay.add_offset(170.0, -12.0)
+	run._replay_events = replay.events
+	run._dispatch_replay(110.0)
+	eq(run._path_motion_samples.size(), 1, "replay applies move events")
+	eq(run._key_presses.size(), 0, "replay waits for future events")
+	run._dispatch_replay(165.0)
+	eq(run._key_presses.size(), 1, "replay applies press events")
+	near(float(run._key_presses[0]["time"]), 120.0, 0.001, "replayed press keeps its time")
+	eq(run._key_presses[0]["mouse"], Vector2(7.0, 8.0), "replayed press keeps its cursor")
+	near(float(run._key_presses[0]["lo"]), 116.0, 0.001, "replayed press keeps its frame window")
+	ok(not run._keys_held.has(65), "replayed release erases the held key")
+	eq(run._seek_presses.size(), 1, "replay applies seek events")
+	run._dispatch_replay(200.0)
+	near(run._offset_override, -12.0, 0.001, "replay applies offset changes")
+	near(run._active_offset(), -12.0, 0.001, "recorded offset beats the live setting")
+	eq(run._replay_index, 5, "every event is dispatched once")
+	run._dispatch_replay(500.0)
+	eq(run._replay_index, 5, "events are not dispatched twice")
+	run.free()
+	return true
+
+
+## 进度条比例：起点/终点要夹住，中间线性。
+func test_replay_scrub() -> bool:
+	var run := Playtest.new()
+	run._replay_start_ms = 1000.0
+	run._replay_total_ms = 5000.0
+	run._replay_ms = 3000.0
+	near(run._replay_fraction(), 0.5, 0.001, "scrub maps the middle of the song")
+	run._replay_ms = 1000.0
+	near(run._replay_fraction(), 0.0, 0.001, "scrub clamps at the start")
+	run._replay_ms = 9000.0
+	near(run._replay_fraction(), 1.0, 0.001, "scrub clamps past the end")
+	run._replay_start_ms = 0.0
+	run._replay_total_ms = 0.0
+	run._replay_ms = 0.0
+	near(run._replay_fraction(), 0.0, 0.001, "empty span does not divide by zero")
+	run.free()
+	return true
+
+
+## 回放文件名：Windows 非法字符要替换，空名字要有兜底。
+func test_replay_file_name() -> bool:
+	var run := Playtest.new()
+	eq(run._sanitize_file_name("a/b:c*?"), "a_b_c__", "file name replaces illegal characters")
+	eq(run._sanitize_file_name("  "), "replay", "blank file name falls back")
+	eq(run._sanitize_file_name("Sakura_紫"), "Sakura_紫", "normal names are kept")
+	run.free()
+	return true
+
+
+## 试玩界面构建冒烟测试：控件属性名写错时 _build_ui 会中途报错，
+## 这种错误单测和空跑都抓不到，只有真开一局试玩才会暴露。
+func test_playtest_ui_builds() -> bool:
+	var run := Playtest.new()
+	run._build_ui()
+	eq(run._replay_button.text, "回放本局", "results screen has a replay button")
+	eq(run._export_replay_button.text, "导出回放", "results screen has a replay-file export button")
+	eq(run._export_replay_button.get_parent() == run._replay_button.get_parent(), true,
+		"replay export button sits in the same row as the replay button")
+	eq(run._replay_bar != null and not run._replay_bar.visible, true, "replay bar is built but hidden")
+	eq(run._replay_exit_button != null and run._replay_exit_button.get_parent() == run._replay_bar.get_child(0),
+		true, "replay bar ends with an exit button")
+	eq(run._results != null, true, "results panel is built")
+	run.free()
+	return true
+
+
 ## 鼠标左右键当成两个独立键位，且不会和真实 Key 枚举相撞。
 func test_mouse_button_input() -> bool:
 	eq(Playtest.mouse_button_key(MOUSE_BUTTON_LEFT), Playtest.MOUSE_KEY_LEFT, "left button maps to its own key")
@@ -3861,4 +4792,173 @@ func test_osu_pill_rows() -> bool:
 	eq(OsuBrowser.pill_rows(19, 1300), 2, "wide card fits 19 on two rows")
 	ok(OsuBrowser.pill_rows(19, 700) > OsuBrowser.pill_rows(19, 1300), "narrower card needs more rows")
 	eq(OsuBrowser.pill_rows(0, 900), 1, "no difficulties still one row (the toggle chip)")
+	return true
+
+
+## Path 方向箭头：固定弧长间距；锯齿状轨迹再按屏幕距离去重。
+func test_path_chevron_spacing() -> bool:
+	var line := PackedVector2Array([Vector2(0, 0), Vector2(300, 0)])
+	var fractions := Preview3D.chevron_fractions(line, 60.0, 40.0)
+	eq(fractions.size(), 5, "300px with 60px spacing gives 5 arrows")
+	for i in range(1, fractions.size()):
+		var gap := (fractions[i] - fractions[i - 1]) * 300.0
+		ok(absf(gap - 60.0) < 0.01, "arrow spacing is uniform (%.2f)" % gap)
+
+	# 短于间距的一条线：一只箭头都不画
+	ok(Preview3D.chevron_fractions(PackedVector2Array([Vector2(0, 0), Vector2(20, 0)]), 60.0, 40.0).is_empty(),
+		"short stub gets no arrow")
+
+	# 锯齿：弧长够长，但同一片区域反复折返 → 去重后数量明显变少
+	var zig := PackedVector2Array([Vector2(0, 0), Vector2(120, 0), Vector2(20, 12), Vector2(130, 24), Vector2(30, 36)])
+	var zig_fractions := Preview3D.chevron_fractions(zig, 40.0, 70.0)
+	var zig_arc := 0.0
+	for i in zig.size() - 1:
+		zig_arc += zig[i].distance_to(zig[i + 1])
+	ok(zig_fractions.size() < int(zig_arc / 40.0), "crowded zigzag drops overlapping arrows")
+	ok(zig_fractions.size() >= 2, "zigzag still gets some arrows")
+
+	# 超长轨迹：箭头上限 48 只时必须整体拉开间距、铺到终点，不能在 48 * spacing 处截断
+	var long_line := PackedVector2Array([Vector2(0, 0), Vector2(4000, 0)])
+	var long_fractions := Preview3D.chevron_fractions(long_line, 60.0, 30.0)
+	eq(long_fractions.size(), 48, "long path caps at 48 arrows")
+	ok(float(long_fractions[long_fractions.size() - 1]) > 0.9, "arrows still reach the end of a long path")
+	var long_gap := (float(long_fractions[1]) - float(long_fractions[0])) * 4000.0
+	var last_gap := (float(long_fractions[long_fractions.size() - 1]) - float(long_fractions[long_fractions.size() - 2])) * 4000.0
+	ok(absf(long_gap - last_gap) < 0.5, "capped long path keeps uniform spacing")
+	return true
+
+
+## osu! storyboard：静态 sprite + 单条命令插值。
+func test_storyboard_parse() -> bool:
+	var text := """[Events]
+Sprite,Background,Centre,"bg.jpg",320,240
+ F,0,0,1000,0,1
+ M,0,0,1000,100,200,300,400
+"""
+	var board := Storyboard.parse(text)
+	eq(board.sprites.size(), 1, "one sprite parsed")
+	var sprite: Storyboard.Sprite = board.sprites[0]
+	eq(sprite.layer, "Background", "layer")
+	eq(sprite.origin, 4, "centre origin")
+	eq(sprite.path, "bg.jpg", "path")
+
+	# 起始 alpha = 0 的 sprite 不参与绘制（osu 也是这样）
+	ok(board.sample(0.0).is_empty(), "alpha 0 sprite is culled")
+
+	var quarter := board.sample(250.0)
+	eq(quarter.size(), 1, "visible once faded in")
+	ok(absf(float(quarter[0]["alpha"]) - 0.25) < 0.01, "alpha starts at 0 and fades in")
+	var start_pos: Vector2 = quarter[0]["pos"]
+	ok(start_pos.distance_to(Vector2(150, 250)) < 0.5, "move start")
+
+	var mid := board.sample(500.0)
+	ok(absf(float(mid[0]["alpha"]) - 0.5) < 0.01, "alpha interpolates linearly")
+	var mid_pos: Vector2 = mid[0]["pos"]
+	ok(mid_pos.distance_to(Vector2(200, 300)) < 0.01, "move interpolates")
+
+	var end := board.sample(1000.0)
+	ok(absf(float(end[0]["alpha"]) - 1.0) < 0.001, "alpha ends at 1")
+
+	# lazer 的 EndTimeForDisplay：命令全部结束后对象就不存在了
+	ok(board.sample(1500.0).is_empty(), "sprite is gone after its last command")
+	return true
+
+
+## 故事板写回 .osb 后再解析，对象和命令数量要一致（覆盖编辑器的保存/导出）。
+func test_storyboard_serialize() -> bool:
+	var text := """[Events]
+Sprite,Background,Centre,"sb/a.png",320,240
+ F,0,0,1000,0,1
+ M,17,1000,2000,320,240,400,300
+Sprite,Foreground,TopCentre,"sb/b.png",320,0
+ S,0,0,,0.5
+ V,0,0,,2,3
+ R,0,0,90,0
+ C,0,0,,255,0,0
+"""
+	var board := Storyboard.parse(text, "test.osb")
+	eq(board.sprites.size(), 2, "serialize: 2 sprites")
+	eq(board.sprites[0].commands.size(), 2, "serialize: first sprite commands")
+	var written := board.to_osb_text()
+	var again := Storyboard.parse(written, "again.osb")
+	eq(again.sprites.size(), 2, "round-trip: sprite count")
+	eq(again.sprites[0].commands.size(), 2, "round-trip: first sprite commands")
+	eq(again.sprites[1].commands.size(), 4, "round-trip: second sprite commands")
+	ok(written.contains("Sprite,Background,Centre"), "writes sprite header")
+	ok(written.contains(" F,"), "writes alpha command")
+	return true
+
+
+## 编辑器新建对象 + 加命令后能保存并解析回来。
+func test_storyboard_editor_model() -> bool:
+	var board := Storyboard.create_blank()
+	var sprite := board.add_sprite("sb/x.png", "Foreground", 4, Vector2(320, 240))
+	board.add_command(sprite, "alpha", 0, 1000.0, 2000.0, [0.0], [1.0])
+	board.add_command(sprite, "move", 0, 0.0, 1000.0, [0.0, 0.0], [320.0, 240.0])
+	eq(board.sprites.size(), 1, "editor: sprite added")
+	eq(sprite.commands.size(), 2, "editor: commands added")
+	# 首条 alpha 是 0→1：按 lazer 的 StartTime 规则，生命周期从「第一个可见的 alpha」开始
+	ok(absf(sprite.start_time - 1000.0) < 0.001, "editor: start time follows lazer StartTime")
+	var text := board.to_osb_text()
+	var parsed := Storyboard.parse(text, "edit.osb")
+	eq(parsed.sprites.size(), 1, "editor: saved board parses back")
+	eq(parsed.sprites[0].commands.size(), 2, "editor: saved commands parse back")
+	return true
+
+
+## loop 展开 + 缓动。
+func test_storyboard_loops_and_easing() -> bool:
+	var text := """[Events]
+Sprite,Foreground,TopLeft,"p.png",0,0
+ L,1000,2
+  F,0,0,500,1,0
+  S,0,0,500,2,1
+"""
+	var board := Storyboard.parse(text)
+	eq(board.sprites.size(), 1, "sprite parsed")
+	var sprite: Storyboard.Sprite = board.sprites[0]
+	# 两轮 × 一条 F/S 命令 = 每条命令 2 段
+	eq((sprite.timeline.get("alpha", []) as Array).size(), 2, "loop expanded alpha into two commands")
+	eq((sprite.timeline.get("scale", []) as Array).size(), 2, "loop expanded scale into two commands")
+
+	var first := board.sample(1250.0)
+	ok(absf(float(first[0]["alpha"]) - 0.5) < 0.01, "first loop iteration fades")
+	ok(absf(float(first[0]["scale"].x) - 1.5) < 0.01, "first loop iteration scales")
+
+	var second := board.sample(1750.0)
+	ok(absf(float(second[0]["alpha"]) - 0.5) < 0.01, "second loop iteration repeats")
+
+	# 第二轮结束后 alpha 终值是 0，对象被剔除（osu 里也就是看不见）
+	ok(board.sample(2500.0).is_empty(), "loop ends at alpha 0 (culled)")
+
+	# 缓动：OutQuad（id=4）在 25% 处应大于线性
+	var eased := """[Events]
+Sprite,Background,Centre,"a.png",0,0
+ F,4,0,1000,0,1
+"""
+	var board2 := Storyboard.parse(eased)
+	var quarter := board2.sample(250.0)
+	ok(float(quarter[0]["alpha"]) > 0.4, "ease-out is ahead of linear at 25%")
+	eq(Storyboard.Easing.apply(0, 0.25), 0.25, "linear easing")
+	eq(Storyboard.Easing.apply(4, 0.5), 0.75, "out-quad at half")
+	eq(Storyboard.Easing.apply(35, 1.0), 1.0, "out-pow10 ends at 1")
+	return true
+
+
+## 图层 / 原点 / 动画帧。
+func test_storyboard_layers() -> bool:
+	var text := """[Events]
+Sprite,Background,Centre,"bg.png",320,240
+Sprite,Foreground,BottomRight,"fg.png",640,480
+Sprite,Overlay,TopLeft,"over.png",0,0
+Animation,Foreground,Centre,"anim.png",10,10,4,120,1
+"""
+	var board := Storyboard.parse(text)
+	eq(board.sprites.size(), 4, "four objects")
+	eq((board.sprites[1] as Storyboard.Sprite).layer, "Foreground", "foreground layer")
+	eq((board.sprites[2] as Storyboard.Sprite).origin, 0, "top-left origin")
+	var anim: Storyboard.Sprite = board.sprites[3]
+	eq(anim.frames, 4, "animation frames")
+	ok(absf(anim.frame_delay - 120.0) < 0.001, "frame delay")
+	eq(anim.loop_type, 1, "loop once")
 	return true
