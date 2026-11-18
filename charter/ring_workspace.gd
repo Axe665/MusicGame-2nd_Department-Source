@@ -35,6 +35,12 @@ static func _fmt_clock(ms: float) -> String:
 	return "%d:%02d.%03d" % [minutes, seconds, millis]
 
 
+## 标尺上的 m:ss（不带毫秒）：小节号和秒数并排，一屏内能对上时间。
+static func _fmt_short(ms: float) -> String:
+	var total := maxf(0.0, ms)
+	return "%d:%02d" % [int(total / 60000.0), int(fmod(total, 60000.0) / 1000.0)]
+
+
 static func _beat_num(value: float) -> String:
 	var snapped := snappedf(value, 0.01)
 	if absf(snapped - round(snapped)) < 0.001:
@@ -149,7 +155,7 @@ class Timeline:
 	const FOOTER_H := 24.0
 	const BAR_H := 18.0
 	const KEY_SIZE := 9.0
-	const LABEL_MIN := 42.0
+	const LABEL_MIN := 84.0
 	const EDGE_HIT := 5.0
 	const KEY_HIT := 8.0
 
@@ -332,10 +338,12 @@ class Timeline:
 
 	func _draw_ruler(start: float, span: float, bpb: float) -> void:
 		var font := UITheme.mono_font()
+		var chart: Chart = workspace.chart()
 		var beat_px := (size.x - GUTTER) / maxf(0.001, span)
 		var bar_px := beat_px * bpb
 		var step := 1
-		while float(step) * bar_px < 46.0 and step < 64:
+		# 64px 才放得下「小节 + 时间」双标注；抽稀比挤成一团好读。
+		while float(step) * bar_px < 64.0 and step < 64:
 			step *= 2
 		var first := floori(start / bpb)
 		var last := ceili((start + span) / bpb)
@@ -345,7 +353,12 @@ class Timeline:
 				continue
 			draw_line(Vector2(x, RULER_H - 11.0), Vector2(x, RULER_H), Color(1, 1, 1, 0.45), 1.0)
 			if bar % step == 0:
-				draw_string(font, Vector2(x + 3, RULER_H - 13.0), str(bar + 1), HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(1, 1, 1, 0.75))
+				# 标尺双单位：小节号 + 该小节起点的时间，找段落不用心算 BPM。
+				var label := str(bar + 1)
+				if chart != null:
+					label = "%d · %s" % [bar + 1, RingWorkspace._fmt_short(
+						chart.timing.beat_to_chart_ms(float(bar) * bpb) + chart.offset_ms)]
+				draw_string(font, Vector2(x + 3, RULER_H - 13.0), label, HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(1, 1, 1, 0.75))
 		if beat_px >= 12.0:
 			for beat in range(floori(start), ceili(start + span) + 1):
 				var x := _x_for(float(beat))
@@ -384,12 +397,41 @@ class Timeline:
 			var fill_alpha := 0.34 if selected else (0.24 if hovered else 0.16)
 			var border_alpha := 0.90 if selected else (0.68 if hovered else 0.45)
 			var rect := Rect2(Vector2(x0, y), Vector2(maxf(2.0, x1 - x0), BAR_H))
+			var span_beats := end - start
+			# 形状帧可以只花一段的一部分在变形上，剩下的时间保持到下一帧。
+			var morph := span_beats
+			if lane == 0 and items[i] is Dictionary:
+				morph = BoundaryRuntime.morph_beats(items[i], span_beats)
 			draw_rect(rect, Color(color.r, color.g, color.b, fill_alpha))
+			var morph_rect := rect
+			if morph < span_beats - 0.0001:
+				var hold_x := clampf(_x_for(start + morph), x0, x1)
+				morph_rect = Rect2(Vector2(x0, y), Vector2(maxf(2.0, hold_x - x0), BAR_H))
+				# 保持段压暗：在已经画好的填充上再叠一层半透明也是「更亮」，得往黑里压。
+				draw_rect(Rect2(Vector2(hold_x, y), Vector2(maxf(0.0, x1 - hold_x), BAR_H)),
+					Color(0.02, 0.03, 0.04, 0.62))
+				draw_line(Vector2(hold_x, y), Vector2(hold_x, y + BAR_H),
+					Color(color.r, color.g, color.b, 0.8), 1.0)
 			draw_rect(rect, Color(color.r, color.g, color.b, border_alpha), false, 1.0)
-			_draw_easing(rect, String(_item_easing(items[i])), color)
+			_draw_easing(morph_rect, String(_item_easing(items[i])), color)
+			# 两端方向箭头：这段是从左往右走的，不用猜。
+			_draw_flow_arrow(x0 + 5.0, _lane_center(lane), color, 0.9)
+			var text_left := x0 + 14.0
+			if lane == 0 and rect.size.x >= 110.0 and items[i] is Dictionary:
+				var shape := chart.get_shape(String(items[i].get("shape_id", "")))
+				if shape != null:
+					_draw_shape_thumb(Rect2(Vector2(x0 + 14.0, y + 2.0), Vector2(14.0, 14.0)), shape, color)
+					text_left = x0 + 32.0
+			_draw_flow_arrow(rect.end.x - 7.0, _lane_center(lane), color, 0.9)
 			if rect.size.x >= LABEL_MIN:
-				var text := RingWorkspace.span_label(end - start, seg_bpb)
-				draw_string(UITheme.FONT_REGULAR, Vector2(x0 + 7, y + 15), text, HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(1, 1, 1, 0.92 if (selected or hovered) else 0.72))
+				var secs := (chart.timing.beat_to_chart_ms(end) - chart.timing.beat_to_chart_ms(start)) * 0.001
+				var text := "%s · %.2f 秒" % [RingWorkspace.span_label(span_beats, seg_bpb), secs]
+				if rect.size.x >= 190.0:
+					text = "%.2f→%.2f 拍 · %s · %.2f 秒" % [
+						start, end, RingWorkspace.span_label(span_beats, seg_bpb), secs]
+				draw_string(UITheme.FONT_REGULAR, Vector2(text_left, y + 15), text,
+					HORIZONTAL_ALIGNMENT_LEFT, maxf(0.0, rect.end.x - 12.0 - text_left), 11,
+					Color(1, 1, 1, 0.92 if (selected or hovered) else 0.72))
 			if key_visible:
 				var key_rect := Rect2(Vector2(x0 - KEY_SIZE * 0.5, _lane_center(lane) - KEY_SIZE * 0.5), Vector2(KEY_SIZE, KEY_SIZE))
 				draw_rect(key_rect, Color(color.r, color.g, color.b, 1.0 if selected else 0.9))
@@ -414,6 +456,39 @@ class Timeline:
 			var eased := Ease.apply(easing, t)
 			points.append(Vector2(lerpf(rect.position.x + 3.0, rect.end.x - 3.0, t), rect.end.y - 5.0 - (t - eased) * 12.0))
 		draw_polyline(points, Color(color.r, color.g, color.b, 0.80), 1.2, true)
+
+
+	## 段块两端的方向箭头：一个 5px 的实心三角，读作「这段时间往右走」。
+	func _draw_flow_arrow(x: float, center_y: float, color: Color, alpha: float) -> void:
+		draw_colored_polygon(PackedVector2Array([
+			Vector2(x, center_y - 4.0), Vector2(x + 5.0, center_y), Vector2(x, center_y + 4.0),
+		]), Color(color.r, color.g, color.b, alpha))
+
+
+	## 段块里的形状缩略图：按边界真实采样画，方形/星形/椭圆一眼能分。
+	func _draw_shape_thumb(box: Rect2, shape: BoundaryShape, color: Color) -> void:
+		var raw := shape.sample_points(24)
+		var points := PackedVector2Array()
+		var low := Vector2(INF, INF)
+		var high := Vector2(-INF, -INF)
+		for item in raw:
+			if bool(item.get("gap", false)):
+				continue
+			var p: Vector2 = item.get("point", Vector2.ZERO)
+			low = Vector2(minf(low.x, p.x), minf(low.y, p.y))
+			high = Vector2(maxf(high.x, p.x), maxf(high.y, p.y))
+			points.append(p)
+		if points.size() < 3:
+			return
+		var span := high - low
+		var scale := minf(box.size.x / maxf(0.001, span.x), box.size.y / maxf(0.001, span.y))
+		var origin := box.position + box.size * 0.5 - (low + span * 0.5) * scale
+		var mapped := PackedVector2Array()
+		for p in points:
+			mapped.append(origin + p * scale)
+		if mapped.size() > 1:
+			mapped.append(mapped[0])
+		draw_polyline(mapped, Color(color.r, color.g, color.b, 0.8), 1.0, true)
 
 	func _draw_lane_grid(lane: int, bpb: float, snap_division: int) -> void:
 		var top := _lane_top(lane)
@@ -1132,7 +1207,7 @@ func _build() -> void:
 	_timeline = Timeline.new(self)
 	root.add_child(_timeline)
 	var explain := Label.new()
-	explain.text = "块=这一帧保持到下一帧，块越长隔得越久；拖方块改时间，拖块右缘改下一帧；滚轮滚动，Ctrl+滚轮缩放。"
+	explain.text = "块=这一帧保持到下一帧，块越长隔得越久；半透明段=形变已完成、在原地保持（检查器「形变时长」）；拖方块改时间，拖块右缘改下一帧；滚轮滚动，Ctrl+滚轮缩放。"
 	explain.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	UITheme.style_mono(explain, 11, UITheme.MUTED)
 	root.add_child(explain)
@@ -1378,10 +1453,18 @@ func _rebuild_panel() -> void:
 		shape_box.add_child(_button("删除这一帧", _delete_key))
 		shape_box.add_child(_button("切断/恢复这一段 (G)", _toggle_gap))
 		var easing := String(key.get("easing", "in-out"))
-		# 白话标签：谱师不需要知道 cubic-bezier 是什么。
-		shape_box.add_child(_option("到下一帧怎么变", ["匀速", "缓入缓出", "柔和"], maxi(0, EASINGS.find(easing)), func(index: int) -> void:
+		# 白话标签：谱师不需要知道 cubic-bezier 是什么。原来的「柔和」没有对应值，
+		# 选中会越界，已隐藏（EASINGS 里只有匀速 / 缓入缓出）。
+		shape_box.add_child(_option("到下一帧怎么变", ["匀速", "缓入缓出"], maxi(0, EASINGS.find(easing)), func(index: int) -> void:
 			_app.mutate(func() -> void: key["easing"] = EASINGS[index])
 		))
+		# 形变时长：默认等于整段（旧行为）；改短 = 快速变完，剩下的时间保持这个形状。
+		var span := _key_span(key)
+		var morph := BoundaryRuntime.morph_beats(key, span)
+		var morph_max := maxf(0.05, span)
+		shape_box.add_child(_number("形变时长（拍）", morph, 0.05, morph_max, 0.05,
+			func(value: float) -> void: _app.mutate(func() -> void: key["morph"] = clampf(value, 0.05, morph_max))))
+		shape_box.add_child(_label("变完到下一帧之前保持这个形状。整段 %s 拍，调小就是变快点。" % RingWorkspace._beat_num(span)))
 		var shape := _current_shape()
 		if shape != null:
 			var index: int = clampi(int(_app.selected_segment_index), 0, maxi(0, shape.vertex_count() - 1))
@@ -1398,6 +1481,13 @@ func _rebuild_panel() -> void:
 	cam_box.add_child(_button("在这里打镜头关键帧", _add_view_keyframe))
 	if _app.selected_view_index >= 0:
 		cam_box.add_child(_button("删除选中镜头帧", _delete_view_keyframe))
+		var selected_view: ViewState = _app.get_selected_view()
+		if selected_view != null:
+			# 每段可以单独选缓动；旋转本身在 ViewState.evaluate 里走最短弧。
+			var rotate_easing := maxi(0, EASINGS.find(selected_view.easing))
+			cam_box.add_child(_option("这一段怎么转", ["匀速", "缓入缓出"], rotate_easing,
+				func(index: int) -> void: _app.mutate(func() -> void: selected_view.easing = EASINGS[index])))
+			cam_box.add_child(_label("旋转走最短弧：350°→10° 是 +20°，不会反向绕 340°。"))
 
 	var advanced := _fold("高级数值")
 	if advanced.visible:
@@ -1434,6 +1524,25 @@ func _build_advanced(parent: VBoxContainer) -> void:
 	parent.add_child(_number("ellipse", float(view.get("ellipse", 1.0)), 0.5, 1.5, 0.01, func(value: float) -> void:
 		_apply_view("ellipse", value)
 	))
+
+
+## 当前形状关键帧到下一帧的拍数（最后一帧算到谱面内容结束）。
+func _key_span(key: Dictionary) -> float:
+	var chart_data := chart()
+	if chart_data == null:
+		return 0.0
+	var keys := chart_data.sorted_shape_keys()
+	var beats: Array[float] = []
+	var index := -1
+	var key_beat := float(key.get("beat", 0.0))
+	for i in keys.size():
+		beats.append(float(keys[i].get("beat", 0.0)))
+		if absf(beats[i] - key_beat) < 0.0005:
+			index = i
+	if index < 0:
+		return 0.0
+	var bpb := maxf(1.0, chart_data.timing.beats_per_bar_at(key_beat))
+	return maxf(0.25, RingWorkspace.span_end(beats, index, chart_data.content_end_beat(), bpb) - key_beat)
 
 
 func _update_onion() -> void:

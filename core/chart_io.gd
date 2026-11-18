@@ -14,11 +14,15 @@ static func chart_to_dict(chart: Chart) -> Dictionary:
 	var shape_code := BoundaryShape.shapes_to_code(chart.sorted_shapes())
 	var key_rows: Array[Dictionary] = []
 	for key in chart.sorted_shape_keys():
-		key_rows.append({
+		var row := {
 			"beat": snappedf(float(key.get("beat", 0.0)), 0.001),
 			"shape": String(key.get("shape_id", "")),
 			"easing": String(key.get("easing", "in-out")),
-		})
+		}
+		# 只在真的设过形变时长时才写；缺字段 = 整段都在变（旧谱语义）。
+		if float(key.get("morph", 0.0)) > 0.0:
+			row["morph"] = snappedf(float(key.get("morph", 0.0)), 0.001)
+		key_rows.append(row)
 	var event_list: Array[Dictionary] = []
 	if key_rows.is_empty():
 		for event in chart.events:
@@ -384,11 +388,14 @@ static func chart_from_dict(data: Dictionary) -> Chart:
 	chart.shape_keys.clear()
 	for raw in data.get("boundary_keys", []):
 		if raw is Dictionary:
-			chart.shape_keys.append({
+			var key_row := {
 				"beat": float(raw.get("beat", 0.0)),
 				"shape_id": String(raw.get("shape", raw.get("shape_id", ""))),
 				"easing": String(raw.get("easing", "in-out")),
-			})
+			}
+			if raw.has("morph"):
+				key_row["morph"] = float(raw.get("morph", 0.0))
+			chart.shape_keys.append(key_row)
 	for raw in data.get("events", []):
 		if raw is Dictionary:
 			chart.events.append(BoundaryEvent.from_dict(raw))

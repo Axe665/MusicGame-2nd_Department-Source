@@ -10,6 +10,7 @@ func _initialize() -> void:
 		"test_boundary_circle",
 		"test_boundary_vertices",
 		"test_boundary_keys_io",
+		"test_shape_morph_duration_and_camera_arc",
 		"test_ring_compat_rules",
 		"test_boundary_batch",
 		"test_boundary_frame",
@@ -390,6 +391,37 @@ func test_boundary_keys_io() -> bool:
 	if migrated != null:
 		eq(migrated.shape_keys.size(), 2, "legacy events become keys")
 		eq(migrated.events.size(), 0, "legacy events are cleared after migration")
+	return true
+
+
+## 形变时长：默认整段（旧谱不变），设短则先变完再保持；镜头旋转走最短弧。
+func test_shape_morph_duration_and_camera_arc() -> bool:
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	chart.shapes["S1"] = BoundaryShape.circle("S1", 200.0, 12)
+	chart.shape_keys = [
+		{"beat": 2.0, "shape_id": "S1", "easing": "linear"},
+		{"beat": 6.0, "shape_id": "S0", "easing": "linear"},
+	]
+	near(BoundaryRuntime.eval_point(chart, 0.0, 4.0).point.x, 265.0, 0.5, "默认形变时长 = 整段")
+	chart.shape_keys[0]["morph"] = 1.0
+	near(BoundaryRuntime.eval_point(chart, 0.0, 2.5).point.x, 265.0, 0.5, "形变时长内仍按缓动插值")
+	near(BoundaryRuntime.eval_point(chart, 0.0, 3.0).point.x, 330.0, 0.5, "形变完成后保持下一帧形状")
+	near(BoundaryRuntime.morph_beats({"morph": 99.0}, 3.0), 3.0, 0.0001, "形变时长最多等于整段")
+	near(BoundaryRuntime.morph_beats({}, 3.0), 3.0, 0.0001, "缺字段时等于整段（旧谱兼容）")
+	var data := ChartIO.chart_to_dict(chart)
+	eq(float((data["boundary_keys"] as Array)[0].get("morph", 0.0)), 1.0, "形变时长写进 json")
+	var back := ChartIO.from_json(ChartIO.to_json(chart))
+	eq(float(back.shape_keys[0].get("morph", 0.0)), 1.0, "形变时长读回")
+	near(BoundaryRuntime.eval_point(back, 0.0, 3.0).point.x, 330.0, 0.5, "读回后形变节奏不变")
+	var states: Array[ViewState] = [
+		ViewState.new(0.0, 1.0, 0.0, 0.0, 1.0, 170.0),
+		ViewState.new(2.0, 1.0, 0.0, 0.0, 1.0, -170.0),
+	]
+	var middle := ViewState.evaluate(states, 1.0)
+	near(absf(float(middle["rotation"])), 180.0, 0.001, "旋转走最短弧：170→-170 的中点是 180")
+	var straight := ViewState.evaluate(states, 0.0)
+	near(float(straight["rotation"]), 170.0, 0.001, "起点仍是 170")
 	return true
 
 
@@ -4293,7 +4325,6 @@ func test_anchor_release_snap() -> bool:
 	return true
 
 
-## 音符松手回吸：只回吸真的动过的那个轴；单击不挪音符。
 func test_note_release_snap() -> bool:
 	var app: App = load("res://charter/app.gd").new()
 	app.chart = Chart.new()
