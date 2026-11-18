@@ -1175,25 +1175,32 @@ func _build_view_page(page: VBoxContainer) -> void:
 	_label(page, "从星星落点到等待结束计时；预览和试玩共用，试玩暂停菜单也可切换。", 11, UITheme.MUTED)
 	var cap_keys: Array[String] = ["60", "120", "vsync", "unlimited"]
 	var cap_labels: Array[String] = ["60 FPS", "120 FPS", "跟随显示器（vsync）", "无限制"]
-	_setting_option(page, "帧率上限", cap_labels, maxi(0, cap_keys.find(_app.frame_cap)), func(index: int) -> void:
+	# 死选项/重复项先隐藏（代码保留）：帧率上限在「设置」里有完整 6 档，这份只有 4 档。
+	var cap_row := _setting_option(page, "帧率上限", cap_labels, maxi(0, cap_keys.find(_app.frame_cap)), func(index: int) -> void:
 		_app.frame_cap = cap_keys[index]
 		_app.apply_frame_cap()
 		_app.save_settings()
 		_app.notice.emit("帧率上限：%s" % cap_labels[index], "info")
 	)
+	cap_row.get_parent().visible = false
 	# Godot 只在启动时读音频缓冲；这里写 override.cfg，重启后生效。
 	var buffer_values: Array[int] = [3, 10, 20]
 	var buffer_labels: Array[String] = ["低延迟 3ms", "标准 10ms", "安全 20ms"]
-	_setting_option(page, "音频缓冲", buffer_labels, maxi(0, buffer_values.find(int(_app.audio_buffer_ms))),
+	var buffer_row := _setting_option(page, "音频缓冲", buffer_labels, maxi(0, buffer_values.find(int(_app.audio_buffer_ms))),
 		func(index: int) -> void: _app.set_audio_buffer(buffer_values[index]))
-	_label(page, "音频缓冲改动写进 override.cfg，重启游戏后生效（3ms ≈ 12ms 总延迟，爆音就换标准）。", 11, UITheme.MUTED)
+	buffer_row.get_parent().visible = false
+	var buffer_hint := _label(page, "音频缓冲改动写进 override.cfg，重启游戏后生效（3ms ≈ 12ms 总延迟，爆音就换标准）。", 11, UITheme.MUTED)
+	buffer_hint.visible = false
 	_check(page, "正对镜头（忽略倾斜）", bool(_app.chart.metadata.get("face_camera", true)), func(value: bool) -> void:
 		_app.mutate(func() -> void: _app.chart.metadata["face_camera"] = value)
 	)
 	_check(page, "HUD（H）", _app.hud_visible, func(value: bool) -> void: _app.hud_visible = value)
 	_check(page, "调试叠层", _app.debug_overlay, func(value: bool) -> void: _app.debug_overlay = value)
-	_check(page, "波形", _app.waveform_visible, func(value: bool) -> void: _app.waveform_visible = value)
-	_check(page, "幽灵红区", _app.ghost_regions, func(value: bool) -> void: _app.ghost_regions = value)
+	# 死选项先隐藏（代码保留）：waveform_visible / ghost_regions 全项目没有读取点。
+	var waveform_check := _check(page, "波形", _app.waveform_visible, func(value: bool) -> void: _app.waveform_visible = value)
+	waveform_check.visible = false
+	var ghost_check := _check(page, "幽灵红区", _app.ghost_regions, func(value: bool) -> void: _app.ghost_regions = value)
+	ghost_check.visible = false
 	_check(page, "3D 环网格（GPU）", _app.use_3d_ring, func(value: bool) -> void:
 		_app.use_3d_ring = value
 		_app.status_changed.emit()
@@ -1228,7 +1235,9 @@ func _build_view_page(page: VBoxContainer) -> void:
 	])
 	_label(page, "支持 OGV / MP4 / M4V / WebM / MOV / MKV / AVI；mp4 等默认直接解码（不转码），只有缺少解码库时才转码到 user://media 缓存。", 11, UITheme.MUTED)
 	_spin(page, "videoOffset ms", _app.chart.video_offset_ms, -10000.0, 10000.0, 1.0, func(value: float) -> void: _app.chart.video_offset_ms = value)
-	_spin(page, "FPS 提示", _app.chart.video_fps, 1.0, 240.0, 1.0, func(value: float) -> void: _app.chart.video_fps = value)
+	# video_fps 只被序列化、从不被播放/导出读取，先隐藏这一行（字段保留）。
+	var fps_hint := _spin(page, "FPS 提示", _app.chart.video_fps, 1.0, 240.0, 1.0, func(value: float) -> void: _app.chart.video_fps = value)
+	fps_hint.get_parent().visible = false
 	_spin(page, "不透明度", _app.chart.video_opacity, 0.0, 1.0, 0.01, func(value: float) -> void: _app.chart.video_opacity = value)
 	_label(page, "RingState 关键帧在「视图 → 环编辑」里用滚轮/菱形调。", 11, UITheme.MUTED)
 

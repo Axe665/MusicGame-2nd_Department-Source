@@ -1368,6 +1368,9 @@ func _build_quality_rows(parent: Control) -> void:
 	parent.add_child(grid)
 	for option in QUALITY_OPTIONS:
 		var key := String(option["key"])
+		# 死选项先隐藏（代码保留）：3D 环刷新率全项目没有任何读取点。
+		if key == "ring_3d_hz":
+			continue
 		var label := Label.new()
 		label.text = String(option["label"])
 		label.add_theme_font_size_override("font_size", 11)
@@ -1376,6 +1379,10 @@ func _build_quality_rows(parent: Control) -> void:
 		pick.add_theme_font_size_override("font_size", 11)
 		for choice in option["choices"]:
 			pick.add_item(String(choice[0]))
+		# 原生 / 超采样三档在 _load_settings 里会被重置回 high，先禁用（代码保留）。
+		if key == "ring_3d_scale":
+			for i in mini(3, pick.item_count):
+				pick.set_item_disabled(i, true)
 		if key == "preset":
 			pick.add_item("自定义")
 		pick.item_selected.connect(func(index: int) -> void:
@@ -3111,6 +3118,8 @@ func _build_playtest_dialog() -> void:
 	_playtest_flow = _playtest_spin_row(box, "音符速度", 0.05, 3.0, 0.01, 1.0, "×")
 	_playtest_flow.tooltip_text = "音符从出现到该打的时间 = 1 秒 ÷ 这个倍率；和 BPM 无关，越高越快"
 	_playtest_star = _playtest_spin_row(box, "星速", 0.5, 2.0, 0.05, 1.0, "×")
+	# 星速没有任何消费点（preview_3d.star_speed 只被赋值、从不读取），先隐藏。
+	_playtest_star.visible = false
 	_playtest_cursor = _playtest_spin_row(box, "光标大小", 0.5, 2.0, 0.05, 1.0, "×")
 	var mirror_row := HBoxContainer.new()
 	mirror_row.add_theme_constant_override("separation", 6)
