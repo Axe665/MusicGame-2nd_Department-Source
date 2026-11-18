@@ -1909,6 +1909,7 @@ func _open_ring_workspace() -> void:
 		if _main_row != null:
 			_main_row.visible = true
 		_app.chart_changed.emit()
+		_update_transport(true)
 	)
 
 
@@ -1978,7 +1979,7 @@ func _on_seek_requested(beat: float) -> void:
 	if _playing:
 		_rebase_playback(beat)
 	_update_transport(true)
-	_preview.request_redraw()
+	_preview.request_playhead_redraw()
 
 
 ## 进度条拖动 → 拍号。进度条和时间轴共用谱面本身的长度，避免两边刻度不一致。
@@ -2138,6 +2139,9 @@ func _timeline_total_beats() -> float:
 
 func _update_transport(force: bool = false) -> void:
 	if _app == null or _app.chart == null or _time_label == null:
+		return
+	# 环编辑器是全屏覆盖层，底下这条运输条看不见；拖播放头时不必每帧重排它的文字。
+	if _app.ring_editor_open:
 		return
 	var now := Time.get_ticks_msec()
 	if not force and now - _last_transport_msec < 50:

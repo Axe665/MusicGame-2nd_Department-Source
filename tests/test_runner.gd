@@ -48,6 +48,8 @@ func _initialize() -> void:
 		"test_flow_flip_anchor",
 		"test_ring_span_label",
 		"test_ring_span_end",
+		"test_ring_scrub_state",
+		"test_playhead_redraw_is_light",
 		"test_chart_end_limit",
 		"test_uniform_meter",
 		"test_timing_presorted",
@@ -1704,6 +1706,37 @@ func test_storyboard_clamps_first_command() -> bool:
 
 
 ## 环随鼠标倾斜：鼠标那一侧靠近镜头（近大远小），0 度 = 关闭。
+## 拖播放头时不能重建面板：一次重建 ≈70–80 个控件，跨一个关键帧要付两遍。
+func test_ring_scrub_state() -> bool:
+	var workspace := RingWorkspace.new()
+	var timeline := RingWorkspace.Timeline.new(workspace)
+	workspace._timeline = timeline
+	eq(workspace.scrubbing(), false, "没在拖播放头")
+	timeline._drag_kind = "playhead"
+	eq(workspace.scrubbing(), true, "拖播放头的状态在 Timeline 上也能被认到")
+	eq(workspace.dragging(), true, "scrubbing 同时算拖动，面板刷新被压住")
+	timeline._drag_kind = ""
+	workspace._drag_kind = "key"
+	eq(workspace.scrubbing(), false, "拖关键帧不是 scrubbing")
+	eq(workspace.dragging(), true, "拖关键帧仍然算 dragging")
+	timeline.free()
+	workspace.free()
+	return true
+
+
+## 播放头跳转只重画覆盖层：同一拍重复事件不该反复重建环网格。
+func test_playhead_redraw_is_light() -> bool:
+	var preview := Preview3D.new()
+	preview._mesh_dirty = false
+	preview.request_playhead_redraw()
+	eq(preview._mesh_dirty, false, "播放头跳转不强制重建网格")
+	eq(preview._force_3d_frame, true, "仍然让 3D 出一帧")
+	preview.request_redraw()
+	eq(preview._mesh_dirty, true, "结构改动仍走 request_redraw 强建")
+	preview.free()
+	return true
+
+
 func test_ring_tilt_target() -> bool:
 	var bounds := Vector2(1600, 900)
 	eq(Preview3D.tilt_target_for(Vector2(800, 450), bounds, 7.0), Vector2.ZERO, "tilt zero at centre")

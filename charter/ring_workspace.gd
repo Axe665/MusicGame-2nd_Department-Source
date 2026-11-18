@@ -326,15 +326,17 @@ class Timeline:
 		var bpb := maxf(1.0, chart.timing.beats_per_bar_at(start))
 		var snap_division: int = workspace.snap_division()
 		_draw_ruler(start, span, bpb)
+		# 内容结束拍是 O(音符+红区+事件) 的扫描：一次重绘只算一遍，别每个轨道各扫一遍。
+		var content_end := chart.content_end_beat()
 		var lane_items: Array = []
 		for lane in 4:
 			var items := _lane_items(chart, lane)
 			lane_items.append(items)
 			if not hidden_lanes.has(lane):
-				_draw_lane(lane, items, chart, bpb, snap_division)
+				_draw_lane(lane, items, chart, bpb, snap_division, content_end)
 		_draw_gutter(lane_items)
 		_draw_playhead()
-		_draw_status(chart, lane_items, bpb)
+		_draw_status(chart, lane_items, bpb, content_end)
 
 	func _draw_ruler(start: float, span: float, bpb: float) -> void:
 		var font := UITheme.mono_font()
@@ -367,7 +369,7 @@ class Timeline:
 				draw_line(Vector2(x, RULER_H - 5.0), Vector2(x, RULER_H), Color(1, 1, 1, 0.16), 1.0)
 		draw_line(Vector2(GUTTER, RULER_H), Vector2(size.x, RULER_H), Color(1, 1, 1, 0.10), 1.0)
 
-	func _draw_lane(lane: int, items: Array, chart: Chart, bpb: float, snap_division: int) -> void:
+	func _draw_lane(lane: int, items: Array, chart: Chart, bpb: float, snap_division: int, content_end: float) -> void:
 		var top := _lane_top(lane)
 		var color := _lane_colour(lane)
 		draw_rect(Rect2(Vector2(GUTTER, top), Vector2(size.x - GUTTER, LANE_H)), Color(color.r, color.g, color.b, 0.035 if lane == 0 else 0.02))
@@ -377,7 +379,6 @@ class Timeline:
 			draw_string(UITheme.FONT_REGULAR, Vector2(GUTTER + 8, _lane_center(lane) + 4), "还没有关键帧", HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(1, 1, 1, 0.28))
 			return
 		var beats := _item_beats(items)
-		var content_end := chart.content_end_beat()
 		for i in items.size():
 			var start := beats[i]
 			var seg_bpb := maxf(1.0, chart.timing.beats_per_bar_at(start))
@@ -543,11 +544,11 @@ class Timeline:
 		draw_line(Vector2(px, RULER_H), Vector2(px, size.y - FOOTER_H), UITheme.CORAL, 1.5)
 		draw_colored_polygon(PackedVector2Array([Vector2(px - 5, RULER_H - 10), Vector2(px + 5, RULER_H - 10), Vector2(px, RULER_H)]), UITheme.CORAL)
 
-	func _draw_status(chart: Chart, lane_items: Array, bpb: float) -> void:
+	func _draw_status(chart: Chart, lane_items: Array, bpb: float, content_end: float) -> void:
 		draw_rect(Rect2(0, size.y - FOOTER_H, size.x, FOOTER_H), Color("#10131B"))
 		var beat := workspace.playhead()
 		var ms := chart.timing.beat_to_chart_ms(beat) + chart.offset_ms
-		var total_ms := chart.timing.beat_to_chart_ms(chart.content_end_beat()) + chart.offset_ms
+		var total_ms := chart.timing.beat_to_chart_ms(content_end) + chart.offset_ms
 		var text := "当前 %s · %.2f 拍 · 总长 %s · %d FPS · 吸附 %s" % [
 			RingWorkspace._fmt_clock(ms), beat,
 			RingWorkspace._fmt_clock(total_ms), int(Engine.get_frames_per_second()),
@@ -557,7 +558,7 @@ class Timeline:
 			if _hover_index < items.size():
 				var beats := _item_beats(items)
 				var start := beats[_hover_index]
-				var end := RingWorkspace.span_end(beats, _hover_index, chart.content_end_beat(), bpb)
+				var end := RingWorkspace.span_end(beats, _hover_index, content_end, bpb)
 				text = "%s · %s → %s · %s" % [
 					_lane_name(_hover_lane), chart.timing.format_beat(start),
 					chart.timing.format_beat(end), RingWorkspace.span_label(end - start, bpb)]
@@ -580,9 +581,12 @@ class Timeline:
 				if event.pressed:
 					_press(event.position, event)
 				else:
+					var was_scrubbing := _drag_kind == "playhead"
 					_drag_kind = ""
 					if workspace.dragging():
 						workspace.end_drag()
+					elif was_scrubbing:
+						workspace.finish_scrub()
 				accept_event()
 		elif event is InputEventMouseMotion:
 			if _drag_kind != "":
@@ -1322,7 +1326,23 @@ func seek(beat: float) -> void:
 
 
 func dragging() -> bool:
-	return not _drag_kind.is_empty()
+	return not _drag_kind.is_empty() or scrubbing()
+
+
+## 正在拖时间轴的播放头。拖过关键帧时不要重建面板：一次重建 ≈70–80 个控件，
+## 拖动时每跨一帧都要付两遍（进/出各一次），这就是「经过关键帧极卡」的来源。
+func scrubbing() -> bool:
+	return _timeline != null and _timeline._drag_kind == "playhead"
+
+
+## 拖动播放头结束：面板与洋葱皮补一次，拖动过程中全部跳过。
+func finish_scrub() -> void:
+	var key := current_key()
+	_last_key_beat = float(key.get("beat", -999.0)) if not key.is_empty() else -999.0
+	_rebuild_panel()
+	_update_onion()
+	_sync_time_tool(true)
+	_timeline.queue_redraw()
 
 
 func current_key() -> Dictionary:
@@ -1358,11 +1378,11 @@ func _process(delta: float) -> void:
 		_fps_label.text = "%d FPS" % Engine.get_frames_per_second()
 
 
-func _sync_time_tool() -> void:
+func _sync_time_tool(force: bool = false) -> void:
 	# 每帧写 Label / SpinBox 会让整页 UI 重新排版（实测 78ms/帧）；
 	# 只在显示值变化时写，并且限到 ~12Hz。播放头位置本身仍然是逐帧的。
 	var now := Time.get_ticks_msec()
-	if now - _sync_last_msec < 80:
+	if not force and now - _sync_last_msec < 80:
 		return
 	_sync_last_msec = now
 	var beat := playhead()

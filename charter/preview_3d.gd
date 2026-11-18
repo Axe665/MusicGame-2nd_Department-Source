@@ -4539,6 +4539,15 @@ func request_redraw() -> void:
 		_overlay.queue_redraw()
 
 
+## 播放头移动：只重画覆盖层 + 让 3D 出一帧，不强制重建环网格。
+## 拖动时同一拍会收到多次事件，强建等于每帧重传 3 个网格。
+## 网格本身由 _process 的 mesh_key 决定，真的跨了拍自然会重建。
+func request_playhead_redraw() -> void:
+	if _overlay != null:
+		_overlay.queue_redraw()
+	_force_3d_frame = true
+
+
 func add_hit_pulse(point: Vector2, color: Color, label: String = "HIT", kind: String = "tap", detail: String = "") -> void:
 	if not _valid_point(point):
 		return
