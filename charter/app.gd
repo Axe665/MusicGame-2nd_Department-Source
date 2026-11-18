@@ -153,6 +153,9 @@ var _live_change_pending: bool = false
 ## 环工作区打开时，被盖住的检查器不用跟着重建。
 var ring_editor_open: bool = false
 var _validation_pending: bool = false
+## 编辑中只跑快速校验；闲下来 2 秒再补一次全量（事件两两重叠 + 可玩性采样）。
+var _validation_full_pending: bool = false
+var _validation_full_timer: float = 0.0
 var _validation_timer: float = 0.0
 var _commands_since_autosave: int = 0
 var _autosave_timer: Timer
@@ -894,12 +897,36 @@ func restore_snapshot(data: Dictionary) -> void:
 	_emit_validation()
 
 
+## 上一次提交后的谱面快照。复用它可以省掉「每次编辑都重新拍一遍 before」，
+## 10k 音符下一次 chart_to_dict ≈ 200ms。只认同一个 Chart 对象，换谱自动失效。
+var _last_snapshot: Dictionary = {}
+var _last_snapshot_chart: Chart = null
+var _gesture_timer: Timer = null
+
+
+func invalidate_snapshot_cache() -> void:
+	_last_snapshot = {}
+	_last_snapshot_chart = null
+
+
+func _cached_snapshot() -> Dictionary:
+	if chart != null and _last_snapshot_chart == chart and not _last_snapshot.is_empty():
+		return _last_snapshot
+	return snapshot()
+
+
+func _remember_snapshot(data: Dictionary) -> void:
+	_last_snapshot = data
+	_last_snapshot_chart = chart
+
+
 func mutate(callback: Callable) -> void:
 	if chart == null:
 		return
-	var before := snapshot()
+	var before := _cached_snapshot()
 	callback.call()
 	var after := snapshot()
+	_remember_snapshot(after)
 	if before == after:
 		return
 	undo.record(before)
@@ -907,19 +934,40 @@ func mutate(callback: Callable) -> void:
 	_after_change()
 
 
+## 连续手势（滚轮缩放、步进按钮）：第一次 begin_edit，停手 0.6s 后 finish_edit。
+## 一个手势只记一条撤销、只拍一次 before，不再每个滚轮档都做一次全谱快照。
+func gesture_mutate(callback: Callable) -> void:
+	if chart == null:
+		return
+	if not _editing:
+		begin_edit()
+	callback.call()
+	touch_chart()
+	if _gesture_timer == null:
+		_gesture_timer = Timer.new()
+		_gesture_timer.one_shot = true
+		_gesture_timer.wait_time = 0.6
+		_gesture_timer.timeout.connect(finish_edit)
+		add_child(_gesture_timer)
+	_gesture_timer.start()
+
+
 func begin_edit() -> void:
 	if _editing or chart == null:
 		return
-	_edit_before = snapshot()
+	_edit_before = _cached_snapshot()
 	_editing = true
 
 
 func finish_edit() -> void:
 	if not _editing:
 		return
+	if _gesture_timer != null:
+		_gesture_timer.stop()
 	_flush_live_change()
 	_editing = false
 	var after := snapshot()
+	_remember_snapshot(after)
 	if _edit_before == after:
 		return
 	undo.record(_edit_before)
@@ -956,7 +1004,15 @@ func _process(delta: float) -> void:
 		if _validation_timer <= 0.0:
 			_validation_pending = false
 			if chart != null:
-				validation_changed.emit(Validator.validate(chart))
+				validation_changed.emit(Validator.validate(chart, false))
+				_validation_full_pending = true
+				_validation_full_timer = 2.0
+	if _validation_full_pending:
+		_validation_full_timer -= delta
+		if _validation_full_timer <= 0.0:
+			_validation_full_pending = false
+			if chart != null:
+				validation_changed.emit(Validator.validate(chart, true))
 
 
 func _flush_live_change() -> void:

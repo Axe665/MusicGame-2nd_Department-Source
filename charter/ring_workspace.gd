@@ -1621,7 +1621,7 @@ func _apply_view(key: String, value: float) -> void:
 func _on_ring_zoom(delta: float) -> void:
 	var view := _active_view()
 	var target := clampf(float(view.get("zoom", 1.0)) + delta, 0.75, 1.4)
-	_app.mutate(func() -> void: _apply_view("zoom", target))
+	_app.gesture_mutate(func() -> void: _apply_view("zoom", target))
 
 
 func _on_ring_rotate(degrees: float) -> void:
@@ -1631,8 +1631,8 @@ func _on_ring_rotate(degrees: float) -> void:
 		state = _app.get_selected_view()
 		if state == null:
 			return
-	state.rotation = clampf(state.rotation + degrees, -180.0, 180.0)
-	_app.touch_chart()
+	# 旋转是拖动出来的连续量：整段拖动合成一条撤销。
+	_app.gesture_mutate(func() -> void: state.rotation = clampf(state.rotation + degrees, -180.0, 180.0))
 	_preview.queue_redraw()
 
 
@@ -1998,7 +1998,8 @@ func _number(text: String, value: float, min_value: float, max_value: float, ste
 	spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	spin.value_changed.connect(func(new_value: float) -> void:
 		if _app != null:
-			_app.mutate(func() -> void: callback.call(new_value))
+			# 连点步进也算一个手势：一条撤销，不是每格一条。
+			_app.gesture_mutate(func() -> void: callback.call(new_value))
 	)
 	row.add_child(spin)
 	return row
