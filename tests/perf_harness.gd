@@ -47,6 +47,8 @@ var _failures: Array[String] = []
 var _metrics: Dictionary = {}
 ## headless 主循环本身有个固定地板（与场景无关），扣掉它才是我们代码的开销。
 var _floor_ms := 0.0
+## 本机算力标定：同一份固定工作量的耗时，用来把基线和当前机器对齐。
+var _calibration_ms := 0.0
 
 
 func _ready() -> void:
@@ -55,6 +57,7 @@ func _ready() -> void:
 	if DisplayServer.get_name() != "headless":
 		DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
 	await _measure_floor()
+	_measure_calibration()
 	_print_meta()
 	for scenario in _scenario_list():
 		await _run(scenario)
@@ -107,11 +110,24 @@ func _scenario_list() -> Array[String]:
 
 
 func _print_meta() -> void:
-	print("PERF_META godot=%s renderer=%s display=%s max_fps=%d floor_ms=%.2f chart=%s notes=%d keys=%d" % [
+	print("PERF_META godot=%s renderer=%s display=%s max_fps=%d floor_ms=%.2f calibration_ms=%.2f chart=%s notes=%d keys=%d" % [
 		Engine.get_version_info()["string"], RenderingServer.get_video_adapter_name(),
-		DisplayServer.get_name(), Engine.max_fps, _floor_ms,
+		DisplayServer.get_name(), Engine.max_fps, _floor_ms, _calibration_ms,
 		_chart_path if not _chart_path.is_empty() else "synthetic",
 		_notes, _keys])
+
+
+## 固定工作量的耗时（2000 音符谱面序列化）：用来校正不同机器的算力差异，
+## 否则在慢 runner 上基线永远超，门禁就成了摆设。
+func _measure_calibration() -> void:
+	var probe := PerfChart.make(2000, 20)
+	var samples: Array[float] = []
+	for i in 3:
+		var started := Time.get_ticks_usec()
+		var size := JSON.stringify(ChartIO.chart_to_dict(probe)).length()
+		samples.append(float(Time.get_ticks_usec() - started) / 1000.0 + float(size) * 0.0)
+	samples.sort()
+	_calibration_ms = samples[1]
 
 
 ## 空场景的帧间隔 = 引擎/平台地板，各场景扣掉它。
@@ -312,6 +328,11 @@ func _compare_baseline() -> void:
 		return
 	var baseline: Dictionary = parsed
 	var tolerance := float(baseline.get("tolerance", 1.5))
+	# 基线是在某台机上量的；按算力标定把容差一起缩放，慢机器不会假红。
+	var scale := 1.0
+	var base_calibration := float(baseline.get("calibration_ms", 0.0))
+	if base_calibration > 0.0 and _calibration_ms > 0.0:
+		scale = clampf(_calibration_ms / base_calibration, 0.5, 10.0)
 	var rows: Dictionary = baseline.get("metrics", {})
 	for key in rows:
 		if not _metrics.has(key):
@@ -319,7 +340,7 @@ func _compare_baseline() -> void:
 		var base := float(rows[key])
 		if base <= 0.0:
 			continue
-		var limit := base * tolerance
+		var limit := base * tolerance * scale
 		if float(_metrics[key]) > limit:
 			_failures.append("%s=%.2f > baseline %.2f × %.2f" % [key, float(_metrics[key]), base, tolerance])
 
