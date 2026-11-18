@@ -61,7 +61,6 @@ var fx_budget: String = "full"
 ## high / mid / low（3D 背景渲染分辨率 0.8 / 0.65 / 0.5）
 var ring_3d_scale: String = "high"
 ## 3D 背景刷新率上限 60 / 30（只在视角或形变变化时重画；2D 与判定永远按游戏帧率）
-var ring_3d_hz: int = 30
 var bar_lines: bool = true
 ## HUD 选项（视图 → 界面）。只影响显示，不碰判定。
 ## 80 / 100 / 120
@@ -145,8 +144,6 @@ var hud_visible: bool = true
 var use_3d_ring: bool = true
 var mouse_tilt: bool = true
 var debug_overlay: bool = false
-var waveform_visible: bool = true
-var ghost_regions: bool = false
 var boundary_mode: bool = false
 
 var undo := UndoStack.new()
@@ -477,24 +474,6 @@ func add_difficulty_copy(label: String) -> int:
 	return difficulty_index
 
 
-func remove_difficulty(index: int) -> bool:
-	if difficulties.size() <= 1 or index < 0 or index >= difficulties.size():
-		return false
-	difficulties.remove_at(index)
-	difficulty_index = clampi(difficulty_index, 0, difficulties.size() - 1)
-	switch_difficulty(difficulty_index)
-	return true
-
-
-func clear_difficulties() -> void:
-	if difficulties.is_empty():
-		return
-	difficulties.clear()
-	difficulty_index = 0
-	difficulties_changed.emit()
-	import_set_changed.emit()
-
-
 ## 把难度组里每一份都存成单独文件，返回写成功的个数。
 func save_all_difficulties(dir: String) -> int:
 	if difficulties.is_empty():
@@ -589,7 +568,6 @@ func _load_settings() -> void:
 			fx_budget = fx_mode if fx_mode in ["full", "light", "off"] else "full"
 			var ring_scale := String(data.get("ring_3d_scale", ring_3d_scale))
 			ring_3d_scale = ring_scale if ring_scale in ["high", "mid", "low"] else "high"
-			ring_3d_hz = 30 if int(data.get("ring_3d_hz", ring_3d_hz)) == 30 else 60
 			bar_lines = bool(data.get("bar_lines", bar_lines))
 			var preset := String(data.get("quality_preset", "high"))
 			quality_preset = preset if preset in ["ultra", "high", "mid", "low", "custom"] else "high"
@@ -699,8 +677,7 @@ func apply_quality_preset(name: String) -> void:
 			note_glow = true
 			cursor_trail = "long"
 			fx_budget = "full"
-			ring_3d_scale = "native"
-			ring_3d_hz = 60
+			ring_3d_scale = "high"
 			bar_lines = true
 		"low":
 			aa_2d_level = 0
@@ -710,7 +687,6 @@ func apply_quality_preset(name: String) -> void:
 			cursor_trail = "off"
 			fx_budget = "light"
 			ring_3d_scale = "low"
-			ring_3d_hz = 30
 			bar_lines = false
 		"mid":
 			aa_2d_level = 1
@@ -720,7 +696,6 @@ func apply_quality_preset(name: String) -> void:
 			cursor_trail = "short"
 			fx_budget = "light"
 			ring_3d_scale = "mid"
-			ring_3d_hz = 30
 			bar_lines = true
 		_:
 			quality_preset = "high"
@@ -730,8 +705,7 @@ func apply_quality_preset(name: String) -> void:
 			note_glow = true
 			cursor_trail = "long"
 			fx_budget = "full"
-			ring_3d_scale = "native"
-			ring_3d_hz = 30
+			ring_3d_scale = "high"
 			bar_lines = true
 
 
@@ -1584,29 +1558,10 @@ func get_selected_region() -> Region:
 	return null
 
 
-func get_selected_event() -> BoundaryEvent:
-	if chart == null or selected_event_id.is_empty():
-		return null
-	for event in chart.events:
-		if event.id == selected_event_id:
-			return event
-	return null
-
-
 func get_selected_shape() -> BoundaryShape:
 	if chart == null:
 		return null
 	return chart.get_shape(selected_shape_id)
-
-
-func get_selected_segment() -> BoundarySegment:
-	var shape := get_selected_shape()
-	if shape == null:
-		return null
-	var sorted := shape.sorted_segments()
-	if selected_segment_index < 0 or selected_segment_index >= sorted.size():
-		return null
-	return sorted[selected_segment_index]
 
 
 func get_selected_view() -> ViewState:

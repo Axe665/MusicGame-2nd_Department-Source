@@ -229,9 +229,6 @@ var _last_mesh_usec: int = 0
 var _last_process_time: float = -9999.0
 var _last_mouse_screen: Vector2 = Vector2(-9999, -9999)
 var _cursor_trail: Array[Dictionary] = []
-## 3D 视口上次重画时间（试玩时限频，不影响 2D/游戏帧率）。
-var _last_3d_usec: int = 0
-var _last_3d_key: String = ""
 ## 性能采样：draw_overlay 的平均耗时 + FPS，每 2 秒打印一次（仅试玩）。
 var _perf_draw_usec: int = 0
 var _perf_frames: int = 0
@@ -255,7 +252,6 @@ var _avg_radius_cache: float = 100.0
 var _avg_radius_key: String = ""
 var _last_overlay_time: float = -9999.0
 var _render_mode: int = -1
-var _render_frame: int = 0
 var _tilt: Vector2 = Vector2.ZERO
 var _tilt_target: Vector2 = Vector2.ZERO
 var _force_3d_frame: bool = false
@@ -351,7 +347,6 @@ var bar_lines_visible: bool = true
 var ring_3d_scale: String = "high"
 ## 0 = 关，1 = 2x，2 = 4x
 var msaa_3d_level: int = 1
-var ring_3d_hz: int = 60
 
 
 func set_quality_level(level: int) -> void:
@@ -368,10 +363,6 @@ func apply_ring_quality() -> void:
 		return
 	var scale := 1.0
 	match ring_3d_scale:
-		"ssaa15":
-			scale = 1.5
-		"ssaa12":
-			scale = 1.25
 		"high":
 			scale = 0.85
 		"mid":
@@ -2678,14 +2669,6 @@ static func _decode_texture(full: String) -> void:
 	_tex_mutex.unlock()
 
 
-func _storyboard_texture(path: String) -> Texture2D:
-	var full := _storyboard_dir + "/" + path.get_file()
-	var texture: Texture2D = _tex_cache.get(full)
-	if texture == null:
-		_request_texture(full)
-	return texture
-
-
 ## 把 storyboard 的 640x480 坐标场映射到预览区域：
 ## osu 是按 **高度** 缩放、场中心对齐屏幕中心（宽屏只是左右多露出来），
 ## 不是 cover——之前用 max() 会把 1920x540 这种横条撑满整屏，把背景图盖死。
@@ -2965,26 +2948,6 @@ static func limit_flash_alpha(since_ms: float) -> float:
 	return clampf(1.0 - maxf(0.0, since_ms) / 70.0, 0.0, 1.0) * 0.35
 
 
-## 锯齿外缘：隔一段一个尖齿，1–3px 量级，是 Estella 那种“撕开的警戒带”而不是噪声。
-func _jagged_arc_points(angle: float, width: float, beat: float, steps: int,
-		scale: float, amplitude: float) -> PackedVector2Array:
-	var points := PackedVector2Array()
-	var safe_width := clampf(width, 0.1, 360.0)
-	var count := maxi(steps, 8)
-	var center := project_design(Vector2.ZERO)
-	var radius_px := 1.0
-	var rim := _arc_point_scaled(angle, beat, 1.0)
-	if _valid_point(rim) and _valid_point(center):
-		radius_px = maxf(1.0, center.distance_to(rim))
-	for i in count + 1:
-		var a := angle - safe_width * 0.5 + safe_width * float(i) / float(count)
-		var tooth := 1.0 if i % 2 == 0 else 0.3
-		var p := _arc_point_scaled(a, beat, scale + amplitude * tooth / radius_px)
-		if _valid_point(p):
-			points.append(p)
-	return points
-
-
 func _draw_red_regions(canvas: Control, chart: Chart, t: float) -> void:
 	for region in chart.regions:
 		var active := region.active_at(t)
@@ -3204,33 +3167,6 @@ func _paths_overlap(chart: Chart, a: Note, b: Note) -> bool:
 			if pa.distance_to(pb) < 0.22:
 				return true
 	return false
-
-
-func path_screen_runs(note: Note, t: float, grow: float = 1.0) -> Array[PackedVector2Array]:
-	var chart := get_chart()
-	if chart == null:
-		return []
-	var total := note.duration()
-	if total <= 0.001:
-		return []
-	var count := clampi(int(total * 18.0), 40, 96)
-	var points := PackedVector2Array()
-	var erased_flags: Array[bool] = []
-	for i in count + 1:
-		var rel := total * float(i) / float(count)
-		erased_flags.append(path_erased(note, rel))
-		points.append(_path_screen_point(chart, note, rel, t, false, 1.0))
-	var runs := split_path_runs(points, erased_flags)
-	if grow < 0.999:
-		var center := project_design(Vector2.ZERO)
-		var scaled_runs: Array[PackedVector2Array] = []
-		for piece in runs:
-			var scaled := PackedVector2Array()
-			for p in piece:
-				scaled.append(center.lerp(p, grow))
-			scaled_runs.append(scaled)
-		runs = scaled_runs
-	return runs
 
 
 static func split_path_runs(points: PackedVector2Array, erased: Array) -> Array[PackedVector2Array]:
@@ -3532,29 +3468,6 @@ func _point_polyline_distance(points: PackedVector2Array, point: Vector2) -> flo
 	return best
 
 
-func erase_path_overlap(note: Note, from: Vector2, to: Vector2, beat: float) -> bool:
-	var chart := get_chart()
-	if chart == null:
-		return false
-	var total := note.duration()
-	if total <= 0.001:
-		return false
-	var count := 96
-	var points := PackedVector2Array()
-	for i in count + 1:
-		points.append(_path_screen_point(chart, note, total * float(i) / float(count), beat, false))
-	var brush := 26.0 * _note_scale()
-	# 多星星保护：只有鼠标当前或上一帧确实贴着这条 Path 时才擦，
-	# 避免从 A 星移到 B 星时把路上穿过的 C 星误削。
-	var guard := 72.0 * _note_scale()
-	if minf(_point_polyline_distance(points, from), _point_polyline_distance(points, to)) > guard:
-		return false
-	var ranges := path_erase_ranges(points, from, to, brush)
-	for span in ranges:
-		_add_path_erase_range(note, span.x, span.y)
-	return not ranges.is_empty()
-
-
 static func merge_erase_ranges(ranges: Array, from_fraction: float, to_fraction: float) -> Array:
 	var a := clampf(minf(from_fraction, to_fraction), 0.0, 1.0)
 	var b := clampf(maxf(from_fraction, to_fraction), 0.0, 1.0)
@@ -3698,33 +3611,6 @@ func set_path_erased_to(note: Note, fraction: float) -> void:
 	path_cut_versions[note.id] = int(path_cut_versions.get(note.id, 0)) + 1
 	if _overlay != null:
 		_overlay.queue_redraw()
-
-
-func path_fraction(note: Note, mouse: Vector2, beat: float) -> Dictionary:
-	var chart := get_chart()
-	if chart == null:
-		return {"fraction": 0.0, "distance": INF}
-	var points := PackedVector2Array()
-	var count := 48
-	for i in count + 1:
-		var p := _path_screen_point(chart, note, note.duration() * float(i) / float(count), beat, false)
-		if _valid_point(p):
-			points.append(p)
-	if points.size() < 2:
-		return {"fraction": 0.0, "distance": INF}
-	var best := INF
-	var best_fraction := 0.0
-	for i in points.size() - 1:
-		var a := points[i]
-		var b := points[i + 1]
-		var ab := b - a
-		var length_squared := ab.length_squared()
-		var q := 0.0 if length_squared <= 0.0001 else clampf((mouse - a).dot(ab) / length_squared, 0.0, 1.0)
-		var distance := mouse.distance_to(a + ab * q)
-		if distance < best:
-			best = distance
-			best_fraction = (float(i) + q) / float(points.size() - 1)
-	return {"fraction": best_fraction, "distance": best}
 
 
 func _add_path_erase_range(note: Note, from_fraction: float, to_fraction: float) -> void:
@@ -4241,23 +4127,6 @@ func _draw_notes(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 				_draw_diamond(canvas, p, 24.0 * ns * clampf(grow, 0.35, 1.0), UITheme.VIOLET)
 			"bell":
 				_draw_bell(canvas, chart, note, t)
-
-
-func _draw_tap_donut(canvas: Control, point: Vector2, radius: float, color: Color, alpha: float = 1.0) -> void:
-	# 舞萌式 Tap：固定大小的粉色圆环，不随判定宽度拉成长条。
-	var skin := _skin()
-	var outline := float(skin["outline"])
-	var glow := float(skin["glow"])
-	var gloss := float(skin["gloss"])
-	canvas.draw_circle(point, radius + 10.0, Color(color.r, color.g, color.b, 0.10 * glow * alpha))
-	canvas.draw_circle(point, radius + 3.5 * outline, Color(0, 0, 0, 0.66 * alpha))
-	canvas.draw_circle(point, radius + 1.2, Color(1, 1, 1, 0.94 * alpha))
-	canvas.draw_circle(point, radius - 1.0, Color(color.r, color.g, color.b, 0.95 * alpha))
-	canvas.draw_circle(point, radius * 0.58, Color(0.04, 0.05, 0.07, 0.92 * alpha))
-	canvas.draw_arc(point, radius * 0.58, 0.0, TAU, 28, Color(1, 1, 1, 0.55 * alpha), 1.4, false)
-	canvas.draw_circle(point, radius * 0.18, Color(color.r, color.g, color.b, 0.65 * alpha))
-	if gloss > 0.01:
-		canvas.draw_arc(point, radius * 0.82, -PI * 0.85, -PI * 0.25, 16, Color(1, 1, 1, 0.42 * gloss * alpha), 2.0, false)
 
 
 func _draw_tap_note(canvas: Control, chart: Chart, note: Note, t: float, pre: float) -> void:
@@ -5281,33 +5150,6 @@ func _hud_layout() -> Dictionary:
 	return layout
 
 
-## 诊断/测试用：HUD 左右列相对环心与半径的位置（单位 px）。
-## 和 _draw_play_hud 用同一组常数，改了那边要同步改这里。
-func hud_metrics() -> Dictionary:
-	var bounds := size
-	var hs := clampf(bounds.y / 900.0, 0.8, 1.8)
-	var s := hs * clampf(float(hud_options.get("scale", 100)) / 100.0, 0.5, 2.0)
-	var margin := 14.0 * s
-	var layout := _hud_layout()
-	var center: Vector2 = layout["center"]
-	var ring_r: float = float(layout["ring"]) * 1.2
-	var gap := 20.0 * s
-	var side := minf(center.x, bounds.x - center.x) - ring_r - margin - gap
-	var col_w := clampf(side, 90.0 * s, 320.0 * s)
-	return {
-		"size": bounds,
-		"s": s,
-		"gap": gap,
-		"center": center,
-		"live_center": project_design(Vector2.ZERO),
-		"ring": ring_r,
-		"live_ring": _hud_ring_radius(0.0) * 1.2,
-		"left_edge": center.x - ring_r - gap,
-		"right_edge": center.x + ring_r + gap,
-		"col_w": col_w,
-	}
-
-
 func _hud_ring_radius(t: float) -> float:
 	_ensure_design_radius(get_chart())
 	if _max_design_radius > 0.0:
@@ -5656,15 +5498,6 @@ func _arc_points(angle: float, width: float, beat: float, steps: int) -> PackedV
 	return points
 
 
-func _draw_marker(canvas: Control, point: Vector2, color: Color, radius: float) -> void:
-	if not _valid_point(point):
-		return
-	var center := project_design(Vector2.ZERO)
-	canvas.draw_line(center, point, Color(color.r, color.g, color.b, 0.16), 2.0, false)
-	canvas.draw_circle(point, radius, color)
-	canvas.draw_circle(point, maxf(2.0, radius * 0.35), UITheme.INK)
-
-
 func _draw_diamond(canvas: Control, point: Vector2, radius: float, color: Color) -> void:
 	if not _valid_point(point):
 		return
@@ -5897,14 +5730,6 @@ func note_graphic_radius(kind: String) -> float:
 	if kind == "anchor":
 		return 16.0 * ns
 	return 9.0 * ns
-
-
-func _design_radius_to_screen(point: Vector2, radius: float) -> float:
-	var p1 := project_design(point)
-	var p2 := project_design(Vector2(point.x + radius, point.y))
-	if not _valid_point(p1) or not _valid_point(p2):
-		return radius
-	return p1.distance_to(p2)
 
 
 ## 以“毫秒预读”为准的取音符窗口。

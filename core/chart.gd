@@ -251,22 +251,6 @@ func refresh_ids() -> void:
 	_next_event_id = max_event + 1
 
 
-func notes_at(beat: float, tolerance: float = 0.001) -> Array[Note]:
-	var result: Array[Note] = []
-	for note in notes:
-		if absf(note.beat - beat) <= tolerance:
-			result.append(note)
-	return result
-
-
-func regions_at(beat: float) -> Array[Region]:
-	var result: Array[Region] = []
-	for region in regions:
-		if region.active_at(beat):
-			result.append(region)
-	return result
-
-
 ## 同一条 Path 链上的全部 part（含自身），从 root 到末段。复制/粘贴要整链一起，
 ## 否则粘出来的 part 会指向原链，预览、试玩和存盘都把它当成别人的子部件跳过。
 func path_chain(note: Note) -> Array[Note]:
@@ -405,14 +389,6 @@ func palette_usage(index: int) -> int:
 		if note.color == index:
 			total += 1
 	return total
-
-
-## 谱面里是否有音符使用自定义颜色（分组或单音符覆盖）。
-func has_custom_note_colors() -> bool:
-	for note in notes:
-		if note.has_custom_color or note.color > 0:
-			return true
-	return false
 
 
 ## 音符飞行时长（毫秒，已含当前 BPM 不影响）。显示层再按音符速度倍率缩放。

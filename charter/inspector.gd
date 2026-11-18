@@ -357,10 +357,6 @@ func _spin_slider(page: VBoxContainer, label_text: String, value: float, min_val
 	return {"spin": spin, "slider": slider}
 
 
-func _int(page: VBoxContainer, label_text: String, value: int, min_value: int, max_value: int, callback: Callable) -> SpinBox:
-	return _spin(page, label_text, float(value), float(min_value), float(max_value), 1.0, func(new_value: float) -> void: callback.call(int(new_value)))
-
-
 func _text(page: VBoxContainer, label_text: String, value: String, callback: Callable) -> LineEdit:
 	var edit := LineEdit.new()
 	edit.text = value
@@ -436,14 +432,6 @@ func _buttons(page: VBoxContainer, specs: Array[Dictionary]) -> HBoxContainer:
 		row.add_child(button)
 	page.add_child(row)
 	return row
-
-
-func _quality_changed() -> void:
-	_app.quality_preset = "custom"
-	_app.save_settings()
-	_app.apply_visual_quality()
-	_app.appearance_changed.emit()
-	call_deferred("_rebuild")
 
 
 func _apply(callback: Callable) -> void:
@@ -1027,13 +1015,6 @@ func _set_path_erase_width(note: Note, width: float) -> void:
 	note.path_gaps.append({"from": 0.5 - half, "to": 0.5 + half})
 
 
-func _set_hold_style(note: Note, style: String) -> void:
-	_apply(func() -> void:
-		note.hold_style = style
-	)
-	_rebuild()
-
-
 func _path_tail_display(note: Note) -> Vector2:
 	## The tail is stored as a point. Keep a negative R meaningful by comparing
 	## the point direction with the author-facing tail angle: an opposite point
@@ -1114,17 +1095,8 @@ func _build_region_page(page: VBoxContainer) -> void:
 	_row(page, "类型", _readonly(region.kind))
 	_beat(page, "开始拍", region.start_beat, func(value: float) -> void: region.start_beat = value)
 	_beat(page, "结束拍", region.end_beat, func(value: float) -> void: region.end_beat = value)
-	var angle_row := _spin(page, "逻辑角度", region.angle, 0.0, 360.0, 0.5, func(value: float) -> void: region.angle = fposmod(value, 360.0))
-	angle_row.get_parent().visible = false
 	var width_spin := _spin(page, "逻辑宽度", region.width, 0.0, 360.0, 1.0, func(value: float) -> void: region.width = value)
 	width_spin.get_parent().visible = true
-	var polarity_row := _spin(page, "极性", region.polarity, -1.0, 1.0, 2.0, func(value: float) -> void: region.polarity = int(value))
-	polarity_row.get_parent().visible = false
-	var shapes: Array[String] = [""]
-	for shape in _app.chart.sorted_shapes():
-		shapes.append(shape.id)
-	var shape_option := _option(page, "形状引用", shapes, maxi(0, shapes.find(region.shape)), func(index: int) -> void: region.shape = shapes[index])
-	shape_option.get_parent().visible = false
 	_label(page, "时长 %.2f 拍 / 上限 4.00 拍；同刻公共角度减去限制区后必须非空。" % region.duration(), 11, UITheme.MUTED)
 	_buttons(page, [
 		{"text": "定位播放头", "callback": func() -> void: _app.set_playhead(region.start_beat)},
@@ -1173,34 +1145,11 @@ func _build_view_page(page: VBoxContainer) -> void:
 		_app.appearance_changed.emit()
 	)
 	_label(page, "从星星落点到等待结束计时；预览和试玩共用，试玩暂停菜单也可切换。", 11, UITheme.MUTED)
-	var cap_keys: Array[String] = ["60", "120", "vsync", "unlimited"]
-	var cap_labels: Array[String] = ["60 FPS", "120 FPS", "跟随显示器（vsync）", "无限制"]
-	# 死选项/重复项先隐藏（代码保留）：帧率上限在「设置」里有完整 6 档，这份只有 4 档。
-	var cap_row := _setting_option(page, "帧率上限", cap_labels, maxi(0, cap_keys.find(_app.frame_cap)), func(index: int) -> void:
-		_app.frame_cap = cap_keys[index]
-		_app.apply_frame_cap()
-		_app.save_settings()
-		_app.notice.emit("帧率上限：%s" % cap_labels[index], "info")
-	)
-	cap_row.get_parent().visible = false
-	# Godot 只在启动时读音频缓冲；这里写 override.cfg，重启后生效。
-	var buffer_values: Array[int] = [3, 10, 20]
-	var buffer_labels: Array[String] = ["低延迟 3ms", "标准 10ms", "安全 20ms"]
-	var buffer_row := _setting_option(page, "音频缓冲", buffer_labels, maxi(0, buffer_values.find(int(_app.audio_buffer_ms))),
-		func(index: int) -> void: _app.set_audio_buffer(buffer_values[index]))
-	buffer_row.get_parent().visible = false
-	var buffer_hint := _label(page, "音频缓冲改动写进 override.cfg，重启游戏后生效（3ms ≈ 12ms 总延迟，爆音就换标准）。", 11, UITheme.MUTED)
-	buffer_hint.visible = false
 	_check(page, "正对镜头（忽略倾斜）", bool(_app.chart.metadata.get("face_camera", true)), func(value: bool) -> void:
 		_app.mutate(func() -> void: _app.chart.metadata["face_camera"] = value)
 	)
 	_check(page, "HUD（H）", _app.hud_visible, func(value: bool) -> void: _app.hud_visible = value)
 	_check(page, "调试叠层", _app.debug_overlay, func(value: bool) -> void: _app.debug_overlay = value)
-	# 死选项先隐藏（代码保留）：waveform_visible / ghost_regions 全项目没有读取点。
-	var waveform_check := _check(page, "波形", _app.waveform_visible, func(value: bool) -> void: _app.waveform_visible = value)
-	waveform_check.visible = false
-	var ghost_check := _check(page, "幽灵红区", _app.ghost_regions, func(value: bool) -> void: _app.ghost_regions = value)
-	ghost_check.visible = false
 	_check(page, "3D 环网格（GPU）", _app.use_3d_ring, func(value: bool) -> void:
 		_app.use_3d_ring = value
 		_app.status_changed.emit()
@@ -1235,9 +1184,6 @@ func _build_view_page(page: VBoxContainer) -> void:
 	])
 	_label(page, "支持 OGV / MP4 / M4V / WebM / MOV / MKV / AVI；mp4 等默认直接解码（不转码），只有缺少解码库时才转码到 user://media 缓存。", 11, UITheme.MUTED)
 	_spin(page, "videoOffset ms", _app.chart.video_offset_ms, -10000.0, 10000.0, 1.0, func(value: float) -> void: _app.chart.video_offset_ms = value)
-	# video_fps 只被序列化、从不被播放/导出读取，先隐藏这一行（字段保留）。
-	var fps_hint := _spin(page, "FPS 提示", _app.chart.video_fps, 1.0, 240.0, 1.0, func(value: float) -> void: _app.chart.video_fps = value)
-	fps_hint.get_parent().visible = false
 	_spin(page, "不透明度", _app.chart.video_opacity, 0.0, 1.0, 0.01, func(value: float) -> void: _app.chart.video_opacity = value)
 	_label(page, "RingState 关键帧在「视图 → 环编辑」里用滚轮/菱形调。", 11, UITheme.MUTED)
 

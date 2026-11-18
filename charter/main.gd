@@ -41,8 +41,7 @@ const QUALITY_OPTIONS := [
 	{"key": "path_style", "label": "Path 画法", "choices": [["履带（粗，默认）", 180], ["丝带（半透明）", 181]]},
 	{"key": "cursor_trail", "label": "光标拖尾", "choices": [["长", 67], ["短", 68], ["关", 69]]},
 	{"key": "fx_budget", "label": "命中特效", "choices": [["完整", 70], ["精简", 71], ["关", 72]]},
-	{"key": "ring_3d_scale", "label": "3D 环分辨率", "choices": [["原生", 160], ["超采样 1.25×", 161], ["超采样 1.5×", 162], ["高 0.85", 163], ["中 0.65", 164], ["低 0.5", 165]]},
-	{"key": "ring_3d_hz", "label": "3D 环刷新", "choices": [["60Hz", 76], ["30Hz", 77]]},
+	{"key": "ring_3d_scale", "label": "3D 环分辨率", "choices": [["高 0.85", 163], ["中 0.65", 164], ["低 0.5", 165]]},
 	{"key": "bar_lines", "label": "小节线", "choices": [["开", 78], ["关", 79]]},
 	{"key": "background_brightness", "label": "背景明暗", "choices": [["关", 96], ["25%", 97], ["50%", 98], ["75%", 99], ["100%（默认）", 100]]},
 	{"key": "show_storyboard", "label": "故事板", "choices": [["开", 166], ["关", 167]]},
@@ -485,7 +484,7 @@ func _build_ui() -> void:
 		["-", 0], ["设置…", 26],
 	]))
 	_view_menu = _menu("视图", [
-		["显示/隐藏 HUD", 20], ["调试叠层", 21], ["波形", 22], ["从上往下写入", 25], ["-", 0],
+		["显示/隐藏 HUD", 20], ["调试叠层", 21], ["从上往下写入", 25], ["-", 0],
 		["环编辑…", 39], ["时间 / BPM (F6)", 24], ["-", 0], ["故事板", 27],
 	])
 	brand_row.add_child(_view_menu)
@@ -1221,9 +1220,7 @@ func _quality_index(key: String) -> int:
 		"fx_budget":
 			return ["full", "light", "off"].find(_app.fx_budget)
 		"ring_3d_scale":
-			return ["native", "ssaa12", "ssaa15", "high", "mid", "low"].find(_app.ring_3d_scale)
-		"ring_3d_hz":
-			return 0 if _app.ring_3d_hz >= 60 else 1
+			return ["high", "mid", "low"].find(_app.ring_3d_scale)
 		"bar_lines":
 			return 0 if _app.bar_lines else 1
 		"background_brightness":
@@ -1266,9 +1263,7 @@ func _set_quality_index(key: String, index: int) -> void:
 		"fx_budget":
 			_app.fx_budget = ["full", "light", "off"][clampi(index, 0, 2)]
 		"ring_3d_scale":
-			_app.ring_3d_scale = ["native", "ssaa12", "ssaa15", "high", "mid", "low"][clampi(index, 0, 5)]
-		"ring_3d_hz":
-			_app.ring_3d_hz = 60 if index == 0 else 30
+			_app.ring_3d_scale = ["high", "mid", "low"][clampi(index, 0, 2)]
 		"bar_lines":
 			_app.bar_lines = index == 0
 		"background_brightness":
@@ -1306,7 +1301,6 @@ func _apply_visual_options() -> void:
 	_preview.fx_budget = _app.fx_budget
 	_preview.ring_3d_scale = _app.ring_3d_scale
 	_preview.msaa_3d_level = _app.msaa_3d_level
-	_preview.ring_3d_hz = _app.ring_3d_hz
 	_preview.bar_lines_visible = _app.bar_lines
 	_preview.hud_options = _app.hud_options()
 	_preview.show_storyboard = _app.show_storyboard
@@ -1324,7 +1318,6 @@ func _apply_visual_options() -> void:
 		inner.cursor_trail_mode = _app.cursor_trail
 		inner.fx_budget = _app.fx_budget
 		inner.ring_3d_scale = _app.ring_3d_scale
-		inner.ring_3d_hz = _app.ring_3d_hz
 		inner.bar_lines_visible = _app.bar_lines
 		inner.hud_options = _app.hud_options()
 		inner.show_storyboard = _app.show_storyboard
@@ -1367,9 +1360,6 @@ func _build_quality_rows(parent: Control) -> void:
 	parent.add_child(grid)
 	for option in QUALITY_OPTIONS:
 		var key := String(option["key"])
-		# 死选项先隐藏（代码保留）：3D 环刷新率全项目没有任何读取点。
-		if key == "ring_3d_hz":
-			continue
 		var label := Label.new()
 		label.text = String(option["label"])
 		label.add_theme_font_size_override("font_size", 11)
@@ -1378,10 +1368,6 @@ func _build_quality_rows(parent: Control) -> void:
 		pick.add_theme_font_size_override("font_size", 11)
 		for choice in option["choices"]:
 			pick.add_item(String(choice[0]))
-		# 原生 / 超采样三档在 _load_settings 里会被重置回 high，先禁用（代码保留）。
-		if key == "ring_3d_scale":
-			for i in mini(3, pick.item_count):
-				pick.set_item_disabled(i, true)
 		if key == "preset":
 			pick.add_item("自定义")
 		pick.item_selected.connect(func(index: int) -> void:
@@ -2119,15 +2105,6 @@ func _process(_delta: float) -> void:
 			_stop_play()
 
 
-func _playback_total_ms() -> float:
-	if _app == null or _app.chart == null:
-		return 0.0
-	var total_ms: float = _app.chart.timing.beat_to_chart_ms(_app.chart.duration_beats())
-	if _audio != null and _audio.stream != null:
-		total_ms = maxf(total_ms, _audio.stream.get_length() * 1000.0 * _audio_stream_rate + _app.chart.offset_ms)
-	return total_ms
-
-
 ## 进度条、时间标签、时间轴共用同一条时间线：谱面本身的长度。
 func _timeline_total_beats() -> float:
 	if _app == null or _app.chart == null:
@@ -2220,15 +2197,6 @@ func _on_audio_detect_requested(path: String) -> void:
 		_audio_dialog.popup_centered_ratio(0.8)
 		return
 	_song_dialog.open_for(path)
-
-
-func _on_audio_selected(path: String) -> void:
-	_song_dialog.open_for(path)
-
-
-func _on_song_timing_applied() -> void:
-	_sync_from_app()
-	_show_toast("已写入识别结果；可在“时间”页继续微调 BPM / offset。", "info")
 
 
 func _on_tab_changed(index: int) -> void:
@@ -2680,54 +2648,6 @@ func _save_all_difficulties() -> void:
 		_show_toast("保存难度套组失败", "error")
 
 
-## 新窗口起不来时的退路：老流程（多难度弹窗选一个，直接在当前窗口导入）。
-func _import_into_current_window(path: String) -> void:
-	# 直接走难度组：多难度来源会一次性转好，顶部会出现难度下拉。
-	if _app != null and _app.open_import_source(path):
-		await _prepare_import_media()
-		_sync_from_app()
-		_show_report(_app.last_import_report)
-		return
-	var simai := SimaiIO.list_maidata(path)
-	if not simai.is_empty():
-		_pending_kind = "simai"
-		_pending_osz = path
-		_difficulty_list.clear()
-		for i in simai.size():
-			var item: Dictionary = simai[i]
-			if not bool(item.get("has_notes", true)):
-				continue
-			var index := int(item.get("index", 0))
-			var label := SimaiIO.difficulty_label(index, String(item.get("level", "")))
-			var item_index := _difficulty_list.item_count
-			_difficulty_list.add_item("%s — %s  %s" % [String(item.get("title", "")), label, String(item.get("creator", ""))])
-			_difficulty_list.set_item_metadata(item_index, index)
-		if _difficulty_list.item_count == 0:
-			_show_toast("导入失败：maidata 里没有可用难度", "error")
-			return
-		_difficulty_list.select(0)
-		_difficulty_dialog.popup_centered_ratio(0.58)
-		return
-	_pending_kind = "osu"
-	var difficulties := OsuIO.list_osz_difficulties(path)
-	if difficulties.is_empty():
-		_show_toast("导入失败：%s" % OsuIO.last_error, "error")
-		return
-	if difficulties.size() == 1:
-		_import_osz(path, 0)
-		return
-	_pending_osz = path
-	_difficulty_list.clear()
-	for item in difficulties:
-		_difficulty_list.add_item("%s — %s  [%s]  %s" % [
-			String(item.get("title", "")), String(item.get("version", "")),
-			"taiko" if int(item.get("mode", 0)) == 1 else "std",
-			String(item.get("creator", "")),
-		])
-	_difficulty_list.select(0)
-	_difficulty_dialog.popup_centered_ratio(0.58)
-
-
 func _import_osz(path: String, difficulty_index: int) -> void:
 	if _app.import_osz(path, difficulty_index):
 		_sync_from_app()
@@ -2831,8 +2751,6 @@ func _on_menu(id: int) -> void:
 		21:
 			_app.debug_overlay = not _app.debug_overlay
 			_preview.show_debug = _app.debug_overlay
-		22:
-			_app.waveform_visible = not _app.waveform_visible
 		25:
 			_app.set_time_flows_down(not _app.time_flows_down)
 		23, 37, 38, 39:

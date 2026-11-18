@@ -351,7 +351,6 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 		_preview.cursor_trail_mode = String(_app.cursor_trail)
 		_preview.fx_budget = String(_app.fx_budget)
 		_preview.ring_3d_scale = String(_app.ring_3d_scale)
-		_preview.ring_3d_hz = int(_app.ring_3d_hz)
 		_preview.bar_lines_visible = bool(_app.bar_lines)
 		_preview.apply_ring_quality()
 	_preview.auto_cursor = Vector2.INF
@@ -1448,20 +1447,6 @@ func _current_replay() -> Replay:
 	if replay_mode:
 		return replay_source
 	return _record
-
-
-func _replay_file_name() -> String:
-	var title := "回放"
-	if chart != null:
-		var meta_title := String(chart.metadata.get("title", ""))
-		if not meta_title.is_empty():
-			title = meta_title
-	var version := String(chart.metadata.get("version", "")) if chart != null else ""
-	var stamp := Time.get_datetime_string_from_system().replace(":", "").replace("-", "").replace("T", "-")
-	var name := title
-	if not version.is_empty():
-		name += "_" + version
-	return _sanitize_file_name(name + "_" + stamp) + ".tmkrpl"
 
 
 ## Windows 不允许这几个字符出现在文件名里。

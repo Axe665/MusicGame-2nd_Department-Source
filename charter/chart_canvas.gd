@@ -755,28 +755,6 @@ func _draw_grid(plot: Rect2) -> void:
 		draw_string(font, Vector2(plot.position.x + 7, y + 12), text, HORIZONTAL_ALIGNMENT_LEFT, -1, 10, UITheme.GOLD)
 
 
-func _draw_divisions(plot: Rect2) -> void:
-	var font := UITheme.mono_font()
-	var left := plot.end.x + DIVISION_MARGIN
-	var total := float(GridDivisions.ITEMS.size()) * (DIVISION_ITEM_HEIGHT + DIVISION_GAP) - DIVISION_GAP
-	var top := clampf(plot.get_center().y - total * 0.5, plot.position.y + 18.0, maxf(plot.position.y + 18.0, plot.end.y - total - 4.0))
-	_division_rects.clear()
-	draw_line(Vector2(plot.end.x + 3.0, plot.position.y), Vector2(plot.end.x + 3.0, plot.end.y), Color(1, 1, 1, 0.06), 1.0)
-	draw_string(font, Vector2(left, top - 7.0), "分音", HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(1, 1, 1, 0.35))
-	for i in GridDivisions.ITEMS.size():
-		var division: int = GridDivisions.ITEMS[i]
-		var rect := Rect2(Vector2(left, top + float(i) * (DIVISION_ITEM_HEIGHT + DIVISION_GAP)), Vector2(DIVISION_WIDTH, DIVISION_ITEM_HEIGHT))
-		_division_rects.append(rect)
-		var active := division == snap_division
-		var hovered := i == _division_hover
-		if active:
-			draw_rect(rect, UITheme.ACCENT)
-		elif hovered:
-			draw_rect(rect, Color(1, 1, 1, 0.10))
-		draw_rect(rect, UITheme.ACCENT if active else Color(1, 1, 1, 0.14), false, 1.0)
-		draw_string(font, Vector2(rect.position.x, rect.position.y + 15.0), GridDivisions.LABELS[i], HORIZONTAL_ALIGNMENT_CENTER, DIVISION_WIDTH, 10, UITheme.BG if active else Color(1, 1, 1, 0.55))
-
-
 func _draw_beat_subdivisions(plot: Rect2, emphasize: bool) -> void:
 	if _app == null:
 		return
@@ -2186,20 +2164,6 @@ func _create_simple(type: String, beat: float, u: float) -> void:
 		chart.notes.append(item)
 	_app.finish_edit()
 	_app.select_note(added[0].id)
-
-
-func _create_sized_tap(beat: float, u: float) -> void:
-	var chart: Chart = _app.chart
-	if chart == null:
-		return
-	# 默认与旧版 Tap 同长（1.0 l），按下去就能在检查器里改成 0–1.5 l 的任意值。
-	var note := Note.new("tap", beat, u * 360.0, 60.0)
-	note.id = chart.next_note_id()
-	note.set_size_ratio(1.0)
-	_app.begin_edit()
-	chart.notes.append(note)
-	_app.finish_edit()
-	_app.select_note(note.id)
 
 
 func _create_hold(beat: float, u: float) -> void:

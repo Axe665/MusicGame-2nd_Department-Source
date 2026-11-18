@@ -9,7 +9,6 @@ signal play_toggled
 signal loop_requested(start: float, end: float, enabled: bool)
 
 const ZOOM_LEVELS := [8.0, 16.0, 32.0, 64.0]
-const WINDOW_BEATS := 16.0
 const THUMB_SIZE := Vector2(64, 64)
 const EASINGS := ["linear", "in-out"]
 
@@ -59,15 +58,6 @@ static func span_end(beats: Array, index: int, content_end: float, bpb: float) -
 	if end - start < 0.001:
 		end = start + maxf(1.0, bpb)
 	return end
-
-
-static func easing_label(kind: String) -> String:
-	match kind:
-		"linear":
-			return "匀速"
-		"in-out", "cubic-bezier":
-			return "缓入缓出"
-	return kind
 
 
 var _app: Node = null

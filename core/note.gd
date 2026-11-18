@@ -121,10 +121,6 @@ func set_size_ratio(value: float) -> void:
 	size_ratio = clampf(snappedf(value, 0.01), SIZED_TAP_MIN, SIZED_TAP_MAX)
 
 
-func is_point_target() -> bool:
-	return type in ["tap", "hold", "path", "anchor"]
-
-
 func path_local_at(relative_beat: float) -> Vector2:
 	var total := duration()
 	if total <= 0.000001:
@@ -307,17 +303,6 @@ func path_angle_at(relative_beat: float) -> float:
 func _unit_from_angle(degrees: float) -> Vector2:
 	var radians := deg_to_rad(degrees)
 	return Vector2(cos(radians), sin(radians))
-
-
-func _star_local(p: float) -> Vector2:
-	# 保留给旧谱面读取；新的 Path 一律平面，不再生成五角星。
-	var tips: Array[Vector2] = []
-	for k in 5:
-		tips.append(_unit_from_angle(angle - 90.0 + float(k) * 72.0) * 0.78)
-	var order: Array[int] = [0, 2, 4, 1, 3, 0]
-	var cursor := clampf(p, 0.0, 1.0) * 5.0
-	var index := mini(int(cursor), 4)
-	return tips[order[index]].lerp(tips[order[index + 1]], cursor - float(index))
 
 
 func path_sample_beats() -> Array[float]:
