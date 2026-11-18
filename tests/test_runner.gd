@@ -208,6 +208,7 @@ func _initialize() -> void:
 		"test_replay_scrub",
 		"test_replay_file_name",
 		"test_playtest_ui_builds",
+		"test_retry_clears_playtest_visuals",
 	]
 	for test_name in tests:
 		if call(test_name) != true:
@@ -5011,6 +5012,26 @@ func test_playtest_ui_builds() -> bool:
 
 
 ## 鼠标左右键当成两个独立键位，且不会和真实 Key 枚举相撞。
+
+
+func test_retry_clears_playtest_visuals() -> bool:
+	var preview := Preview3D.new()
+	preview._pulses = [{"age": 0.2}, {"age": 0.4}]
+	preview._arc_flashes = [{"age": 0.1}]
+	preview._hud_combo_prev = 37
+	preview._hud_combo_broken = 37
+	preview._hud_combo_break_at = 1234
+	preview.reset_path_cuts()
+	eq(preview._pulses.size(), 0, "重试清空上一局的判定文字/火花")
+	eq(preview._arc_flashes.size(), 0, "重试清空上一局的命中弧闪")
+	eq(preview._hud_combo_prev, 0, "重试复位连击动画缓存")
+	eq(preview._hud_combo_broken, 0, "重试不再显示上一局的断连数字")
+	preview.free()
+	return true
+
+
+## 复制 Path 必须带上整条链并重映射 id：照抄旧 id 会让新 part 指向原链，
+## 预览/试玩/存盘都把它当子部件跳过，用户看到的就是“粘贴没反应”。
 func test_mouse_button_input() -> bool:
 	eq(Playtest.mouse_button_key(MOUSE_BUTTON_LEFT), Playtest.MOUSE_KEY_LEFT, "left button maps to its own key")
 	eq(Playtest.mouse_button_key(MOUSE_BUTTON_RIGHT), Playtest.MOUSE_KEY_RIGHT, "right button maps to its own key")

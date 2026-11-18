@@ -343,6 +343,8 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	_preview.hud_tiers = {}
 	_preview.hud_options = _app.hud_options() if _app != null else {}
 	_update_hud_state()
+	# 准备层还开着的时候也要重算时间标签：上一局的 _clock 还停在自己的结尾。
+	_preview.hud_ms = _timeline_start_ms
 	if _app != null:
 		_preview.note_detail_fine = bool(_app.note_detail_fine)
 		_preview.note_glow = bool(_app.note_glow)
@@ -904,6 +906,7 @@ func _init_states() -> void:
 	_slow_windows = 0
 	_last_press_ms.clear()
 	_keys_held.clear()
+	_release_ms.clear()
 	_hit_count = 0
 	_miss_count = 0
 	_accuracy_sum = 0.0

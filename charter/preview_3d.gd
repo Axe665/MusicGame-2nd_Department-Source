@@ -1346,6 +1346,13 @@ func reset_path_cuts() -> void:
 	_path_head_state.clear()
 	_path_runs_cache.clear()
 	clear_note_states()
+	# 上一局的判定文字、命中火花和连击断连动画也会跟着重试活过来：一起清掉。
+	_pulses.clear()
+	_arc_flashes.clear()
+	_hud_combo_prev = 0
+	_hud_combo_pop_at = -100000
+	_hud_combo_break_at = -100000
+	_hud_combo_broken = 0
 
 
 ## 星头判定结果：决定圆和下落星星什么时候开始淡出。
