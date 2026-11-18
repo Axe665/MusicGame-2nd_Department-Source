@@ -46,6 +46,16 @@ var _drag_width_side: int = 0
 var _drag_width_note: Note = null
 var _drag_width_origin: float = 0.0
 var _drag_width_start: float = 0.0
+var _drag_tail_note: Note = null
+var _drag_tail_start: float = 0.0
+var _drag_tail_origin: float = 0.0
+var _drag_head_note: Note = null
+var _drag_head_start: float = 0.0
+var _drag_head_origin: float = 0.0
+var _drag_region_start_beat: float = 0.0
+var _drag_region_end_beat: float = 0.0
+var _drag_region_angle: float = 0.0
+var _drag_region_width: float = 0.0
 var _marquee: Rect2 = Rect2()
 var _marquee_start_beat: float = 0.0
 var _marquee_start_u: float = 0.0
@@ -140,7 +150,7 @@ func _u_to_x(u: float) -> float:
 
 func _x_to_u(x: float) -> float:
 	var plot := _plot_rect()
-	return clampf((x - plot.position.x) / maxf(1.0, plot.size.x), 0.0, 0.999999)
+	return clampf((x - plot.position.x) / maxf(1.0, plot.size.x), 0.0, 1.0)
 
 
 func _vertical_scale() -> float:
@@ -772,7 +782,7 @@ func _draw_beat_subdivisions(plot: Rect2, emphasize: bool) -> void:
 func _draw_vertical_lines(plot: Rect2) -> void:
 	if _app == null:
 		return
-	var offsets := TimingMap.vertical_line_offsets(int(_app.vertical_lines))
+	var offsets := TimingMap.angle_line_offsets(int(_app.angle_divisions))
 	if offsets.is_empty():
 		return
 	var color := Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.09)
@@ -811,6 +821,13 @@ func _draw_regions(plot: Rect2) -> void:
 			draw_string(UITheme.mono_font(), Vector2(x0 + 4, top + 12), "LIMIT %d" % region.id, HORIZONTAL_ALIGNMENT_LEFT, -1, 9, color)
 		if _is_region_selected(region.id):
 			draw_rect(Rect2(Vector2(_u_to_x(0.0), top), Vector2(plot.size.x, height)), Color(1, 1, 1, 0.35), false, 1.0)
+			# 宽度手柄：上下两条边上各画一对，抓到任意一条都能改宽度。
+			for interval in _u_intervals(region.angle, region.width):
+				for y in [top, top + height]:
+					for x in [_u_to_x(interval.x), _u_to_x(interval.y)]:
+						var handle := Rect2(Vector2(x - 6.0, y - 6.0), Vector2(12.0, 12.0))
+						draw_rect(handle, UITheme.INK)
+						draw_rect(handle, UITheme.BG, false, 1.5)
 
 
 func _draw_events(plot: Rect2) -> void:
@@ -920,6 +937,7 @@ func _draw_tap(note: Note) -> void:
 	var center_x := _u_to_x(fposmod(note.angle, 360.0) / 360.0)
 	draw_line(Vector2(center_x, y - 8.0), Vector2(center_x, y + 8.0), UITheme.INK, 2.0)
 	draw_circle(Vector2(center_x, y), 2.2, UITheme.INK)
+	_draw_width_handles(note, y)
 	if _show_type_label(note):
 		_draw_type_label("TAP", Vector2(center_x + 8.0, y + 12.0), UITheme.CORAL)
 
@@ -930,37 +948,26 @@ func _draw_hold(note: Note) -> void:
 	var x := _u_to_x(fposmod(note.angle, 360.0) / 360.0)
 	var selected := _is_note_selected(note.id)
 	var color := UITheme.AMBER
-	# 弯长条已移除：没有体节点就按直 Hold 画实心矩形。
-	var straight := note.visual_pts.is_empty()
-	if straight:
-		# 制谱器里直长条画成实心矩形：宽 = 判定弧宽，长 = 拍长。
-		# 弧宽跨过 0°/360° 接缝时拆成两段画（以前“x1<x0 就铺满整行”会让压接缝的 Hold 变成满屏长条）。
-		var top := minf(y0, y1)
-		var height := maxf(2.0, absf(y1 - y0))
-		for span in _u_intervals(note.angle, note.arc_width()):
-			var x0 := _u_to_x(span.x)
-			var x1 := _u_to_x(span.y)
-			if x1 - x0 < 1.0:
-				continue
-			var rect := Rect2(Vector2(x0, top), Vector2(x1 - x0, height))
-			draw_rect(rect, Color(color.r, color.g, color.b, 0.32))
-			draw_rect(rect, Color(color.r, color.g, color.b, 0.95), false, 1.5)
-	else:
-		var body := PackedVector2Array([Vector2(x, y0)])
-		for point in note.visual_pts:
-			body.append(Vector2(
-				_u_to_x(fposmod(note.angle + float(point.get("da", 0.0)), 360.0) / 360.0),
-				_beat_to_y(note.beat + float(point.get("db", 0.0)))
-			))
-		body.append(Vector2(x, y1))
-		if body.size() > 1:
-			draw_polyline(body, Color(color.r, color.g, color.b, 0.28), 12.0, true)
-			draw_polyline(body, color, 2.0, true)
-		for i in range(1, body.size() - 1):
-			draw_circle(body[i], 3.0, UITheme.MINT)
-		_draw_width_band(note.angle, note.arc_width(), y0, color)
+	# 弯长条已废除：一律按直 Hold 画实心矩形，宽 = 判定弧宽，长 = 拍长。
+	# 旧谱里的 visual_pts 只保留数据，不再参与绘制（否则看不出宽度）。
+	# 弧宽跨过 0°/360° 接缝时拆成两段画（以前“x1<x0 就铺满整行”会让压接缝的 Hold 变成满屏长条）。
+	var top := minf(y0, y1)
+	var height := maxf(2.0, absf(y1 - y0))
+	for span in _u_intervals(note.angle, note.arc_width()):
+		var x0 := _u_to_x(span.x)
+		var x1 := _u_to_x(span.y)
+		if x1 - x0 < 1.0:
+			continue
+		var rect := Rect2(Vector2(x0, top), Vector2(x1 - x0, height))
+		draw_rect(rect, Color(color.r, color.g, color.b, 0.32))
+		draw_rect(rect, Color(color.r, color.g, color.b, 0.95), false, 1.5)
 	_draw_hexagon(Vector2(x, y0), 9.0 if selected else 8.0, color)
 	_draw_ring(Vector2(x, y1), 6.0, color)
+	_draw_width_handles(note, y0)
+	if selected:
+		# 尾巴手柄：拖它只改结束拍。
+		draw_circle(Vector2(x, y1), 6.0, UITheme.INK)
+		draw_arc(Vector2(x, y1), 6.0, 0.0, TAU, 16, UITheme.BG, 1.5, true)
 	if _show_type_label(note):
 		_draw_type_label("HOLD", Vector2(x + 11.0, y0 + 12.0), color)
 
@@ -1027,6 +1034,10 @@ func _draw_path(note: Note) -> void:
 	_draw_width_band(tail_draw_angle, note.tail_width, y1, tail_color)
 	_draw_star(Vector2(x0, y0), 9.0 if selected else 8.0, head_color)
 	_draw_donut(Vector2(x1, y1), 7.0, tail_color)
+	if selected:
+		# 头/尾都能拖：白圈标出可抓的位置（宽度手柄只在 Tap/Hold 上）。
+		draw_arc(Vector2(x0, y0), 11.0, 0.0, TAU, 24, UITheme.INK, 1.5, true)
+		draw_arc(Vector2(x1, y1), 11.0, 0.0, TAU, 24, UITheme.INK, 1.5, true)
 	if _show_type_label(note):
 		_draw_type_label("PATH", Vector2(x0 + 11.0, y0 + 12.0), UITheme.CYAN)
 
@@ -1101,7 +1112,7 @@ func _draw_bell(note: Note) -> void:
 	var p := Vector2(_u_to_x(note.center_u), _beat_to_y(note.beat))
 	var selected := _is_note_selected(note.id)
 	# 时间轴里的金键 = 游戏内那段弧带的俯视图：白壳 + 金色核心 + 圆头。
-	var span := clampf(12.0 + note.width * 0.35, 14.0, 64.0)
+	var span := _bell_span(note)
 	var half := 7.0 if selected else 6.0
 	var tip := 4.5
 	if selected:
@@ -1109,8 +1120,20 @@ func _draw_bell(note: Note) -> void:
 	_bell_bar(p, span + 4.0, half + 2.0, Color(0, 0, 0, 0.5))
 	_bell_bar(p, span, half, Color(1, 1, 1, 0.94))
 	_bell_bar(p, span, half * 0.62, UITheme.KEY_YELLOW)
+	if selected:
+		for x in [p.x - span * 0.5, p.x + span * 0.5]:
+			var handle := Rect2(Vector2(x - 6.0, p.y - 6.0), Vector2(12.0, 12.0))
+			draw_rect(handle, UITheme.INK)
+			draw_rect(handle, UITheme.BG, false, 1.5)
+
+
 	if _show_type_label(note):
 		_draw_type_label("BELL", p + Vector2(span * 0.5 + 10.0, 4.0), UITheme.KEY_YELLOW)
+
+
+## 金键在时间线上的可见长度（像素）：和检测/绘制共用，手柄才抓得准。
+func _bell_span(note: Note) -> float:
+	return clampf(12.0 + note.bell_width() * 0.35, 14.0, 64.0)
 
 
 func _bell_bar(p: Vector2, span: float, half: float, color: Color) -> void:
@@ -1218,6 +1241,17 @@ func _draw_width_band(angle: float, width: float, y: float, color: Color) -> voi
 		draw_line(Vector2(x0, y), Vector2(x1, y), Color(color.r, color.g, color.b, 0.40), 6.0, true)
 
 
+## 选中时在弧带两端画方柄：手柄要永远比窄音符宽，否则抓不到。
+func _draw_width_handles(note: Note, y: float) -> void:
+	if not _is_note_selected(note.id):
+		return
+	for interval in _u_intervals(note.angle, note.arc_width()):
+		for x in [_u_to_x(interval.x), _u_to_x(interval.y)]:
+			var rect := Rect2(Vector2(x - 6.0, y - 6.0), Vector2(12.0, 12.0))
+			draw_rect(rect, UITheme.INK)
+			draw_rect(rect, UITheme.BG, false, 1.5)
+
+
 func _draw_diamond(p: Vector2, r: float, color: Color) -> void:
 	var points := PackedVector2Array([p + Vector2(0, -r), p + Vector2(r, 0), p + Vector2(0, r), p + Vector2(-r, 0), p + Vector2(0, -r)])
 	draw_polyline(points, color, 2.0, true)
@@ -1283,6 +1317,7 @@ func _gui_input(event: InputEvent) -> void:
 		_mouse_pos = event.position
 		_hover_u = _x_to_u(event.position.x)
 		_hover_beat = _y_to_beat(event.position.y)
+		_update_hover_cursor()
 		var hover_index := _division_index_at(event.position)
 		if hover_index != _division_hover:
 			_division_hover = hover_index
@@ -1292,15 +1327,21 @@ func _gui_input(event: InputEvent) -> void:
 			_clipboard_mouse_beat = _hover_beat
 			_rebuild_ghost()
 		if _pending_hold != null:
-			var end_beat := _snap_beat_to_subdivision(_y_to_beat(event.position.y), event.alt_pressed)
+			var end_beat := _snap_beat_to_subdivision(_y_to_beat(event.position.y), not _snap_modifier(event))
 			_pending_hold.end_beat = maxf(_pending_hold.beat, end_beat)
 			_app.touch_chart()
 		if _drag_mode == "note":
 			_drag_notes_update(event.position, event)
 		elif _drag_mode == "width":
 			_drag_width_update(event.position)
+		elif _drag_mode == "path_tail":
+			_drag_path_tail_update(event.position, event)
+		elif _drag_mode == "path_head":
+			_drag_path_head_update(event.position, event)
 		elif _drag_mode == "limit":
 			_drag_red_update(event.position, event)
+		elif _drag_mode == "region_body" or _drag_mode == "region_width":
+			_drag_region_update(event.position, event)
 		elif _drag_mode == "hold_end":
 			_drag_hold_update(event.position, event)
 		elif _drag_mode == "marquee":
@@ -1413,8 +1454,7 @@ func _handle_wheel(event: InputEventMouseButton) -> void:
 		if _app != null:
 			_app.set_vertical_stretch(_app.vertical_stretch + step)
 	else:
-		var direction := -1.0 if event.button_index == MOUSE_BUTTON_WHEEL_UP else 1.0
-		scroll_beat = clampf(scroll_beat + direction * 3.0, 0.0, _scroll_limit())
+		scroll_beat = clampf(scroll_beat + wheel_step(event.button_index == MOUSE_BUTTON_WHEEL_UP, flow_down), 0.0, _scroll_limit())
 		if playback_pinned and playback_view == "pin":
 			# 滚轮临时脱离钉住：过一会儿自动拉回播放头。
 			_pin_resume_msec = Time.get_ticks_msec() + PIN_RESUME_MS
@@ -1427,7 +1467,19 @@ func _handle_wheel(event: InputEventMouseButton) -> void:
 		_overlay.queue_redraw()
 
 
-func _snap_beat_to_subdivision(raw_beat: float, bypass: bool = false) -> float:
+## 默认不吸附（真正的自由放置）；按住 Shift 才吸附到最近的 拍×角度 格点。
+static func _snap_modifier(event: InputEventWithModifiers) -> bool:
+	return event.shift_pressed and not event.alt_pressed
+
+
+## 滚轮一小格的 beat 位移。规则只有一条：往上滚 = 页面往上走（回到更早的拍），
+## 往下滚 = 继续往后。时间轴朝下时 scroll_beat 是顶边拍，要减小；
+## 朝上时它是底边拍，要增大。
+static func wheel_step(up: bool, flow_down: bool, steps: float = 3.0) -> float:
+	return steps if up != flow_down else -steps
+
+
+func _snap_beat_to_subdivision(raw_beat: float, bypass: bool = true) -> float:
 	if bypass or _app == null:
 		return raw_beat
 	return TimingMap.nearest_beat_subdivision(raw_beat, int(_app.beat_subdivisions))
@@ -1440,11 +1492,8 @@ func _snap_beat_u(raw_beat: float, raw_u: float, bypass: bool) -> Vector2:
 	if bypass or _app == null:
 		return Vector2(raw_beat, raw_u)
 	var beat := _snap_beat_to_subdivision(raw_beat, false)
-	var lines := mini(int(_app.vertical_lines), TimingMap.MAX_VERTICAL_LINES)
-	if lines <= 0:
-		return Vector2(beat, raw_u)
-	var u := TimingMap.nearest_vertical_line_u(raw_u, lines)
-	return Vector2(beat, u)
+	# 角度格线：N 等分（360÷N 必须是整数），包含 0°/360° 两个接缝。
+	return Vector2(beat, TimingMap.nearest_angle_u(raw_u, int(_app.angle_divisions)))
 
 
 func _snap_note_placement(screen: Vector2, bypass: bool) -> Vector2:
@@ -1461,7 +1510,7 @@ func _snap_dragged_notes(bypass: bool) -> void:
 		var note: Note = item["note"]
 		if note.lock:
 			continue
-		var raw_u := fposmod(note.angle, 360.0) / 360.0
+		var raw_u := note.center_u if note.type == "bell" else fposmod(note.angle, 360.0) / 360.0
 		var snapped := _snap_beat_u(note.beat, raw_u, false)
 		var beat_delta := snapped.x - note.beat
 		var angle_delta := snapped.y * 360.0 - note.angle
@@ -1473,6 +1522,9 @@ func _snap_dragged_notes(bypass: bool) -> void:
 		if note.type == "bell":
 			note.angle = fposmod(snapped.y * 360.0, 360.0)
 			note.center_u = snapped.y
+		elif note.type == "anchor":
+			# 整对锚点各自吸角度会把 180° 关系吸歪；只吸拍位。
+			pass
 		elif note.type != "seek":
 			note.angle = fposmod(note.angle + angle_delta, 360.0)
 			if note.type == "path":
@@ -1506,7 +1558,7 @@ func _on_left_press(event: InputEventMouseButton) -> void:
 	# A pending hold consumes the next left click as its end time, before the
 	# overlap guard can select another note.
 	if _pending_hold != null:
-		var end_beat := _snap_beat_to_subdivision(_y_to_beat(event.position.y), event.alt_pressed)
+		var end_beat := _snap_beat_to_subdivision(_y_to_beat(event.position.y), not _snap_modifier(event))
 		_finish_pending_hold(end_beat)
 		return
 	# Ctrl is a selection modifier across all tools: toggle the clicked note
@@ -1523,9 +1575,10 @@ func _on_left_press(event: InputEventMouseButton) -> void:
 		var hit := _hit_test(event.position)
 		if String(hit.get("kind", "")) == "note":
 			_app.select_note(int(hit["id"]), event.shift_pressed)
+			_begin_note_drag(event.position)
 			return
 	if _app.tool in NOTE_TOOLS:
-		var placement := _snap_note_placement(event.position, event.alt_pressed)
+		var placement := _snap_note_placement(event.position, not _snap_modifier(event))
 		beat = placement.x
 		u = placement.y
 	match _app.tool:
@@ -1551,8 +1604,8 @@ func _on_left_release(event: InputEventMouseButton) -> void:
 	if _app == null:
 		return
 	if _drag_mode == "note":
-		_snap_dragged_notes(event.alt_pressed)
-	if _drag_mode in ["note", "width", "limit", "hold_end"]:
+		_snap_dragged_notes(not _snap_modifier(event))
+	if _drag_mode in ["note", "width", "limit", "hold_end", "path_tail", "path_head", "region_body", "region_width"]:
 		_app.finish_edit()
 	if _drag_mode == "marquee":
 		_finish_marquee()
@@ -1561,6 +1614,8 @@ func _on_left_release(event: InputEventMouseButton) -> void:
 	_drag_notes.clear()
 	_drag_region = null
 	_drag_width_note = null
+	_drag_tail_note = null
+	_drag_head_note = null
 	queue_redraw()
 	if _overlay != null:
 		_overlay.queue_redraw()
@@ -1610,14 +1665,22 @@ func _select_press(event: InputEventMouseButton) -> void:
 			_app.select_note(note_id, event.shift_pressed)
 			if hit.get("part", "") == "width":
 				_begin_width_drag(note_id, event.position)
+			elif hit.get("part", "") == "head":
+				_begin_head_drag(note_id, event.position)
+			elif hit.get("part", "") == "tail":
+				_begin_tail_drag(note_id, event.position)
 			else:
 				_begin_note_drag(event.position)
 		"region":
-			_app.select_region(int(hit["id"]))
+			var region_id := int(hit["id"])
+			_app.select_region(region_id)
+			_begin_region_drag(region_id, String(hit.get("part", "body")), event.position)
 		"event":
 			_app.select_event(String(hit["id"]))
 
 
+## 命中检测：音符优先，取「离指针最近的部件」；红区/事件只在没点到音符时响应。
+## 先按指针所在行做纵向剔除——1500 音符的谱面逐个算投影会让按下延迟 20–50ms。
 func _hit_test(pos: Vector2) -> Dictionary:
 	var chart: Chart = _app.chart
 	if chart == null:
@@ -1625,41 +1688,31 @@ func _hit_test(pos: Vector2) -> Dictionary:
 	var best := {}
 	var best_distance := 12.0
 	for note in chart.notes:
-		var positions := _note_positions(note)
-		for item in positions:
-			var distance: float = item["point"].distance_to(pos)
-			if distance < best_distance:
-				best_distance = distance
-				best = {"kind": "note", "id": note.id, "part": item["part"]}
-		if note.type in ["tap", "hold"]:
-			var edge := _width_edge_hit(note, pos)
-			if not edge.is_empty():
-				return edge
-			var note_y := _beat_to_y(note.beat)
-			if absf(pos.y - note_y) <= 7.0 and JudgeMath.in_arc(_x_to_u(pos.x) * 360.0, note.angle, note.arc_width()):
-				return {"kind": "note", "id": note.id, "part": "body"}
-		if note.type == "path":
-			# The whole drawn Path is selectable, not just its head/tail or
-			# the column at the start angle.
-			if _path_body_hit(note, pos):
-				return {"kind": "note", "id": note.id, "part": "body"}
-		if note.type == "seek":
-			if absf(pos.y - _beat_to_y(note.beat)) <= 8.0:
-				return {"kind": "note", "id": note.id, "part": "body"}
-		if note.type == "hold":
-			var y0 := _beat_to_y(note.beat)
-			var y1 := _beat_to_y(note.end_beat)
-			if pos.y >= minf(y0, y1) - 4 and pos.y <= maxf(y0, y1) + 4:
-				var body_x := _u_to_x(fposmod(note.angle, 360.0) / 360.0)
-				if absf(pos.x - body_x) < 8.0:
-					return {"kind": "note", "id": note.id, "part": "body"}
+		if _note_off_row(note, pos):
+			continue
+		var hit := _note_hit(note, pos)
+		if hit.is_empty():
+			continue
+		var distance := float(hit["distance"])
+		if distance <= best_distance:
+			best_distance = distance
+			best = {"kind": "note", "id": note.id, "part": String(hit["part"])}
+	if not best.is_empty():
+		return best
 	for region in chart.regions:
 		var y0 := _beat_to_y(region.start_beat)
 		var y1 := _beat_to_y(region.end_beat)
 		if pos.y < minf(y0, y1) or pos.y > maxf(y0, y1):
 			continue
-		if JudgeMath.in_arc(_x_to_u(pos.x) * 360.0, region.angle, region.width):
-			return {"kind": "region", "id": region.id}
+		if not JudgeMath.in_arc(_x_to_u(pos.x) * 360.0, region.angle, region.width):
+			continue
+		var part := "body"
+		if _is_region_selected(region.id):
+			for interval in _u_intervals(region.angle, region.width):
+				if absf(pos.x - _u_to_x(interval.x)) <= 7.0 or absf(pos.x - _u_to_x(interval.y)) <= 7.0:
+					part = "width"
+					break
+		return {"kind": "region", "id": region.id, "part": part}
 	for event in chart.events:
 		var y0 := _beat_to_y(event.start_beat)
 		var y1 := _beat_to_y(event.end_beat)
@@ -1668,30 +1721,116 @@ func _hit_test(pos: Vector2) -> Dictionary:
 		var u := _x_to_u(pos.x)
 		if u >= event.target_u0 and u <= event.target_u1:
 			return {"kind": "event", "id": event.id}
-	return best
+	return {}
 
 
-func _path_body_hit(note: Note, pos: Vector2) -> bool:
+## 纵向剔除：指针离这一行超过 14px 就不可能有命中（最长判定半径 12px + 余量）。
+func _note_off_row(note: Note, pos: Vector2) -> bool:
+	var head_y := _beat_to_y(note.beat)
+	if note.type in ["hold", "path"]:
+		var tail_y := _beat_to_y(note.end_beat)
+		return pos.y < minf(head_y, tail_y) - 14.0 or pos.y > maxf(head_y, tail_y) + 14.0
+	return absf(pos.y - head_y) > 14.0
+
+
+## 单个音符命中了哪个部件、离指针多远。空字典 = 没点到。
+func _note_hit(note: Note, pos: Vector2) -> Dictionary:
+	match note.type:
+		"anchor":
+			var p := Vector2(_u_to_x(fposmod(note.angle, 360.0) / 360.0), _beat_to_y(note.beat))
+			var distance := p.distance_to(pos)
+			return {"part": "body", "distance": distance} if distance <= 11.0 else {}
+		"bell":
+			var center := Vector2(_u_to_x(note.center_u), _beat_to_y(note.beat))
+			var half := _bell_span(note) * 0.5
+			if absf(pos.y - center.y) <= 8.0 and _is_note_selected(note.id):
+				var edge := minf(absf(pos.x - (center.x - half)), absf(pos.x - (center.x + half)))
+				if edge <= 8.0:
+					return {"part": "width", "distance": edge}
+			if absf(pos.y - center.y) <= 8.0 and absf(pos.x - center.x) <= half + 6.0:
+				return {"part": "body", "distance": absf(pos.y - center.y)}
+			return {}
+		"tap":
+			var edge := _width_edge_hit(note, pos)
+			if not edge.is_empty():
+				return {"part": "width", "distance": float(edge["distance"])}
+			var y := _beat_to_y(note.beat)
+			var in_row := absf(pos.y - y) <= 7.0
+			if in_row and JudgeMath.in_arc(_x_to_u(pos.x) * 360.0, note.angle, note.arc_width()):
+				return {"part": "body", "distance": absf(pos.y - y)}
+			var head := Vector2(_u_to_x(fposmod(note.angle, 360.0) / 360.0), y)
+			var distance := head.distance_to(pos)
+			return {"part": "head", "distance": distance} if distance <= 12.0 else {}
+		"hold":
+			var y0 := _beat_to_y(note.beat)
+			var y1 := _beat_to_y(note.end_beat)
+			var body_x := _u_to_x(fposmod(note.angle, 360.0) / 360.0)
+			if absf(pos.x - body_x) <= 9.0 and absf(pos.y - y1) <= 7.0:
+				return {"part": "tail", "distance": absf(pos.y - y1)}
+			var edge := _width_edge_hit(note, pos)
+			if not edge.is_empty():
+				return {"part": "width", "distance": float(edge["distance"])}
+			if absf(pos.y - y0) <= 7.0 and JudgeMath.in_arc(_x_to_u(pos.x) * 360.0, note.angle, note.arc_width()):
+				return {"part": "body", "distance": absf(pos.y - y0)}
+			if pos.y >= minf(y0, y1) - 4 and pos.y <= maxf(y0, y1) + 4 and absf(pos.x - body_x) < 8.0:
+				return {"part": "body", "distance": absf(pos.x - body_x)}
+			var head := Vector2(body_x, y0)
+			var head_distance := head.distance_to(pos)
+			return {"part": "body", "distance": head_distance} if head_distance <= 12.0 else {}
+		"path":
+			var tail := _path_tail_screen_point(note)
+			var tail_distance := tail.distance_to(pos)
+			if tail_distance <= 10.0:
+				return {"part": "tail", "distance": tail_distance}
+			var head := _path_screen_point(note, 0.0)
+			var head_distance := head.distance_to(pos)
+			if note.path_part == 0 and head_distance <= 10.0:
+				return {"part": "head", "distance": head_distance}
+			var body := _path_body_distance(note, pos)
+			if body <= PATH_HIT_RADIUS:
+				return {"part": "body", "distance": body}
+			return {}
+		"seek":
+			var y := _beat_to_y(note.beat)
+			if absf(pos.y - y) <= 8.0:
+				return {"part": "body", "distance": absf(pos.y - y)}
+			return {}
+	return {}
+
+
+func _path_tail_screen_point(note: Note) -> Vector2:
+	var tail_local := note.path_tail_local()
+	var tail_angle := note.tail_angle
+	if tail_local.length() > 0.0001:
+		tail_angle = rad_to_deg(atan2(tail_local.y, tail_local.x))
+	return Vector2(_u_to_x(fposmod(tail_angle, 360.0) / 360.0), _beat_to_y(note.end_beat))
+
+
+## 点到 Path 轨迹的最短距离（擦除段不算）。
+func _path_body_distance(note: Note, pos: Vector2) -> float:
 	var total := maxf(0.001, note.duration())
 	var run: Array[Vector2] = []
+	var best := INF
 	for i in 41:
 		var local := total * float(i) / 40.0
 		if note.erased_at(local):
-			if _path_run_hit(run, pos):
-				return true
+			best = minf(best, _path_run_distance(run, pos))
 			run = []
 			continue
 		run.append(_path_screen_point(note, local))
-	return _path_run_hit(run, pos)
+	return minf(best, _path_run_distance(run, pos))
 
 
-func _path_run_hit(run: Array[Vector2], pos: Vector2) -> bool:
+func _path_run_distance(run: Array[Vector2], pos: Vector2) -> float:
 	if run.is_empty():
-		return false
-	return JudgeMath.trace_distance(pos, run) <= PATH_HIT_RADIUS
+		return INF
+	return JudgeMath.trace_distance(pos, run)
 
 
 func _width_edge_hit(note: Note, pos: Vector2) -> Dictionary:
+	# 手柄只在选中时画出来；没选中时抓到端点应该是「选中并整条拖动」，不是偷偷改宽度。
+	if not _is_note_selected(note.id):
+		return {}
 	var y := _beat_to_y(note.beat)
 	if absf(pos.y - y) > 7.0:
 		return {}
@@ -1699,9 +1838,40 @@ func _width_edge_hit(note: Note, pos: Vector2) -> Dictionary:
 	var half := note.arc_width() / 720.0
 	var left := fposmod(center - half + 1.0, 1.0)
 	var right := fposmod(center + half, 1.0)
-	if absf(pos.x - _u_to_x(left)) < 6.0 or absf(pos.x - _u_to_x(right)) < 6.0:
-		return {"kind": "note", "id": note.id, "part": "width"}
-	return {}
+	var distance := minf(absf(pos.x - _u_to_x(left)), absf(pos.x - _u_to_x(right)))
+	if distance >= 9.0:
+		return {}
+	return {"kind": "note", "id": note.id, "part": "width", "distance": distance}
+
+
+## 手柄只在选中时画出来，但指针靠近也要变成左右缩放光标。
+func _update_hover_cursor() -> void:
+	var shape := Control.CURSOR_ARROW
+	if _app != null and _drag_mode == "":
+		for note in _app.get_selected_notes():
+			if note.type == "bell":
+				var center := Vector2(_u_to_x(note.center_u), _beat_to_y(note.beat))
+				var half := _bell_span(note) * 0.5
+				var edge := minf(absf(_mouse_pos.x - (center.x - half)), absf(_mouse_pos.x - (center.x + half)))
+				if absf(_mouse_pos.y - center.y) <= 8.0 and edge <= 8.0:
+					shape = Control.CURSOR_HSIZE
+					break
+			elif note.type in ["tap", "hold"] and not _width_edge_hit(note, _mouse_pos).is_empty():
+				shape = Control.CURSOR_HSIZE
+				break
+		if shape == Control.CURSOR_ARROW and _app.selected_region_id >= 0 and _app.chart != null:
+			for region in _app.chart.regions:
+				if region.id != _app.selected_region_id:
+					continue
+				var y0 := _beat_to_y(region.start_beat)
+				var y1 := _beat_to_y(region.end_beat)
+				if _mouse_pos.y < minf(y0, y1) - 4.0 or _mouse_pos.y > maxf(y0, y1) + 4.0:
+					continue
+				for interval in _u_intervals(region.angle, region.width):
+					if absf(_mouse_pos.x - _u_to_x(interval.x)) <= 7.0 or absf(_mouse_pos.x - _u_to_x(interval.y)) <= 7.0:
+						shape = Control.CURSOR_HSIZE
+						break
+	mouse_default_cursor_shape = shape
 
 
 func _note_positions(note: Note) -> Array[Dictionary]:
@@ -1709,11 +1879,7 @@ func _note_positions(note: Note) -> Array[Dictionary]:
 	match note.type:
 		"path":
 			result.append({"point": _path_screen_point(note, 0.0), "part": "head"})
-			var tail_local := note.path_tail_local()
-			var tail_angle := note.tail_angle
-			if tail_local.length() > 0.0001:
-				tail_angle = rad_to_deg(atan2(tail_local.y, tail_local.x))
-			result.append({"point": Vector2(_u_to_x(fposmod(tail_angle, 360.0) / 360.0), _beat_to_y(note.end_beat)), "part": "tail"})
+			result.append({"point": _path_tail_screen_point(note), "part": "tail"})
 		"bell":
 			result.append({"point": Vector2(_u_to_x(note.center_u), _beat_to_y(note.beat)), "part": "head"})
 		"tap":
@@ -1729,11 +1895,13 @@ func _begin_note_drag(screen: Vector2) -> void:
 	_drag_start_beat = _y_to_beat(screen.y)
 	_drag_start_u = _x_to_u(screen.x)
 	_drag_notes.clear()
-	for note in _app.get_selected_notes():
+	# Anchor 是双押配置：拖一颗就整对一起动，保持同拍 + 180° 反向。
+	for note in _app.with_anchor_partners(_app.get_selected_notes()):
 		_drag_notes.append({
 			"note": note,
 			"beat": note.beat,
-			"angle": note.angle,
+			# Bell 的实际位置在 center_u，angle 可能还是旧值。
+			"angle": note.center_u * 360.0 if note.type == "bell" else note.angle,
 			"end": note.end_beat,
 			"tail": note.tail_angle,
 			"center": note.center_u,
@@ -1754,7 +1922,7 @@ func _drag_notes_update(screen: Vector2, event: InputEventMouseMotion) -> void:
 		var note: Note = item["note"]
 		if note.lock:
 			continue
-		var new_beat := maxf(0.0, _snap_beat_to_subdivision(float(item["beat"]) + delta_beat, event.alt_pressed))
+		var new_beat := maxf(0.0, _snap_beat_to_subdivision(float(item["beat"]) + delta_beat, not _snap_modifier(event)))
 		var new_angle := fposmod(float(item["angle"]) + delta_u * 360.0, 360.0)
 		var beat_delta := new_beat - note.beat
 		note.beat = new_beat
@@ -1772,9 +1940,74 @@ func _drag_hold_update(screen: Vector2, event: InputEventMouseMotion) -> void:
 	if _drag_notes.is_empty():
 		return
 	var note: Note = _drag_notes[0]["note"]
-	var beat: float = _snap_beat_to_subdivision(_y_to_beat(screen.y), event.alt_pressed)
+	var beat: float = _snap_beat_to_subdivision(_y_to_beat(screen.y), not _snap_modifier(event))
 	note.end_beat = maxf(note.beat + 0.25, beat)
 	_app.touch_chart()
+
+
+## 抓尾巴：Hold 只拉长短；Path 横向改尾角、纵向改结束拍。
+func _begin_tail_drag(note_id: int, screen: Vector2) -> void:
+	var note := _find_note(note_id)
+	if note == null:
+		return
+	_drag_tail_note = note
+	_drag_tail_start = note.tail_angle
+	_drag_tail_origin = _x_to_u(screen.x)
+	if note.type == "hold":
+		_drag_mode = "hold_end"
+		_drag_notes = [{"note": note}]
+	else:
+		_drag_mode = "path_tail"
+	_app.begin_edit()
+
+
+func _drag_path_tail_update(screen: Vector2, event: InputEventMouseMotion) -> void:
+	if _drag_tail_note == null:
+		return
+	_drag_tail_note.tail_angle = fposmod(
+		_drag_tail_start + (_x_to_u(screen.x) - _drag_tail_origin) * 360.0, 360.0)
+	_drag_tail_note.end_beat = maxf(_drag_tail_note.beat + 0.25,
+		_snap_beat_to_subdivision(_y_to_beat(screen.y), not _snap_modifier(event)))
+	_app.touch_chart()
+
+
+## Path 头：横向改头角、纵向改起始拍；头永远贴在环上（半径 1.0）。
+## 头与尾都不做宽度手柄——Path 的宽度是判定带，继续走检查器。
+func _begin_head_drag(note_id: int, screen: Vector2) -> void:
+	var note := _find_note(note_id)
+	if note == null:
+		return
+	if note.type != "path" or note.path_part > 0:
+		# Anchor / Bell 没有「头」这个概念：按住本体就是拖位置。
+		_begin_note_drag(screen)
+		return
+	_drag_head_note = note
+	_drag_head_start = note.angle
+	_drag_head_origin = _x_to_u(screen.x)
+	_drag_mode = "path_head"
+	_app.begin_edit()
+
+
+func _drag_path_head_update(screen: Vector2, event: InputEventMouseMotion) -> void:
+	if _drag_head_note == null:
+		return
+	var note := _drag_head_note
+	note.angle = fposmod(_drag_head_start + (_x_to_u(screen.x) - _drag_head_origin) * 360.0, 360.0)
+	note.beat = path_head_beat(
+		_snap_beat_to_subdivision(_y_to_beat(screen.y), not _snap_modifier(event)), note.end_beat)
+	if note.path_controls_set:
+		# 参数化 Path 的 head 由 angle 推出来，重建一次才看得到。
+		note.set_path_axis(note.path_axis)
+	elif not note.trace_pts.is_empty():
+		# 手绘 Path：只挪头那一点，中间形状不动。
+		note.trace_pts[0]["x"] = cos(deg_to_rad(note.angle))
+		note.trace_pts[0]["y"] = sin(deg_to_rad(note.angle))
+	_app.touch_chart()
+
+
+## 头不能越过尾巴：至少留 0.25 拍。
+static func path_head_beat(desired: float, end_beat: float) -> float:
+	return clampf(desired, 0.0, maxf(0.0, end_beat - 0.25))
 
 
 func _begin_width_drag(note_id: int, screen: Vector2) -> void:
@@ -1783,7 +2016,9 @@ func _begin_width_drag(note_id: int, screen: Vector2) -> void:
 		return
 	_drag_mode = "width"
 	_drag_width_note = note
-	var center_x := _u_to_x(fposmod(note.angle, 360.0) / 360.0)
+	# Bell 的位置在 center_u（检查器只改它，angle 可能是旧值），左右手柄要按画出来的中心算。
+	var center_u := note.center_u if note.type == "bell" else fposmod(note.angle, 360.0) / 360.0
+	var center_x := _u_to_x(center_u)
 	_drag_width_side = -1 if screen.x < center_x else 1
 	_drag_width_origin = _x_to_u(screen.x)
 	_drag_width_start = note.width
@@ -1794,12 +2029,22 @@ func _drag_width_update(screen: Vector2) -> void:
 	if _drag_width_note == null:
 		return
 	var u := _x_to_u(screen.x)
-	var delta := (u - _drag_width_origin) * 360.0
-	# 画出来的是 width × length_ratio，把鼠标位移换算回 width，边缘才跟手。
-	var visual := maxf(0.05, _drag_width_note.length_ratio())
-	var new_width := _drag_width_start + delta * 2.0 * float(_drag_width_side) / visual
-	_drag_width_note.width = clampf(new_width, 5.0, 360.0)
+	var delta_u := u - _drag_width_origin
+	var width := 0.0
+	if _drag_width_note.type == "bell":
+		width = dragged_bell_width(_drag_width_start, delta_u, _drag_width_side)
+	else:
+		width = dragged_width(
+			_drag_width_start, delta_u, _drag_width_side, _drag_width_note.length_ratio())
+	_drag_width_note.width = width
 	_app.touch_chart()
+
+
+## 画出来的是 width × length_ratio，鼠标位移要换算回 width，边缘才跟手；
+## 上限也按画出来的弧宽算，否则 sized Tap ×1.5 会推出 540° 的非法宽度。
+static func dragged_width(start_width: float, delta_u: float, side: int, length_ratio: float) -> float:
+	var visual := maxf(0.05, length_ratio)
+	return clampf(start_width + delta_u * 360.0 * 2.0 * float(side) / visual, 5.0, 360.0 / visual)
 
 
 func _create_simple(type: String, beat: float, u: float) -> void:
@@ -1985,6 +2230,73 @@ func set_pending_seek_orientation(orien: int) -> void:
 			return
 
 
+## 已存在的红区：身体拖角度 + 时间窗，左右边缘拖宽度。
+func _begin_region_drag(region_id: int, part: String, screen: Vector2) -> void:
+	var chart: Chart = _app.chart
+	if chart == null:
+		return
+	var region: Region = null
+	for item in chart.regions:
+		if item.id == region_id:
+			region = item
+			break
+	if region == null:
+		return
+	_drag_region = region
+	_drag_start_beat = _y_to_beat(screen.y)
+	_drag_start_u = _x_to_u(screen.x)
+	_drag_region_start_beat = region.start_beat
+	_drag_region_end_beat = region.end_beat
+	_drag_region_angle = region.angle
+	_drag_region_width = region.width
+	if part == "width":
+		_drag_mode = "region_width"
+		var center_x := _u_to_x(fposmod(region.angle, 360.0) / 360.0)
+		_drag_width_side = -1 if screen.x < center_x else 1
+		_drag_width_origin = _x_to_u(screen.x)
+	else:
+		_drag_mode = "region_body"
+	_app.begin_edit()
+
+
+func _drag_region_update(screen: Vector2, event: InputEventMouseMotion) -> void:
+	if _drag_region == null:
+		return
+	var du := _x_to_u(screen.x) - _drag_start_u
+	if _drag_mode == "region_body":
+		var beat: float = _app.snap_beat(_y_to_beat(screen.y), event.alt_pressed)
+		var span := moved_region(_drag_region_start_beat, _drag_region_end_beat, _drag_start_beat, beat)
+		_drag_region.start_beat = span.x
+		_drag_region.end_beat = span.y
+		_drag_region.angle = fposmod(_drag_region_angle + du * 360.0, 360.0)
+	else:
+		# 拖一边：另一边基本不动，所以中心角度只走一半。
+		_drag_region.width = dragged_region_width(_drag_region_width, du, _drag_width_side)
+		_drag_region.angle = dragged_region_angle(_drag_region_angle, du, _drag_width_side)
+	_app.touch_chart()
+
+
+## 红区身体平移：时长不变，起点不早于 0。
+static func moved_region(start_beat: float, end_beat: float, press_beat: float, beat: float) -> Vector2:
+	var duration := maxf(0.25, end_beat - start_beat)
+	var start := maxf(0.0, start_beat + beat - press_beat)
+	return Vector2(start, start + duration)
+
+
+## 红区宽度手柄：拖一边，另一边基本不动；上限 359°（全环没有可判定区域）。
+static func dragged_region_width(start_width: float, delta_u: float, side: int) -> float:
+	return clampf(start_width + delta_u * 360.0 * 2.0 * float(side), 10.0, 359.0)
+
+
+static func dragged_region_angle(start_angle: float, delta_u: float, side: int) -> float:
+	return fposmod(start_angle + delta_u * 360.0 * 0.5 * float(side), 360.0)
+
+
+## 金键只有 24–30°，按 u 的 1:1 换算（约 0.57°/px），别用 Tap 的 2 倍速。
+static func dragged_bell_width(start_width: float, delta_u: float, side: int) -> float:
+	return clampf(start_width + delta_u * 360.0 * float(side), Note.BELL_MIN_WIDTH, Note.BELL_MAX_WIDTH)
+
+
 func _begin_red(beat: float, u: float) -> void:
 	var chart: Chart = _app.chart
 	if chart == null:
@@ -2049,6 +2361,12 @@ func _finish_marquee() -> void:
 
 
 func _note_in_marquee(note: Note) -> bool:
+	# 先按拍位剔掉框外音符：1500 音符的谱面每次松手都全量投影是框选卡顿的主因。
+	var top := minf(_marquee_start_beat, _marquee_end_beat)
+	var bottom := maxf(_marquee_start_beat, _marquee_end_beat)
+	var note_end := note.end_beat if note.type in ["hold", "path"] else note.beat
+	if note.beat > bottom + 0.1 or note_end < top - 0.1:
+		return false
 	for item in _note_positions(note):
 		if _circle_hits_marquee(item["point"], _note_point_radius(note, String(item.get("part", "head")))):
 			return true
@@ -2074,6 +2392,11 @@ func _note_in_marquee(note: Note) -> bool:
 			if previous.is_finite() and _segment_hits_marquee(previous, point):
 				return true
 			previous = point
+	if note.type == "bell":
+		var bell_center := Vector2(_u_to_x(note.center_u), _beat_to_y(note.beat))
+		var bell_half := _bell_span(note) * 0.5
+		if _marquee.intersects(Rect2(bell_center - Vector2(bell_half, 7.0), Vector2(bell_half * 2.0, 14.0))):
+			return true
 	if note.type == "seek":
 		var seek_y := _beat_to_y(note.beat)
 		if _marquee.intersects(Rect2(Vector2(_u_to_x(0.0), seek_y - 4.0), Vector2(_u_to_x(1.0) - _u_to_x(0.0), 8.0))):

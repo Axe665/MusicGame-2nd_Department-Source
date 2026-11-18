@@ -2,7 +2,7 @@ class_name TimingMap
 extends RefCounted
 
 const MAX_BEAT_SUBDIVISIONS := 64
-const MAX_VERTICAL_LINES := 64
+const MAX_ANGLE_DIVISIONS := 360
 
 var points: Array[TimingPoint] = []
 var offset_ms: float = 0.0
@@ -149,8 +149,32 @@ static func parse_beat_subdivision(text: String) -> int:
 	return parse_positive_int(text, MAX_BEAT_SUBDIVISIONS)
 
 
-static func parse_vertical_lines(text: String) -> int:
-	return parse_positive_int(text, MAX_VERTICAL_LINES)
+## 角度等分数：360 必须能被 N 整除（12 → 30°，24 → 15°）。不合法返回 0。
+static func parse_angle_divisions(text: String) -> int:
+	var value := parse_positive_int(text, MAX_ANGLE_DIVISIONS)
+	if value < 2 or 360 % value != 0:
+		return 0
+	return value
+
+
+static func is_angle_division(value: int) -> bool:
+	return value >= 2 and value <= MAX_ANGLE_DIVISIONS and 360 % value == 0
+
+
+## 最近的合法等分数（输入 7 → 8，输入 11 → 12），用来提示用户。
+static func nearest_angle_divisions(value: int) -> int:
+	if is_angle_division(value):
+		return value
+	var best := 12
+	var best_delta := 1 << 30
+	for n in range(2, MAX_ANGLE_DIVISIONS + 1):
+		if 360 % n != 0:
+			continue
+		var delta := absi(n - value)
+		if delta <= best_delta:
+			best_delta = delta
+			best = n
+	return best
 
 
 static func normalize_bpm(value: float) -> float:
@@ -183,17 +207,12 @@ static func beat_subdivision_offsets(divisions: int) -> PackedFloat32Array:
 	return offsets
 
 
-static func vertical_line_offsets(count: int) -> PackedFloat32Array:
-	## N interior vertical lines, evenly spaced across u∈(0,1). They split
-	## the editing area into N+1 intervals; together with the two plot edges
-	## there are N+2 visible vertical boundaries.
+## 角度格线在 u∈(0,1) 上的位置：N 等分就有 N−1 条内部线。
+static func angle_line_offsets(divisions: int) -> PackedFloat32Array:
 	var offsets := PackedFloat32Array()
-	var lines := mini(count, MAX_VERTICAL_LINES)
-	if lines <= 0:
-		return offsets
-	var step := 1.0 / float(lines + 1)
-	for index in range(1, lines + 1):
-		offsets.append(step * float(index))
+	var n := divisions if is_angle_division(divisions) else 12
+	for index in range(1, n):
+		offsets.append(float(index) / float(n))
 	return offsets
 
 
@@ -206,15 +225,10 @@ static func nearest_beat_subdivision(beat: float, divisions: int) -> float:
 	return roundf(beat / step) * step
 
 
-static func nearest_vertical_line_u(u: float, count: int) -> float:
-	## Nearest interior vertical line in u space, clamped to the outermost
-	## interior lines so the plot edges are not silently used as snap targets.
-	var lines := mini(count, MAX_VERTICAL_LINES)
-	if lines <= 0:
-		return clampf(u, 0.0, 1.0)
-	var step := 1.0 / float(lines + 1)
-	var index := clampi(roundi(u / step), 1, lines)
-	return float(index) * step
+## 最近的角度格线位置，**包含 0 和 1 两条边**（0° 与 360° 是同一个接缝，两边都能放）。
+static func nearest_angle_u(u: float, divisions: int) -> float:
+	var n := divisions if is_angle_division(divisions) else 12
+	return clampf(roundf(u * float(n)) / float(n), 0.0, 1.0)
 
 
 func format_beat(beat: float, divide: int = 4) -> String:

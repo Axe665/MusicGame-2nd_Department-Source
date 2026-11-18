@@ -72,7 +72,7 @@ static func _transcode_to_wav(path: String, target_rate: int) -> String:
 		ProjectSettings.globalize_path(target),
 	]
 	var output: Array = []
-	var code := OS.execute(MediaIO.ffmpeg_exe, args, output, true, false)
+	var code := OS.execute(MediaIO.exe(), args, output, true, false)
 	if code != 0 or not FileAccess.file_exists(target):
 		var detail := ""
 		if not output.is_empty():

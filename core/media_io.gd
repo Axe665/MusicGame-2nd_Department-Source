@@ -15,6 +15,13 @@ const SUPPORTED_VIDEO := ["ogv", "mp4", "m4v", "webm", "mov", "mkv", "avi"]
 ## own setting so a bundled or non-PATH ffmpeg also works for audio analysis.
 static var ffmpeg_exe: String = "ffmpeg"
 
+## 随程序带的 ffmpeg（tools/ffmpeg/<平台>/ffmpeg.gz）。单个可执行文件超过
+## GitHub 的单文件上限，所以仓库里存 gzip，第一次用到时解压到 user://。
+const BUNDLE_DIR := "res://tools/ffmpeg"
+const BUNDLE_VERSION := 1
+
+static var _resolved_exe := ""
+static var _resolved_checked := false
 static var _ffmpeg_checked := false
 static var _ffmpeg_available := false
 static var last_error: String = ""
@@ -27,8 +34,70 @@ static var _jobs: Dictionary = {}
 static func set_ffmpeg_exe(path: String) -> void:
 	var clean := path.strip_edges()
 	ffmpeg_exe = clean if not clean.is_empty() else "ffmpeg"
+	_resolved_checked = false
 	_ffmpeg_checked = false
 	_ffmpeg_available = false
+
+
+## 真正执行用的路径：手动指定 > 内置包 > PATH。所有 ffmpeg 调用都要经过这里。
+static func exe() -> String:
+	if _resolved_checked:
+		return _resolved_exe
+	_resolved_checked = true
+	_resolved_exe = _resolve_exe()
+	return _resolved_exe
+
+
+static func _resolve_exe() -> String:
+	var clean := ffmpeg_exe.strip_edges()
+	# 默认值 "ffmpeg" 表示“没手动指定”，这时优先用内置的那份。
+	if not clean.is_empty() and clean != "ffmpeg":
+		return clean
+	var bundled := _bundled_exe()
+	return bundled if not bundled.is_empty() else "ffmpeg"
+
+
+static func _platform_dir() -> String:
+	match OS.get_name():
+		"Linux":
+			return "linux64"
+		"Windows":
+			return "win64"
+	return ""
+
+
+## 内置 ffmpeg 的可执行路径；第一次调用会把 gz 解压到 user:// 并加执行位。
+static func _bundled_exe() -> String:
+	var platform := _platform_dir()
+	if platform.is_empty():
+		return ""
+	var exe_name := "ffmpeg.exe" if platform == "win64" else "ffmpeg"
+	var target := "user://tools/ffmpeg-%d-%s/%s" % [BUNDLE_VERSION, platform, exe_name]
+	if FileAccess.file_exists(target):
+		return ProjectSettings.globalize_path(target)
+	var packed := "%s/%s/ffmpeg.gz" % [BUNDLE_DIR, platform]
+	if not FileAccess.file_exists(packed):
+		return ""
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(target.get_base_dir()))
+	# Godot 的 FileAccess.open_compressed 只认它自己写的头；系统 gzip 用 decompress_dynamic。
+	var compressed := FileAccess.get_file_as_bytes(packed)
+	if compressed.is_empty():
+		last_error = "读不到内置 ffmpeg：%s" % packed
+		return ""
+	var bytes := compressed.decompress_dynamic(300 * 1024 * 1024, FileAccess.COMPRESSION_GZIP)
+	if bytes.is_empty():
+		last_error = "内置 ffmpeg 解不开：%s" % packed
+		return ""
+	var dst := FileAccess.open(target, FileAccess.WRITE)
+	if dst == null:
+		last_error = "无法写入内置 ffmpeg：%s" % target
+		return ""
+	dst.store_buffer(bytes)
+	dst.close()
+	var absolute := ProjectSettings.globalize_path(target)
+	if platform != "win64":
+		OS.execute("chmod", ["+x", absolute], [], true, false)
+	return absolute
 
 
 static func has_ffmpeg() -> bool:
@@ -36,7 +105,7 @@ static func has_ffmpeg() -> bool:
 		return _ffmpeg_available
 	_ffmpeg_checked = true
 	var output: Array = []
-	var code := OS.execute(ffmpeg_exe, ["-version"], output, true, false)
+	var code := OS.execute(exe(), ["-version"], output, true, false)
 	_ffmpeg_available = code == 0
 	return _ffmpeg_available
 
@@ -92,7 +161,7 @@ static func prepare_audio_at_rate(path: String, rate: float) -> String:
 		return ""
 	DirAccess.make_dir_recursive_absolute("user://media")
 	var output: Array = []
-	var code := OS.execute(ffmpeg_exe, _rate_audio_args(_source_path(path), target, rate), output, true, false)
+	var code := OS.execute(exe(), _rate_audio_args(_source_path(path), target, rate), output, true, false)
 	if code != 0 or not FileAccess.file_exists(target):
 		last_error = "变速音频生成失败：%s" % path.get_file()
 		return ""
@@ -127,7 +196,7 @@ static func prepare_audio_at_rate_async(path: String, rate: float, tree: SceneTr
 	var progress_abs := ProjectSettings.globalize_path(progress_path)
 	if FileAccess.file_exists(progress_path):
 		DirAccess.remove_absolute(progress_abs)
-	var pid := OS.create_process(ffmpeg_exe, _rate_audio_args(_source_path(path), target, rate, progress_abs), false)
+	var pid := OS.create_process(exe(), _rate_audio_args(_source_path(path), target, rate, progress_abs), false)
 	if pid <= 0:
 		_jobs.erase(target)
 		last_error = "无法启动 ffmpeg。"
@@ -177,7 +246,7 @@ static func prepare_audio(path: String) -> String:
 		return ""
 	DirAccess.make_dir_recursive_absolute("user://media")
 	var output: Array = []
-	var code := OS.execute(ffmpeg_exe, _audio_args(source, target), output, true, false)
+	var code := OS.execute(exe(), _audio_args(source, target), output, true, false)
 	if code != 0 or not FileAccess.file_exists(target):
 		last_error = "音频转换失败：%s" % path.get_file()
 		return ""
@@ -199,7 +268,7 @@ static func prepare_video(path: String) -> String:
 		return ""
 	DirAccess.make_dir_recursive_absolute("user://media")
 	var output: Array = []
-	var code := OS.execute(ffmpeg_exe, _video_args(source, target), output, true, false)
+	var code := OS.execute(exe(), _video_args(source, target), output, true, false)
 	if code != 0 or not FileAccess.file_exists(target):
 		last_error = "视频转换失败：%s" % path.get_file()
 		return ""
@@ -235,7 +304,7 @@ static func prepare_video_async(path: String, tree: SceneTree, progress: Callabl
 	var progress_abs := ProjectSettings.globalize_path(progress_path)
 	if FileAccess.file_exists(progress_path):
 		DirAccess.remove_absolute(progress_abs)
-	var pid := OS.create_process(ffmpeg_exe, _video_args(_source_path(path), target, progress_abs), false)
+	var pid := OS.create_process(exe(), _video_args(_source_path(path), target, progress_abs), false)
 	if pid <= 0:
 		_jobs.erase(target)
 		last_error = "无法启动 ffmpeg。"
@@ -285,7 +354,7 @@ static func prepare_audio_async(path: String, tree: SceneTree, progress: Callabl
 	var progress_abs := ProjectSettings.globalize_path(progress_path)
 	if FileAccess.file_exists(progress_path):
 		DirAccess.remove_absolute(progress_abs)
-	var pid := OS.create_process(ffmpeg_exe, _audio_args(_source_path(path), target, progress_abs), false)
+	var pid := OS.create_process(exe(), _audio_args(_source_path(path), target, progress_abs), false)
 	if pid <= 0:
 		_jobs.erase(target)
 		last_error = "无法启动 ffmpeg。"
@@ -410,27 +479,43 @@ static func read_progress_seconds(path: String) -> float:
 
 
 static func probe_video_duration(path: String) -> float:
-	var output: Array = []
-	var code := OS.execute(_ffprobe_exe(), [
-		"-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1",
-		_source_path(path),
-	], output, true, false)
-	if code != 0 or output.is_empty():
-		return 0.0
-	for line in "\n".join(output).split("\n"):
-		var value := line.strip_edges()
-		if value.is_valid_float():
-			return float(value)
+	var probe := _ffprobe_exe()
+	if not probe.is_empty():
+		var output: Array = []
+		var code := OS.execute(probe, [
+			"-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1",
+			_source_path(path),
+		], output, true, false)
+		if code == 0 and not output.is_empty():
+			for line in "\n".join(output).split("\n"):
+				var value := line.strip_edges()
+				if value.is_valid_float():
+					return float(value)
+	# 只有内置 ffmpeg（没带 ffprobe）时，从 `ffmpeg -i` 的 stderr 里读时长。
+	var info: Array = []
+	OS.execute(exe(), ["-hide_banner", "-i", _source_path(path)], info, true, false)
+	for line in "\n".join(info).split("\n"):
+		var at := line.find("Duration:")
+		if at < 0:
+			continue
+		var stamp := line.substr(at + 9).strip_edges().split(",")[0].strip_edges()
+		var parts := stamp.split(":")
+		if parts.size() == 3:
+			return float(parts[0]) * 3600.0 + float(parts[1]) * 60.0 + float(parts[2])
 	return 0.0
 
 
 static func _ffprobe_exe() -> String:
-	var base := ffmpeg_exe.get_base_dir()
+	var base := exe().get_base_dir()
 	if not base.is_empty():
-		var candidate := base.path_join("ffprobe")
+		var candidate := base.path_join("ffprobe.exe" if OS.get_name() == "Windows" else "ffprobe")
 		if FileAccess.file_exists(candidate):
 			return candidate
-	return "ffprobe"
+	# PATH 里恰好有 ffprobe 就用它，没有就返回空（调用方退回 ffmpeg）。
+	var output: Array = []
+	if OS.execute("ffprobe", ["-version"], output, true, false) == 0:
+		return "ffprobe"
+	return ""
 
 
 static func _source_path(path: String) -> String:

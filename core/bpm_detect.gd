@@ -22,9 +22,9 @@ extends RefCounted
 
 const RATE := 100.0
 const MIN_BPM := 40.0
-const MAX_BPM := 240.0
-const PREFERRED_CENTER := 140.0
-const PRIOR_SIGMA := 0.55
+const MAX_BPM := 300.0
+const PREFERRED_CENTER := 150.0
+const PRIOR_SIGMA := 0.9
 const MAX_AUTOCORR_SECONDS := 45.0
 const ATTACK_FLOOR := 0.35
 
@@ -70,6 +70,9 @@ static func analyze(samples: PackedFloat32Array, sample_rate: float) -> Dictiona
 	if coarse <= 0.0:
 		result["error"] = "找不到稳定的节拍周期"
 		return result
+	# 二分/两倍如果同样有 onset 支撑，说明快的那档才是拍（4 拍底鼓的曲子
+	# 在两倍速上是等强的；只有反拍/半拍的曲子两倍速会明显变弱）。
+	coarse = _prefer_supported_octave(env, fps, coarse)
 	var period := coarse
 	var phase := _best_phase(env, period)
 	var tracked := _track_beats(env, period, phase, samples, sample_rate)
@@ -89,6 +92,32 @@ static func analyze(samples: PackedFloat32Array, sample_rate: float) -> Dictiona
 	var confidence := 0.35 * clampf(acf_peak * 1.4, 0.0, 1.0) + 0.65 * clampf(float(tracked["ratio"]), 0.0, 1.0)
 	result["confidence"] = clampf(confidence, 0.0, 1.0)
 	return result
+
+
+## 检测结果允许的倍数校正：2/3 与 3/2 是检测器最常见的“三拍两拍”错位，
+## 4 与 1/4 兜住把一小节当成一拍的情况。
+const MULTIPLIERS := [0.25, 0.5, 2.0 / 3.0, 1.0, 1.5, 2.0, 4.0]
+const SNAP_TOLERANCE := 0.04
+
+
+## 把一个检测值校正到 `reference`（通常是谱面里已有的 BPM）。
+## 只有在某个倍数与 reference 的误差 ≤4% 时才校正，否则原样返回。
+static func snap_to_reference(detected: float, reference: float, tolerance: float = SNAP_TOLERANCE) -> float:
+	if detected <= 0.0 or reference <= 0.0:
+		return detected
+	if absf(detected - reference) / reference <= 0.005:
+		return reference
+	var best := detected
+	var best_error := tolerance
+	for factor in MULTIPLIERS:
+		var candidate: float = detected * factor
+		if candidate < MIN_BPM or candidate > MAX_BPM:
+			continue
+		var error := absf(candidate - reference) / reference
+		if error <= best_error:
+			best_error = error
+			best = candidate
+	return best
 
 
 ## Onset strength per frame, normalised so the loudest onset is 1.0.
@@ -210,6 +239,37 @@ static func _best_lag(acf: PackedFloat32Array, fps: float) -> float:
 	if best_lag < 0:
 		return 0.0
 	return _parabolic(acf, best_lag)
+
+
+## 半拍/双拍都有人写：只有在“快的那一档”也有同样的 onset 支撑时才选快的那档。
+static func _prefer_supported_octave(env: PackedFloat32Array, fps: float, period: float) -> float:
+	var slow := _supported_mean(env, period)
+	if slow <= 0.0:
+		return period
+	# 依次试 2 倍、1.5 倍：只要更快的网格每拍支撑还有慢速的 92%，
+	# 说明那些“多出来的拍”上也有真实的 onset，把它们算进拍里（制谱常用写法）。
+	for scale in [0.5, 2.0 / 3.0]:
+		var candidate: float = period * scale
+		if 60.0 * fps / candidate > MAX_BPM:
+			continue
+		if _supported_mean(env, candidate) >= slow * 0.92:
+			period = candidate
+	return period
+
+
+## 把整段包络按某个周期采样一遍，返回每拍的平均 onset 强度。
+static func _supported_mean(env: PackedFloat32Array, period: float) -> float:
+	if period < 1.0 or env.size() < 8:
+		return 0.0
+	var phase := _best_phase(env, period)
+	var sum := 0.0
+	var count := 0
+	var t := phase
+	while t < float(env.size() - 1):
+		sum += _sample(env, t)
+		count += 1
+		t += period
+	return sum / float(maxi(1, count))
 
 
 static func _prior(bpm: float) -> float:
