@@ -50,6 +50,7 @@ func _initialize() -> void:
 		"test_ring_span_end",
 		"test_ring_scrub_state",
 		"test_ring_lane_items_real_chart",
+		"test_undo_memory_budget",
 		"test_playhead_redraw_is_light",
 		"test_chart_end_limit",
 		"test_uniform_meter",
@@ -1710,6 +1711,25 @@ func test_storyboard_clamps_first_command() -> bool:
 ## 拖播放头时不能重建面板：一次重建 ≈70–80 个控件，跨一个关键帧要付两遍。
 ## 环编辑器四条轨道必须能处理旧谱的 BoundaryEvent：它只有 start_beat，
 ## 用 .beat 排序会让每次重绘抛错，整条时间轴画不出来（看起来就是打不开）。
+## 撤销不再无限吃内存：快照总量按音符数限额，小谱仍保留 200 步。
+func test_undo_memory_budget() -> bool:
+	var undo := UndoStack.new()
+	for i in 30:
+		var snap := {"notes": [], "i": i}
+		snap["notes"].resize(10000)
+		undo.record(snap)
+	eq(undo.undo_items.size(), 12, "1 万音符谱面只保留 12 步撤销（内存上限）")
+	var small := UndoStack.new()
+	for i in 260:
+		small.record({"notes": [], "i": i})
+	eq(small.undo_items.size(), UndoStack.LIMIT, "小谱仍保留 200 步")
+	# 撤销一步后用量计数要跟着退，不能越用越少
+	var back := undo.undo({"notes": []})
+	eq(int(back.get("i", -1)), 29, "撤销取回最近一份快照")
+	eq(undo.undo_items.size(), 11, "撤销后列表缩短")
+	return true
+
+
 func test_ring_lane_items_real_chart() -> bool:
 	var workspace := RingWorkspace.new()
 	var timeline := RingWorkspace.Timeline.new(workspace)

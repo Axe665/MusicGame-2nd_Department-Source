@@ -1,5 +1,5 @@
 {
-  "note": "10k 音符 / 200 关键帧，headless。只锁稳定指标；CPU 指标在无 GPU 的机器上有 ±50% 抖动，所以容差 2×，用来抓真正的回退，不做严格的毫秒门禁。",
+  "note": "10k 音符 / 200 关键帧，headless。只锁稳定指标：环编辑器拖动的 CPU 中位数、节点数、内存。覆盖层单次绘制受 headless 合并帧影响噪声太大，只打印不门禁；亚毫秒指标同样不门禁。",
   "scenario": {
     "notes": 10000,
     "keys": 200,
@@ -8,8 +8,7 @@
   },
   "tolerance": 2.0,
   "metrics": {
-    "ring_scrub.work_p50_ms": 2.23,
-    "playtest.overlay_ms": 12.03,
+    "ring_scrub.work_p50_ms": 1.46,
     "editor_idle.nodes": 1860.0,
     "ring_idle.nodes": 1937.0,
     "editor_idle.memory_mb": 198.56

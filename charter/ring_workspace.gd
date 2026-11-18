@@ -161,6 +161,9 @@ class Timeline:
 	var _new_button: Button = null
 	var _delete_button: Button = null
 	var _menu: MenuButton = null
+	## 段块缩略图：按谱面版本缓存形状采样点，别每帧重新 sample_points。
+	var _thumb_cache: Dictionary = {}
+	var _thumb_cache_version: int = -1
 
 	func _init(p_workspace: RingWorkspace) -> void:
 		workspace = p_workspace
@@ -467,19 +470,31 @@ class Timeline:
 
 	## 段块里的形状缩略图：按边界真实采样画，方形/星形/椭圆一眼能分。
 	func _draw_shape_thumb(box: Rect2, shape: BoundaryShape, color: Color) -> void:
-		var raw := shape.sample_points(24)
-		var points := PackedVector2Array()
-		var low := Vector2(INF, INF)
-		var high := Vector2(-INF, -INF)
-		for item in raw:
-			if bool(item.get("gap", false)):
-				continue
-			var p: Vector2 = item.get("point", Vector2.ZERO)
-			low = Vector2(minf(low.x, p.x), minf(low.y, p.y))
-			high = Vector2(maxf(high.x, p.x), maxf(high.y, p.y))
-			points.append(p)
+		var chart: Chart = workspace.chart()
+		if chart == null:
+			return
+		if chart.version != _thumb_cache_version:
+			_thumb_cache_version = chart.version
+			_thumb_cache.clear()
+		if not _thumb_cache.has(shape.id):
+			var raw := shape.sample_points(24)
+			var points := PackedVector2Array()
+			var low := Vector2(INF, INF)
+			var high := Vector2(-INF, -INF)
+			for item in raw:
+				if bool(item.get("gap", false)):
+					continue
+				var p: Vector2 = item.get("point", Vector2.ZERO)
+				low = Vector2(minf(low.x, p.x), minf(low.y, p.y))
+				high = Vector2(maxf(high.x, p.x), maxf(high.y, p.y))
+				points.append(p)
+			_thumb_cache[shape.id] = {"points": points, "low": low, "high": high}
+		var cached: Dictionary = _thumb_cache[shape.id]
+		var points: PackedVector2Array = cached["points"]
 		if points.size() < 3:
 			return
+		var low: Vector2 = cached["low"]
+		var high: Vector2 = cached["high"]
 		var span := high - low
 		var scale := minf(box.size.x / maxf(0.001, span.x), box.size.y / maxf(0.001, span.y))
 		var origin := box.position + box.size * 0.5 - (low + span * 0.5) * scale

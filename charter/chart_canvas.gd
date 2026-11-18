@@ -70,6 +70,9 @@ var _waveform_peaks: PackedFloat32Array = PackedFloat32Array()
 var _waveform_duration: float = 0.0
 var _waveform_audio_path: String = ""
 var _wave_key: String = ""
+## 波形按「音频位置 → 拍」采样一次（与滚动无关），每帧只做拍→y 映射。
+var _wave_beats: PackedFloat32Array = PackedFloat32Array()
+var _wave_vals: PackedFloat32Array = PackedFloat32Array()
 var _wave_right: PackedVector2Array = PackedVector2Array()
 var _wave_left: PackedVector2Array = PackedVector2Array()
 var _last_playhead_redraw: int = 0
@@ -609,29 +612,33 @@ func _draw_waveform(plot: Rect2) -> void:
 	var timing_sig := "%.3f|%d" % [chart.offset_ms, chart.timing.points.size()]
 	for point in chart.timing.points:
 		timing_sig += "|%.4f" % point.bpm
-	var key := "%s|%.4f|%.4f|%.1f|%.1f|%.1f|%d|%s" % [
-		_waveform_audio_path, _waveform_duration, scroll_beat, px_per_beat,
-		plot.position.y, plot.size.y, _waveform_peaks.size(), timing_sig,
+	# 采样只依赖音频与 BPM 表：滚动/缩放不再让它每帧重建。
+	var key := "%s|%.4f|%d|%s" % [
+		_waveform_audio_path, _waveform_duration, _waveform_peaks.size(), timing_sig,
 	]
 	if key != _wave_key:
 		_wave_key = key
-		_wave_right = PackedVector2Array()
-		_wave_left = PackedVector2Array()
-		var center_x := strip.position.x + strip.size.x * 0.5
-		var half := strip.size.x * 0.5 - 2.0
-		# 每行都要查一次拍→毫秒；先排一次序，循环里不再重复排序。
+		_wave_beats = PackedFloat32Array()
+		_wave_vals = PackedFloat32Array()
 		chart.timing.sort_points()
-		for y in range(int(plot.position.y), int(plot.end.y), 2):
-			var beat := _y_to_beat(float(y))
-			var chart_ms := chart.timing.beat_to_ms_sorted(beat)
-			var audio_ms := chart_ms - chart.offset_ms
-			var fraction := audio_ms / 1000.0 / _waveform_duration
-			if fraction < 0.0 or fraction > 1.0:
-				continue
-			var index := clampi(int(fraction * _waveform_peaks.size()), 0, _waveform_peaks.size() - 1)
-			var peak := _waveform_peaks[index]
-			_wave_right.append(Vector2(center_x + peak * half, y))
-			_wave_left.append(Vector2(center_x - peak * half, y))
+		var count := mini(800, _waveform_peaks.size())
+		for i in count:
+			var frac := float(i) / float(maxi(1, count - 1))
+			var audio_ms := frac * _waveform_duration * 1000.0
+			_wave_beats.append(chart.timing.chart_ms_to_beat(audio_ms + chart.offset_ms))
+			_wave_vals.append(_waveform_peaks[mini(_waveform_peaks.size() - 1,
+				int(frac * float(_waveform_peaks.size())))])
+	var center_x := strip.position.x + strip.size.x * 0.5
+	var half := strip.size.x * 0.5 - 2.0
+	_wave_right = PackedVector2Array()
+	_wave_left = PackedVector2Array()
+	for i in _wave_beats.size():
+		var y := _beat_to_y(_wave_beats[i])
+		if y < plot.position.y or y > plot.end.y:
+			continue
+		var peak := _wave_vals[i]
+		_wave_right.append(Vector2(center_x + peak * half, y))
+		_wave_left.append(Vector2(center_x - peak * half, y))
 	if _wave_right.size() > 1:
 		draw_polyline(_wave_right, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.42), 1.0, true)
 	if _wave_left.size() > 1:
