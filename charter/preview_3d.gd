@@ -130,6 +130,7 @@ static var _parse_done: Dictionary = {}
 static var _parse_mutex := Mutex.new()
 static var _tex_decoded: Dictionary = {}
 static var _tex_mutex := Mutex.new()
+var _sb_prefetch_usec: int = 0
 ## 预览最大也就屏幕那么高，超长边超过这个数只会白吃显存和解码时间。
 const STORYBOARD_TEX_MAX := 1024
 var show_storyboard := true
@@ -395,6 +396,19 @@ func apply_ring_quality() -> void:
 			_subviewport.screen_space_aa = Viewport.SCREEN_SPACE_AA_FXAA
 	if _overlay != null:
 		_overlay.queue_redraw()
+
+
+## 暂停 / 结算：冻结 3D 子视口（保留最后一帧），但不接管 _process 归属。
+## 试玩的帧是 Playtest 主动驱动的，不能在这里 set_process(true)。
+func freeze_ring_3d(frozen: bool) -> void:
+	if _subviewport == null:
+		return
+	if frozen:
+		_subviewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
+		_render_mode = SubViewport.UPDATE_DISABLED
+	else:
+		_force_3d_frame = use_3d_ring
+		_render_mode = -1
 
 
 func set_suspended(suspended: bool) -> void:
@@ -784,7 +798,11 @@ func _process(_delta: float) -> void:
 		_mesh_dirty = false
 	_update_background(chart)
 	_update_video(chart, t)
-	_prefetch_storyboard_textures()
+	# 贴图预取以前每帧都遍历全部 referenced_files（加锁 + 字符串拼接）。4Hz 足够。
+	var prefetch_now := Time.get_ticks_usec()
+	if prefetch_now - _sb_prefetch_usec >= 250000:
+		_sb_prefetch_usec = prefetch_now
+		_prefetch_storyboard_textures()
 	var beat_phase := fposmod(t, 1.0)
 	_glow_material.albedo_color = Color(0.37, 0.92, 0.86, 0.10 + 0.09 * exp(-beat_phase * 7.0))
 	if playtest_mode:

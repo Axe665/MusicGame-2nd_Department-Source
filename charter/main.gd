@@ -25,6 +25,10 @@ var _preview_drag_start_x: float = 0.0
 var _preview_drag_width: float = 340.0
 var _preview_manual_open: bool = false
 var _audio_popup: PopupPanel = null
+## 静止降帧：没有任何输入/播放/试玩 1.5 秒后把帧率压到 10，
+## 避免窗口以 120fps 重画同一张静止画面（GPU 空转的主量级）。
+var _last_activity_ms: int = 0
+var _idle_capped: bool = false
 var _settings_dialog: AcceptDialog = null
 var _quality_widgets: Dictionary = {}
 var _hud_widgets: Dictionary = {}
@@ -185,6 +189,8 @@ var _volume_sliders: Array = []
 
 func _ready() -> void:
 	_app = get_node_or_null("/root/App")
+	# 启动就算「刚活动过」，否则开局直接进 10fps 静止档。
+	_last_activity_ms = Time.get_ticks_msec()
 	theme = UITheme.build()
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_setup_audio_buses()
@@ -2073,7 +2079,25 @@ func _fire_editor_sfx(beat: float) -> void:
 	_sfx_last_beat = beat
 
 
+## 静止降帧：暂停/无输入 1.5 秒后把帧率压到 10，任何活动立刻恢复用户设定。
+## 只降「空转的重画」，不改画质、不改逻辑；播放/试玩/拖动都不受影响。
+func _update_idle_cap() -> void:
+	if _app == null:
+		return
+	var busy := _playing or _playtest != null \
+		or Time.get_ticks_msec() - _last_activity_ms < 1500
+	if busy:
+		if _idle_capped:
+			_idle_capped = false
+			_app.apply_frame_cap()
+		return
+	if not _idle_capped:
+		_idle_capped = true
+		Engine.max_fps = 10
+
+
 func _process(_delta: float) -> void:
+	_update_idle_cap()
 	if _app == null or _app.chart == null:
 		return
 	if _playing:
@@ -3358,6 +3382,7 @@ func _end_playtest() -> void:
 
 
 func _input(event: InputEvent) -> void:
+	_last_activity_ms = Time.get_ticks_msec()
 	if _playtest != null:
 		return
 	if _calibration_dialog != null and _calibration_dialog.visible:

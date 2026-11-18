@@ -168,7 +168,7 @@ var _auto_key_phase: int = 0
 ## a real movement from another path that overlaps it.
 var _path_motion_samples: Array[Dictionary] = []
 ## Diagnostic capture for the current input investigation; F9 toggles capture.
-var path_input_logging := true
+var path_input_logging := false
 var _path_input_log: FileAccess
 var _path_input_log_path := ""
 ## 回放：录制本局输入；播放时把录制的事件按时间喂回同一套判定。
@@ -783,6 +783,8 @@ func _set_paused(value: bool) -> void:
 	if _audio_available and _audio != null:
 		_audio.stream_paused = value
 	_preview.set_video_paused(value)
+	# 暂停时 3D 子视口以前还停在 UPDATE_ALWAYS：整场景每帧照渲，GPU 白烧。
+	_preview.freeze_ring_3d(value)
 	if value:
 		_refresh_pause_status()
 		Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
@@ -2685,11 +2687,16 @@ func _flush_offset() -> void:
 	_offset_dirty = false
 
 
+## 判定日志：暂停菜单要读，但每颗音符都 print 会拖慢高密度谱（一万颗就是一万次 IO）。
+var verbose_log: bool = false
+
+
 func _add_log(line: String) -> void:
 	_log.append(line)
 	if _log.size() > 120:
 		_log.pop_front()
-	print("[playtest] %s" % line)
+	if verbose_log:
+		print("[playtest] %s" % line)
 
 
 ## 把本局状态推给 Preview3D 的 HUD（20Hz，和原来顶栏刷新同频）。
@@ -3141,6 +3148,8 @@ func _finish() -> void:
 	# 真正的停止在 _exit()（淡出）或重试（_start_audio 换播放器）里做。
 	_preview.playing = false
 	_preview.set_process(true)
+	# 结算页背景是静态的：别让 3D 子视口继续按 UPDATE_ALWAYS 渲染。
+	_preview.freeze_ring_3d(true)
 	_preview.custom_cursor_visible = false
 	var lines: Array[String] = []
 	if auto_play:
