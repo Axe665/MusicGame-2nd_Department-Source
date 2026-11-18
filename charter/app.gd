@@ -34,7 +34,6 @@ var sfx_volume: float = 100.0
 ## 音符速度倍率：飞行时长 = Chart.NOTE_FALL_MS / flow_scale（和 BPM 无关）。
 var flow_scale: float = 1.0
 var ffmpeg_path: String = "ffmpeg"
-var star_speed: float = 1.0
 ## Path 等待阶段的启动提示（全局外观设置，不参与判定）。
 const PATH_WAIT_MODES: Array[String] = ["off", "progress", "shrink"]
 const PATH_WAIT_LABELS: Array[String] = ["关闭", "环形进度", "淡蓝收缩圆环"]
@@ -652,7 +651,6 @@ func _load_settings() -> void:
 			path_wait_indicator = wait_mode if wait_mode in PATH_WAIT_MODES else "progress"
 			cursor_scale = clampf(float(data.get("cursor_scale", cursor_scale)), 0.5, 2.0)
 			flow_scale = clampf(float(data.get("flow_scale", flow_scale)), 0.05, 3.0)
-			star_speed = clampf(float(data.get("star_speed", star_speed)), 0.5, 2.0)
 	MediaIO.set_ffmpeg_exe(ffmpeg_path)
 	apply_frame_cap()
 	apply_visual_quality()
@@ -797,7 +795,7 @@ func effective_latency_sec() -> float:
 
 
 func save_settings() -> void:
-	var data := {"settings_version": 1, "path_wait_indicator": path_wait_indicator, "note_skin": note_skin, "hit_fx_style": hit_fx_style, "hit_sfx_style": hit_sfx_style, "ffmpeg": ffmpeg_path, "frame_cap": frame_cap, "video_encoder": video_encoder, "audio_buffer_ms": audio_buffer_ms, "playtest_offset_ms": playtest_offset_ms, "audio_latency_ms": audio_latency_ms, "music_volume": music_volume, "sfx_volume": sfx_volume, "dynamic_offset": dynamic_offset, "playtest_auto": playtest_auto, "playtest_mirror": playtest_mirror, "playback_scroll": playback_scroll, "background_brightness": background_brightness, "mouse_tilt": mouse_tilt, "startup_tabs": startup_tabs, "osu_favorites": osu_favorites, "last_bias_ms": last_bias_ms, "cursor_scale": cursor_scale, "flow_scale": flow_scale, "star_speed": star_speed, "aa_2d_level": aa_2d_level, "msaa_3d_level": msaa_3d_level, "ring_pad_rect": ring_pad_rect, "angle_divisions": angle_divisions, "note_detail_fine": note_detail_fine, "note_glow": note_glow, "path_style": path_style, "bpm_lock_ms": bpm_lock_ms, "cursor_trail": cursor_trail, "fx_budget": fx_budget, "ring_3d_scale": ring_3d_scale, "ring_3d_hz": ring_3d_hz, "bar_lines": bar_lines, "quality_preset": quality_preset,
+	var data := {"settings_version": 1, "path_wait_indicator": path_wait_indicator, "note_skin": note_skin, "hit_fx_style": hit_fx_style, "hit_sfx_style": hit_sfx_style, "ffmpeg": ffmpeg_path, "frame_cap": frame_cap, "video_encoder": video_encoder, "audio_buffer_ms": audio_buffer_ms, "playtest_offset_ms": playtest_offset_ms, "audio_latency_ms": audio_latency_ms, "music_volume": music_volume, "sfx_volume": sfx_volume, "dynamic_offset": dynamic_offset, "playtest_auto": playtest_auto, "playtest_mirror": playtest_mirror, "playback_scroll": playback_scroll, "background_brightness": background_brightness, "mouse_tilt": mouse_tilt, "startup_tabs": startup_tabs, "osu_favorites": osu_favorites, "last_bias_ms": last_bias_ms, "cursor_scale": cursor_scale, "flow_scale": flow_scale, "aa_2d_level": aa_2d_level, "msaa_3d_level": msaa_3d_level, "ring_pad_rect": ring_pad_rect, "angle_divisions": angle_divisions, "note_detail_fine": note_detail_fine, "note_glow": note_glow, "path_style": path_style, "bpm_lock_ms": bpm_lock_ms, "cursor_trail": cursor_trail, "fx_budget": fx_budget, "ring_3d_scale": ring_3d_scale, "bar_lines": bar_lines, "quality_preset": quality_preset,
 		"hud_scale": hud_scale, "hud_combo_mode": hud_combo_mode, "hud_progress_style": hud_progress_style,
 		"hud_judge_position": hud_judge_position, "hud_opacity": hud_opacity,
 		"hud_show_title": hud_show_title, "hud_show_difficulty": hud_show_difficulty,

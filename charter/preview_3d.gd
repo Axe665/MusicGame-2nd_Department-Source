@@ -57,7 +57,6 @@ var show_debug: bool = false
 var show_path_judgement := false
 var path_judgement_states: Dictionary = {}
 var flow_scale: float = 1.0
-var star_speed: float = 1.0
 ## Trace 门框的主色（默认银白）。
 var custom_cursor_visible: bool = true
 ## 光标大小倍率（1.0 = 默认）。

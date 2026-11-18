@@ -1237,7 +1237,6 @@ func open_workspace(preview: Preview3D = null, restore: Callable = Callable()) -
 		_preview.show_hud = false
 		_preview.use_3d_ring = _app.use_3d_ring
 		_preview.flow_scale = _app.flow_scale
-		_preview.star_speed = _app.star_speed
 		_preview.note_skin = _app.note_skin
 		_preview.cursor_scale = _app.cursor_scale
 		if not _preview.notice.is_connected(_set_hint):

@@ -160,7 +160,6 @@ var _playtest: Playtest
 var _playtest_dialog: AcceptDialog = null
 var _playtest_rate: SpinBox = null
 var _playtest_flow: SpinBox = null
-var _playtest_star: SpinBox = null
 var _playtest_cursor: SpinBox = null
 var _playtest_offset: SpinBox = null
 var _playtest_latency: SpinBox = null
@@ -1732,7 +1731,6 @@ func _sync_from_app() -> void:
 	_preview.mouse_tilt = _app.mouse_tilt
 	_preview.show_debug = _app.debug_overlay
 	_preview.flow_scale = _app.flow_scale
-	_preview.star_speed = _app.star_speed
 	_preview.note_skin = _app.note_skin
 	_preview.hit_fx_style = _app.hit_fx_style
 	_preview.cursor_scale = _app.cursor_scale
@@ -2915,7 +2913,6 @@ func _open_playtest_setup(from_start: bool) -> void:
 			_playtest_start_button.visible = true
 	_playtest_rate.value = _rate
 	_playtest_flow.value = _app.flow_scale
-	_playtest_star.value = _app.star_speed
 	if _playtest_cursor != null:
 		_playtest_cursor.value = _app.cursor_scale
 	if _playtest_offset != null:
@@ -3121,9 +3118,6 @@ func _build_playtest_dialog() -> void:
 	_playtest_rate.tooltip_text = "试玩和编辑器试听都按这个速度走；声音不变调（每个新倍速首次生成缓存）；局中修改在重开本局后生效；只对本次运行有效"
 	_playtest_flow = _playtest_spin_row(box, "音符速度", 0.05, 3.0, 0.01, 1.0, "×")
 	_playtest_flow.tooltip_text = "音符从出现到该打的时间 = 1 秒 ÷ 这个倍率；和 BPM 无关，越高越快"
-	_playtest_star = _playtest_spin_row(box, "星速", 0.5, 2.0, 0.05, 1.0, "×")
-	# 星速没有任何消费点（preview_3d.star_speed 只被赋值、从不读取），先隐藏。
-	_playtest_star.visible = false
 	_playtest_cursor = _playtest_spin_row(box, "光标大小", 0.5, 2.0, 0.05, 1.0, "×")
 	var mirror_row := HBoxContainer.new()
 	mirror_row.add_theme_constant_override("separation", 6)
@@ -3249,7 +3243,6 @@ func _commit_playtest_settings() -> void:
 	if _playtest_latency != null:
 		_app.audio_latency_ms = clampf(_playtest_latency.value, 0.0, 250.0)
 	_app.flow_scale = _playtest_flow.value
-	_app.star_speed = _playtest_star.value
 	if _playtest_cursor != null:
 		_app.cursor_scale = clampf(_playtest_cursor.value, 0.5, 2.0)
 	if _playtest_offset != null:
@@ -3264,7 +3257,6 @@ func _commit_playtest_settings() -> void:
 		_app.playtest_mirror = ["off", "lr", "rot180"][clampi(_playtest_mirror.selected, 0, 2)]
 	_app.save_settings()
 	_preview.flow_scale = _app.flow_scale
-	_preview.star_speed = _app.star_speed
 	_preview.playback_rate = _rate
 	_preview.cursor_scale = _app.cursor_scale
 	_preview.request_redraw()
@@ -3273,7 +3265,6 @@ func _commit_playtest_settings() -> void:
 		# 倍速不即时改：写进下一局，重开本局才换速度。
 		_playtest.next_playback_rate = _rate
 		_playtest._preview.flow_scale = _app.flow_scale
-		_playtest._preview.star_speed = _app.star_speed
 		_playtest._preview.cursor_scale = _app.cursor_scale
 		_playtest._preview.request_redraw()
 	if _editor_flow_spin != null:

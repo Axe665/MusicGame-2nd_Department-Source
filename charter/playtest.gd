@@ -331,7 +331,6 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	_preview.mouse_tilt = true
 	_preview.show_debug = false
 	_preview.flow_scale = flow
-	_preview.star_speed = float(_app.star_speed if _app != null else 1.0)
 	_preview.playback_rate = playback_rate
 	_preview.note_skin = String(_app.note_skin if _app != null else "candy")
 	_preview.hit_fx_style = String(_app.hit_fx_style if _app != null else "burst")
@@ -1204,7 +1203,6 @@ func _start_recording() -> void:
 		# 录制时的镜像，回放/导出时原样还原。
 		"mirror": mirror_mode,
 		"flow": _preview.flow_scale,
-		"star_speed": _preview.star_speed,
 		"cursor_scale": _preview.cursor_scale,
 		"note_skin": _preview.note_skin,
 		"hit_fx": _preview.hit_fx_style,
@@ -1249,7 +1247,6 @@ func _enter_replay(data: Replay) -> void:
 	_timeline_start_beat = start_beat
 	_replay_cursor = Vector2.INF
 	_preview.flow_scale = float(data.settings.get("flow", _preview.flow_scale))
-	_preview.star_speed = float(data.settings.get("star_speed", _preview.star_speed))
 	_preview.cursor_scale = float(data.settings.get("cursor_scale", _preview.cursor_scale))
 	if data.settings.has("note_skin"):
 		_preview.note_skin = String(data.settings["note_skin"])
