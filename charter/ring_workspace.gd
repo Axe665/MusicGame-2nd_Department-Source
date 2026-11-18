@@ -279,7 +279,7 @@ class Timeline:
 		return "linear"
 
 	func _lane_name(lane: int) -> String:
-		return ["形状", "镜头", "边界事件", "BPM"][clampi(lane, 0, 3)]
+		return ["形状", "镜头", "边界事件", "BPM 速度"][clampi(lane, 0, 3)]
 
 	func _lane_colour(lane: int) -> Color:
 		match lane:
@@ -1194,7 +1194,7 @@ func _build() -> void:
 	UITheme.style_mono(_fps_label, 12, UITheme.MUTED)
 	time_row.add_child(_fps_label)
 	var hint := Label.new()
-	hint.text = "拖青色菱形改时间，双击画形状"
+	hint.text = "拖动方块改时间，双击画形状"
 	UITheme.style_mono(hint, 11, UITheme.MUTED)
 	time_row.add_child(hint)
 
@@ -1510,10 +1510,10 @@ func _build_advanced(parent: VBoxContainer) -> void:
 		var index: int = clampi(int(_app.selected_segment_index), 0, maxi(0, shape.vertex_count() - 1))
 		var points := shape.vertices()
 		if index < points.size():
-			parent.add_child(_number("顶点 x", points[index].x, -2000, 2000, 1.0, func(value: float) -> void:
+			parent.add_child(_number("顶点 横向", points[index].x, -2000, 2000, 1.0, func(value: float) -> void:
 				shape.set_vertex(index, Vector2(value, shape.vertices()[index].y))
 			))
-			parent.add_child(_number("顶点 y", points[index].y, -2000, 2000, 1.0, func(value: float) -> void:
+			parent.add_child(_number("顶点 纵向", points[index].y, -2000, 2000, 1.0, func(value: float) -> void:
 				shape.set_vertex(index, Vector2(shape.vertices()[index].x, value))
 			))
 		parent.add_child(_number("顶点数", float(shape.vertex_count()), 3, 48, 1.0, func(value: float) -> void:
@@ -1524,13 +1524,13 @@ func _build_advanced(parent: VBoxContainer) -> void:
 			key["beat"] = value
 		))
 	var view := _active_view()
-	parent.add_child(_number("tiltX", float(view.get("tilt_x", 0.0)), -60, 60, 1.0, func(value: float) -> void:
+	parent.add_child(_number("倾斜 左右", float(view.get("tilt_x", 0.0)), -60, 60, 1.0, func(value: float) -> void:
 		_apply_view("tilt_x", value)
 	))
-	parent.add_child(_number("tiltY", float(view.get("tilt_y", 0.0)), -60, 60, 1.0, func(value: float) -> void:
+	parent.add_child(_number("倾斜 前后", float(view.get("tilt_y", 0.0)), -60, 60, 1.0, func(value: float) -> void:
 		_apply_view("tilt_y", value)
 	))
-	parent.add_child(_number("ellipse", float(view.get("ellipse", 1.0)), 0.5, 1.5, 0.01, func(value: float) -> void:
+	parent.add_child(_number("椭圆 横向拉伸", float(view.get("ellipse", 1.0)), 0.5, 1.5, 0.01, func(value: float) -> void:
 		_apply_view("ellipse", value)
 	))
 
@@ -1918,8 +1918,17 @@ func _button(text: String, callback: Callable) -> Button:
 	return button
 
 
-func _option(text: String, items: Array, selected: int, callback: Callable) -> OptionButton:
+## 下拉框一定要带中文标签：「缓入缓出」这种值单独摆出来没人知道它在问什么。
+func _option(text: String, items: Array, selected: int, callback: Callable) -> Control:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 6)
+	var label := Label.new()
+	label.text = text
+	label.custom_minimum_size = Vector2(96, 0)
+	UITheme.style_mono(label, 11, UITheme.MUTED)
+	row.add_child(label)
 	var option := OptionButton.new()
+	option.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	for item in items:
 		option.add_item(String(item))
 	option.selected = clampi(selected, 0, items.size() - 1)
@@ -1928,7 +1937,8 @@ func _option(text: String, items: Array, selected: int, callback: Callable) -> O
 		if _app != null:
 			_app.mutate(func() -> void: callback.call(index))
 	)
-	return option
+	row.add_child(option)
+	return row
 
 
 func _slider(text: String, value: float, min_value: float, max_value: float, step: float, callback: Callable) -> Control:
