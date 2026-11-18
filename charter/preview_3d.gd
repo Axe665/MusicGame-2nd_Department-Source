@@ -222,6 +222,12 @@ var _last_cursor_emit: Vector2 = Vector2(-999, -999)
 var _cursor_cache_key: String = ""
 var _sorted_notes_cache: Array[Note] = []
 var _path_runs_cache: Dictionary = {}
+## Path 链合成结果 / 两两重叠：纯几何，按谱面版本缓存（拖动时版本变才重算）。
+var _chain_cache: Dictionary = {}
+var _chain_cache_version: int = -1
+var _overlap_version: int = -1
+var _overlap_key: String = ""
+var _overlap_any: bool = false
 var _sorted_notes_chart: Chart = null
 var _last_view_key: String = ""
 var _last_fit_key: String = ""
@@ -3095,19 +3101,25 @@ func _draw_paths(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 				break
 		if not on_screen:
 			continue
-		visible.append(build_path_chain_note(root, chain) if chain.size() > 1 else root)
+		visible.append(_chain_note_for(chart, root, chain))
 	# 旧 Path 先画、新的最后画：多星星重叠时，新星和它的擦除缺口始终在最上层。
 	visible.sort_custom(func(a: Note, b: Note) -> bool: return a.beat < b.beat)
 	# 舞萌式同色系：所有星共用一个主色，重叠时只压明明度，不换色相。
 	# 谱师自定义过的单星颜色优先。
-	var any_overlap := false
-	for i in visible.size():
-		for j in range(i + 1, visible.size()):
-			if _paths_overlap(chart, visible[i], visible[j]):
-				any_overlap = true
+	# 重叠是纯几何：按谱面版本缓存，别每帧两两重算（8 条路径 = 28 对 × 169 采样）。
+	var overlap_key := "|".join(visible.map(func(n: Note) -> String: return str(n.id)))
+	if chart.version != _overlap_version or overlap_key != _overlap_key:
+		_overlap_version = chart.version
+		_overlap_key = overlap_key
+		_overlap_any = false
+		for i in visible.size():
+			for j in range(i + 1, visible.size()):
+				if _paths_overlap(chart, visible[i], visible[j]):
+					_overlap_any = true
+					break
+			if _overlap_any:
 				break
-		if any_overlap:
-			break
+	var any_overlap := _overlap_any
 	var base := Note.DEFAULT_PATH_COLOR
 	var colors := {}
 	var shade := 0
@@ -3173,6 +3185,21 @@ static func build_path_chain_note(root: Note, chain: Array[Note]) -> Note:
 
 
 ## 两条星在时间上重叠、且轨迹在盘面内靠得足够近，就算“有重叠”。
+## 一条 part 链合成一颗合成 Path（含整链 trace_pts）：几何不变时别每帧重造。
+func _chain_note_for(chart: Chart, root: Note, chain: Array[Note]) -> Note:
+	if chain.size() <= 1:
+		return root
+	if chart.version != _chain_cache_version:
+		_chain_cache_version = chart.version
+		_chain_cache.clear()
+	var cached: Note = _chain_cache.get(root.id, null)
+	if cached != null:
+		return cached
+	var built := build_path_chain_note(root, chain)
+	_chain_cache[root.id] = built
+	return built
+
+
 func _paths_overlap(chart: Chart, a: Note, b: Note) -> bool:
 	if a.end_beat < b.beat - 0.25 or b.end_beat < a.beat - 0.25:
 		return false

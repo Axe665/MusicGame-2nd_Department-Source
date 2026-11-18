@@ -8,8 +8,8 @@
   },
   "tolerance": 2.0,
   "metrics": {
-    "ring_scrub.work_p50_ms": 1.63,
-    "playtest.overlay_ms": 16.51,
+    "ring_scrub.work_p50_ms": 2.23,
+    "playtest.overlay_ms": 12.03,
     "editor_idle.nodes": 1860.0,
     "ring_idle.nodes": 1937.0,
     "editor_idle.memory_mb": 198.56
