@@ -1327,7 +1327,7 @@ func _gui_input(event: InputEvent) -> void:
 			_clipboard_mouse_beat = _hover_beat
 			_rebuild_ghost()
 		if _pending_hold != null:
-			var end_beat := _snap_beat_to_subdivision(_y_to_beat(event.position.y), not _snap_modifier(event))
+			var end_beat := _snap_beat_to_subdivision(_y_to_beat(event.position.y), _snap_bypass(event))
 			_pending_hold.end_beat = maxf(_pending_hold.beat, end_beat)
 			_app.touch_chart()
 		if _drag_mode == "note":
@@ -1467,9 +1467,10 @@ func _handle_wheel(event: InputEventMouseButton) -> void:
 		_overlay.queue_redraw()
 
 
-## 默认不吸附（真正的自由放置）；按住 Shift 才吸附到最近的 拍×角度 格点。
-static func _snap_modifier(event: InputEventWithModifiers) -> bool:
-	return event.shift_pressed and not event.alt_pressed
+## 默认吸到 小节线 × 角度竖线 的交点；按住 Shift 则本次操作完全不吸
+## （拍轴与轨道轴一起跳过，红区同样适用）。
+static func _snap_bypass(event: InputEventWithModifiers) -> bool:
+	return event.shift_pressed
 
 
 ## 滚轮一小格的 beat 位移。规则只有一条：往上滚 = 页面往上走（回到更早的拍），
@@ -1479,21 +1480,25 @@ static func wheel_step(up: bool, flow_down: bool, steps: float = 3.0) -> float:
 	return steps if up != flow_down else -steps
 
 
-func _snap_beat_to_subdivision(raw_beat: float, bypass: bool = true) -> float:
+func _snap_beat_to_subdivision(raw_beat: float, bypass: bool = false) -> float:
 	if bypass or _app == null:
 		return raw_beat
-	return TimingMap.nearest_beat_subdivision(raw_beat, int(_app.beat_subdivisions))
+	return _app.snap_grid_beat(raw_beat)
 
 
 func _snap_beat_u(raw_beat: float, raw_u: float, bypass: bool) -> Vector2:
-	## Always pull the note to the nearest intersection of a configured 小节线
-	## and a configured 竖线. Both axes move together, so changing either
-	## input immediately affects new placements and drag-release snapping.
+	## 拍轴常开：吸到顶栏「网格 小节线：N」的 1/N 拍线。轨道轴（「角度等分」
+	## 的竖线）由顶栏「轨道吸附」开关控制，关掉时角度保持鼠标原样。
 	if bypass or _app == null:
 		return Vector2(raw_beat, raw_u)
-	var beat := _snap_beat_to_subdivision(raw_beat, false)
-	# 角度格线：N 等分（360÷N 必须是整数），包含 0°/360° 两个接缝。
-	return Vector2(beat, TimingMap.nearest_angle_u(raw_u, int(_app.angle_divisions)))
+	return Vector2(_app.snap_grid_beat(raw_beat), _app.snap_rail_u(raw_u))
+
+
+## 角度（度）按轨道开关吸到最近的竖线；0°/360° 是同一个接缝。
+func _snap_angle(angle: float, bypass: bool) -> float:
+	if bypass or _app == null:
+		return angle
+	return _app.snap_rail_u(fposmod(angle, 360.0) / 360.0) * 360.0
 
 
 func _snap_note_placement(screen: Vector2, bypass: bool) -> Vector2:
@@ -1506,12 +1511,32 @@ func _snap_dragged_notes(bypass: bool) -> void:
 	## line instead of relying on the mouse-up cursor position alone.
 	if _app == null or bypass:
 		return
+	var changed := false
+	# Anchor 是刚体：先按 pair 分组，改 beat 之前就把组长定好。
+	var anchor_items := {}
 	for item in _drag_notes:
 		var note: Note = item["note"]
+		if note.type == "anchor":
+			var key := note.pair_id if not note.pair_id.is_empty() else "id%d" % note.id
+			if not anchor_items.has(key):
+				anchor_items[key] = []
+			anchor_items[key].append(item)
+			continue
 		if note.lock:
+			continue
+		var now_u := note.center_u * 360.0 if note.type == "bell" else note.angle
+		var moved_beat := absf(note.beat - float(item["beat"])) > 0.000001
+		var moved_angle := absf(now_u - float(item["angle"])) > 0.001
+		# 只是点了一下没拖动：不动它，免得单击选中就把音符吸走。
+		if not moved_beat and not moved_angle:
 			continue
 		var raw_u := note.center_u if note.type == "bell" else fposmod(note.angle, 360.0) / 360.0
 		var snapped := _snap_beat_u(note.beat, raw_u, false)
+		# 只回吸真的动过的那个轴：Ctrl 只改时间时别把角度也拽到竖线上。
+		if not moved_beat:
+			snapped.x = note.beat
+		if not moved_angle:
+			snapped.y = raw_u
 		var beat_delta := snapped.x - note.beat
 		var angle_delta := snapped.y * 360.0 - note.angle
 		if absf(beat_delta) <= 0.000001 and absf(angle_delta) <= 0.001:
@@ -1522,13 +1547,70 @@ func _snap_dragged_notes(bypass: bool) -> void:
 		if note.type == "bell":
 			note.angle = fposmod(snapped.y * 360.0, 360.0)
 			note.center_u = snapped.y
-		elif note.type == "anchor":
-			# 整对锚点各自吸角度会把 180° 关系吸歪；只吸拍位。
-			pass
 		elif note.type != "seek":
 			note.angle = fposmod(note.angle + angle_delta, 360.0)
 			if note.type == "path":
 				note.tail_angle = fposmod(note.tail_angle + angle_delta, 360.0)
+		changed = true
+	if _snap_anchor_pairs(anchor_items):
+		changed = true
+	if changed:
+		_app.touch_chart()
+
+
+## 一对 Anchor 一起吸：组长落在竖线上，伙伴跟着转同样的角度，两颗的夹角
+## （含默认的 180°）保持不变。任一颗锁定就整对不动——锁不能被别的音符绕过。
+func _snap_anchor_pairs(groups: Dictionary) -> bool:
+	var changed := false
+	for key in groups:
+		var items: Array = groups[key]
+		var leader: Note = items[0]["note"]
+		var moved_beat := false
+		var moved_angle := false
+		var locked := false
+		for item in items:
+			var note: Note = item["note"]
+			if note.lock:
+				locked = true
+				continue
+			if note.id < leader.id:
+				leader = note
+			if absf(note.beat - float(item["beat"])) > 0.000001:
+				moved_beat = true
+			if absf(note.angle - float(item["angle"])) > 0.001:
+				moved_angle = true
+		if locked or (not moved_beat and not moved_angle):
+			continue
+		if moved_beat:
+			var target := _snap_beat_to_subdivision(leader.beat, false)
+			if absf(target - leader.beat) > 0.000001:
+				for item in items:
+					var note: Note = item["note"]
+					note.beat = maxf(0.0, target)
+				changed = true
+		if moved_angle:
+			var delta := _snap_angle(leader.angle, false) - leader.angle
+			if absf(delta) > 0.001:
+				for item in items:
+					var note: Note = item["note"]
+					note.angle = fposmod(note.angle + delta, 360.0)
+				changed = true
+	return changed
+
+
+## 红区松手回吸：起点对齐小节线（时长不变），中心角按轨道开关吸；弧宽 10–359° 不吸。
+func _snap_dragged_region(bypass: bool) -> void:
+	if _drag_region == null or bypass or _app == null:
+		return
+	# 只是点了一下红区：没拖动就不回吸。
+	if absf(_drag_region.start_beat - _drag_region_start_beat) <= 0.000001 \
+			and absf(fposmod(_drag_region.angle - _drag_region_angle + 540.0, 360.0) - 180.0) <= 0.001:
+		return
+	var duration := maxf(0.25, _drag_region.end_beat - _drag_region.start_beat)
+	var start := maxf(0.0, _snap_beat_to_subdivision(_drag_region.start_beat, false))
+	_drag_region.start_beat = start
+	_drag_region.end_beat = start + duration
+	_drag_region.angle = fposmod(_snap_angle(_drag_region.angle, false), 360.0)
 	_app.touch_chart()
 
 
@@ -1558,7 +1640,7 @@ func _on_left_press(event: InputEventMouseButton) -> void:
 	# A pending hold consumes the next left click as its end time, before the
 	# overlap guard can select another note.
 	if _pending_hold != null:
-		var end_beat := _snap_beat_to_subdivision(_y_to_beat(event.position.y), not _snap_modifier(event))
+		var end_beat := _snap_beat_to_subdivision(_y_to_beat(event.position.y), _snap_bypass(event))
 		_finish_pending_hold(end_beat)
 		return
 	# Ctrl is a selection modifier across all tools: toggle the clicked note
@@ -1577,8 +1659,9 @@ func _on_left_press(event: InputEventMouseButton) -> void:
 			_app.select_note(int(hit["id"]), event.shift_pressed)
 			_begin_note_drag(event.position)
 			return
-	if _app.tool in NOTE_TOOLS:
-		var placement := _snap_note_placement(event.position, not _snap_modifier(event))
+	# 红区（limit）也算落点对象：按下那一下就要按小节线 + 轨道吸附。
+	if _app.tool in NOTE_TOOLS or _app.tool == "limit":
+		var placement := _snap_note_placement(event.position, _snap_bypass(event))
 		beat = placement.x
 		u = placement.y
 	match _app.tool:
@@ -1604,7 +1687,9 @@ func _on_left_release(event: InputEventMouseButton) -> void:
 	if _app == null:
 		return
 	if _drag_mode == "note":
-		_snap_dragged_notes(not _snap_modifier(event))
+		_snap_dragged_notes(_snap_bypass(event))
+	elif _drag_mode in ["limit", "region_body"]:
+		_snap_dragged_region(_snap_bypass(event))
 	if _drag_mode in ["note", "width", "limit", "hold_end", "path_tail", "path_head", "region_body", "region_width"]:
 		_app.finish_edit()
 	if _drag_mode == "marquee":
@@ -1922,7 +2007,8 @@ func _drag_notes_update(screen: Vector2, event: InputEventMouseMotion) -> void:
 		var note: Note = item["note"]
 		if note.lock:
 			continue
-		var new_beat := maxf(0.0, _snap_beat_to_subdivision(float(item["beat"]) + delta_beat, not _snap_modifier(event)))
+		# 拖动过程跟手（不吸），松手时 _snap_dragged_notes 一次性回吸到格点。
+		var new_beat := maxf(0.0, float(item["beat"]) + delta_beat)
 		var new_angle := fposmod(float(item["angle"]) + delta_u * 360.0, 360.0)
 		var beat_delta := new_beat - note.beat
 		note.beat = new_beat
@@ -1940,7 +2026,7 @@ func _drag_hold_update(screen: Vector2, event: InputEventMouseMotion) -> void:
 	if _drag_notes.is_empty():
 		return
 	var note: Note = _drag_notes[0]["note"]
-	var beat: float = _snap_beat_to_subdivision(_y_to_beat(screen.y), not _snap_modifier(event))
+	var beat: float = _snap_beat_to_subdivision(_y_to_beat(screen.y), _snap_bypass(event))
 	note.end_beat = maxf(note.beat + 0.25, beat)
 	_app.touch_chart()
 
@@ -1964,10 +2050,10 @@ func _begin_tail_drag(note_id: int, screen: Vector2) -> void:
 func _drag_path_tail_update(screen: Vector2, event: InputEventMouseMotion) -> void:
 	if _drag_tail_note == null:
 		return
-	_drag_tail_note.tail_angle = fposmod(
-		_drag_tail_start + (_x_to_u(screen.x) - _drag_tail_origin) * 360.0, 360.0)
+	_drag_tail_note.tail_angle = fposmod(_snap_angle(
+		_drag_tail_start + (_x_to_u(screen.x) - _drag_tail_origin) * 360.0, _snap_bypass(event)), 360.0)
 	_drag_tail_note.end_beat = maxf(_drag_tail_note.beat + 0.25,
-		_snap_beat_to_subdivision(_y_to_beat(screen.y), not _snap_modifier(event)))
+		_snap_beat_to_subdivision(_y_to_beat(screen.y), _snap_bypass(event)))
 	_app.touch_chart()
 
 
@@ -1992,9 +2078,10 @@ func _drag_path_head_update(screen: Vector2, event: InputEventMouseMotion) -> vo
 	if _drag_head_note == null:
 		return
 	var note := _drag_head_note
-	note.angle = fposmod(_drag_head_start + (_x_to_u(screen.x) - _drag_head_origin) * 360.0, 360.0)
+	note.angle = fposmod(_snap_angle(
+		_drag_head_start + (_x_to_u(screen.x) - _drag_head_origin) * 360.0, _snap_bypass(event)), 360.0)
 	note.beat = path_head_beat(
-		_snap_beat_to_subdivision(_y_to_beat(screen.y), not _snap_modifier(event)), note.end_beat)
+		_snap_beat_to_subdivision(_y_to_beat(screen.y), _snap_bypass(event)), note.end_beat)
 	if note.path_controls_set:
 		# 参数化 Path 的 head 由 angle 推出来，重建一次才看得到。
 		note.set_path_axis(note.path_axis)
@@ -2259,12 +2346,13 @@ func _begin_region_drag(region_id: int, part: String, screen: Vector2) -> void:
 	_app.begin_edit()
 
 
-func _drag_region_update(screen: Vector2, event: InputEventMouseMotion) -> void:
+func _drag_region_update(screen: Vector2, _event: InputEventMouseMotion) -> void:
 	if _drag_region == null:
 		return
 	var du := _x_to_u(screen.x) - _drag_start_u
 	if _drag_mode == "region_body":
-		var beat: float = _app.snap_beat(_y_to_beat(screen.y), event.alt_pressed)
+		# 边拖边跟手，松手时 _snap_dragged_region 再回吸。
+		var beat := _y_to_beat(screen.y)
 		var span := moved_region(_drag_region_start_beat, _drag_region_end_beat, _drag_start_beat, beat)
 		_drag_region.start_beat = span.x
 		_drag_region.end_beat = span.y
@@ -2310,14 +2398,19 @@ func _begin_red(beat: float, u: float) -> void:
 	_drag_start_beat = beat
 	_drag_start_u = u
 	_drag_region = region
+	_drag_region_start_beat = region.start_beat
+	_drag_region_end_beat = region.end_beat
+	_drag_region_angle = region.angle
+	_drag_region_width = region.width
 	_app.select_region(region.id)
 
 
-func _drag_red_update(screen: Vector2, event: InputEventMouseMotion) -> void:
+func _drag_red_update(screen: Vector2, _event: InputEventMouseMotion) -> void:
 	if _drag_region == null:
 		return
 	var u := _x_to_u(screen.x)
-	var beat: float = _app.snap_beat(_y_to_beat(screen.y), event.alt_pressed)
+	# 边拖边跟手，松手时 _snap_dragged_region 再回吸。
+	var beat := _y_to_beat(screen.y)
 	var start_u := _drag_start_u
 	var delta := (u - start_u) * 360.0
 	if absf(delta) < 8.0:

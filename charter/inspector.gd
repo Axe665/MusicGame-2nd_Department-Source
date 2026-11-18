@@ -179,6 +179,13 @@ func _rebuild() -> void:
 	_rebuilding = false
 
 
+## Anchor 的伙伴：只比 pair_id + 同拍，不要求 180°（可用来做整对同步）。
+func _anchor_partner(note: Note) -> Note:
+	if note == null or note.type != "anchor" or _app == null or _app.chart == null:
+		return null
+	return _app.chart.anchor_partner(note)
+
+
 ## 音符页：单选/多选/空选三种形态各自复用，绝不在选择变化时重建整页。
 func _rebuild_note_tab() -> void:
 	var selected: int = _app.selected_notes.size()
@@ -509,6 +516,10 @@ func _build_note_page_for(page: VBoxContainer, note: Note) -> void:
 		n.beat = value
 		if n.type in ["hold", "path"]:
 			n.end_beat = maxf(n.beat + 0.25, n.end_beat + delta)
+		# Anchor 整对同拍：只改一颗会让 anchor_partner 找不到伙伴，配对直接断。
+		var partner := _anchor_partner(n)
+		if partner != null:
+			partner.beat = value
 	)
 	_note_widgets["start"] = start_edit
 	_remember_row("start", start_edit)
@@ -525,12 +536,18 @@ func _build_note_page_for(page: VBoxContainer, note: Note) -> void:
 		var n := _active_note
 		if n == null:
 			return
-		n.angle = fposmod(value, 360.0)
+		var target := fposmod(value, 360.0)
+		var delta := JudgeMath.angle_delta(n.angle, target)
+		n.angle = target
 		if n.type == "bell":
 			n.center_u = fposmod(n.angle / 360.0, 1.0)
 		elif n.type == "path":
 			n.generate_path_shape()
 			_sync_path_chain(n)
+		# Anchor 整对转：伙伴走同样的角度增量，夹角不变。
+		var partner := _anchor_partner(n)
+		if partner != null:
+			partner.angle = fposmod(partner.angle + delta, 360.0)
 	)
 	_note_widgets["angle"] = angle_spin
 	_remember_row("angle", angle_spin)

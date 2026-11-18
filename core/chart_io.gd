@@ -155,6 +155,8 @@ static func chart_to_dict(chart: Chart) -> Dictionary:
 			"waveform": bool(chart.editor.get("waveform", true)),
 			"hud": bool(chart.editor.get("hud", true)),
 			"flow_down": bool(chart.editor.get("flow_down", true)),
+			"beat_subdivisions": clampi(int(chart.editor.get("beat_subdivisions", 4)), 1, TimingMap.MAX_BEAT_SUBDIVISIONS),
+			"rail_snap": bool(chart.editor.get("rail_snap", true)),
 		},
 	}
 	# 只有真的用了配色才写这两个键：老谱存盘结果保持逐字节不变。

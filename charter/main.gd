@@ -132,6 +132,7 @@ var _tab_close_index: int = -1
 var _tab_close_dialog: ConfirmationDialog = null
 var _syncing_tabs: bool = false
 var _snap_option: OptionButton
+var _rail_snap_check: CheckBox
 var _lbp_dialog: FileDialog
 var _report_dialog: AcceptDialog
 var _difficulty_dialog: ConfirmationDialog
@@ -588,6 +589,16 @@ func _build_ui() -> void:
 	_vertical_lines_error.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	tool_row.add_child(_vertical_lines_error)
 
+	var rail_check := CheckBox.new()
+	rail_check.text = "轨道吸附"
+	rail_check.button_pressed = _app.rail_snap if _app != null else true
+	rail_check.tooltip_text = "放置/拖动音符时把角度吸到上面的等分竖线；按住 Shift 临时不吸（拍轴也不吸）"
+	rail_check.add_theme_font_size_override("font_size", 11)
+	rail_check.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	rail_check.toggled.connect(_on_rail_snap_toggled)
+	tool_row.add_child(rail_check)
+	_rail_snap_check = rail_check
+
 	var stretch_divider := VSeparator.new()
 	tool_row.add_child(stretch_divider)
 	var layout_label := Label.new()
@@ -919,7 +930,7 @@ func _on_beat_subdivision_changed(text: String) -> void:
 	if value > 0:
 		_set_beat_subdivision_error(false)
 		if _app != null and _app.beat_subdivisions != value:
-			_app.beat_subdivisions = value
+			_app.set_beat_subdivisions(value)
 			if _canvas != null:
 				_canvas.queue_redraw()
 		return
@@ -947,12 +958,20 @@ func _commit_beat_subdivision(text: String) -> void:
 		_beat_subdiv_edit.text = str(value)
 		_set_beat_subdivision_error(false)
 		if _app != null and _app.beat_subdivisions != value:
-			_app.beat_subdivisions = value
+			_app.set_beat_subdivisions(value)
 			if _canvas != null:
 				_canvas.queue_redraw()
 		return
 	_set_beat_subdivision_error(true)
 	_show_toast("小节线数据有误：请输入 1–%d 的整数。" % TimingMap.MAX_BEAT_SUBDIVISIONS, "error")
+
+
+func _on_rail_snap_toggled(on: bool) -> void:
+	if _app == null:
+		return
+	_app.set_rail_snap(on)
+	if _canvas != null:
+		_canvas.queue_redraw()
 
 
 func _set_beat_subdivision_error(has_error: bool) -> void:
@@ -1717,6 +1736,8 @@ func _sync_from_app() -> void:
 	if _beat_subdiv_edit != null:
 		_beat_subdiv_edit.text = str(_app.beat_subdivisions)
 		_set_beat_subdivision_error(false)
+	if _rail_snap_check != null:
+		_rail_snap_check.set_pressed_no_signal(_app.rail_snap)
 	if _vertical_lines_edit != null:
 		_vertical_lines_edit.text = str(_app.angle_divisions)
 		_set_vertical_lines_error(false)
@@ -1820,6 +1841,14 @@ func _sync_tools() -> void:
 
 func _on_chart_changed() -> void:
 	_ensure_audio()
+	# 小节线 N / 轨道吸附跟谱走：切标签页后顶栏要显示新谱的值。
+	if _app != null and _app.chart != null:
+		if _beat_subdiv_edit != null and not _beat_subdiv_edit.has_focus() \
+				and _beat_subdiv_edit.text != str(_app.beat_subdivisions):
+			_beat_subdiv_edit.text = str(_app.beat_subdivisions)
+			_set_beat_subdivision_error(false)
+		if _rail_snap_check != null:
+			_rail_snap_check.set_pressed_no_signal(_app.rail_snap)
 	_build_sfx_events()
 	if _playing and _app != null:
 		_sfx_event_index = _first_sfx_event(_app.playhead_beat)
