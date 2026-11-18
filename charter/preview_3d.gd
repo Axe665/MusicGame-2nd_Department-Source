@@ -3053,15 +3053,16 @@ func _note_tint(note: Note, fallback: Color) -> Color:
 func _draw_paths(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 	# A part chain is drawn as one synthetic Path: one head star at part0, one
 	# progress ball travelling the whole chain, and one final tail ring.
-	var by_id := {}
-	for item in chart.notes:
-		by_id[item.id] = item
+	var by_id := chart.notes_by_id()
 	var visible: Array = []
-	for root in chart.notes:
-		if root.type != "path":
+	# 根已按拍排好：先按「最长链」缩窗口，避免对 2000 个根逐个走链+算起飞拍。
+	var window_from := t - pre - chart.max_note_length_beats() - 0.5
+	var window_to := t + pre + 0.5
+	for root in chart.path_roots():
+		if root.beat < window_from:
 			continue
-		if root.path_prev_id >= 0 and by_id.has(root.path_prev_id):
-			continue
+		if root.beat > window_to:
+			break
 		var chain: Array[Note] = [root]
 		var cursor: Note = root
 		var guard := 0
@@ -4033,7 +4034,8 @@ func _draw_bent_hold(canvas: Control, chart: Chart, note: Note, t: float, pre: f
 func _draw_holds(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 	var ns := _note_scale()
 	var visible: Array[Note] = []
-	for note in _notes_in_range(chart, t - pre - 128.0, t + pre + 0.3):
+	# 回溯窗口按真实最长音符算：写死 128 拍会白扫上千颗短音符。
+	for note in _notes_in_range(chart, t - pre - chart.max_note_length_beats(), t + pre + 0.3):
 		if note.type != "hold":
 			continue
 		var fade_beats := end_fade_beats(chart.timing.bpm_at(note.beat))

@@ -34,19 +34,68 @@ var view_states: Array[ViewState] = []
 var regions: Array[Region] = []
 var notes: Array[Note] = []
 
+## 缓存版本：音符/关键帧/红区/事件/音频长度/offset 一旦变化就 +1。
+## App.touch_chart()（拖动中）与 App._after_change()（提交）都会调 mark_dirty()。
+var version: int = 0
+var _stamp_notes := -1
+var _stamp_shapes := -1
+var _stamp_keys := -1
+var _stamp_duration := -1
+var _stamp_anchors := -1
+var _stamp_by_id := -1
+var _stamp_roots := -1
+var _stamp_max_len := -1
+var _sorted_notes_cache: Array[Note] = []
+var _sorted_shapes_cache: Array[BoundaryShape] = []
+var _sorted_keys_cache: Array[Dictionary] = []
+var _notes_by_id_cache: Dictionary = {}
+var _path_roots_cache: Array[Note] = []
+var _max_len_cache: float = 0.0
+var _duration_cache: float = 0.0
+var _content_end_cache: float = 0.0
+var _anchor_index: Dictionary = {}
+
+
+func mark_dirty() -> void:
+	version += 1
+	_stamp_notes = -1
+	_stamp_shapes = -1
+	_stamp_keys = -1
+	_stamp_duration = -1
+	_stamp_anchors = -1
+	_stamp_by_id = -1
+	_stamp_roots = -1
+	_stamp_max_len = -1
+
+
+## 便宜的变更指纹：版本号为主，尺寸/音频/offset 兜住绕过 mark_dirty 的批量改动。
+func _stamp() -> int:
+	return version * 1000003 + notes.size() * 10007 + regions.size() * 1009 \
+		+ events.size() * 101 + timing.points.size() * 17 \
+		+ int(audio_length_ms() * 10.0) + int(offset_ms * 10.0)
+
 
 ## Anchor 的配对：同一 pairId、同一拍即可，角度自由。
 func anchor_partner(note: Note) -> Note:
 	if note.type != "anchor" or note.pair_id.is_empty():
 		return null
-	for other in notes:
-		if other.id == note.id or other.type != "anchor":
-			continue
-		if other.pair_id != note.pair_id:
-			continue
-		if absf(other.beat - note.beat) > 0.0001:
-			continue
-		return other
+	var stamp := _stamp()
+	if stamp != _stamp_anchors:
+		_stamp_anchors = stamp
+		_anchor_index.clear()
+		for other in notes:
+			if other.type != "anchor" or other.pair_id.is_empty():
+				continue
+			var key := "%s|%d" % [other.pair_id, roundi(other.beat * 10000.0)]
+			if not _anchor_index.has(key):
+				_anchor_index[key] = []
+			(_anchor_index[key] as Array).append(other)
+	var base := roundi(note.beat * 10000.0)
+	for delta in [-1, 0, 1]:
+		var bucket: Array = _anchor_index.get("%s|%d" % [note.pair_id, base + delta], [])
+		for other in bucket:
+			if other.id != note.id:
+				return other
 	return null
 
 
@@ -97,13 +146,19 @@ func get_default_shape() -> BoundaryShape:
 	return shape
 
 
+## 只读：返回内部缓存，调用方不要改它（要改就改 shape_keys 再 mark_dirty）。
 func sorted_shape_keys() -> Array[Dictionary]:
+	var stamp := _stamp()
+	if stamp == _stamp_keys:
+		return _sorted_keys_cache
+	_stamp_keys = stamp
 	var result: Array[Dictionary] = []
 	for key in shape_keys:
 		if key is Dictionary:
 			result.append(key)
 	result.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return float(a.get("beat", 0.0)) < float(b.get("beat", 0.0)))
-	return result
+	_sorted_keys_cache = result
+	return _sorted_keys_cache
 
 
 ## 播放头正好落在关键帧上时返回那一帧，否则返回空字典。
@@ -114,13 +169,19 @@ func shape_key_at(beat: float) -> Dictionary:
 	return {}
 
 
+## 只读：返回内部缓存。
 func sorted_shapes() -> Array[BoundaryShape]:
+	var stamp := _stamp()
+	if stamp == _stamp_shapes:
+		return _sorted_shapes_cache
+	_stamp_shapes = stamp
 	var result: Array[BoundaryShape] = []
 	for shape in shapes.values():
 		if shape is BoundaryShape:
 			result.append(shape)
 	result.sort_custom(func(a: BoundaryShape, b: BoundaryShape) -> bool: return a.id < b.id)
-	return result
+	_sorted_shapes_cache = result
+	return _sorted_shapes_cache
 
 
 ## 旧谱的圆心 Bell（bell_radius = 0）并到判定环：角度继承时间上最近的音符。
@@ -166,10 +227,61 @@ static func _position_angle(note: Note) -> float:
 	return fposmod(note.angle, 360.0)
 
 
+## 只读：返回内部缓存，调用方不要排序/修改它。
 func sorted_notes() -> Array[Note]:
+	var stamp := _stamp()
+	if stamp == _stamp_notes:
+		return _sorted_notes_cache
+	_stamp_notes = stamp
 	var result := notes.duplicate()
 	result.sort_custom(func(a: Note, b: Note) -> bool: return a.beat < b.beat)
-	return result
+	_sorted_notes_cache = result
+	return _sorted_notes_cache
+
+
+## id → 音符（只读）。Path 链、命中检测每帧都要它，别再自己建 10k 字典。
+func notes_by_id() -> Dictionary:
+	var stamp := _stamp()
+	if stamp == _stamp_by_id:
+		return _notes_by_id_cache
+	_stamp_by_id = stamp
+	var result := {}
+	for note in notes:
+		result[note.id] = note
+	_notes_by_id_cache = result
+	return _notes_by_id_cache
+
+
+## 全谱最长的音符时长（拍）：Hold 的可见回溯窗口用它，别再写死 128 拍。
+func max_note_length_beats() -> float:
+	var stamp := _stamp()
+	if stamp == _stamp_max_len:
+		return _max_len_cache
+	_stamp_max_len = stamp
+	var longest := 0.0
+	for note in notes:
+		longest = maxf(longest, note.end_beat - note.beat)
+	_max_len_cache = longest
+	return _max_len_cache
+
+
+## Path 链的根（part0 或没有父链的 path），按拍排序（只读）。
+func path_roots() -> Array[Note]:
+	var stamp := _stamp()
+	if stamp == _stamp_roots:
+		return _path_roots_cache
+	_stamp_roots = stamp
+	var by_id := notes_by_id()
+	var result: Array[Note] = []
+	for note in notes:
+		if note.type != "path":
+			continue
+		if note.path_prev_id >= 0 and by_id.has(note.path_prev_id):
+			continue
+		result.append(note)
+	result.sort_custom(func(a: Note, b: Note) -> bool: return a.beat < b.beat)
+	_path_roots_cache = result
+	return _path_roots_cache
 
 
 ## 试玩镜像：音符与 Limit 红区各翻一份，形状/视图/时间共用。原谱不动。
@@ -286,6 +398,10 @@ func ms_to_beat(ms: float) -> float:
 
 
 func duration_beats() -> float:
+	var stamp := _stamp()
+	if stamp == _stamp_duration:
+		return _duration_cache
+	_stamp_duration = stamp
 	var last := 0.0
 	for note in notes:
 		last = maxf(last, maxf(note.beat, note.end_beat))
@@ -293,7 +409,9 @@ func duration_beats() -> float:
 		last = maxf(last, region.end_beat)
 	for event in events:
 		last = maxf(last, event.end_beat + maxf(0.0, event.restore_duration))
-	return last
+	_duration_cache = last
+	_content_end_cache = maxf(last, audio_end_beat())
+	return _duration_cache
 
 
 func bar_length() -> float:
@@ -315,7 +433,8 @@ func audio_end_beat() -> float:
 
 ## 音频与最后一个音符/区域/事件取大：播放和「音频结束」标记都用它。
 func content_end_beat() -> float:
-	return maxf(duration_beats(), audio_end_beat())
+	duration_beats()
+	return _content_end_cache
 
 
 ## 编辑器可滚动/可跳转的终点：内容末尾再留 4 小节。
@@ -410,6 +529,7 @@ func scale_beats_after(anchor_beat: float, factor: float) -> void:
 	for event in events:
 		event.start_beat = _scale_one(anchor_beat, event.start_beat, factor)
 		event.end_beat = _scale_one(anchor_beat, event.end_beat, factor)
+	mark_dirty()
 	for key in shape_keys:
 		key["beat"] = _scale_one(anchor_beat, float(key.get("beat", 0.0)), factor)
 	for state in view_states:

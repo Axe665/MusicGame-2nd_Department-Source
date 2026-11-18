@@ -929,6 +929,8 @@ func finish_edit() -> void:
 
 func _after_change() -> void:
 	_commands_since_autosave += 1
+	if chart != null:
+		chart.mark_dirty()
 	chart_changed.emit()
 	save_state_changed.emit()
 	status_changed.emit()
@@ -942,6 +944,8 @@ func touch_chart() -> void:
 	# Mouse input may arrive several times per rendered frame. Full validation
 	# belongs to the committed edit, not to every intermediate mouse position.
 	_live_change_pending = true
+	if chart != null:
+		chart.mark_dirty()
 
 
 func _process(delta: float) -> void:

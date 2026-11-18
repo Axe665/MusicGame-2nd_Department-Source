@@ -248,23 +248,27 @@ class Timeline:
 				return lane
 		return -1
 
+	## 4 条轨道每帧都要：已经从拍号排好就直接用，别再 duplicate+排序一遍。
 	func _lane_items(chart: Chart, lane: int) -> Array:
 		match lane:
 			0:
 				return chart.sorted_shape_keys()
 			1:
-				var states: Array = chart.view_states.duplicate()
-				states.sort_custom(func(a: ViewState, b: ViewState) -> bool: return a.beat < b.beat)
-				return states
+				_sort_in_place(chart.view_states, func(a: ViewState, b: ViewState) -> bool: return a.beat < b.beat)
+				return chart.view_states
 			2:
-				var events: Array = chart.events.duplicate()
-				events.sort_custom(func(a, b) -> bool: return float(a.beat) < float(b.beat))
-				return events
+				_sort_in_place(chart.events, func(a, b) -> bool: return float(a.beat) < float(b.beat))
+				return chart.events
 			3:
-				var points: Array = chart.timing.points.duplicate()
-				points.sort_custom(func(a, b) -> bool: return float(a.beat) < float(b.beat))
-				return points
+				_sort_in_place(chart.timing.points, func(a, b) -> bool: return float(a.beat) < float(b.beat))
+				return chart.timing.points
 		return []
+
+	func _sort_in_place(items: Array, less: Callable) -> void:
+		for i in range(1, items.size()):
+			if less.call(items[i], items[i - 1]):
+				items.sort_custom(less)
+				return
 
 	func _item_beat(item) -> float:
 		if item is Dictionary:

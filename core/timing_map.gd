@@ -12,7 +12,19 @@ func _init() -> void:
 	points = [TimingPoint.new(0.0, 120.0, 4)]
 
 
+## 已排好且无重复拍时直接返回：这个函数每帧被调几千次，排序+去重不能每次真做。
+func _points_ready() -> bool:
+	if points.is_empty():
+		return false
+	for i in range(1, points.size()):
+		if points[i].beat <= points[i - 1].beat:
+			return false
+	return true
+
+
 func sort_points() -> void:
+	if _points_ready():
+		return
 	points.sort_custom(func(a: TimingPoint, b: TimingPoint) -> bool: return a.beat < b.beat)
 	if points.is_empty():
 		points = [TimingPoint.new(0.0, 120.0, 4)]
