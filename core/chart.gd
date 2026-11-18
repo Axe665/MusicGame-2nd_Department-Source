@@ -267,6 +267,32 @@ func regions_at(beat: float) -> Array[Region]:
 	return result
 
 
+## 同一条 Path 链上的全部 part（含自身），从 root 到末段。复制/粘贴要整链一起，
+## 否则粘出来的 part 会指向原链，预览、试玩和存盘都把它当成别人的子部件跳过。
+func path_chain(note: Note) -> Array[Note]:
+	var chain: Array[Note] = [note]
+	if note.type != "path":
+		return chain
+	var by_id := {}
+	for other in notes:
+		by_id[other.id] = other
+	var root := note
+	var guard := 0
+	while root.path_prev_id >= 0 and by_id.has(root.path_prev_id) and guard < 64:
+		root = by_id[root.path_prev_id]
+		guard += 1
+	chain = [root]
+	var current := root
+	guard = 0
+	while current.path_next_id >= 0 and by_id.has(current.path_next_id) and guard < 64:
+		current = by_id[current.path_next_id]
+		if current.type != "path":
+			break
+		chain.append(current)
+		guard += 1
+	return chain
+
+
 func beat_to_ms(beat: float) -> float:
 	return timing.beat_to_chart_ms(beat)
 

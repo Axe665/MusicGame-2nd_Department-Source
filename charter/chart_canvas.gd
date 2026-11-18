@@ -243,7 +243,12 @@ func has_clipboard() -> bool:
 func copy_selection(cut: bool = false) -> void:
 	if _app == null or _app.chart == null:
 		return
-	var selected: Array[Note] = _app.selection_with_partners()
+	var selected: Array[Note] = []
+	for note in _app.selection_with_partners():
+		# Path 必须整链复制：只带一段的话粘出来是断链（子部件会被预览/存盘跳过）。
+		for part in _app.chart.path_chain(note):
+			if not selected.has(part):
+				selected.append(part)
 	if selected.is_empty():
 		notice.emit("先选中音符，再复制或剪切。", "warning")
 		return
@@ -271,8 +276,8 @@ func copy_selection(cut: bool = false) -> void:
 	_rebuild_ghost()
 	_sync_ghost_layer()
 	notice.emit(
-		("已剪切 %d 个音符；移动鼠标选点，Ctrl+V 粘贴，Ctrl+A 镜像粘贴。" if cut
-		else "已复制 %d 个音符；移动鼠标选点，Ctrl+V 粘贴，Ctrl+A 镜像粘贴。") % copies.size(),
+		("已剪切 %d 个音符；在谱面点一下放置，Ctrl+V 放在鼠标处，Ctrl+A 镜像粘贴。" if cut
+		else "已复制 %d 个音符；在谱面点一下放置，Ctrl+V 放在鼠标处，Ctrl+A 镜像粘贴。") % copies.size(),
 		"info"
 	)
 
@@ -281,9 +286,16 @@ func paste_clipboard(mirror: bool = false) -> bool:
 	if _app == null or _app.chart == null or not has_clipboard():
 		notice.emit("剪贴板为空：先 Ctrl+C 复制或 Ctrl+X 剪切。", "warning")
 		return false
+	return _paste_at(_clipboard_mouse_beat, mirror)
+
+
+## 把剪贴板整段落在 beat（最早那颗的拍）上。Path 链的 id 在这里整体重映射——
+## 照抄旧 id 会让新 part 指向原链，于是预览/试玩/存盘都把它当子部件跳过。
+func _paste_at(beat: float, mirror: bool = false) -> bool:
 	var chart: Chart = _app.chart
-	var delta := _clipboard_mouse_beat - _clipboard_reference_beat
-	var new_ids: Array[int] = []
+	var delta := beat - _clipboard_reference_beat
+	var id_map := {}
+	var copies: Array[Note] = []
 	_app.begin_edit()
 	for note in _clipboard_notes:
 		var copy := Note.from_dict(note.to_dict())
@@ -293,6 +305,20 @@ func paste_clipboard(mirror: bool = false) -> bool:
 			copy.end_beat = maxf(copy.beat + 0.25, note.end_beat + delta)
 		if mirror:
 			copy.mirror_u()
+		id_map[note.id] = copy
+		copies.append(copy)
+	for copy in copies:
+		if copy.type != "path":
+			continue
+		# 链外链接一律断开（复制时已带上整链，这里只兜底防止旧剪贴板留断链）。
+		if id_map.has(copy.path_prev_id):
+			copy.path_prev_id = (id_map[copy.path_prev_id] as Note).id
+		else:
+			copy.path_prev_id = -1
+			copy.path_part = 0
+		copy.path_next_id = (id_map[copy.path_next_id] as Note).id if id_map.has(copy.path_next_id) else -1
+	var new_ids: Array[int] = []
+	for copy in copies:
 		chart.notes.append(copy)
 		new_ids.append(copy.id)
 	_app.finish_edit()
@@ -1642,6 +1668,11 @@ func _on_left_press(event: InputEventMouseButton) -> void:
 	if _pending_hold != null:
 		var end_beat := _snap_beat_to_subdivision(_y_to_beat(event.position.y), _snap_bypass(event))
 		_finish_pending_hold(end_beat)
+		return
+	# 复制后谱面上有半透明幽灵：点一下就把整段（含 Path 链）落在点到的拍上。
+	if has_clipboard():
+		var drop := _snap_note_placement(event.position, _snap_bypass(event))
+		_paste_at(drop.x)
 		return
 	# Ctrl is a selection modifier across all tools: toggle the clicked note
 	# and suppress every placement action while it is held. A pending Path is

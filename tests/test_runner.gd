@@ -29,6 +29,7 @@ func _initialize() -> void:
 		"test_note_glyph_geometry",
 		"test_note_width_controls",
 		"test_path_chain_code",
+		"test_path_paste_chain",
 		"test_path_chain_judgement",
 		"test_path_erase_overlap",
 		"test_path_erase_merge",
@@ -958,6 +959,61 @@ func test_path_chain_code() -> bool:
 
 ## 画面把链式 Path 画成一条（一个头一个尾），判定也必须是一条；否则子段会
 ## 要求一个画面上不存在的隐形头判。
+
+
+func test_path_paste_chain() -> bool:
+	var app: App = load("res://charter/app.gd").new()
+	var chart := Chart.new()
+	app.chart = chart
+	var canvas := ChartCanvas.new()
+	canvas._app = app
+	var parts: Array[Note] = []
+	var beat := 1.0
+	for i in 3:
+		var note := Note.new("path", beat, float(i) * 30.0, 60.0)
+		note.id = chart.next_note_id()
+		note.end_beat = beat + 0.5
+		note.path_part = i
+		if i > 0:
+			note.path_prev_id = parts[i - 1].id
+			note.path_head_local = parts[i - 1].path_tail_local()
+			parts[i - 1].path_next_id = note.id
+		note.generate_path_shape()
+		parts.append(note)
+		chart.notes.append(note)
+		beat += 0.5
+	app.select_note(parts[1].id)
+	canvas.copy_selection()
+	eq(canvas._clipboard_notes.size(), 3, "复制 Path 中间一段时自动带上整条链")
+	var old_ids := [parts[0].id, parts[1].id, parts[2].id]
+	canvas._clipboard_reference_beat = 1.0
+	eq(canvas._paste_at(9.0), true, "粘贴成功")
+	eq(chart.notes.size(), 6, "一次粘贴放下整条链")
+	var fresh: Array[Note] = []
+	for note in chart.notes:
+		if not old_ids.has(note.id):
+			fresh.append(note)
+	fresh.sort_custom(func(a: Note, b: Note) -> bool: return a.path_part < b.path_part)
+	eq(fresh.size(), 3, "新链有三段")
+	if fresh.size() == 3:
+		eq(fresh[0].path_prev_id, -1, "新链 root 没有前驱")
+		eq(fresh[0].path_next_id, fresh[1].id, "新链 root 指向新的 part1")
+		eq(fresh[1].path_prev_id, fresh[0].id, "新链 part1 指回新 root")
+		eq(fresh[1].path_next_id, fresh[2].id, "新链 part1 指向新的 part2")
+		eq(fresh[2].path_prev_id, fresh[1].id, "新链 part2 指回新 part1")
+		eq(fresh[2].path_next_id, -1, "新链末段没有后继")
+		for note in fresh:
+			ok(not old_ids.has(note.path_prev_id) and not old_ids.has(note.path_next_id),
+				"新链不再引用原链 id")
+		near(fresh[0].beat, 9.0, 0.0001, "最早一段落在点到的拍上")
+		near(fresh[2].beat - fresh[0].beat, 1.0, 0.0001, "链内相对拍位保持不变")
+		eq(chart.path_chain(fresh[2]).size(), 3, "从新链末段能走回整条链")
+	canvas.free()
+	app.free()
+	return true
+
+
+## 音符松手回吸：只回吸真的动过的那个轴；单击不挪音符。
 func test_path_chain_judgement() -> bool:
 	var code := "[1]path{(part0,1.0,0.0,2.0,180.0,0.7,0.5);(part1,2.0,0.0,3.0,90.0,0.6,-0.5)}"
 	var parts := Note.path_parts_from_code(code)

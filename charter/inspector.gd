@@ -1651,14 +1651,31 @@ func _add_anchor_pair(note: Note) -> void:
 
 
 func _duplicate_note(note: Note) -> void:
-	var copies: Array[Note] = []
+	# Path 整链一起复制并重映射 id，否则新 part 会指向原链（预览/存盘会跳过它）。
+	var sources: Array[Note] = []
 	for item in _app.with_anchor_partners([note]):
+		for part in _app.chart.path_chain(item):
+			if not sources.has(part):
+				sources.append(part)
+	var id_map := {}
+	var copies: Array[Note] = []
+	for item in sources:
 		var copy := Note.from_dict(item.to_dict())
 		copy.id = _app.chart.next_note_id()
 		copy.beat = item.beat + 1.0
 		if copy.type in ["hold", "path"]:
 			copy.end_beat = item.end_beat + 1.0
+		id_map[item.id] = copy
 		copies.append(copy)
+	for copy in copies:
+		if copy.type != "path":
+			continue
+		if id_map.has(copy.path_prev_id):
+			copy.path_prev_id = (id_map[copy.path_prev_id] as Note).id
+		else:
+			copy.path_prev_id = -1
+			copy.path_part = 0
+		copy.path_next_id = (id_map[copy.path_next_id] as Note).id if id_map.has(copy.path_next_id) else -1
 	if note.type == "anchor" and copies.size() > 1:
 		var pair_id := "P%d" % copies[0].id
 		for copy in copies:
