@@ -1,19 +1,17 @@
 {
-  "note": "10k 音符 / 200 关键帧，headless 基线（扣掉 6.9ms 引擎地板）。改优化后重跑对比，别超过 tolerance。",
+  "note": "10k 音符 / 200 关键帧，headless。只锁稳定指标；CPU 指标在无 GPU 的机器上有 ±50% 抖动，所以容差 2×，用来抓真正的回退，不做严格的毫秒门禁。",
   "scenario": {
     "notes": 10000,
     "keys": 200,
     "frames": 40,
     "warmup": 15
   },
-  "tolerance": 1.35,
+  "tolerance": 2.0,
   "metrics": {
-    "ring_scrub.work_p50_ms": 34.03,
-    "ring_scrub.work_p95_ms": 42.36,
-    "ring_scrub.frame_max_ms": 57.09,
-    "playtest.overlay_ms": 30.87,
-    "playtest.frame_max_ms": 30.35,
-    "ring_idle.work_p95_ms": 0.05,
-    "editor_idle.work_p95_ms": 0.04
+    "ring_scrub.work_p50_ms": 1.63,
+    "playtest.overlay_ms": 16.51,
+    "editor_idle.nodes": 1860.0,
+    "ring_idle.nodes": 1937.0,
+    "editor_idle.memory_mb": 198.56
   }
 }

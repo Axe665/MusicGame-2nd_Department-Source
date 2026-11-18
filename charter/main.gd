@@ -1837,6 +1837,7 @@ func _sync_tools() -> void:
 
 
 func _on_chart_changed() -> void:
+	_last_activity_ms = Time.get_ticks_msec()
 	_ensure_audio()
 	# 小节线 N / 轨道吸附跟谱走：切标签页后顶栏要显示新谱的值。
 	if _app != null and _app.chart != null:
@@ -1860,6 +1861,8 @@ func _on_chart_live_changed() -> void:
 
 
 func _on_playhead_changed(_beat: float) -> void:
+	# 播放头在动就说明有人在用（拖动/播放/跳转），不能进静止档。
+	_last_activity_ms = Time.get_ticks_msec()
 	_update_transport()
 
 
