@@ -43,3 +43,31 @@ jobs:
 
       - name: sfx_playback
         run: godot --headless --path . --script res://tests/sfx_playback.gd
+
+  # 性能回退门禁：只锁稳定指标（拖动 CPU 中位数、覆盖层单次绘制、节点/内存）。
+  # 无 GPU 的 runner 上毫秒有 ±50% 抖动，所以基线容差 2×；先不阻塞合并，
+  # 等几个 PR 的数值稳定后再去掉 continue-on-error。
+  perf:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Godot 4.7.2
+        run: |
+          curl -fsSL -o /tmp/godot.zip \
+            https://github.com/godotengine/godot/releases/download/4.7.2-stable/Godot_v4.7.2-stable_linux.x86_64.zip
+          mkdir -p "$HOME/godot"
+          unzip -q /tmp/godot.zip -d "$HOME/godot"
+          sudo ln -sf "$HOME/godot/Godot_v4.7.2-stable_linux.x86_64" /usr/local/bin/godot
+          godot --version
+
+      - name: Import assets
+        run: godot --headless --path . --import
+
+      - name: perf baseline
+        run: |
+          godot --headless --path . res://tests/perf_harness.tscn -- \
+            --scenario=all --notes=10000 --keys=200 --frames=40 --warmup=15 \
+            --baseline=res://tests/perf_baseline.json
