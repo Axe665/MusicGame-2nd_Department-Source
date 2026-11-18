@@ -1,0 +1,19 @@
+{
+  "note": "10k 音符 / 200 关键帧，headless 基线（扣掉 6.9ms 引擎地板）。改优化后重跑对比，别超过 tolerance。",
+  "scenario": {
+    "notes": 10000,
+    "keys": 200,
+    "frames": 40,
+    "warmup": 15
+  },
+  "tolerance": 1.35,
+  "metrics": {
+    "ring_scrub.work_p50_ms": 34.03,
+    "ring_scrub.work_p95_ms": 42.36,
+    "ring_scrub.frame_max_ms": 57.09,
+    "playtest.overlay_ms": 30.87,
+    "playtest.frame_max_ms": 30.35,
+    "ring_idle.work_p95_ms": 0.05,
+    "editor_idle.work_p95_ms": 0.04
+  }
+}
