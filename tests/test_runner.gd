@@ -75,6 +75,7 @@ func _initialize() -> void:
 		"test_path_head_beat",
 		"test_path_smoothing",
 		"test_seek_limit_animation_curves",
+		"test_seek_grow_matches_tap",
 		"test_limit_dwell_once",
 		"test_bpm_snap_multipliers",
 		"test_path_zone_granularity",
@@ -4416,6 +4417,20 @@ func test_seek_limit_animation_curves() -> bool:
 
 
 ## 红区驻留：进入那一帧不计时、离开清零、每局每区只断一次。
+
+
+## Seek 的下落曲线必须和 Tap/Bell 同一条：出生 1/6 环半径、判定拍正好到环。
+func test_seek_grow_matches_tap() -> bool:
+	near(Preview3D.seek_grow_scale(0.0), Note.SPAWN_LENGTH_RATIO, 0.000001,
+		"seek 出生在 1/6 环半径（和 Tap 一样）")
+	near(Preview3D.seek_grow_scale(1.0), 1.0, 0.000001, "seek 判定那一拍正好落到环上")
+	near(Preview3D.seek_grow_scale(0.5), lerpf(Note.SPAWN_LENGTH_RATIO, 1.0, 0.5), 0.000001,
+		"seek 与 Tap 共用同一条线性下落曲线")
+	near(Preview3D.seek_grow_scale(-1.0), Note.SPAWN_LENGTH_RATIO, 0.000001, "进度为负时夹到出生点")
+	return true
+
+
+## 重试：上一局的判定文字、火花和连击断连动画不能活到新一局。
 func test_limit_dwell_once() -> bool:
 	var state := {"time": 0.0, "broken": false}
 	ok(not Playtest.limit_dwell_break(state, true, 0.2, 0.2), "the frame you enter does not count")

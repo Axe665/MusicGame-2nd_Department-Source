@@ -2941,6 +2941,12 @@ func _draw_affine_arcs(canvas: Control, affine: Array, segments: Array, radius: 
 			canvas.draw_polyline(points, color, width, false)
 
 
+## Seek 的半径比例：和 Tap/Bell 共用 SPAWN_LENGTH_RATIO → 1 的下落曲线，
+## 所以「出生点 / 到环时刻」与其它音符一致，不再是一整段最大半径。
+static func seek_grow_scale(progress: float) -> float:
+	return lerpf(Note.SPAWN_LENGTH_RATIO, 1.0, clampf(progress, 0.0, 1.0))
+
+
 ## 红区激活淡入 + 1.2Hz 呼吸（原来的 1Hz 在 60fps 下像故障）。
 static func limit_fill_alpha(since_ms: float) -> float:
 	var ramp := ease_out_cubic(maxf(0.0, since_ms) / 110.0)
@@ -4356,16 +4362,18 @@ func _draw_seeks(canvas: Control, chart: Chart, t: float) -> void:
 			flash = 1.0 if fposmod(maxf(0.0, exit_ms), 60.0) < 30.0 else 0.0
 		elif t > note.beat:
 			fade = clampf((note.beat + 0.5 - t) / 0.5, 0.0, 1.0)
-		var entrance := ease_out_cubic(since_ms / 120.0)
-		var fill := ease_out_cubic(since_ms / 160.0)
-		var radius := ring_radius * grow * ring_scale
-		canvas.draw_arc(center, radius, 0.0, TAU, 48,
-			Color(color.r, color.g, color.b, 0.16 * fill * fade), 10.0, true)
-		canvas.draw_arc(center, radius, 0.0, TAU, 48,
-			Color(color.r, color.g, color.b, 0.95 * entrance * fade), 3.0, true)
-		if flash > 0.0:
-			canvas.draw_arc(center, radius, 0.0, TAU, 48,
-				Color(1, 1, 1, 0.85 * flash * fade), 2.0, true)
+		# 和 Tap/Bell 同一条下落曲线：出生在 1/6 环半径，判定那一拍正好落到环上。
+		# 原来用「屏幕最大半径的正圆」，椭圆环上会在 60% 进度就撞到短轴边界，
+		# 看起来就是 seek 比别的音符早到、也更快。
+		var scale_now := seek_grow_scale(grow) * ring_scale
+		var ring_points := _arc_points_scaled(0.0, 360.0, t, 96, scale_now)
+		if ring_points.size() > 1:
+			canvas.draw_polyline(ring_points, Color(color.r, color.g, color.b, 0.16 * fade), 10.0, true)
+			canvas.draw_polyline(ring_points, Color(color.r, color.g, color.b, 0.95 * fade), 3.0, true)
+			if flash > 0.0:
+				canvas.draw_polyline(ring_points, Color(1, 1, 1, 0.85 * flash * fade), 2.0, true)
+		# 箭头的锚点也走环上的点；正圆时它和旧版一模一样。
+		var radius := ring_radius * scale_now
 		var inward := note.seek_orien == 1
 		var count := 8
 		# 方向流水：离判定越近跑得越快（40 → 90 px/s）。
@@ -4387,7 +4395,10 @@ func _draw_seeks(canvas: Control, chart: Chart, t: float) -> void:
 				if k > 0 and arrow_p < 1.0:
 					continue
 				var travel := sign * (drift + 14.0 * layer + push)
-				var base := center + dir * radius + dir * travel
+				var anchor := _arc_point_scaled(rad_to_deg(a), t, scale_now)
+				if not _valid_point(anchor):
+					anchor = center + dir * radius
+				var base := anchor + dir * travel
 				var tip := base + dir * sign * 8.0 * scale
 				var side := Vector2(-dir.y, dir.x) * 4.5 * scale
 				var layer_alpha := alpha * (1.0 if k == 0 else 0.35 / layer)
