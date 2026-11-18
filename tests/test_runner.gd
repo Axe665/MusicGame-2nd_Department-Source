@@ -66,6 +66,7 @@ func _initialize() -> void:
 		"test_bell_width_drag",
 		"test_region_drag",
 		"test_canvas_default_snapping",
+		"test_anchor_release_snap",
 		"test_note_release_snap",
 		"test_region_release_snap",
 		"test_editor_snap_settings_persist",
@@ -4159,6 +4160,76 @@ func test_canvas_default_snapping() -> bool:
 	near(canvas._snap_angle(41.0, true), 41.0, 0.0001, "Shift 时角度手柄不吸")
 	app.rail_snap = false
 	near(canvas._snap_angle(41.0, false), 41.0, 0.0001, "关掉轨道吸附后角度手柄不吸")
+	canvas.free()
+	app.free()
+	return true
+
+
+## Anchor 是刚体：松手时整对旋转吸附，夹角与同拍都不变；锁定则整对不动。
+func test_anchor_release_snap() -> bool:
+	var app: App = load("res://charter/app.gd").new()
+	var chart := Chart.new()
+	app.chart = chart
+	var canvas := ChartCanvas.new()
+	canvas._app = app
+	var pair := chart.make_anchor_pair(1.13, 41.0)
+	for item in pair:
+		chart.notes.append(item)
+	canvas._drag_notes = []
+	for item in pair:
+		canvas._drag_notes.append({"note": item, "beat": 1.0, "angle": item.angle - 21.0,
+			"end": 0.0, "tail": 0.0, "center": 0.0})
+	canvas._snap_dragged_notes(false)
+	near(pair[0].beat, 1.25, 0.0001, "Anchor 松手后整对吸到小节线")
+	near(pair[1].beat, pair[0].beat, 0.0001, "Anchor 整对保持同拍")
+	near(pair[0].angle, 30.0, 0.0001, "组长吸到竖线")
+	near(absf(fposmod(pair[0].angle - pair[1].angle, 360.0) - 180.0), 0.0, 0.001,
+		"整对吸附后仍保持 180°")
+	# 锁定一颗 → 整对一点都不动（锁不能被伙伴绕过）。
+	pair[0].beat = 1.13
+	pair[1].beat = 1.13
+	pair[0].angle = 41.0
+	pair[1].angle = 221.0
+	pair[1].lock = true
+	canvas._drag_notes[0]["beat"] = 1.0
+	canvas._drag_notes[1]["beat"] = 1.0
+	canvas._drag_notes[0]["angle"] = 20.0
+	canvas._drag_notes[1]["angle"] = 200.0
+	canvas._snap_dragged_notes(false)
+	near(pair[0].beat, 1.13, 0.0001, "伙伴锁定后组长也不吸拍位")
+	near(pair[0].angle, 41.0, 0.0001, "伙伴锁定后组长也不吸角度")
+	pair[1].lock = false
+	# 没有伙伴的旧 Anchor：只吸它自己。
+	var lone := Note.new("anchor", 1.13, 41.0, 0.0)
+	lone.id = chart.next_note_id()
+	chart.notes.append(lone)
+	canvas._drag_notes = [{"note": lone, "beat": 1.0, "angle": 20.0, "end": 0.0, "tail": 0.0, "center": 0.0}]
+	canvas._snap_dragged_notes(false)
+	near(lone.beat, 1.25, 0.0001, "孤立 Anchor 也吸拍位")
+	near(lone.angle, 30.0, 0.0001, "孤立 Anchor 也吸角度")
+	# 奇数等分（9 → 每格 40°）：组长上格线，伙伴保住 180°，不强求也在格线上。
+	app.angle_divisions = 9
+	pair[0].beat = 1.13
+	pair[1].beat = 1.13
+	pair[0].angle = 41.0
+	pair[1].angle = 221.0
+	canvas._drag_notes = []
+	for item in pair:
+		canvas._drag_notes.append({"note": item, "beat": 1.0, "angle": item.angle - 21.0,
+			"end": 0.0, "tail": 0.0, "center": 0.0})
+	canvas._snap_dragged_notes(false)
+	near(pair[0].angle, 40.0, 0.0001, "9 等分时组长吸到 40°")
+	near(absf(fposmod(pair[0].angle - pair[1].angle, 360.0) - 180.0), 0.0, 0.001,
+		"9 等分时整对仍保持 180°")
+	# 旋转 90° 带上伙伴。
+	app.angle_divisions = 12
+	pair[0].angle = 40.0
+	pair[1].angle = 220.0
+	app.selected_notes.clear()
+	app.selected_notes.append(pair[0].id)
+	app.rotate_selected_notes(90.0)
+	near(pair[0].angle, 130.0, 0.0001, "旋转 90° 转选中那颗")
+	near(pair[1].angle, 310.0, 0.0001, "旋转 90° 也转伙伴")
 	canvas.free()
 	app.free()
 	return true

@@ -274,6 +274,9 @@ var _drag_note: Note = null
 var _drag_note_angle: float = 0.0
 var _drag_note_tail: float = 0.0
 var _drag_note_cursor: float = NAN
+## Anchor 是刚体：按下时把整对记下来，拖动与松手回吸都按同一个角度增量走。
+var _drag_group: Array[Note] = []
+var _drag_group_starts: Array[float] = []
 var _drawing_red: bool = false
 var _red_region: Region = null
 var _red_start_u: float = 0.0
@@ -1611,6 +1614,12 @@ func _on_left_press(event: InputEventMouseButton) -> void:
 				_drag_note_angle = note.angle
 				_drag_note_tail = note.tail_angle
 				_drag_note_cursor = cursor_deg
+				_drag_group.clear()
+				_drag_group_starts.clear()
+				if note.type == "anchor":
+					for item in _app.with_anchor_partners([note]):
+						_drag_group.append(item)
+						_drag_group_starts.append(item.angle)
 				_app.begin_edit()
 
 
@@ -1625,7 +1634,10 @@ func _on_left_release(_event: InputEventMouseButton) -> void:
 		if _app != null:
 			_app.finish_edit()
 	if _drag_note != null:
+		_snap_drag_note_group()
 		_drag_note = null
+		_drag_group.clear()
+		_drag_group_starts.clear()
 		if _app != null:
 			_app.finish_edit()
 	if _drag_vertex >= 0:
@@ -1735,15 +1747,42 @@ func _update_note_angle_drag(screen: Vector2) -> void:
 	if is_nan(cursor_deg):
 		return
 	var angle := dragged_angle(_drag_note_angle, _drag_note_cursor, cursor_deg)
-	_drag_note.angle = angle
-	if _drag_note.type == "bell":
-		_drag_note.center_u = angle / 360.0
-	elif _drag_note.type == "path":
-		_drag_note.tail_angle = fposmod(_drag_note_tail + JudgeMath.angle_delta(_drag_note_angle, angle), 360.0)
+	if _drag_group.size() > 1:
+		# 整对 Anchor 一起转，夹角保持不变。
+		var delta := JudgeMath.angle_delta(_drag_note_angle, angle)
+		for i in _drag_group.size():
+			_drag_group[i].angle = fposmod(_drag_group_starts[i] + delta, 360.0)
+	else:
+		_drag_note.angle = angle
+		if _drag_note.type == "bell":
+			_drag_note.center_u = angle / 360.0
+		elif _drag_note.type == "path":
+			_drag_note.tail_angle = fposmod(_drag_note_tail + JudgeMath.angle_delta(_drag_note_angle, angle), 360.0)
 	_app.touch_chart()
 	queue_redraw()
 	if _overlay != null:
 		_overlay.queue_redraw()
+
+
+## 环预览松手回吸：Anchor 整对旋转（组长吸竖线、伙伴跟转），其他音符不吸。
+func _snap_drag_note_group() -> void:
+	if _app == null or _drag_group.size() < 2 or _drag_note == null:
+		return
+	# 只是点了一下没拖动：不动它。
+	if absf(JudgeMath.angle_delta(_drag_note_angle, _drag_note.angle)) <= 0.001:
+		return
+	var leader: Note = _drag_group[0]
+	for note in _drag_group:
+		if note.lock:
+			return
+		if note.id < leader.id:
+			leader = note
+	var delta: float = _app.snap_rail_u(fposmod(leader.angle, 360.0) / 360.0) * 360.0 - leader.angle
+	if absf(delta) <= 0.001:
+		return
+	for note in _drag_group:
+		note.angle = fposmod(note.angle + delta, 360.0)
+	_app.touch_chart()
 
 
 func _design_to_path_local(design: Vector2) -> Vector2:
@@ -1960,8 +1999,8 @@ func _create_note(type: String) -> void:
 	var chart := get_chart()
 	if chart == null:
 		return
-	var beat: float = _app.snap_beat(get_time_beat())
-	var angle := fposmod(cursor_u * 360.0, 360.0)
+	var beat: float = _app.snap_grid_beat(get_time_beat())
+	var angle := fposmod(_app.snap_rail_u(cursor_u) * 360.0, 360.0)
 	var added: Array[Note] = []
 	if type == "anchor":
 		# Anchor 是双押配置：一次放两颗同拍反向的锚点。

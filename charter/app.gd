@@ -1314,6 +1314,18 @@ func snap_beat(beat: float, bypass: bool = false) -> float:
 	return GridDivisions.snap(beat, snap_division, bypass)
 
 
+## 画布拍轴：顶栏「网格 小节线：N」的 1/N 拍线。时间线画布与环预览共用。
+func snap_grid_beat(beat: float) -> float:
+	return TimingMap.nearest_beat_subdivision(beat, beat_subdivisions)
+
+
+## 轨道轴：角度等分竖线，受顶栏「轨道吸附」开关控制；u ∈ [0,1]。
+func snap_rail_u(u: float) -> float:
+	if not rail_snap:
+		return u
+	return TimingMap.nearest_angle_u(u, angle_divisions)
+
+
 func set_snap_division(division: int) -> void:
 	var normalized := GridDivisions.normalize(division)
 	if chart != null:
@@ -1420,7 +1432,8 @@ func mirror_selected_notes() -> void:
 
 
 func rotate_selected_notes(degrees: float) -> void:
-	var notes := get_selected_notes()
+	# 带上 Anchor 伙伴：只转一颗会把 180° 转歪（数据仍合法，但看着就是错的）。
+	var notes := selection_with_partners()
 	if notes.is_empty():
 		return
 	begin_edit()

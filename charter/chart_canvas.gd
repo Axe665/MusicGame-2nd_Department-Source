@@ -1483,7 +1483,7 @@ static func wheel_step(up: bool, flow_down: bool, steps: float = 3.0) -> float:
 func _snap_beat_to_subdivision(raw_beat: float, bypass: bool = false) -> float:
 	if bypass or _app == null:
 		return raw_beat
-	return TimingMap.nearest_beat_subdivision(raw_beat, int(_app.beat_subdivisions))
+	return _app.snap_grid_beat(raw_beat)
 
 
 func _snap_beat_u(raw_beat: float, raw_u: float, bypass: bool) -> Vector2:
@@ -1491,18 +1491,14 @@ func _snap_beat_u(raw_beat: float, raw_u: float, bypass: bool) -> Vector2:
 	## 的竖线）由顶栏「轨道吸附」开关控制，关掉时角度保持鼠标原样。
 	if bypass or _app == null:
 		return Vector2(raw_beat, raw_u)
-	var beat := _snap_beat_to_subdivision(raw_beat, false)
-	if not _app.rail_snap:
-		return Vector2(beat, raw_u)
-	return Vector2(beat, TimingMap.nearest_angle_u(raw_u, int(_app.angle_divisions)))
+	return Vector2(_app.snap_grid_beat(raw_beat), _app.snap_rail_u(raw_u))
 
 
 ## 角度（度）按轨道开关吸到最近的竖线；0°/360° 是同一个接缝。
 func _snap_angle(angle: float, bypass: bool) -> float:
-	if bypass or _app == null or not _app.rail_snap:
+	if bypass or _app == null:
 		return angle
-	var u := TimingMap.nearest_angle_u(fposmod(angle, 360.0) / 360.0, int(_app.angle_divisions))
-	return u * 360.0
+	return _app.snap_rail_u(fposmod(angle, 360.0) / 360.0) * 360.0
 
 
 func _snap_note_placement(screen: Vector2, bypass: bool) -> Vector2:
@@ -1516,8 +1512,16 @@ func _snap_dragged_notes(bypass: bool) -> void:
 	if _app == null or bypass:
 		return
 	var changed := false
+	# Anchor 是刚体：先按 pair 分组，改 beat 之前就把组长定好。
+	var anchor_items := {}
 	for item in _drag_notes:
 		var note: Note = item["note"]
+		if note.type == "anchor":
+			var key := note.pair_id if not note.pair_id.is_empty() else "id%d" % note.id
+			if not anchor_items.has(key):
+				anchor_items[key] = []
+			anchor_items[key].append(item)
+			continue
 		if note.lock:
 			continue
 		var now_u := note.center_u * 360.0 if note.type == "bell" else note.angle
@@ -1543,16 +1547,55 @@ func _snap_dragged_notes(bypass: bool) -> void:
 		if note.type == "bell":
 			note.angle = fposmod(snapped.y * 360.0, 360.0)
 			note.center_u = snapped.y
-		elif note.type == "anchor":
-			# 整对锚点各自吸角度会把 180° 关系吸歪；只吸拍位。
-			pass
 		elif note.type != "seek":
 			note.angle = fposmod(note.angle + angle_delta, 360.0)
 			if note.type == "path":
 				note.tail_angle = fposmod(note.tail_angle + angle_delta, 360.0)
 		changed = true
+	if _snap_anchor_pairs(anchor_items):
+		changed = true
 	if changed:
 		_app.touch_chart()
+
+
+## 一对 Anchor 一起吸：组长落在竖线上，伙伴跟着转同样的角度，两颗的夹角
+## （含默认的 180°）保持不变。任一颗锁定就整对不动——锁不能被别的音符绕过。
+func _snap_anchor_pairs(groups: Dictionary) -> bool:
+	var changed := false
+	for key in groups:
+		var items: Array = groups[key]
+		var leader: Note = items[0]["note"]
+		var moved_beat := false
+		var moved_angle := false
+		var locked := false
+		for item in items:
+			var note: Note = item["note"]
+			if note.lock:
+				locked = true
+				continue
+			if note.id < leader.id:
+				leader = note
+			if absf(note.beat - float(item["beat"])) > 0.000001:
+				moved_beat = true
+			if absf(note.angle - float(item["angle"])) > 0.001:
+				moved_angle = true
+		if locked or (not moved_beat and not moved_angle):
+			continue
+		if moved_beat:
+			var target := _snap_beat_to_subdivision(leader.beat, false)
+			if absf(target - leader.beat) > 0.000001:
+				for item in items:
+					var note: Note = item["note"]
+					note.beat = maxf(0.0, target)
+				changed = true
+		if moved_angle:
+			var delta := _snap_angle(leader.angle, false) - leader.angle
+			if absf(delta) > 0.001:
+				for item in items:
+					var note: Note = item["note"]
+					note.angle = fposmod(note.angle + delta, 360.0)
+				changed = true
+	return changed
 
 
 ## 红区松手回吸：起点对齐小节线（时长不变），中心角按轨道开关吸；弧宽 10–359° 不吸。
