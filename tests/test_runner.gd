@@ -65,6 +65,10 @@ func _initialize() -> void:
 		"test_canvas_width_drag",
 		"test_bell_width_drag",
 		"test_region_drag",
+		"test_canvas_default_snapping",
+		"test_note_release_snap",
+		"test_region_release_snap",
+		"test_editor_snap_settings_persist",
 		"test_anchor_pair_drag",
 		"test_path_axis_drag",
 		"test_path_head_beat",
@@ -4126,6 +4130,122 @@ func test_region_drag() -> bool:
 	near(ChartCanvas.dragged_region_width(60.0, 0.02, -1), 45.6, 0.0001, "dragging the left edge widens outward")
 	near(ChartCanvas.dragged_region_width(60.0, 10.0, 1), 359.0, 0.0001, "width stops below a full ring")
 	near(ChartCanvas.dragged_region_angle(90.0, 0.1, 1), 108.0, 0.0001, "angle follows half of the edge drag")
+	return true
+
+
+## 画布默认吸附：拍轴常开（顶栏「网格 小节线：N」），轨道轴由 rail_snap 开关，
+## Shift 两个轴一起跳过。
+func test_canvas_default_snapping() -> bool:
+	var app: App = load("res://charter/app.gd").new()
+	app.chart = Chart.new()
+	var canvas := ChartCanvas.new()
+	canvas._app = app
+	var hit := canvas._snap_beat_u(1.13, 0.51, false)
+	near(hit.x, 1.25, 0.0001, "默认：拍轴吸到 1/4 小节线")
+	near(hit.y, 0.5, 0.0001, "默认：角度吸到 12 等分竖线")
+	app.rail_snap = false
+	var free_angle := canvas._snap_beat_u(1.13, 0.51, false)
+	near(free_angle.x, 1.25, 0.0001, "关掉轨道吸附后拍轴仍然吸")
+	near(free_angle.y, 0.51, 0.0001, "关掉轨道吸附后角度保持原样")
+	app.beat_subdivisions = 3
+	near(canvas._snap_beat_u(1.13, 0.51, false).x, 1.0, 0.0001, "小节线 N=3 时吸附目标跟着变")
+	near(canvas._snap_beat_u(1.3, 0.51, false).x, 4.0 / 3.0, 0.0001, "N=3 能吸到 1/3 拍的位置")
+	app.beat_subdivisions = 4
+	var bypassed := canvas._snap_beat_u(1.13, 0.51, true)
+	near(bypassed.x, 1.13, 0.0001, "Shift 绕过：拍不动")
+	near(bypassed.y, 0.51, 0.0001, "Shift 绕过：角度不动")
+	app.rail_snap = true
+	near(canvas._snap_angle(41.0, false), 30.0, 0.0001, "Path 头尾角度吸到最近竖线")
+	near(canvas._snap_angle(41.0, true), 41.0, 0.0001, "Shift 时角度手柄不吸")
+	app.rail_snap = false
+	near(canvas._snap_angle(41.0, false), 41.0, 0.0001, "关掉轨道吸附后角度手柄不吸")
+	canvas.free()
+	app.free()
+	return true
+
+
+## 音符松手回吸：只回吸真的动过的那个轴；单击不挪音符。
+func test_note_release_snap() -> bool:
+	var app: App = load("res://charter/app.gd").new()
+	app.chart = Chart.new()
+	var canvas := ChartCanvas.new()
+	canvas._app = app
+	var tap := Note.new("tap", 1.13, 41.0, 60.0)
+	canvas._drag_notes = [{"note": tap, "beat": 1.0, "angle": 20.0, "end": 0.0, "tail": 0.0, "center": 0.0}]
+	canvas._snap_dragged_notes(false)
+	near(tap.beat, 1.25, 0.0001, "松手后拍位回吸到小节线")
+	near(tap.angle, 30.0, 0.0001, "松手后角度回吸到竖线")
+	var still := Note.new("tap", 1.13, 41.0, 60.0)
+	canvas._drag_notes = [{"note": still, "beat": 1.13, "angle": 41.0, "end": 0.0, "tail": 0.0, "center": 0.0}]
+	canvas._snap_dragged_notes(false)
+	near(still.beat, 1.13, 0.0001, "单击选中不挪拍位")
+	near(still.angle, 41.0, 0.0001, "单击选中不挪角度")
+	var beat_only := Note.new("tap", 1.9, 41.0, 60.0)
+	canvas._drag_notes = [{"note": beat_only, "beat": 1.0, "angle": 41.0, "end": 0.0, "tail": 0.0, "center": 0.0}]
+	canvas._snap_dragged_notes(false)
+	near(beat_only.beat, 2.0, 0.0001, "只改拍时拍位回吸")
+	near(beat_only.angle, 41.0, 0.0001, "只改拍时角度不吸")
+	app.rail_snap = false
+	var free_angle := Note.new("tap", 1.13, 55.0, 60.0)
+	canvas._drag_notes = [{"note": free_angle, "beat": 1.0, "angle": 20.0, "end": 0.0, "tail": 0.0, "center": 0.0}]
+	canvas._snap_dragged_notes(false)
+	near(free_angle.angle, 55.0, 0.0001, "关掉轨道吸附后拖动不回吸角度")
+	near(free_angle.beat, 1.25, 0.0001, "关掉轨道吸附后拍位仍回吸")
+	canvas.free()
+	app.free()
+	return true
+
+
+## 红区松手回吸：起点对齐小节线、时长不变、中心角按轨道开关、弧宽不动。
+func test_region_release_snap() -> bool:
+	var app: App = load("res://charter/app.gd").new()
+	app.chart = Chart.new()
+	var canvas := ChartCanvas.new()
+	canvas._app = app
+	var region := Region.new(1, 3.1, 4.6)
+	region.angle = 41.0
+	region.width = 77.0
+	canvas._drag_region = region
+	canvas._snap_dragged_region(false)
+	near(region.start_beat, 3.0, 0.0001, "红区起点吸到小节线")
+	near(region.end_beat, 4.5, 0.0001, "回吸时时长不变")
+	near(region.angle, 30.0, 0.0001, "红区中心角吸到竖线")
+	near(region.width, 77.0, 0.0001, "红区弧宽不吸")
+	region.start_beat = 3.1
+	region.end_beat = 4.6
+	canvas._snap_dragged_region(true)
+	near(region.start_beat, 3.1, 0.0001, "Shift 时红区不回吸")
+	app.rail_snap = false
+	canvas._snap_dragged_region(false)
+	near(region.start_beat, 3.0, 0.0001, "关掉轨道吸附后红区拍位仍吸")
+	near(region.angle, 30.0, 0.0001, "关掉轨道吸附后红区角度不动")
+	canvas.free()
+	app.free()
+	return true
+
+
+## 小节线 N 与轨道吸附都写进 editor 并随谱面存盘；旧谱缺字段时回默认。
+func test_editor_snap_settings_persist() -> bool:
+	var app: App = load("res://charter/app.gd").new()
+	var chart := Chart.new()
+	app.set_chart(chart)
+	app.set_beat_subdivisions(8)
+	app.set_rail_snap(false)
+	eq(int(chart.editor.get("beat_subdivisions", 0)), 8, "小节线 N 写进谱面 editor")
+	eq(bool(chart.editor.get("rail_snap", true)), false, "轨道吸附开关写进谱面 editor")
+	var data := ChartIO.chart_to_dict(chart)
+	eq(int(data["editor"].get("beat_subdivisions", 0)), 8, "存盘 JSON 带上小节线 N")
+	eq(bool(data["editor"].get("rail_snap", true)), false, "存盘 JSON 带上轨道吸附开关")
+	var reloaded := ChartIO.chart_from_dict(data)
+	app.set_chart(reloaded)
+	eq(app.beat_subdivisions, 8, "重新载入后小节线 N 还在")
+	eq(app.rail_snap, false, "重新载入后轨道吸附开关还在")
+	reloaded.editor.erase("beat_subdivisions")
+	reloaded.editor.erase("rail_snap")
+	app.set_chart(reloaded)
+	eq(app.beat_subdivisions, 4, "旧谱缺字段时小节线回到 4")
+	eq(app.rail_snap, true, "旧谱缺字段时轨道吸附默认开")
+	app.free()
 	return true
 
 

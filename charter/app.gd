@@ -134,6 +134,8 @@ var snap_division: int = GridDivisions.DEFAULT_DIVISION
 var beat_subdivisions: int = 4
 ## 角度格线的等分数（360 必须能被它整除）；u = i/N 处画出格线。
 var angle_divisions: int = 12
+## 轨道吸附：放置/拖动时角度也吸到上面的竖线。关掉后角度完全自由（拍轴仍吸小节线）。
+var rail_snap: bool = true
 var vertical_stretch: float = 0.0
 var zoom_px_per_beat: float = 28.0
 var time_flows_down: bool = true
@@ -847,6 +849,8 @@ func set_chart(new_chart: Chart, path: String = "", mark_dirty: bool = false) ->
 	if chart != null:
 		snap_division = GridDivisions.normalize(int(chart.editor.get("snap", snap_division)))
 		time_flows_down = bool(chart.editor.get("flow_down", time_flows_down))
+		beat_subdivisions = clampi(int(chart.editor.get("beat_subdivisions", 4)), 1, TimingMap.MAX_BEAT_SUBDIVISIONS)
+		rail_snap = bool(chart.editor.get("rail_snap", true))
 	chart_changed.emit()
 	snap_changed.emit(snap_division)
 	flow_changed.emit(time_flows_down)
@@ -1318,6 +1322,26 @@ func set_snap_division(division: int) -> void:
 		return
 	snap_division = normalized
 	snap_changed.emit(snap_division)
+	status_changed.emit()
+
+
+## 小节线 N 跟谱走：写进 editor，切标签页时由 set_chart 读回。
+func set_beat_subdivisions(value: int) -> void:
+	var clamped := clampi(value, 1, TimingMap.MAX_BEAT_SUBDIVISIONS)
+	if chart != null:
+		chart.editor["beat_subdivisions"] = clamped
+	if beat_subdivisions == clamped:
+		return
+	beat_subdivisions = clamped
+	status_changed.emit()
+
+
+func set_rail_snap(on: bool) -> void:
+	if chart != null:
+		chart.editor["rail_snap"] = on
+	if rail_snap == on:
+		return
+	rail_snap = on
 	status_changed.emit()
 
 
