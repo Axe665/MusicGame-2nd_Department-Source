@@ -2976,60 +2976,30 @@ func _jagged_arc_points(angle: float, width: float, beat: float, steps: int,
 func _draw_red_regions(canvas: Control, chart: Chart, t: float) -> void:
 	for region in chart.regions:
 		var active := region.active_at(t)
-		var start_ms := chart.timing.beat_to_chart_ms(region.start_beat)
-		var end_ms := chart.timing.beat_to_chart_ms(region.end_beat)
-		var now_ms := chart.timing.beat_to_chart_ms(t)
-		# 预警只提前 max(400ms, 半个预读) 出现，太早等于提前报警。
-		var warn_ms := maxf(400.0, _pre_read_ms(chart, region.start_beat) * 0.5)
-		var warn_beats := warn_ms / 60000.0 * chart.timing.bpm_at(region.start_beat)
-		var incoming := t >= region.start_beat - warn_beats and t < region.start_beat
+		var incoming := t >= _spawn_beat(chart, region.start_beat) and t < region.start_beat
 		if not active and not incoming:
 			continue
-		var outer := PackedVector2Array()
-		var fill_alpha := 0.0
-		var outline_alpha := 0.85
-		var outline_width := 2.0
-		if incoming:
-			# 预警：只有轮廓，半径从内圈线性长到环上，和谱面时间对齐。
-			var grow := clampf((t - (region.start_beat - warn_beats)) / maxf(0.0001, warn_beats), 0.0, 1.0)
-			outer = _jagged_arc_points(region.angle, region.width, t, 40, lerpf(0.72, 1.0, grow), 2.0)
-			outline_alpha = ease_out_cubic(grow) * 0.85
-		else:
-			var since_ms := now_ms - start_ms
-			var remaining := end_ms - now_ms
-			var collapse := clampf(1.0 - remaining / 150.0, 0.0, 1.0)
-			outer = _jagged_arc_points(region.angle, region.width, t, 40, lerpf(1.0, 0.92, collapse), 3.0)
-			fill_alpha = lerpf(limit_fill_alpha(since_ms), 0.0, collapse)
-			outline_alpha = lerpf(1.0, 0.6, collapse)
-			outline_width = lerpf(3.5, 1.0, collapse)
+		var outer := _arc_points_scaled(region.angle, region.width, t, 40, 1.0)
 		var inner := _arc_points_scaled(region.angle, region.width, t, 40, 0.68)
 		if outer.size() < 2 or inner.size() < 2:
 			continue
-		if fill_alpha > 0.001:
-			var polygon := PackedVector2Array()
-			for point in outer:
-				polygon.append(point)
-			for i in range(inner.size() - 1, -1, -1):
-				polygon.append(inner[i])
-			canvas.draw_colored_polygon(polygon,
-				Color(UITheme.RED.r, UITheme.RED.g, UITheme.RED.b, fill_alpha))
-			# 激活瞬间白闪一次（环内，不是全屏）。
-			var flash := limit_flash_alpha(now_ms - start_ms) if not incoming else 0.0
-			if flash > 0.001:
-				canvas.draw_colored_polygon(polygon, Color(1, 1, 1, flash))
-		canvas.draw_polyline(outer, Color(UITheme.RED.r, UITheme.RED.g, UITheme.RED.b, 0.25 * outline_alpha),
-			outline_width + 15.0, false)
-		canvas.draw_polyline(outer, Color(UITheme.RED.r, UITheme.RED.g, UITheme.RED.b, outline_alpha),
-			outline_width, false)
-		canvas.draw_polyline(inner, Color(UITheme.RED.r, UITheme.RED.g, UITheme.RED.b, 0.75 * outline_alpha),
-			1.5, false)
+		var fill_alpha := (0.52 + 0.06 * sin(t * PI * 2.0)) if active else 0.12
+		var polygon := PackedVector2Array()
+		for point in outer:
+			polygon.append(point)
+		for i in range(inner.size() - 1, -1, -1):
+			polygon.append(inner[i])
+		canvas.draw_colored_polygon(polygon, Color(UITheme.RED.r, UITheme.RED.g, UITheme.RED.b, fill_alpha))
+		canvas.draw_polyline(outer, Color(UITheme.RED.r, UITheme.RED.g, UITheme.RED.b, 0.25 if active else 0.06), 18.0, false)
+		canvas.draw_polyline(outer, Color(UITheme.RED.r, UITheme.RED.g, UITheme.RED.b, 0.98 if active else 0.35), 3.0, false)
+		canvas.draw_polyline(inner, Color(UITheme.RED.r, UITheme.RED.g, UITheme.RED.b, 0.75 if active else 0.18), 1.5, false)
 		for i in 5:
 			var slice := float(i) / 4.0
 			var a := region.angle - region.width * 0.5 + region.width * slice
 			var p0 := _arc_point_scaled(a, t, 0.78)
 			var p1 := _arc_point_scaled(a, t, 0.97)
 			if _valid_point(p0) and _valid_point(p1):
-				canvas.draw_line(p0, p1, Color(1.0, 0.42, 0.34, 0.26 * outline_alpha), 1.0, false)
+				canvas.draw_line(p0, p1, Color(1.0, 0.42, 0.34, 0.26 if active else 0.05), 1.0, false)
 		var label_point := _arc_point_scaled(region.angle, t, 0.86)
 		if _valid_point(label_point):
 			_draw_badge(canvas, "LIMIT" if active else "LIMIT IN", label_point + Vector2(0, -4), UITheme.RED)
