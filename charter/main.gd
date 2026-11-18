@@ -2096,6 +2096,9 @@ func _update_idle_cap() -> void:
 		return
 	if not _idle_capped:
 		_idle_capped = true
+		# 静止时每秒只提交 10 帧：整窗 1000+ 条 2D draw call 不再按 120fps 重发。
+		# 任何输入/播放都会在下一帧恢复用户设定（Godot 只在帧边界收输入，
+		# 所以这一档同时决定了「静止后第一次点击」的最大延迟 ≈100ms）。
 		Engine.max_fps = 10
 
 

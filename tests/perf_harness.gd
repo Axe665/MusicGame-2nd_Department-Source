@@ -216,8 +216,10 @@ func _with_playtest() -> void:
 
 ## 采样：每帧先执行 step（可选），再记一次帧间隔与结构计数。
 func _sample(tag: String, step: Callable = Callable()) -> void:
-	# main.tscn/_apply_visual_options 会按用户设置重设帧率上限，采样前再钉一次。
+	# main.tscn/_apply_visual_options 会按用户设置重设帧率上限与垂直同步，采样前再钉一次。
 	Engine.max_fps = 0
+	if DisplayServer.get_name() != "headless":
+		DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
 	var times: Array[float] = []
 	var prev := Time.get_ticks_usec()
 	for i in _sample_frames:
