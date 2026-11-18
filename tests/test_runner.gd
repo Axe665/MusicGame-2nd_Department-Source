@@ -49,6 +49,7 @@ func _initialize() -> void:
 		"test_ring_span_label",
 		"test_ring_span_end",
 		"test_ring_scrub_state",
+		"test_ring_lane_items_real_chart",
 		"test_playhead_redraw_is_light",
 		"test_chart_end_limit",
 		"test_uniform_meter",
@@ -1707,6 +1708,30 @@ func test_storyboard_clamps_first_command() -> bool:
 
 ## 环随鼠标倾斜：鼠标那一侧靠近镜头（近大远小），0 度 = 关闭。
 ## 拖播放头时不能重建面板：一次重建 ≈70–80 个控件，跨一个关键帧要付两遍。
+## 环编辑器四条轨道必须能处理旧谱的 BoundaryEvent：它只有 start_beat，
+## 用 .beat 排序会让每次重绘抛错，整条时间轴画不出来（看起来就是打不开）。
+func test_ring_lane_items_real_chart() -> bool:
+	var workspace := RingWorkspace.new()
+	var timeline := RingWorkspace.Timeline.new(workspace)
+	workspace._timeline = timeline
+	var chart := Chart.new()
+	chart.events = [
+		BoundaryEvent.new("E1", 4.0, 6.0),
+		BoundaryEvent.new("E0", 1.0, 2.0),
+	]
+	chart.timing.points = [TimingPoint.new(4.0, 120.0, 4), TimingPoint.new(0.0, 120.0, 4)]
+	chart.view_states = [ViewState.new(8.0), ViewState.new(0.0)]
+	var events: Array = timeline._lane_items(chart, 2)
+	eq(events.size(), 2, "边界事件轨拿得到旧谱事件")
+	if events.size() == 2:
+		near(events[0].start_beat, 1.0, 0.001, "事件按 start_beat 排序")
+	var points: Array = timeline._lane_items(chart, 3)
+	near(float(points[0].beat), 0.0, 0.001, "BPM 轨按拍排序")
+	timeline.free()
+	workspace.free()
+	return true
+
+
 func test_ring_scrub_state() -> bool:
 	var workspace := RingWorkspace.new()
 	var timeline := RingWorkspace.Timeline.new(workspace)

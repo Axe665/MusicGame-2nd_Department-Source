@@ -257,7 +257,7 @@ class Timeline:
 				_sort_in_place(chart.view_states, func(a: ViewState, b: ViewState) -> bool: return a.beat < b.beat)
 				return chart.view_states
 			2:
-				_sort_in_place(chart.events, func(a, b) -> bool: return float(a.beat) < float(b.beat))
+				_sort_in_place(chart.events, func(a, b) -> bool: return a.start_beat < b.start_beat)
 				return chart.events
 			3:
 				_sort_in_place(chart.timing.points, func(a, b) -> bool: return float(a.beat) < float(b.beat))
@@ -273,6 +273,9 @@ class Timeline:
 	func _item_beat(item) -> float:
 		if item is Dictionary:
 			return float(item.get("beat", 0.0))
+		# 旧谱事件用的是 start_beat：以前这里拿 .beat 会抛错，整条时间轴画不出来。
+		if item is BoundaryEvent:
+			return (item as BoundaryEvent).start_beat
 		return float((item as Object).get("beat"))
 
 	func _item_easing(item) -> String:
@@ -280,6 +283,8 @@ class Timeline:
 			return String(item.get("easing", "in-out"))
 		if item is ViewState:
 			return (item as ViewState).easing
+		if item is BoundaryEvent:
+			return (item as BoundaryEvent).easing
 		return "linear"
 
 	func _lane_name(lane: int) -> String:
