@@ -77,10 +77,12 @@ static func evaluate(states: Array[ViewState], beat: float) -> Dictionary:
 		if beat >= a.beat and beat <= b.beat:
 			var span := maxf(0.000001, b.beat - a.beat)
 			var p := Ease.apply(b.easing, (beat - a.beat) / span)
+			# 旋转走最短弧：350°→10° 是 +20°，不是反向绕 340°。
+			var turn := JudgeMath.angle_delta(a.rotation, b.rotation)
 			# zoom/rotation 平滑插值；tilt/ellipse 到关键帧瞬切（不动就按左帧）。
 			return {
 				"zoom": lerpf(a.zoom, b.zoom, p),
-				"rotation": lerpf(a.rotation, b.rotation, p),
+				"rotation": wrapf(a.rotation + turn * p, -180.0, 180.0),
 				"tilt_x": a.tilt_x,
 				"tilt_y": a.tilt_y,
 				"ellipse": a.ellipse,

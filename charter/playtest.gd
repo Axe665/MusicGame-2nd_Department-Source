@@ -168,7 +168,7 @@ var _auto_key_phase: int = 0
 ## a real movement from another path that overlaps it.
 var _path_motion_samples: Array[Dictionary] = []
 ## Diagnostic capture for the current input investigation; F9 toggles capture.
-var path_input_logging := true
+var path_input_logging := false
 var _path_input_log: FileAccess
 var _path_input_log_path := ""
 ## 回放：录制本局输入；播放时把录制的事件按时间喂回同一套判定。
@@ -331,7 +331,6 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	_preview.mouse_tilt = true
 	_preview.show_debug = false
 	_preview.flow_scale = flow
-	_preview.star_speed = float(_app.star_speed if _app != null else 1.0)
 	_preview.playback_rate = playback_rate
 	_preview.note_skin = String(_app.note_skin if _app != null else "candy")
 	_preview.hit_fx_style = String(_app.hit_fx_style if _app != null else "burst")
@@ -343,6 +342,8 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	_preview.hud_tiers = {}
 	_preview.hud_options = _app.hud_options() if _app != null else {}
 	_update_hud_state()
+	# 准备层还开着的时候也要重算时间标签：上一局的 _clock 还停在自己的结尾。
+	_preview.hud_ms = _timeline_start_ms
 	if _app != null:
 		_preview.note_detail_fine = bool(_app.note_detail_fine)
 		_preview.note_glow = bool(_app.note_glow)
@@ -350,7 +351,6 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 		_preview.cursor_trail_mode = String(_app.cursor_trail)
 		_preview.fx_budget = String(_app.fx_budget)
 		_preview.ring_3d_scale = String(_app.ring_3d_scale)
-		_preview.ring_3d_hz = int(_app.ring_3d_hz)
 		_preview.bar_lines_visible = bool(_app.bar_lines)
 		_preview.apply_ring_quality()
 	_preview.auto_cursor = Vector2.INF
@@ -451,6 +451,9 @@ func _start_countdown() -> void:
 func _process_ready(delta: float) -> void:
 	if _ready_layer == null:
 		return
+	# 准备层还盖着的时候把 storyboard 贴图传完，开局后不再逐帧上传。
+	if _preview != null:
+		_preview.preload_storyboard_textures()
 	if _ready_phase == "load":
 		# 准备层已经画出来，音频还在后面同步加载；圆环先保持空。
 		_ready_layer.queue_redraw()
@@ -783,6 +786,8 @@ func _set_paused(value: bool) -> void:
 	if _audio_available and _audio != null:
 		_audio.stream_paused = value
 	_preview.set_video_paused(value)
+	# 暂停时 3D 子视口以前还停在 UPDATE_ALWAYS：整场景每帧照渲，GPU 白烧。
+	_preview.freeze_ring_3d(value)
 	if value:
 		_refresh_pause_status()
 		Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
@@ -904,6 +909,7 @@ func _init_states() -> void:
 	_slow_windows = 0
 	_last_press_ms.clear()
 	_keys_held.clear()
+	_release_ms.clear()
 	_hit_count = 0
 	_miss_count = 0
 	_accuracy_sum = 0.0
@@ -1201,7 +1207,6 @@ func _start_recording() -> void:
 		# 录制时的镜像，回放/导出时原样还原。
 		"mirror": mirror_mode,
 		"flow": _preview.flow_scale,
-		"star_speed": _preview.star_speed,
 		"cursor_scale": _preview.cursor_scale,
 		"note_skin": _preview.note_skin,
 		"hit_fx": _preview.hit_fx_style,
@@ -1246,7 +1251,6 @@ func _enter_replay(data: Replay) -> void:
 	_timeline_start_beat = start_beat
 	_replay_cursor = Vector2.INF
 	_preview.flow_scale = float(data.settings.get("flow", _preview.flow_scale))
-	_preview.star_speed = float(data.settings.get("star_speed", _preview.star_speed))
 	_preview.cursor_scale = float(data.settings.get("cursor_scale", _preview.cursor_scale))
 	if data.settings.has("note_skin"):
 		_preview.note_skin = String(data.settings["note_skin"])
@@ -1448,20 +1452,6 @@ func _current_replay() -> Replay:
 	if replay_mode:
 		return replay_source
 	return _record
-
-
-func _replay_file_name() -> String:
-	var title := "回放"
-	if chart != null:
-		var meta_title := String(chart.metadata.get("title", ""))
-		if not meta_title.is_empty():
-			title = meta_title
-	var version := String(chart.metadata.get("version", "")) if chart != null else ""
-	var stamp := Time.get_datetime_string_from_system().replace(":", "").replace("-", "").replace("T", "-")
-	var name := title
-	if not version.is_empty():
-		name += "_" + version
-	return _sanitize_file_name(name + "_" + stamp) + ".tmkrpl"
 
 
 ## Windows 不允许这几个字符出现在文件名里。
@@ -2700,11 +2690,16 @@ func _flush_offset() -> void:
 	_offset_dirty = false
 
 
+## 判定日志：暂停菜单要读，但每颗音符都 print 会拖慢高密度谱（一万颗就是一万次 IO）。
+var verbose_log: bool = false
+
+
 func _add_log(line: String) -> void:
 	_log.append(line)
 	if _log.size() > 120:
 		_log.pop_front()
-	print("[playtest] %s" % line)
+	if verbose_log:
+		print("[playtest] %s" % line)
 
 
 ## 把本局状态推给 Preview3D 的 HUD（20Hz，和原来顶栏刷新同频）。
@@ -3156,6 +3151,8 @@ func _finish() -> void:
 	# 真正的停止在 _exit()（淡出）或重试（_start_audio 换播放器）里做。
 	_preview.playing = false
 	_preview.set_process(true)
+	# 结算页背景是静态的：别让 3D 子视口继续按 UPDATE_ALWAYS 渲染。
+	_preview.freeze_ring_3d(true)
 	_preview.custom_cursor_visible = false
 	var lines: Array[String] = []
 	if auto_play:

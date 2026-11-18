@@ -4,16 +4,19 @@ extends RefCounted
 const EPS := 0.001
 
 
-static func validate(chart: Chart) -> Array[Dictionary]:
+## full=false 时跳过两段 O(n²)/重采样的检查（事件两两重叠、9 拍 × 96 点可玩性），
+## 编辑过程中每改一格都跑得起；闲时或保存前再跑 full=true 补齐。
+static func validate(chart: Chart, full: bool = true) -> Array[Dictionary]:
 	var issues: Array[Dictionary] = []
 	_check_timing(chart, issues)
 	_check_shapes(chart, issues)
 	_check_shape_keys(chart, issues)
-	_check_events(chart, issues)
+	_check_events(chart, issues, full)
 	_check_view_states(chart, issues)
 	_check_regions(chart, issues)
 	_check_notes(chart, issues)
-	_check_playability(chart, issues)
+	if full:
+		_check_playability(chart, issues)
 	return issues
 
 
@@ -68,7 +71,7 @@ static func _check_shape_keys(chart: Chart, issues: Array[Dictionary]) -> void:
 			_add(issues, "error", "形状关键帧引用了不存在的形状", "key")
 
 
-static func _check_events(chart: Chart, issues: Array[Dictionary]) -> void:
+static func _check_events(chart: Chart, issues: Array[Dictionary], full: bool = true) -> void:
 	for event in chart.events:
 		if event.id.is_empty():
 			_add(issues, "error", "BoundaryEvent 缺少 id", "event")
@@ -82,7 +85,10 @@ static func _check_events(chart: Chart, issues: Array[Dictionary]) -> void:
 			_add(issues, "error", "事件 %s 的 endBehavior 必须是 restore/hold" % event.id, "event:" + event.id)
 		if event.restore_duration < 0.0:
 			_add(issues, "error", "事件 %s 的恢复时长不能为负" % event.id, "event:" + event.id)
-		_check_event_morph(chart, event, issues)
+		if full:
+			_check_event_morph(chart, event, issues)
+	if not full:
+		return
 	for i in chart.events.size():
 		for j in range(i + 1, chart.events.size()):
 			var a := chart.events[i]
@@ -140,6 +146,9 @@ static func _check_regions(chart: Chart, issues: Array[Dictionary]) -> void:
 
 static func _check_notes(chart: Chart, issues: Array[Dictionary]) -> void:
 	var seen_ids := {}
+	var default_shape := chart.get_default_shape()
+	# 缺口检查以前每颗音符都 point_at() 扫一遍全部分段；同角度音符很多，按 u 缓存。
+	var gap_by_u := {}
 	for note in chart.notes:
 		if seen_ids.has(note.id):
 			_add(issues, "error", "音符 id %d 重复" % note.id, "note:%d" % note.id)
@@ -176,13 +185,12 @@ static func _check_notes(chart: Chart, issues: Array[Dictionary]) -> void:
 				# 双押配置：单颗 Anchor 不再成立，必须同拍反向成对。
 				if _anchor_partner(chart, note) == null:
 					_add(issues, "error", "Anchor %d 必须与同拍反向的另一颗配对" % note.id, "note:%d" % note.id)
-		if note.space != "plane" or note.type == "path":
+		if (note.space != "plane" or note.type == "path") and default_shape != null:
 			var u := note.center_u if note.type == "bell" else fposmod(note.angle, 360.0) / 360.0
-			var shape := chart.get_default_shape()
-			if shape != null:
-				var sampled := shape.point_at(u)
-				if sampled.get("gap", false):
-					_add(issues, "error", "音符 %d 落在缺口段上" % note.id, "note:%d" % note.id)
+			if not gap_by_u.has(u):
+				gap_by_u[u] = bool(default_shape.point_at(u).get("gap", false))
+			if bool(gap_by_u[u]):
+				_add(issues, "error", "音符 %d 落在缺口段上" % note.id, "note:%d" % note.id)
 	# 同拍最多一对（双押）；第三颗 Anchor 直接拒绝。
 	var anchor_counts := {}
 	for note in chart.notes:

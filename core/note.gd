@@ -121,10 +121,6 @@ func set_size_ratio(value: float) -> void:
 	size_ratio = clampf(snappedf(value, 0.01), SIZED_TAP_MIN, SIZED_TAP_MAX)
 
 
-func is_point_target() -> bool:
-	return type in ["tap", "hold", "path", "anchor"]
-
-
 func path_local_at(relative_beat: float) -> Vector2:
 	var total := duration()
 	if total <= 0.000001:
@@ -307,17 +303,6 @@ func path_angle_at(relative_beat: float) -> float:
 func _unit_from_angle(degrees: float) -> Vector2:
 	var radians := deg_to_rad(degrees)
 	return Vector2(cos(radians), sin(radians))
-
-
-func _star_local(p: float) -> Vector2:
-	# 保留给旧谱面读取；新的 Path 一律平面，不再生成五角星。
-	var tips: Array[Vector2] = []
-	for k in 5:
-		tips.append(_unit_from_angle(angle - 90.0 + float(k) * 72.0) * 0.78)
-	var order: Array[int] = [0, 2, 4, 1, 3, 0]
-	var cursor := clampf(p, 0.0, 1.0) * 5.0
-	var index := mini(int(cursor), 4)
-	return tips[order[index]].lerp(tips[order[index + 1]], cursor - float(index))
 
 
 func path_sample_beats() -> Array[float]:
@@ -599,8 +584,11 @@ func path_part_code() -> String:
 	var fields := "part%d,%s,%s,%s,%s,%s,%s" % [path_part, _code_num(beat),
 		_code_num(angle), _code_num(end_beat), _code_num(tail_angle),
 		_code_num(path_centrifuge), _code_num(path_axis)]
-	if wait_beat > 0.0:
-		fields += "," + _code_num(clampf(wait_beat, 0.0, maxf(0.0, duration() - 0.001)))
+	# 第 8 段固定写 wait（0 也写），第 9 段写 id：重开时按原 id 还原。
+	# 颜色/锁定/note_extras（容差、采样、密度、风格、擦除缺口、手绘轨迹）都按 id
+	# 旁挂，段 id 一换就整段静默丢失。
+	fields += ",%s,%d" % [
+		_code_num(clampf(wait_beat, 0.0, maxf(0.0, duration() - 0.001))), id]
 	return "(" + fields + ")"
 
 
@@ -696,7 +684,7 @@ static func path_parts_from_code(code: String) -> Array[Note]:
 		# fields[0] is partN; fields[7] is optional waiting time in beats.
 		var number := int(fields[0].replace("part", ""))
 		var note := Note.new("path", float(fields[1]), float(fields[2]), 60.0)
-		note.id = root_id if index == 0 else root_id + 1000 * index
+		note.id = int(fields[8]) if fields.size() > 8 else (root_id if index == 0 else root_id + 1000 * index)
 		note.path_part = number
 		note.end_beat = float(fields[3])
 		note.wait_beat = clampf(float(fields[7]), 0.0, maxf(0.0, note.duration() - 0.001)) if fields.size() > 7 else 0.0
@@ -711,7 +699,8 @@ static func path_parts_from_code(code: String) -> Array[Note]:
 		if previous != null:
 			note.path_prev_id = previous.id
 			note.path_head_local = previous.path_tail_local()
-			note.angle = rad_to_deg(atan2(note.path_head_local.y, note.path_head_local.x))
+			# 归一化到 0..360：atan2 会给 -90，和存盘的 270 对不上，重开后字段就变了。
+			note.angle = fposmod(rad_to_deg(atan2(note.path_head_local.y, note.path_head_local.x)), 360.0)
 			previous.path_next_id = note.id
 		else:
 			note.path_part = 0

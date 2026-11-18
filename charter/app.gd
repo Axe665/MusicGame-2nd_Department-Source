@@ -34,7 +34,6 @@ var sfx_volume: float = 100.0
 ## 音符速度倍率：飞行时长 = Chart.NOTE_FALL_MS / flow_scale（和 BPM 无关）。
 var flow_scale: float = 1.0
 var ffmpeg_path: String = "ffmpeg"
-var star_speed: float = 1.0
 ## Path 等待阶段的启动提示（全局外观设置，不参与判定）。
 const PATH_WAIT_MODES: Array[String] = ["off", "progress", "shrink"]
 const PATH_WAIT_LABELS: Array[String] = ["关闭", "环形进度", "淡蓝收缩圆环"]
@@ -62,7 +61,6 @@ var fx_budget: String = "full"
 ## high / mid / low（3D 背景渲染分辨率 0.8 / 0.65 / 0.5）
 var ring_3d_scale: String = "high"
 ## 3D 背景刷新率上限 60 / 30（只在视角或形变变化时重画；2D 与判定永远按游戏帧率）
-var ring_3d_hz: int = 30
 var bar_lines: bool = true
 ## HUD 选项（视图 → 界面）。只影响显示，不碰判定。
 ## 80 / 100 / 120
@@ -146,8 +144,6 @@ var hud_visible: bool = true
 var use_3d_ring: bool = true
 var mouse_tilt: bool = true
 var debug_overlay: bool = false
-var waveform_visible: bool = true
-var ghost_regions: bool = false
 var boundary_mode: bool = false
 
 var undo := UndoStack.new()
@@ -157,6 +153,9 @@ var _live_change_pending: bool = false
 ## 环工作区打开时，被盖住的检查器不用跟着重建。
 var ring_editor_open: bool = false
 var _validation_pending: bool = false
+## 编辑中只跑快速校验；闲下来 2 秒再补一次全量（事件两两重叠 + 可玩性采样）。
+var _validation_full_pending: bool = false
+var _validation_full_timer: float = 0.0
 var _validation_timer: float = 0.0
 var _commands_since_autosave: int = 0
 var _autosave_timer: Timer
@@ -478,24 +477,6 @@ func add_difficulty_copy(label: String) -> int:
 	return difficulty_index
 
 
-func remove_difficulty(index: int) -> bool:
-	if difficulties.size() <= 1 or index < 0 or index >= difficulties.size():
-		return false
-	difficulties.remove_at(index)
-	difficulty_index = clampi(difficulty_index, 0, difficulties.size() - 1)
-	switch_difficulty(difficulty_index)
-	return true
-
-
-func clear_difficulties() -> void:
-	if difficulties.is_empty():
-		return
-	difficulties.clear()
-	difficulty_index = 0
-	difficulties_changed.emit()
-	import_set_changed.emit()
-
-
 ## 把难度组里每一份都存成单独文件，返回写成功的个数。
 func save_all_difficulties(dir: String) -> int:
 	if difficulties.is_empty():
@@ -590,7 +571,6 @@ func _load_settings() -> void:
 			fx_budget = fx_mode if fx_mode in ["full", "light", "off"] else "full"
 			var ring_scale := String(data.get("ring_3d_scale", ring_3d_scale))
 			ring_3d_scale = ring_scale if ring_scale in ["high", "mid", "low"] else "high"
-			ring_3d_hz = 30 if int(data.get("ring_3d_hz", ring_3d_hz)) == 30 else 60
 			bar_lines = bool(data.get("bar_lines", bar_lines))
 			var preset := String(data.get("quality_preset", "high"))
 			quality_preset = preset if preset in ["ultra", "high", "mid", "low", "custom"] else "high"
@@ -652,7 +632,6 @@ func _load_settings() -> void:
 			path_wait_indicator = wait_mode if wait_mode in PATH_WAIT_MODES else "progress"
 			cursor_scale = clampf(float(data.get("cursor_scale", cursor_scale)), 0.5, 2.0)
 			flow_scale = clampf(float(data.get("flow_scale", flow_scale)), 0.05, 3.0)
-			star_speed = clampf(float(data.get("star_speed", star_speed)), 0.5, 2.0)
 	MediaIO.set_ffmpeg_exe(ffmpeg_path)
 	apply_frame_cap()
 	apply_visual_quality()
@@ -701,8 +680,7 @@ func apply_quality_preset(name: String) -> void:
 			note_glow = true
 			cursor_trail = "long"
 			fx_budget = "full"
-			ring_3d_scale = "native"
-			ring_3d_hz = 60
+			ring_3d_scale = "high"
 			bar_lines = true
 		"low":
 			aa_2d_level = 0
@@ -712,7 +690,6 @@ func apply_quality_preset(name: String) -> void:
 			cursor_trail = "off"
 			fx_budget = "light"
 			ring_3d_scale = "low"
-			ring_3d_hz = 30
 			bar_lines = false
 		"mid":
 			aa_2d_level = 1
@@ -722,7 +699,6 @@ func apply_quality_preset(name: String) -> void:
 			cursor_trail = "short"
 			fx_budget = "light"
 			ring_3d_scale = "mid"
-			ring_3d_hz = 30
 			bar_lines = true
 		_:
 			quality_preset = "high"
@@ -732,8 +708,7 @@ func apply_quality_preset(name: String) -> void:
 			note_glow = true
 			cursor_trail = "long"
 			fx_budget = "full"
-			ring_3d_scale = "native"
-			ring_3d_hz = 30
+			ring_3d_scale = "high"
 			bar_lines = true
 
 
@@ -797,7 +772,7 @@ func effective_latency_sec() -> float:
 
 
 func save_settings() -> void:
-	var data := {"settings_version": 1, "path_wait_indicator": path_wait_indicator, "note_skin": note_skin, "hit_fx_style": hit_fx_style, "hit_sfx_style": hit_sfx_style, "ffmpeg": ffmpeg_path, "frame_cap": frame_cap, "video_encoder": video_encoder, "audio_buffer_ms": audio_buffer_ms, "playtest_offset_ms": playtest_offset_ms, "audio_latency_ms": audio_latency_ms, "music_volume": music_volume, "sfx_volume": sfx_volume, "dynamic_offset": dynamic_offset, "playtest_auto": playtest_auto, "playtest_mirror": playtest_mirror, "playback_scroll": playback_scroll, "background_brightness": background_brightness, "mouse_tilt": mouse_tilt, "startup_tabs": startup_tabs, "osu_favorites": osu_favorites, "last_bias_ms": last_bias_ms, "cursor_scale": cursor_scale, "flow_scale": flow_scale, "star_speed": star_speed, "aa_2d_level": aa_2d_level, "msaa_3d_level": msaa_3d_level, "ring_pad_rect": ring_pad_rect, "angle_divisions": angle_divisions, "note_detail_fine": note_detail_fine, "note_glow": note_glow, "path_style": path_style, "bpm_lock_ms": bpm_lock_ms, "cursor_trail": cursor_trail, "fx_budget": fx_budget, "ring_3d_scale": ring_3d_scale, "ring_3d_hz": ring_3d_hz, "bar_lines": bar_lines, "quality_preset": quality_preset,
+	var data := {"settings_version": 1, "path_wait_indicator": path_wait_indicator, "note_skin": note_skin, "hit_fx_style": hit_fx_style, "hit_sfx_style": hit_sfx_style, "ffmpeg": ffmpeg_path, "frame_cap": frame_cap, "video_encoder": video_encoder, "audio_buffer_ms": audio_buffer_ms, "playtest_offset_ms": playtest_offset_ms, "audio_latency_ms": audio_latency_ms, "music_volume": music_volume, "sfx_volume": sfx_volume, "dynamic_offset": dynamic_offset, "playtest_auto": playtest_auto, "playtest_mirror": playtest_mirror, "playback_scroll": playback_scroll, "background_brightness": background_brightness, "mouse_tilt": mouse_tilt, "startup_tabs": startup_tabs, "osu_favorites": osu_favorites, "last_bias_ms": last_bias_ms, "cursor_scale": cursor_scale, "flow_scale": flow_scale, "aa_2d_level": aa_2d_level, "msaa_3d_level": msaa_3d_level, "ring_pad_rect": ring_pad_rect, "angle_divisions": angle_divisions, "note_detail_fine": note_detail_fine, "note_glow": note_glow, "path_style": path_style, "bpm_lock_ms": bpm_lock_ms, "cursor_trail": cursor_trail, "fx_budget": fx_budget, "ring_3d_scale": ring_3d_scale, "bar_lines": bar_lines, "quality_preset": quality_preset,
 		"hud_scale": hud_scale, "hud_combo_mode": hud_combo_mode, "hud_progress_style": hud_progress_style,
 		"hud_judge_position": hud_judge_position, "hud_opacity": hud_opacity,
 		"hud_show_title": hud_show_title, "hud_show_difficulty": hud_show_difficulty,
@@ -922,12 +897,36 @@ func restore_snapshot(data: Dictionary) -> void:
 	_emit_validation()
 
 
+## 上一次提交后的谱面快照。复用它可以省掉「每次编辑都重新拍一遍 before」，
+## 10k 音符下一次 chart_to_dict ≈ 200ms。只认同一个 Chart 对象，换谱自动失效。
+var _last_snapshot: Dictionary = {}
+var _last_snapshot_chart: Chart = null
+var _gesture_timer: Timer = null
+
+
+func invalidate_snapshot_cache() -> void:
+	_last_snapshot = {}
+	_last_snapshot_chart = null
+
+
+func _cached_snapshot() -> Dictionary:
+	if chart != null and _last_snapshot_chart == chart and not _last_snapshot.is_empty():
+		return _last_snapshot
+	return snapshot()
+
+
+func _remember_snapshot(data: Dictionary) -> void:
+	_last_snapshot = data
+	_last_snapshot_chart = chart
+
+
 func mutate(callback: Callable) -> void:
 	if chart == null:
 		return
-	var before := snapshot()
+	var before := _cached_snapshot()
 	callback.call()
 	var after := snapshot()
+	_remember_snapshot(after)
 	if before == after:
 		return
 	undo.record(before)
@@ -935,19 +934,40 @@ func mutate(callback: Callable) -> void:
 	_after_change()
 
 
+## 连续手势（滚轮缩放、步进按钮）：第一次 begin_edit，停手 0.6s 后 finish_edit。
+## 一个手势只记一条撤销、只拍一次 before，不再每个滚轮档都做一次全谱快照。
+func gesture_mutate(callback: Callable) -> void:
+	if chart == null:
+		return
+	if not _editing:
+		begin_edit()
+	callback.call()
+	touch_chart()
+	if _gesture_timer == null:
+		_gesture_timer = Timer.new()
+		_gesture_timer.one_shot = true
+		_gesture_timer.wait_time = 0.6
+		_gesture_timer.timeout.connect(finish_edit)
+		add_child(_gesture_timer)
+	_gesture_timer.start()
+
+
 func begin_edit() -> void:
 	if _editing or chart == null:
 		return
-	_edit_before = snapshot()
+	_edit_before = _cached_snapshot()
 	_editing = true
 
 
 func finish_edit() -> void:
 	if not _editing:
 		return
+	if _gesture_timer != null:
+		_gesture_timer.stop()
 	_flush_live_change()
 	_editing = false
 	var after := snapshot()
+	_remember_snapshot(after)
 	if _edit_before == after:
 		return
 	undo.record(_edit_before)
@@ -957,6 +977,8 @@ func finish_edit() -> void:
 
 func _after_change() -> void:
 	_commands_since_autosave += 1
+	if chart != null:
+		chart.mark_dirty()
 	chart_changed.emit()
 	save_state_changed.emit()
 	status_changed.emit()
@@ -970,6 +992,8 @@ func touch_chart() -> void:
 	# Mouse input may arrive several times per rendered frame. Full validation
 	# belongs to the committed edit, not to every intermediate mouse position.
 	_live_change_pending = true
+	if chart != null:
+		chart.mark_dirty()
 
 
 func _process(delta: float) -> void:
@@ -980,7 +1004,15 @@ func _process(delta: float) -> void:
 		if _validation_timer <= 0.0:
 			_validation_pending = false
 			if chart != null:
-				validation_changed.emit(Validator.validate(chart))
+				validation_changed.emit(Validator.validate(chart, false))
+				_validation_full_pending = true
+				_validation_full_timer = 2.0
+	if _validation_full_pending:
+		_validation_full_timer -= delta
+		if _validation_full_timer <= 0.0:
+			_validation_full_pending = false
+			if chart != null:
+				validation_changed.emit(Validator.validate(chart, true))
 
 
 func _flush_live_change() -> void:
@@ -1586,29 +1618,10 @@ func get_selected_region() -> Region:
 	return null
 
 
-func get_selected_event() -> BoundaryEvent:
-	if chart == null or selected_event_id.is_empty():
-		return null
-	for event in chart.events:
-		if event.id == selected_event_id:
-			return event
-	return null
-
-
 func get_selected_shape() -> BoundaryShape:
 	if chart == null:
 		return null
 	return chart.get_shape(selected_shape_id)
-
-
-func get_selected_segment() -> BoundarySegment:
-	var shape := get_selected_shape()
-	if shape == null:
-		return null
-	var sorted := shape.sorted_segments()
-	if selected_segment_index < 0 or selected_segment_index >= sorted.size():
-		return null
-	return sorted[selected_segment_index]
 
 
 func get_selected_view() -> ViewState:

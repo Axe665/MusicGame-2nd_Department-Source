@@ -529,15 +529,6 @@ func invalidate() -> void:
 	_cache_result = []
 
 
-func index_stats() -> Dictionary:
-	if not _index_ready:
-		build_index()
-	var bucket_sizes := 0
-	for key in _buckets.keys():
-		bucket_sizes = maxi(bucket_sizes, (_buckets[key] as Array).size())
-	return {"buckets": _buckets.size(), "persistent": _persistent.size(), "max_bucket": bucket_sizes}
-
-
 ## 谱面背景图是否被 storyboard 的 Background 层替代（对照 lazer Storyboard.ReplacesBackground）。
 func replaces_background(background_file: String) -> bool:
 	if background_file.is_empty():

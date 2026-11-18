@@ -70,6 +70,9 @@ var _waveform_peaks: PackedFloat32Array = PackedFloat32Array()
 var _waveform_duration: float = 0.0
 var _waveform_audio_path: String = ""
 var _wave_key: String = ""
+## 波形按「音频位置 → 拍」采样一次（与滚动无关），每帧只做拍→y 映射。
+var _wave_beats: PackedFloat32Array = PackedFloat32Array()
+var _wave_vals: PackedFloat32Array = PackedFloat32Array()
 var _wave_right: PackedVector2Array = PackedVector2Array()
 var _wave_left: PackedVector2Array = PackedVector2Array()
 var _last_playhead_redraw: int = 0
@@ -243,7 +246,12 @@ func has_clipboard() -> bool:
 func copy_selection(cut: bool = false) -> void:
 	if _app == null or _app.chart == null:
 		return
-	var selected: Array[Note] = _app.selection_with_partners()
+	var selected: Array[Note] = []
+	for note in _app.selection_with_partners():
+		# Path 必须整链复制：只带一段的话粘出来是断链（子部件会被预览/存盘跳过）。
+		for part in _app.chart.path_chain(note):
+			if not selected.has(part):
+				selected.append(part)
 	if selected.is_empty():
 		notice.emit("先选中音符，再复制或剪切。", "warning")
 		return
@@ -271,8 +279,8 @@ func copy_selection(cut: bool = false) -> void:
 	_rebuild_ghost()
 	_sync_ghost_layer()
 	notice.emit(
-		("已剪切 %d 个音符；移动鼠标选点，Ctrl+V 粘贴，Ctrl+A 镜像粘贴。" if cut
-		else "已复制 %d 个音符；移动鼠标选点，Ctrl+V 粘贴，Ctrl+A 镜像粘贴。") % copies.size(),
+		("已剪切 %d 个音符；在谱面点一下放置，Ctrl+V 放在鼠标处，Ctrl+A 镜像粘贴。" if cut
+		else "已复制 %d 个音符；在谱面点一下放置，Ctrl+V 放在鼠标处，Ctrl+A 镜像粘贴。") % copies.size(),
 		"info"
 	)
 
@@ -281,9 +289,16 @@ func paste_clipboard(mirror: bool = false) -> bool:
 	if _app == null or _app.chart == null or not has_clipboard():
 		notice.emit("剪贴板为空：先 Ctrl+C 复制或 Ctrl+X 剪切。", "warning")
 		return false
+	return _paste_at(_clipboard_mouse_beat, mirror)
+
+
+## 把剪贴板整段落在 beat（最早那颗的拍）上。Path 链的 id 在这里整体重映射——
+## 照抄旧 id 会让新 part 指向原链，于是预览/试玩/存盘都把它当子部件跳过。
+func _paste_at(beat: float, mirror: bool = false) -> bool:
 	var chart: Chart = _app.chart
-	var delta := _clipboard_mouse_beat - _clipboard_reference_beat
-	var new_ids: Array[int] = []
+	var delta := beat - _clipboard_reference_beat
+	var id_map := {}
+	var copies: Array[Note] = []
 	_app.begin_edit()
 	for note in _clipboard_notes:
 		var copy := Note.from_dict(note.to_dict())
@@ -293,6 +308,20 @@ func paste_clipboard(mirror: bool = false) -> bool:
 			copy.end_beat = maxf(copy.beat + 0.25, note.end_beat + delta)
 		if mirror:
 			copy.mirror_u()
+		id_map[note.id] = copy
+		copies.append(copy)
+	for copy in copies:
+		if copy.type != "path":
+			continue
+		# 链外链接一律断开（复制时已带上整链，这里只兜底防止旧剪贴板留断链）。
+		if id_map.has(copy.path_prev_id):
+			copy.path_prev_id = (id_map[copy.path_prev_id] as Note).id
+		else:
+			copy.path_prev_id = -1
+			copy.path_part = 0
+		copy.path_next_id = (id_map[copy.path_next_id] as Note).id if id_map.has(copy.path_next_id) else -1
+	var new_ids: Array[int] = []
+	for copy in copies:
 		chart.notes.append(copy)
 		new_ids.append(copy.id)
 	_app.finish_edit()
@@ -583,29 +612,33 @@ func _draw_waveform(plot: Rect2) -> void:
 	var timing_sig := "%.3f|%d" % [chart.offset_ms, chart.timing.points.size()]
 	for point in chart.timing.points:
 		timing_sig += "|%.4f" % point.bpm
-	var key := "%s|%.4f|%.4f|%.1f|%.1f|%.1f|%d|%s" % [
-		_waveform_audio_path, _waveform_duration, scroll_beat, px_per_beat,
-		plot.position.y, plot.size.y, _waveform_peaks.size(), timing_sig,
+	# 采样只依赖音频与 BPM 表：滚动/缩放不再让它每帧重建。
+	var key := "%s|%.4f|%d|%s" % [
+		_waveform_audio_path, _waveform_duration, _waveform_peaks.size(), timing_sig,
 	]
 	if key != _wave_key:
 		_wave_key = key
-		_wave_right = PackedVector2Array()
-		_wave_left = PackedVector2Array()
-		var center_x := strip.position.x + strip.size.x * 0.5
-		var half := strip.size.x * 0.5 - 2.0
-		# 每行都要查一次拍→毫秒；先排一次序，循环里不再重复排序。
+		_wave_beats = PackedFloat32Array()
+		_wave_vals = PackedFloat32Array()
 		chart.timing.sort_points()
-		for y in range(int(plot.position.y), int(plot.end.y), 2):
-			var beat := _y_to_beat(float(y))
-			var chart_ms := chart.timing.beat_to_ms_sorted(beat)
-			var audio_ms := chart_ms - chart.offset_ms
-			var fraction := audio_ms / 1000.0 / _waveform_duration
-			if fraction < 0.0 or fraction > 1.0:
-				continue
-			var index := clampi(int(fraction * _waveform_peaks.size()), 0, _waveform_peaks.size() - 1)
-			var peak := _waveform_peaks[index]
-			_wave_right.append(Vector2(center_x + peak * half, y))
-			_wave_left.append(Vector2(center_x - peak * half, y))
+		var count := mini(800, _waveform_peaks.size())
+		for i in count:
+			var frac := float(i) / float(maxi(1, count - 1))
+			var audio_ms := frac * _waveform_duration * 1000.0
+			_wave_beats.append(chart.timing.chart_ms_to_beat(audio_ms + chart.offset_ms))
+			_wave_vals.append(_waveform_peaks[mini(_waveform_peaks.size() - 1,
+				int(frac * float(_waveform_peaks.size())))])
+	var center_x := strip.position.x + strip.size.x * 0.5
+	var half := strip.size.x * 0.5 - 2.0
+	_wave_right = PackedVector2Array()
+	_wave_left = PackedVector2Array()
+	for i in _wave_beats.size():
+		var y := _beat_to_y(_wave_beats[i])
+		if y < plot.position.y or y > plot.end.y:
+			continue
+		var peak := _wave_vals[i]
+		_wave_right.append(Vector2(center_x + peak * half, y))
+		_wave_left.append(Vector2(center_x - peak * half, y))
 	if _wave_right.size() > 1:
 		draw_polyline(_wave_right, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.42), 1.0, true)
 	if _wave_left.size() > 1:
@@ -727,28 +760,6 @@ func _draw_grid(plot: Rect2) -> void:
 		var text_width := font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, 10).x
 		draw_rect(Rect2(Vector2(plot.position.x + 4, y + 1), Vector2(text_width + 6, 14)), Color(0.05, 0.06, 0.08, 0.85))
 		draw_string(font, Vector2(plot.position.x + 7, y + 12), text, HORIZONTAL_ALIGNMENT_LEFT, -1, 10, UITheme.GOLD)
-
-
-func _draw_divisions(plot: Rect2) -> void:
-	var font := UITheme.mono_font()
-	var left := plot.end.x + DIVISION_MARGIN
-	var total := float(GridDivisions.ITEMS.size()) * (DIVISION_ITEM_HEIGHT + DIVISION_GAP) - DIVISION_GAP
-	var top := clampf(plot.get_center().y - total * 0.5, plot.position.y + 18.0, maxf(plot.position.y + 18.0, plot.end.y - total - 4.0))
-	_division_rects.clear()
-	draw_line(Vector2(plot.end.x + 3.0, plot.position.y), Vector2(plot.end.x + 3.0, plot.end.y), Color(1, 1, 1, 0.06), 1.0)
-	draw_string(font, Vector2(left, top - 7.0), "分音", HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(1, 1, 1, 0.35))
-	for i in GridDivisions.ITEMS.size():
-		var division: int = GridDivisions.ITEMS[i]
-		var rect := Rect2(Vector2(left, top + float(i) * (DIVISION_ITEM_HEIGHT + DIVISION_GAP)), Vector2(DIVISION_WIDTH, DIVISION_ITEM_HEIGHT))
-		_division_rects.append(rect)
-		var active := division == snap_division
-		var hovered := i == _division_hover
-		if active:
-			draw_rect(rect, UITheme.ACCENT)
-		elif hovered:
-			draw_rect(rect, Color(1, 1, 1, 0.10))
-		draw_rect(rect, UITheme.ACCENT if active else Color(1, 1, 1, 0.14), false, 1.0)
-		draw_string(font, Vector2(rect.position.x, rect.position.y + 15.0), GridDivisions.LABELS[i], HORIZONTAL_ALIGNMENT_CENTER, DIVISION_WIDTH, 10, UITheme.BG if active else Color(1, 1, 1, 0.55))
 
 
 func _draw_beat_subdivisions(plot: Rect2, emphasize: bool) -> void:
@@ -1643,6 +1654,11 @@ func _on_left_press(event: InputEventMouseButton) -> void:
 		var end_beat := _snap_beat_to_subdivision(_y_to_beat(event.position.y), _snap_bypass(event))
 		_finish_pending_hold(end_beat)
 		return
+	# 复制后谱面上有半透明幽灵：点一下就把整段（含 Path 链）落在点到的拍上。
+	if has_clipboard():
+		var drop := _snap_note_placement(event.position, _snap_bypass(event))
+		_paste_at(drop.x)
+		return
 	# Ctrl is a selection modifier across all tools: toggle the clicked note
 	# and suppress every placement action while it is held. A pending Path is
 	# exempt because its second click is the tail-placement step.
@@ -2155,20 +2171,6 @@ func _create_simple(type: String, beat: float, u: float) -> void:
 		chart.notes.append(item)
 	_app.finish_edit()
 	_app.select_note(added[0].id)
-
-
-func _create_sized_tap(beat: float, u: float) -> void:
-	var chart: Chart = _app.chart
-	if chart == null:
-		return
-	# 默认与旧版 Tap 同长（1.0 l），按下去就能在检查器里改成 0–1.5 l 的任意值。
-	var note := Note.new("tap", beat, u * 360.0, 60.0)
-	note.id = chart.next_note_id()
-	note.set_size_ratio(1.0)
-	_app.begin_edit()
-	chart.notes.append(note)
-	_app.finish_edit()
-	_app.select_note(note.id)
 
 
 func _create_hold(beat: float, u: float) -> void:

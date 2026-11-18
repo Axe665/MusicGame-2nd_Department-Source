@@ -10,6 +10,7 @@ func _initialize() -> void:
 		"test_boundary_circle",
 		"test_boundary_vertices",
 		"test_boundary_keys_io",
+		"test_shape_morph_duration_and_camera_arc",
 		"test_ring_compat_rules",
 		"test_boundary_batch",
 		"test_boundary_frame",
@@ -29,6 +30,7 @@ func _initialize() -> void:
 		"test_note_glyph_geometry",
 		"test_note_width_controls",
 		"test_path_chain_code",
+		"test_path_paste_chain",
 		"test_path_chain_judgement",
 		"test_path_erase_overlap",
 		"test_path_erase_merge",
@@ -46,6 +48,14 @@ func _initialize() -> void:
 		"test_flow_flip_anchor",
 		"test_ring_span_label",
 		"test_ring_span_end",
+		"test_ring_scrub_state",
+		"test_ring_lane_items_real_chart",
+		"test_undo_memory_budget",
+		"test_full_chart_round_trip",
+		"test_difficulty_set_round_trip",
+		"test_lbp_export_covers_all_types",
+		"test_save_atomic_and_backup",
+		"test_playhead_redraw_is_light",
 		"test_chart_end_limit",
 		"test_uniform_meter",
 		"test_timing_presorted",
@@ -75,6 +85,7 @@ func _initialize() -> void:
 		"test_path_head_beat",
 		"test_path_smoothing",
 		"test_seek_limit_animation_curves",
+		"test_seek_grow_matches_tap",
 		"test_limit_dwell_once",
 		"test_bpm_snap_multipliers",
 		"test_path_zone_granularity",
@@ -207,6 +218,7 @@ func _initialize() -> void:
 		"test_replay_scrub",
 		"test_replay_file_name",
 		"test_playtest_ui_builds",
+		"test_retry_clears_playtest_visuals",
 	]
 	for test_name in tests:
 		if call(test_name) != true:
@@ -387,6 +399,37 @@ func test_boundary_keys_io() -> bool:
 	if migrated != null:
 		eq(migrated.shape_keys.size(), 2, "legacy events become keys")
 		eq(migrated.events.size(), 0, "legacy events are cleared after migration")
+	return true
+
+
+## 形变时长：默认整段（旧谱不变），设短则先变完再保持；镜头旋转走最短弧。
+func test_shape_morph_duration_and_camera_arc() -> bool:
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	chart.shapes["S1"] = BoundaryShape.circle("S1", 200.0, 12)
+	chart.shape_keys = [
+		{"beat": 2.0, "shape_id": "S1", "easing": "linear"},
+		{"beat": 6.0, "shape_id": "S0", "easing": "linear"},
+	]
+	near(BoundaryRuntime.eval_point(chart, 0.0, 4.0).point.x, 265.0, 0.5, "默认形变时长 = 整段")
+	chart.shape_keys[0]["morph"] = 1.0
+	near(BoundaryRuntime.eval_point(chart, 0.0, 2.5).point.x, 265.0, 0.5, "形变时长内仍按缓动插值")
+	near(BoundaryRuntime.eval_point(chart, 0.0, 3.0).point.x, 330.0, 0.5, "形变完成后保持下一帧形状")
+	near(BoundaryRuntime.morph_beats({"morph": 99.0}, 3.0), 3.0, 0.0001, "形变时长最多等于整段")
+	near(BoundaryRuntime.morph_beats({}, 3.0), 3.0, 0.0001, "缺字段时等于整段（旧谱兼容）")
+	var data := ChartIO.chart_to_dict(chart)
+	eq(float((data["boundary_keys"] as Array)[0].get("morph", 0.0)), 1.0, "形变时长写进 json")
+	var back := ChartIO.from_json(ChartIO.to_json(chart))
+	eq(float(back.shape_keys[0].get("morph", 0.0)), 1.0, "形变时长读回")
+	near(BoundaryRuntime.eval_point(back, 0.0, 3.0).point.x, 330.0, 0.5, "读回后形变节奏不变")
+	var states: Array[ViewState] = [
+		ViewState.new(0.0, 1.0, 0.0, 0.0, 1.0, 170.0),
+		ViewState.new(2.0, 1.0, 0.0, 0.0, 1.0, -170.0),
+	]
+	var middle := ViewState.evaluate(states, 1.0)
+	near(absf(float(middle["rotation"])), 180.0, 0.001, "旋转走最短弧：170→-170 的中点是 180")
+	var straight := ViewState.evaluate(states, 0.0)
+	near(float(straight["rotation"]), 170.0, 0.001, "起点仍是 170")
 	return true
 
 
@@ -956,6 +999,61 @@ func test_path_chain_code() -> bool:
 
 ## 画面把链式 Path 画成一条（一个头一个尾），判定也必须是一条；否则子段会
 ## 要求一个画面上不存在的隐形头判。
+
+
+func test_path_paste_chain() -> bool:
+	var app: App = load("res://charter/app.gd").new()
+	var chart := Chart.new()
+	app.chart = chart
+	var canvas := ChartCanvas.new()
+	canvas._app = app
+	var parts: Array[Note] = []
+	var beat := 1.0
+	for i in 3:
+		var note := Note.new("path", beat, float(i) * 30.0, 60.0)
+		note.id = chart.next_note_id()
+		note.end_beat = beat + 0.5
+		note.path_part = i
+		if i > 0:
+			note.path_prev_id = parts[i - 1].id
+			note.path_head_local = parts[i - 1].path_tail_local()
+			parts[i - 1].path_next_id = note.id
+		note.generate_path_shape()
+		parts.append(note)
+		chart.notes.append(note)
+		beat += 0.5
+	app.select_note(parts[1].id)
+	canvas.copy_selection()
+	eq(canvas._clipboard_notes.size(), 3, "复制 Path 中间一段时自动带上整条链")
+	var old_ids := [parts[0].id, parts[1].id, parts[2].id]
+	canvas._clipboard_reference_beat = 1.0
+	eq(canvas._paste_at(9.0), true, "粘贴成功")
+	eq(chart.notes.size(), 6, "一次粘贴放下整条链")
+	var fresh: Array[Note] = []
+	for note in chart.notes:
+		if not old_ids.has(note.id):
+			fresh.append(note)
+	fresh.sort_custom(func(a: Note, b: Note) -> bool: return a.path_part < b.path_part)
+	eq(fresh.size(), 3, "新链有三段")
+	if fresh.size() == 3:
+		eq(fresh[0].path_prev_id, -1, "新链 root 没有前驱")
+		eq(fresh[0].path_next_id, fresh[1].id, "新链 root 指向新的 part1")
+		eq(fresh[1].path_prev_id, fresh[0].id, "新链 part1 指回新 root")
+		eq(fresh[1].path_next_id, fresh[2].id, "新链 part1 指向新的 part2")
+		eq(fresh[2].path_prev_id, fresh[1].id, "新链 part2 指回新 part1")
+		eq(fresh[2].path_next_id, -1, "新链末段没有后继")
+		for note in fresh:
+			ok(not old_ids.has(note.path_prev_id) and not old_ids.has(note.path_next_id),
+				"新链不再引用原链 id")
+		near(fresh[0].beat, 9.0, 0.0001, "最早一段落在点到的拍上")
+		near(fresh[2].beat - fresh[0].beat, 1.0, 0.0001, "链内相对拍位保持不变")
+		eq(chart.path_chain(fresh[2]).size(), 3, "从新链末段能走回整条链")
+	canvas.free()
+	app.free()
+	return true
+
+
+## 音符松手回吸：只回吸真的动过的那个轴；单击不挪音符。
 func test_path_chain_judgement() -> bool:
 	var code := "[1]path{(part0,1.0,0.0,2.0,180.0,0.7,0.5);(part1,2.0,0.0,3.0,90.0,0.6,-0.5)}"
 	var parts := Note.path_parts_from_code(code)
@@ -1614,6 +1712,330 @@ func test_storyboard_clamps_first_command() -> bool:
 
 
 ## 环随鼠标倾斜：鼠标那一侧靠近镜头（近大远小），0 度 = 关闭。
+## 拖播放头时不能重建面板：一次重建 ≈70–80 个控件，跨一个关键帧要付两遍。
+## 环编辑器四条轨道必须能处理旧谱的 BoundaryEvent：它只有 start_beat，
+## 用 .beat 排序会让每次重绘抛错，整条时间轴画不出来（看起来就是打不开）。
+## 撤销不再无限吃内存：快照总量按音符数限额，小谱仍保留 200 步。
+## 一张「所有功能都用上」的谱面走真实保存/重开链路，逐字段比对。
+## 失败说明某类数据存不住 —— 那是制谱器最致命的问题，所以用整份 dict 比对。
+func test_full_chart_round_trip() -> bool:
+	var chart := _make_full_chart()
+	var before := JSON.stringify(ChartIO.chart_to_dict(chart))
+	var reloaded := ChartIO.from_json(ChartIO.to_json(chart))
+	ok(reloaded != null, "整谱保存/重开不报错")
+	if reloaded == null:
+		return true
+	var after := JSON.stringify(ChartIO.chart_to_dict(reloaded))
+	if after != before:
+		# 找出第一处差异，报给用户看
+		var a: Dictionary = ChartIO.chart_to_dict(chart)
+		var b: Dictionary = ChartIO.chart_to_dict(reloaded)
+		var diff := ""
+		for key in a.keys():
+			if JSON.stringify(a[key]) != JSON.stringify(b.get(key, null)):
+				diff = String(key)
+				if key == "notes":
+					var la: Array = a[key]
+					var lb: Array = b.get(key, [])
+					for i in mini(la.size(), lb.size()):
+						if String(la[i]) != String(lb[i]):
+							print("NOTEDIFF %d\n  before=%s\n  after =%s" % [i, la[i], lb[i]])
+							break
+				break
+		ok(false, "保存/重开后字段不一致（首个差异：%s）" % diff)
+	else:
+		ok(true, "保存/重开后整份谱面字典一致")
+	# 关键功能逐个点名，别让整份比对掩盖了“恰好都没写”
+	eq(reloaded.notes.size(), chart.notes.size(), "音符数量")
+	var types := {}
+	for note in reloaded.notes:
+		types[note.type] = true
+	for type in ["tap", "hold", "path", "seek", "anchor", "bell"]:
+		ok(types.has(type), "重开后仍有 %s" % type)
+	eq(reloaded.regions.size(), 2, "红区数量")
+	eq(reloaded.shape_keys.size(), 3, "形状关键帧数量")
+	near(float(reloaded.shape_keys[1].get("morph", 0.0)), 1.5, 0.001, "形变时长")
+	eq(reloaded.view_states.size(), 2, "镜头关键帧数量")
+	near(reloaded.view_states[1].rotation, 170.0, 0.001, "镜头旋转")
+	near(reloaded.timing.points[1].bpm, 180.0, 0.001, "BPM 点")
+	eq(reloaded.editor.get("beat_subdivisions", 0), 8, "小节线等分写入 editor")
+	eq(reloaded.editor.get("rail_snap", true), false, "轨道吸附写入 editor")
+	eq(reloaded.metadata.get("storyboard", ""), "sb/storyboard.osb", "故事板路径")
+	eq(reloaded.palette.size(), 1, "配色组")
+	# 多段 Path 的第二段：id 必须原样还原，旁挂属性才不会丢
+	var child: Note = null
+	for note in reloaded.notes:
+		if note.type == "path" and note.path_part == 1:
+			child = note
+			break
+	if child != null:
+		eq(child.path_style, "ribbon", "第二段 Path 的画法")
+		near(child.path_speed, 0.8, 0.001, "第二段 Path 的速度")
+		near(child.tolerance, 0.31, 0.001, "第二段 Path 的容差")
+		eq(child.path_gaps.size(), 1, "第二段 Path 的擦除缺口")
+		eq(child.trace_pts.size(), 2, "第二段 Path 的手绘轨迹")
+		eq(child.color, 1, "第二段 Path 的配色组")
+		eq(child.lock, true, "第二段 Path 的锁定")
+	else:
+		ok(false, "重开后找不到第二段 Path")
+	# 再走一遍 App 的真实保存/打开入口（含校验拦截、难度套组分支、notice 信号）
+	var app: App = load("res://charter/app.gd").new()
+	app.chart = _make_full_chart()
+	var temp_path := "user://roundtrip_check.json"
+	app.chart_path = temp_path
+	ok(app.save_chart(), "App.save_chart() 不被校验拦截")
+	ok(app.load_chart(temp_path), "App.load_chart() 能打开刚存的谱面")
+	if app.chart != null:
+		eq(JSON.stringify(ChartIO.chart_to_dict(app.chart)), before, "走 App 入口保存后整份字典一致")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(temp_path))
+	app.free()
+	return true
+
+
+## 造一张覆盖所有可存字段的谱面。
+## 难度套组：一首歌多个难度存成一个 .set.json，重开逐个比对内容与星数。
+## 保存必须原子：先写 .tmp 再改名；覆盖前留 .bak.1..5，崩了也能找回上一版。
+func test_save_atomic_and_backup() -> bool:
+	var path := "user://atomic_check/chart.json"
+	for suffix in ["", ".bak.1", ".bak.2"]:
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(path + suffix))
+	eq(ChartIO.atomic_write(path, "{\"v\":1}\n"), OK, "首次保存到不存在的目录")
+	ok(FileAccess.file_exists(path), "文件已生成")
+	eq(ChartIO.atomic_write(path, "{\"v\":2}\n"), OK, "第二次保存")
+	ok(FileAccess.file_exists(path + ".bak.1"), "覆盖前生成 .bak.1")
+	eq(FileAccess.get_file_as_string(path + ".bak.1"), "{\"v\":1}\n", ".bak.1 是上一版内容")
+	ok(not FileAccess.file_exists(path + ".tmp"), "临时文件已改名，不残留")
+	for suffix in ["", ".bak.1", ".bak.2"]:
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(path + suffix))
+	DirAccess.remove_absolute(ProjectSettings.globalize_path("user://atomic_check"))
+	return true
+
+
+func test_difficulty_set_round_trip() -> bool:
+	var path := "user://roundtrip_set.set.json"
+	var basic := _make_full_chart()
+	basic.difficulty = "Basic"
+	basic.metadata["version"] = "Basic 3"
+	var expert := _make_full_chart()
+	expert.difficulty = "Expert"
+	expert.metadata["version"] = "Expert 9+"
+	var before_basic := JSON.stringify(ChartIO.chart_to_dict(basic))
+	var before_expert := JSON.stringify(ChartIO.chart_to_dict(expert))
+	var entries := [
+		{"name": "Basic 3", "stars": 3.5, "chart": basic},
+		{"name": "Expert 9+", "stars": 9.7, "chart": expert},
+	]
+	eq(ChartIO.save_set(path, entries, "套组测试歌", "imports/x"), OK, "套组保存成功")
+	var loaded := ChartIO.load_set(path)
+	ok(bool(loaded.get("ok", false)), "套组能打开")
+	var rows: Array = loaded.get("entries", [])
+	eq(rows.size(), 2, "套组里两个难度")
+	if rows.size() == 2:
+		eq(String(rows[0].get("name", "")), "Basic 3", "第一个难度名")
+		near(float(rows[0].get("stars", -1.0)), 3.5, 0.001, "第一个难度星数")
+		eq(String(rows[1].get("name", "")), "Expert 9+", "第二个难度名")
+		near(float(rows[1].get("stars", -1.0)), 9.7, 0.001, "第二个难度星数")
+		eq(JSON.stringify(ChartIO.chart_to_dict(rows[0]["chart"])), before_basic, "第一个难度内容一致")
+		eq(JSON.stringify(ChartIO.chart_to_dict(rows[1]["chart"])), before_expert, "第二个难度内容一致")
+	eq(String(loaded.get("title", "")), "套组测试歌", "套组标题")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	return true
+
+
+## LBP 是导出格式：每种音符、红区、关键帧、镜头、配色都必须出现在文本里。
+func test_lbp_export_covers_all_types() -> bool:
+	var chart := _make_full_chart()
+	var text := LBPIO.export_chart(chart)
+	for needle in ["tap,", "hold,", "path,", "seek,", "anchor,", "bell,",
+			"region,", "key,", "ring,", "group,", "[BoundaryShapes]", "[TimingPoints]"]:
+		ok(text.contains(needle), "LBP 导出包含 %s" % needle)
+	ok(text.contains("erase="), "LBP 导出带擦除缺口")
+	ok(text.contains("lock=1"), "LBP 导出带锁定")
+	ok(text.contains("style=ribbon"), "LBP 导出带 Path 画法")
+	var path := "user://roundtrip_check.lbp.txt"
+	eq(LBPIO.export_to_file(chart, path), OK, "LBP 导出到文件")
+	ok(FileAccess.file_exists(path), "LBP 文件存在")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	return true
+
+
+func _make_full_chart() -> Chart:
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4), TimingPoint.new(8.0, 180.0, 3)]
+	chart.timing.offset_ms = 12.5
+	chart.offset_ms = 12.5
+	chart.audio_path = "audio/demo_click.wav"
+	chart.video_path = "media/bga.mp4"
+	chart.video_offset_ms = -33.0
+	chart.video_fps = 59.94
+	chart.video_opacity = 0.4
+	chart.difficulty = "Expert"
+	for key in ["title", "artist", "creator", "version", "tags", "license", "background", "storyboard"]:
+		chart.metadata[key] = "%s-value" % key
+	chart.metadata["storyboard"] = "sb/storyboard.osb"
+	chart.metadata["widescreen"] = true
+	var custom := BoundaryShape.new()
+	custom.id = "S1"
+	custom.closed = true
+	var pts := [Vector2(300, 0), Vector2(150, 260), Vector2(-150, 260), Vector2(-300, 0), Vector2(-150, -260), Vector2(150, -260)]
+	for i in pts.size():
+		var a: Vector2 = pts[i]
+		var b: Vector2 = pts[(i + 1) % pts.size()]
+		var seg := BoundarySegment.new(float(i) / float(pts.size()), float(i + 1) / float(pts.size()), a, b, "l", "l", i == 2)
+		custom.segments.append(seg)
+	chart.shapes["S1"] = custom
+	chart.shapes["S2"] = BoundaryShape.ellipse("S2", 280.0, 180.0, 48)
+	chart.default_shape_id = "S0"
+	chart.shape_keys = [
+		{"beat": 0.0, "shape_id": "S0", "easing": "linear"},
+		{"beat": 4.0, "shape_id": "S1", "easing": "in-out", "morph": 1.5},
+		{"beat": 8.0, "shape_id": "S2", "easing": "linear"},
+	]
+	chart.view_states = [
+		ViewState.new(0.0, 1.0, 0.0, 0.0, 1.0, 0.0, "linear"),
+		ViewState.new(8.0, 1.2, 5.0, -3.0, 1.1, 170.0, "in-out"),
+	]
+	# 红区放在没有音符的时段：同拍被红区盖住的音符会被校验判成「无处落脚」。
+	var region_a := Region.new(101, 6.5, 7.0)
+	region_a.angle = 200.0
+	region_a.width = 60.0
+	chart.regions.append(region_a)
+	var region_b := Region.new(102, 7.2, 7.6)
+	region_b.angle = 200.0
+	region_b.width = 45.0
+	chart.regions.append(region_b)
+	# 每种音符各来一颗，并带上各自的非默认字段
+	var tap := Note.new("tap", 1.0, 30.0, 60.0)
+	tap.id = chart.next_note_id()
+	tap.color = 1
+	tap.has_custom_color = true
+	tap.custom_color = Color("#ff00aa")
+	tap.lock = true
+	chart.notes.append(tap)
+	var hold := Note.new("hold", 1.5, 90.0, 60.0)
+	hold.id = chart.next_note_id()
+	hold.end_beat = 3.0
+	hold.hold_style = "curved"
+	hold.visual_pts = [{"x": 0.1, "y": 0.2, "db": 0.0}]
+	chart.notes.append(hold)
+	var root := Note.new("path", 2.0, 180.0, 60.0)
+	root.id = chart.next_note_id()
+	root.end_beat = 3.0
+	root.tail_angle = 270.0
+	root.trace_pts = [{"x": 0.2, "y": 0.0, "db": 0.0}, {"x": 0.4, "y": 0.2, "db": 1.0}]
+	root.path_gaps = [{"from": 0.1, "to": 0.2}]
+	root.path_speed = 1.3
+	root.path_style = "ribbon"
+	root.tolerance = 0.3
+	root.samples_per_beat = 6.0
+	chart.notes.append(root)
+	var part := Note.new("path", 3.0, 270.0, 60.0)
+	part.id = chart.next_note_id()
+	part.end_beat = 4.0
+	part.tail_angle = 0.0
+	part.path_part = 1
+	part.path_prev_id = root.id
+	part.path_head_local = root.path_tail_local()
+	part.path_style = "ribbon"
+	part.path_speed = 0.8
+	part.tolerance = 0.31
+	part.path_gaps = [{"from": 0.2, "to": 0.4}]
+	part.trace_pts = [{"x": 0.3, "y": 0.1, "db": 0.0}, {"x": 0.5, "y": 0.3, "db": 1.0}]
+	part.color = 1
+	part.lock = true
+	root.path_next_id = part.id
+	chart.notes.append(part)
+	var seek := Note.new("seek", 4.5, 0.0, 360.0)
+	seek.id = chart.next_note_id()
+	seek.end_beat = seek.beat
+	seek.seek_orien = 1
+	chart.notes.append(seek)
+	var pair := chart.make_anchor_pair(5.0, 45.0)
+	for item in pair:
+		chart.notes.append(item)
+	var bell := Note.new("bell", 6.0, 120.0, 24.0)
+	bell.id = chart.next_note_id()
+	bell.center_u = 120.0 / 360.0
+	bell.radius = 40.0
+	chart.notes.append(bell)
+	chart.palette.append({"name": "夜间", "tap": "#ff00aa", "hold": "#f0c36a", "path": "#8cbfff"})
+	chart.editor = {
+		"snap": 8, "zoom": 1.4, "waveform": false, "hud": false,
+		"flow_down": false, "beat_subdivisions": 8, "rail_snap": false,
+	}
+	return chart
+
+
+func test_undo_memory_budget() -> bool:
+	var undo := UndoStack.new()
+	for i in 30:
+		var snap := {"notes": [], "i": i}
+		snap["notes"].resize(10000)
+		undo.record(snap)
+	eq(undo.undo_items.size(), 12, "1 万音符谱面只保留 12 步撤销（内存上限）")
+	var small := UndoStack.new()
+	for i in 260:
+		small.record({"notes": [], "i": i})
+	eq(small.undo_items.size(), UndoStack.LIMIT, "小谱仍保留 200 步")
+	# 撤销一步后用量计数要跟着退，不能越用越少
+	var back := undo.undo({"notes": []})
+	eq(int(back.get("i", -1)), 29, "撤销取回最近一份快照")
+	eq(undo.undo_items.size(), 11, "撤销后列表缩短")
+	return true
+
+
+func test_ring_lane_items_real_chart() -> bool:
+	var workspace := RingWorkspace.new()
+	var timeline := RingWorkspace.Timeline.new(workspace)
+	workspace._timeline = timeline
+	var chart := Chart.new()
+	chart.events = [
+		BoundaryEvent.new("E1", 4.0, 6.0),
+		BoundaryEvent.new("E0", 1.0, 2.0),
+	]
+	chart.timing.points = [TimingPoint.new(4.0, 120.0, 4), TimingPoint.new(0.0, 120.0, 4)]
+	chart.view_states = [ViewState.new(8.0), ViewState.new(0.0)]
+	var events: Array = timeline._lane_items(chart, 2)
+	eq(events.size(), 2, "边界事件轨拿得到旧谱事件")
+	if events.size() == 2:
+		near(events[0].start_beat, 1.0, 0.001, "事件按 start_beat 排序")
+	var points: Array = timeline._lane_items(chart, 3)
+	near(float(points[0].beat), 0.0, 0.001, "BPM 轨按拍排序")
+	timeline.free()
+	workspace.free()
+	return true
+
+
+func test_ring_scrub_state() -> bool:
+	var workspace := RingWorkspace.new()
+	var timeline := RingWorkspace.Timeline.new(workspace)
+	workspace._timeline = timeline
+	eq(workspace.scrubbing(), false, "没在拖播放头")
+	timeline._drag_kind = "playhead"
+	eq(workspace.scrubbing(), true, "拖播放头的状态在 Timeline 上也能被认到")
+	eq(workspace.dragging(), true, "scrubbing 同时算拖动，面板刷新被压住")
+	timeline._drag_kind = ""
+	workspace._drag_kind = "key"
+	eq(workspace.scrubbing(), false, "拖关键帧不是 scrubbing")
+	eq(workspace.dragging(), true, "拖关键帧仍然算 dragging")
+	timeline.free()
+	workspace.free()
+	return true
+
+
+## 播放头跳转只重画覆盖层：同一拍重复事件不该反复重建环网格。
+func test_playhead_redraw_is_light() -> bool:
+	var preview := Preview3D.new()
+	preview._mesh_dirty = false
+	preview.request_playhead_redraw()
+	eq(preview._mesh_dirty, false, "播放头跳转不强制重建网格")
+	eq(preview._force_3d_frame, true, "仍然让 3D 出一帧")
+	preview.request_redraw()
+	eq(preview._mesh_dirty, true, "结构改动仍走 request_redraw 强建")
+	preview.free()
+	return true
+
+
 func test_ring_tilt_target() -> bool:
 	var bounds := Vector2(1600, 900)
 	eq(Preview3D.tilt_target_for(Vector2(800, 450), bounds, 7.0), Vector2.ZERO, "tilt zero at centre")
@@ -4235,7 +4657,6 @@ func test_anchor_release_snap() -> bool:
 	return true
 
 
-## 音符松手回吸：只回吸真的动过的那个轴；单击不挪音符。
 func test_note_release_snap() -> bool:
 	var app: App = load("res://charter/app.gd").new()
 	app.chart = Chart.new()
@@ -4416,6 +4837,20 @@ func test_seek_limit_animation_curves() -> bool:
 
 
 ## 红区驻留：进入那一帧不计时、离开清零、每局每区只断一次。
+
+
+## Seek 的下落曲线必须和 Tap/Bell 同一条：出生 1/6 环半径、判定拍正好到环。
+func test_seek_grow_matches_tap() -> bool:
+	near(Preview3D.seek_grow_scale(0.0), Note.SPAWN_LENGTH_RATIO, 0.000001,
+		"seek 出生在 1/6 环半径（和 Tap 一样）")
+	near(Preview3D.seek_grow_scale(1.0), 1.0, 0.000001, "seek 判定那一拍正好落到环上")
+	near(Preview3D.seek_grow_scale(0.5), lerpf(Note.SPAWN_LENGTH_RATIO, 1.0, 0.5), 0.000001,
+		"seek 与 Tap 共用同一条线性下落曲线")
+	near(Preview3D.seek_grow_scale(-1.0), Note.SPAWN_LENGTH_RATIO, 0.000001, "进度为负时夹到出生点")
+	return true
+
+
+## 重试：上一局的判定文字、火花和连击断连动画不能活到新一局。
 func test_limit_dwell_once() -> bool:
 	var state := {"time": 0.0, "broken": false}
 	ok(not Playtest.limit_dwell_break(state, true, 0.2, 0.2), "the frame you enter does not count")
@@ -4996,6 +5431,26 @@ func test_playtest_ui_builds() -> bool:
 
 
 ## 鼠标左右键当成两个独立键位，且不会和真实 Key 枚举相撞。
+
+
+func test_retry_clears_playtest_visuals() -> bool:
+	var preview := Preview3D.new()
+	preview._pulses = [{"age": 0.2}, {"age": 0.4}]
+	preview._arc_flashes = [{"age": 0.1}]
+	preview._hud_combo_prev = 37
+	preview._hud_combo_broken = 37
+	preview._hud_combo_break_at = 1234
+	preview.reset_path_cuts()
+	eq(preview._pulses.size(), 0, "重试清空上一局的判定文字/火花")
+	eq(preview._arc_flashes.size(), 0, "重试清空上一局的命中弧闪")
+	eq(preview._hud_combo_prev, 0, "重试复位连击动画缓存")
+	eq(preview._hud_combo_broken, 0, "重试不再显示上一局的断连数字")
+	preview.free()
+	return true
+
+
+## 复制 Path 必须带上整条链并重映射 id：照抄旧 id 会让新 part 指向原链，
+## 预览/试玩/存盘都把它当子部件跳过，用户看到的就是“粘贴没反应”。
 func test_mouse_button_input() -> bool:
 	eq(Playtest.mouse_button_key(MOUSE_BUTTON_LEFT), Playtest.MOUSE_KEY_LEFT, "left button maps to its own key")
 	eq(Playtest.mouse_button_key(MOUSE_BUTTON_RIGHT), Playtest.MOUSE_KEY_RIGHT, "right button maps to its own key")

@@ -36,14 +36,6 @@ func duration() -> float:
 	return maxf(0.0, end_beat - start_beat)
 
 
-func covers_u(u: float) -> bool:
-	return u + 0.000001 >= target_u0 and u - 0.000001 <= target_u1
-
-
-func covers_beat(beat: float) -> bool:
-	return beat + 0.000001 >= start_beat and beat - 0.000001 <= end_beat
-
-
 func to_dict() -> Dictionary:
 	return {
 		"id": id,
