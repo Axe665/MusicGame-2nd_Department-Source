@@ -130,7 +130,6 @@ static var _parse_done: Dictionary = {}
 static var _parse_mutex := Mutex.new()
 static var _tex_decoded: Dictionary = {}
 static var _tex_mutex := Mutex.new()
-var _sb_prefetch_usec: int = 0
 ## 预览最大也就屏幕那么高，超长边超过这个数只会白吃显存和解码时间。
 const STORYBOARD_TEX_MAX := 1024
 var show_storyboard := true
@@ -151,9 +150,8 @@ var _sb_render_items: Array[Dictionary] = []
 ## 采样后按图层分桶：每层只遍历自己的对象，不用 7 个层各扫一遍全部 items。
 var _sb_layer_items: Dictionary = {}
 var _sb_additive_layer_items: Dictionary = {}
-## 贴图预取队列：storyboard 一次几百张图，全在用到的那一帧读会卡一下，
-## 改成每帧后台预取几张。
-var _sb_prefetch: Array[String] = []
+## 引用文件的全路径只拼一次（以前每帧每张图都要 get_file() + 拼接）。
+var _sb_ref_full: PackedStringArray = PackedStringArray()
 ## storyboard 的 Background 层里有谱面背景图时，静态背景层要关掉（对照 lazer ReplacesBackground）。
 var _storyboard_replaces_background := false
 ## 背景层（Background/Video）单独一层，垫在 3D 判定环下面。
@@ -804,11 +802,9 @@ func _process(_delta: float) -> void:
 		_mesh_dirty = false
 	_update_background(chart)
 	_update_video(chart, t)
-	# 贴图预取以前每帧都遍历全部 referenced_files（加锁 + 字符串拼接）。4Hz 足够。
-	var prefetch_now := Time.get_ticks_usec()
-	if prefetch_now - _sb_prefetch_usec >= 250000:
-		_sb_prefetch_usec = prefetch_now
-		_prefetch_storyboard_textures()
+	# 逐帧预取：现在只做字典查重 + 每帧最多上传 2 张贴图。
+	# 之前 4Hz 节流会让 135 张图拖到十几秒才全部出现。
+	_prefetch_storyboard_textures()
 	var beat_phase := fposmod(t, 1.0)
 	_glow_material.albedo_color = Color(0.37, 0.92, 0.86, 0.10 + 0.09 * exp(-beat_phase * 7.0))
 	if playtest_mode:
@@ -2543,7 +2539,7 @@ func _ensure_storyboard(chart: Chart) -> void:
 	_storyboard_replaces_background = false
 	_sb_sample_ms = -1.0e9
 	_sb_render_items = []
-	_sb_prefetch.clear()
+	_sb_ref_full = PackedStringArray()
 	if chart == null:
 		_refresh_background_layering()
 		return
@@ -2563,11 +2559,13 @@ func _ensure_storyboard(chart: Chart) -> void:
 	_sb_wide_detected = _detect_wide(board)
 	_update_storyboard_clip_rects()
 	_storyboard_replaces_background = _storyboard.replaces_background(String(chart.metadata.get("background", "")))
-	if _sb_prefetch.is_empty():
-		for ref in _storyboard.referenced_files:
-			if not _tex_cache.has(dir + "/" + String(ref).get_file()):
-				_sb_prefetch.append(ref)
 	_refresh_background_layering()
+
+## 准备阶段（READY/倒计时）把 storyboard 贴图先传上去：
+## 开局后每帧最多 2 张上传，135 张会在前 1 秒内一张张卡帧；藏在 READY 后面就看不见。
+func preload_storyboard_textures() -> void:
+	_prefetch_storyboard_textures()
+
 
 func _prefetch_storyboard_textures() -> void:
 	if _storyboard == null:
@@ -2598,11 +2596,11 @@ func _prefetch_storyboard_textures() -> void:
 	# 刚上传的贴图要重画一次：暂停/编辑器里没有 time_changed，否则会一直空着。
 	if uploaded > 0:
 		refresh_storyboard_layers()
-	# 还没排队的引用文件，趁早丢给后台线程。
-	for ref in _storyboard.referenced_files:
-		var full := _storyboard_dir + "/" + String(ref).get_file()
-		if _storyboard == null:
-			break
+	# 还没排队的引用文件，趁早丢给后台线程（全路径已缓存，逐帧扫也不贵）。
+	if _sb_ref_full.is_empty() and not _storyboard.referenced_files.is_empty():
+		for ref in _storyboard.referenced_files:
+			_sb_ref_full.append(_storyboard_dir + "/" + String(ref).get_file())
+	for full in _sb_ref_full:
 		_request_texture(full)
 
 

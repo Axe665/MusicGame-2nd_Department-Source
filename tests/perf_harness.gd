@@ -17,6 +17,24 @@ extends Control
 
 const PerfChart = preload("res://tests/perf_chart.gd")
 
+
+## 在 _draw 里把 5 个 storyboard 图层各画一遍并计时（draw_* 只能在 _draw 内调）。
+class StoryboardProbe:
+	extends Control
+	var preview: Preview3D
+	var total_us := 0
+	var draws := 0
+
+	func _draw() -> void:
+		var started := Time.get_ticks_usec()
+		preview.draw_storyboard_background(self)
+		preview.draw_storyboard_additive_background(self)
+		preview.draw_storyboard_front(self)
+		preview.draw_storyboard_overlay(self)
+		preview.draw_storyboard_additive_front(self)
+		total_us += Time.get_ticks_usec() - started
+		draws += 1
+
 var _notes := 10000
 var _keys := 200
 var _sample_frames := 120
@@ -186,6 +204,13 @@ func _with_ring(scrub: bool) -> void:
 
 func _with_playtest() -> void:
 	var chart := _chart()
+	var sb_dir := ""
+	for arg in OS.get_cmdline_user_args():
+		var text := String(arg)
+		if text.begins_with("--storyboard="):
+			sb_dir = text.split("=", true, 1)[1]
+	if not sb_dir.is_empty():
+		chart.metadata["storyboard"] = sb_dir
 	var preview: Preview3D = load("res://tests/bench_preview.gd").new()
 	add_child(preview)
 	preview.position = Vector2.ZERO
@@ -195,13 +220,30 @@ func _with_playtest() -> void:
 	preview.playtest_mode = true
 	preview.show_hud = true
 	preview.show_notes = true
+	preview.show_storyboard = not sb_dir.is_empty()
+	preview.show_storyboard_background = true
 	# 落在密集段：0 拍附近只有一两颗音符，测不出每帧成本。
 	preview.time_beat = 400.0
 	await _frames(_warmup)
 	var beat := 400.0
+	var probe: StoryboardProbe = null
+	if not sb_dir.is_empty():
+		probe = StoryboardProbe.new()
+		probe.preview = preview
+		probe.size = Vector2(1280, 720)
+		add_child(probe)
 	await _sample("playtest", func(_index: int) -> void:
 		beat += 1.0 / 60.0
-		preview.time_beat = beat)
+		preview.time_beat = beat
+		if probe != null:
+			probe.queue_redraw())
+	if probe != null:
+		print("PERF playtest.storyboard_textures=%d" % preview._tex_cache.size())
+		var sb_ms := float(probe.total_us) / float(maxi(1, probe.draws)) / 1000.0
+		_metrics["playtest.storyboard_ms"] = sb_ms
+		print("PERF playtest.storyboard_ms=%.2f" % sb_ms)
+		print("PERF playtest.storyboard_draws=%d" % probe.draws)
+		probe.queue_free()
 	# 覆盖层每帧重建的纯 CPU 成本（和帧间隔分开：帧间隔有引擎地板）。
 	var draws := maxi(1, int(preview.draw_count))
 	var overlay_ms := float(preview.total_us) / float(draws) / 1000.0
