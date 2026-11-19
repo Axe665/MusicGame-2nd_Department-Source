@@ -1033,7 +1033,9 @@ func _hit_segment(lane: int, items: Array, pos: Vector2) -> int:
 		elif lane == LANE_EVENTS and items[i] is BoundaryEvent:
 			end = (items[i] as BoundaryEvent).end_beat
 		elif chart != null:
-			end = maxf(start + 0.25, chart.content_end_beat())
+			# 和色带绘制用同一条「最后一段到内容结束/至少一小节」规则。
+			var bpb := maxf(1.0, chart.timing.beats_per_bar_at(start))
+			end = RingWorkspace.span_end([start], 0, chart.content_end_beat(), bpb)
 		if pos.x >= _x_for(start) and pos.x <= _x_for(end):
 			return i
 	return -1

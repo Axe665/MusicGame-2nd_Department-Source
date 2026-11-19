@@ -119,8 +119,8 @@ func _init(p_workspace, p_timeline) -> void:
 	add_child(_gesture_timer)
 
 
-func refresh() -> void:
-	if _building or _editing:
+func refresh(force: bool = false) -> void:
+	if _building or (_editing and not force):
 		return
 	_building = true
 	for child in get_children():

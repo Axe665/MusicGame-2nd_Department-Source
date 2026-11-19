@@ -2099,6 +2099,9 @@ func test_ring_marquee_and_drag() -> bool:
 	timeline._release(Vector2(timeline._x_for(2.0), 100))
 	near(float(chart.shape_keys[0].get("beat", 0.0)), 2.0, 0.001, "形状帧跟着拖动")
 	near(chart.view_states[0].beat, 2.0, 0.001, "镜头帧一起拖动")
+	# 最后一段的整条「保持到结尾」都要能点中（以前只认起点后 0.25 拍）
+	var last_hit := timeline._hit_segment(0, chart.sorted_shape_keys(), Vector2(timeline._x_for(5.0), 90))
+	eq(last_hit, 1, "最后一段保持区可点选")
 	timeline.free()
 	workspace.free()
 	app.free()

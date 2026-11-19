@@ -678,7 +678,7 @@ func _build() -> void:
 	root.add_child(_timeline)
 	if _inspector != null:
 		_inspector.timeline = _timeline
-		_timeline.selection_changed.connect(_inspector.refresh)
+		_timeline.selection_changed.connect(func() -> void: _inspector.refresh(true))
 	# 选中变化时标题也要立刻跟着变（镜头帧/形状帧），不能等下一次跨拍。
 	_timeline.selection_changed.connect(func() -> void: _sync_time_tool(true))
 	var explain := Label.new()
