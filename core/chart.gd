@@ -163,8 +163,8 @@ var _next_event_id: int = 1
 func _init() -> void:
 	shapes["S0"] = BoundaryShape.circle("S0", 330.0, 48)
 	view_states = [ViewState.new(0.0, 1.0, 0.0, 0.0, 1.0, 0.0, "linear")]
-	# 新谱默认让作者设置的倾斜/椭圆进入试玩；老谱没有这个键，载入时按 true 处理。
-	metadata["face_camera"] = false
+	# 镜头面板只保留推拉/滚转；保留 face_camera 兼容旧谱的倾斜/椭圆数据。
+	metadata["face_camera"] = true
 
 
 func get_shape(shape_id: String) -> BoundaryShape:

@@ -64,6 +64,7 @@ func _initialize() -> void:
 		"test_camera_dolly_interpolates",
 		"test_ring_segment_targets",
 		"test_ring_undo_and_default_circle",
+		"test_ring_insert_advances_when_occupied",
 		"test_ease_bezier",
 		"test_undo_memory_budget",
 		"test_full_chart_round_trip",
@@ -2408,6 +2409,44 @@ func test_ring_undo_and_default_circle() -> bool:
 	eq(app.chart.shape_keys.size(), 0, "环编辑撤销")
 	app.redo_chart()
 	eq(app.chart.shape_keys.size(), 1, "环编辑重做")
+	app.free()
+	return true
+
+
+## 播放头停在已有帧上时，插入必须自动放到下一拍，而不是静默替换。
+func test_ring_insert_advances_when_occupied() -> bool:
+	var app: App = load("res://charter/app.gd").new()
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	chart.shape_keys = [{"beat": 0.0, "shape_id": "S0", "easing": "linear", "morph": 0.0, "id": 1}]
+	app.chart = chart
+	app.snap_division = 4
+	app.playhead_beat = 0.0
+	var workspace := RingWorkspace.new()
+	workspace._app = app
+	workspace._view_beats = 16.0
+	var timeline := RingTimeline.new(workspace)
+	workspace._timeline = timeline
+	timeline.size = Vector2(1600, 300)
+	workspace._insert_key_with_shape("S0")
+	eq(chart.shape_keys.size(), 2, "已有帧时插入会新增而不是替换")
+	near(workspace.playhead(), 0.25, 0.001, "新增后播放头移到下一拍")
+	workspace._insert_key_with_shape("S0")
+	eq(chart.shape_keys.size(), 3, "连点继续往后加")
+	near(workspace.playhead(), 0.5, 0.001, "第二次也移到下一拍")
+	workspace.insert_next_shape()
+	eq(chart.shape_keys.size(), 4, "检查器「下一拍」按钮继续加形状帧")
+	near(workspace.playhead(), 0.75, 0.001, "下一拍按钮也推进播放头")
+	workspace.seek(0.0)
+	var views_before := chart.view_states.size()
+	workspace._add_view_keyframe()
+	eq(chart.view_states.size(), views_before + 1, "已有镜头帧时也会新增")
+	near(workspace.playhead(), 0.25, 0.001, "镜头帧也移到下一拍")
+	workspace.insert_next_view()
+	eq(chart.view_states.size(), views_before + 2, "检查器「下一拍」按钮继续加镜头帧")
+	near(workspace.playhead(), 0.5, 0.001, "镜头下一拍按钮推进播放头")
+	timeline.free()
+	workspace.free()
 	app.free()
 	return true
 

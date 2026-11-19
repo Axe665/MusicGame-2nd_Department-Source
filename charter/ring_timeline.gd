@@ -767,9 +767,7 @@ func _draw_segment_content(canvas: CanvasItem, lane: int, item, rect: Rect2, cha
 				label += " · " + ("硬切" if morph <= 0.0001 else ("过渡 %.2f 拍" % morph))
 	elif lane == LANE_CAMERA and item is ViewState:
 		var shown: ViewState = (target as ViewState) if has_target and target is ViewState else (item as ViewState)
-		var head := "x%.2f · %.0f°" % [shown.zoom, shown.rotation]
-		if absf(shown.dolly - 1.0) > 0.001:
-			head += " · 推拉 %.2f" % shown.dolly
+		var head := "推拉 %.2f · 滚转 %.0f°" % [shown.dolly, shown.rotation]
 		if is_last:
 			label = "保持到结尾 · " + head
 		else:
@@ -983,8 +981,8 @@ func _hover_hint(lane: int, item, start: float, end: float) -> String:
 			String(item.get("shape_id", "")), end - start, secs, morph]
 	if lane == LANE_CAMERA and item is ViewState:
 		var state := item as ViewState
-		return "镜头 · %.2f 拍 · %.2f 秒 · x%.2f · %.0f° · 缓动 %s" % [
-			end - start, secs, state.zoom, state.rotation, state.easing]
+		return "镜头 · %.2f 拍 · %.2f 秒 · 推拉 %.2f · 滚转 %.0f° · 缓动 %s" % [
+			end - start, secs, state.dolly, state.rotation, state.easing]
 	if lane == LANE_EVENTS and item is BoundaryEvent:
 		return "事件 %s（只读）" % (item as BoundaryEvent).id
 	if lane == LANE_BPM:

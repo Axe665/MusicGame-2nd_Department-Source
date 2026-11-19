@@ -1046,7 +1046,7 @@ func _library_shape() -> BoundaryShape:
 
 func _rebuild_thumbs() -> void:
 	var chart_data := chart()
-	if chart_data == null:
+	if chart_data == null or _thumbs == null:
 		return
 	var active := String(_app.selected_shape_id)
 	var signature := active
@@ -1154,6 +1154,30 @@ func _on_ring_rotate(degrees: float) -> void:
 	_preview.queue_redraw()
 
 
+## 从 after 之后找第一个没有对应关键帧的吸附拍：放帧不再覆盖/卡死在同一拍。
+func _free_beat(after: float, kind: String) -> float:
+	var chart_data := chart()
+	if chart_data == null:
+		return after
+	var step := GridDivisions.step_beats(snap_division())
+	if step <= 0.0001:
+		step = 0.25
+	var beat := after + step
+	for i in 512:
+		var used := false
+		if kind == "shape":
+			used = not chart_data.shape_key_at(beat).is_empty()
+		else:
+			for state in chart_data.view_states:
+				if absf(state.beat - beat) < 0.001:
+					used = true
+					break
+		if not used:
+			return beat
+		beat += step
+	return after
+
+
 func _add_view_keyframe() -> void:
 	var chart_data := chart()
 	if chart_data == null:
@@ -1161,10 +1185,10 @@ func _add_view_keyframe() -> void:
 	var at := playhead()
 	for existing in chart_data.view_states:
 		if absf(existing.beat - at) < 0.001:
-			_app.select_view(chart_data.view_states.find(existing))
-			if _timeline != null:
-				_timeline._select_only("view", existing.id)
-			return
+			# 播放头已有镜头帧：自动放到下一拍，连点可以连续打帧。
+			at = _free_beat(at, "view")
+			seek(at)
+			break
 	var current := BoundaryRuntime.eval_view(chart_data, at)
 	var state := ViewState.new(at, float(current.get("zoom", 1.0)), float(current.get("tilt_x", 0.0)),
 		float(current.get("tilt_y", 0.0)), float(current.get("ellipse", 1.0)), float(current.get("rotation", 0.0)),
@@ -1295,20 +1319,20 @@ func _insert_key_snapshot() -> void:
 	var chart_data := chart()
 	if chart_data == null:
 		return
-	var beat := playhead()
+	var beat := _free_beat(playhead(), "shape")
+	if not chart_data.shape_key_at(beat).is_empty():
+		_set_hint("附近没有空拍可插；先拖时间轴到别的拍。")
+		return
+	if not is_equal_approx(beat, playhead()):
+		seek(beat)
 	var shape := _snapshot_shape(beat)
-	var existing := current_key()
 	_app.mutate_ring(func() -> void:
 		chart_data.shapes[shape.id] = shape
-		if existing.is_empty():
-			var key := {"beat": beat, "shape_id": shape.id, "easing": "linear", "morph": 0.0,
-				"id": chart_data.next_key_id()}
-			chart_data.shape_keys.append(key)
-			_app.select_shape(shape.id)
-			_app.select_segment(0)
-		else:
-			existing["shape_id"] = shape.id
-			_app.select_shape(shape.id)
+		var key := {"beat": beat, "shape_id": shape.id, "easing": "linear", "morph": 0.0,
+			"id": chart_data.next_key_id()}
+		chart_data.shape_keys.append(key)
+		_app.select_shape(shape.id)
+		_app.select_segment(0)
 	)
 	var created := chart_data.shape_key_at(beat)
 	if not created.is_empty() and _timeline != null:
@@ -1321,20 +1345,88 @@ func _insert_key_with_shape(shape_id: String) -> void:
 	var chart_data := chart()
 	if chart_data == null or chart_data.get_shape(shape_id) == null:
 		return
-	var beat := playhead()
-	var existing := current_key()
+	var beat := _free_beat(playhead(), "shape")
+	if not chart_data.shape_key_at(beat).is_empty():
+		_set_hint("附近没有空拍可插；先拖时间轴到别的拍。")
+		return
+	if not is_equal_approx(beat, playhead()):
+		seek(beat)
 	_app.mutate_ring(func() -> void:
-		if existing.is_empty():
-			chart_data.shape_keys.append({"beat": beat, "shape_id": shape_id, "easing": "linear",
-				"morph": 0.0, "id": chart_data.next_key_id()})
-		else:
-			existing["shape_id"] = shape_id
+		chart_data.shape_keys.append({"beat": beat, "shape_id": shape_id, "easing": "linear",
+			"morph": 0.0, "id": chart_data.next_key_id()})
 		_app.select_shape(shape_id)
 	)
 	var created := chart_data.shape_key_at(beat)
 	if not created.is_empty() and _timeline != null:
 		_timeline._select_only("shape", int(created.get("id", 0)))
 	_refresh()
+
+
+## 从当前选中的帧复制到下一个空吸附格：连点可以连续铺帧，不覆盖已有帧。
+func insert_next_shape() -> void:
+	var chart_data := chart()
+	if chart_data == null:
+		return
+	var source: Dictionary = _timeline.primary_key() if _timeline != null else {}
+	if source.is_empty():
+		source = current_key()
+	var beat := _free_beat(playhead(), "shape")
+	if not chart_data.shape_key_at(beat).is_empty():
+		_set_hint("附近没有空拍可插；先拖时间轴到别的拍。")
+		return
+	var shape_id := String(source.get("shape_id", chart_data.default_shape_id))
+	if chart_data.get_shape(shape_id) == null:
+		shape_id = chart_data.default_shape_id
+	var key := {"beat": beat, "shape_id": shape_id,
+		"easing": String(source.get("easing", "linear")),
+		"morph": float(source.get("morph", 0.0)),
+		"id": chart_data.next_key_id()}
+	if source.has("curve"):
+		key["curve"] = (source.get("curve", []) as Array).duplicate()
+	_app.mutate_ring(func() -> void:
+		chart_data.shape_keys.append(key)
+		_app.select_shape(shape_id)
+	)
+	seek(beat)
+	_timeline._select_only("shape", int(key.get("id", 0)))
+	_refresh()
+	_set_hint("已在 %.2f 拍插入形状帧 %s。" % [beat, shape_id])
+
+
+func insert_next_view() -> void:
+	var chart_data := chart()
+	if chart_data == null:
+		return
+	var source: ViewState = _timeline.primary_view() if _timeline != null else null
+	if source == null:
+		source = _app.get_selected_view()
+	var at := _free_beat(playhead(), "view")
+	if not is_equal_approx(at, playhead()):
+		seek(at)
+	var current := BoundaryRuntime.eval_view(chart_data, at)
+	var state := ViewState.new(at,
+		float(current.get("zoom", 1.0)), float(current.get("tilt_x", 0.0)),
+		float(current.get("tilt_y", 0.0)), float(current.get("ellipse", 1.0)),
+		float(current.get("rotation", 0.0)), "in-out", float(current.get("dolly", 1.0)))
+	if source != null:
+		state.zoom = source.zoom
+		state.tilt_x = source.tilt_x
+		state.tilt_y = source.tilt_y
+		state.ellipse = source.ellipse
+		state.rotation = source.rotation
+		state.dolly = source.dolly
+		state.easing = source.easing
+		state.morph = source.morph
+		state.curve = source.curve.duplicate()
+	state.id = chart_data.next_key_id()
+	_app.mutate_ring(func() -> void:
+		chart_data.view_states.append(state)
+		chart_data.view_states.sort_custom(func(a: ViewState, b: ViewState) -> bool: return a.beat < b.beat)
+		_app.select_view(chart_data.view_states.find(state))
+	)
+	_timeline._select_only("view", state.id)
+	_refresh()
+	_set_hint("已在 %.2f 拍插入镜头帧。" % at)
 
 
 func _delete_key() -> void:

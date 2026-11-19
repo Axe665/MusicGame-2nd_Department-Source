@@ -162,8 +162,15 @@ func _build_empty(chart: Chart) -> void:
 	_add_hint("点关键帧选中；Ctrl/Shift 加选；拖空白框选。\n选中色带可编辑这一段；选中关键帧可改参数。")
 	_add_sep()
 	_add_info("播放头", "%.2f 拍" % workspace.playhead())
-	_add_button("＋ 在播放头插入形状帧", func() -> void: workspace.open_insert_menu())
-	_add_button("＋ 在播放头打镜头帧", func() -> void: workspace._add_view_keyframe())
+	var occupied: bool = not workspace.current_key().is_empty()
+	for state in chart.view_states:
+		if absf(state.beat - workspace.playhead()) < 0.001:
+			occupied = true
+			break
+	if occupied:
+		_add_hint("播放头已经有帧了；再插入会自动放到下一拍，连点可以连续加。")
+	_add_button("＋ 插入形状帧", func() -> void: workspace.open_insert_menu())
+	_add_button("＋ 打镜头帧", func() -> void: workspace._add_view_keyframe())
 	_add_sep()
 	_add_info("形状数", str(chart.shapes.size()))
 	_add_info("形状帧", str(chart.shape_keys.size()))
@@ -276,6 +283,10 @@ func _build_segment(chart: Chart) -> void:
 	_add_button("选中目标帧", func() -> void:
 		timeline._select_only(lane, int(key.get("id", 0) if lane == "shape" else (view.id if view != null else 0)))
 	)
+	if lane == "shape":
+		_add_button("＋ 在下一拍插入形状帧", func() -> void: workspace.insert_next_shape())
+	elif view != null:
+		_add_button("＋ 在下一拍插入镜头帧", func() -> void: workspace.insert_next_view())
 
 
 func _build_shape_key(chart: Chart, key: Dictionary) -> void:
@@ -310,6 +321,7 @@ func _build_shape_key(chart: Chart, key: Dictionary) -> void:
 		workspace._toggle_gap()
 	)
 	_add_button("删除这一帧 (Del)", func() -> void: timeline.delete_selection())
+	_add_button("＋ 在下一拍插入形状帧", func() -> void: workspace.insert_next_shape())
 	_add_sep()
 	if span > 0.0001:
 		var morph := BoundaryRuntime.morph_beats(key, span)
@@ -337,20 +349,17 @@ func _build_camera_key(chart: Chart, state: ViewState) -> void:
 		)
 	)
 	_add_sep()
-	# 常用演出预设：只改对应的几项，不覆盖作者已经调好的其他参数。
+	# 只保留推拉和滚转：预设也只改这两项，不再暴露缩放/倾斜/椭圆。
 	var grid := GridContainer.new()
-	grid.columns = 4
+	grid.columns = 3
 	grid.add_theme_constant_override("h_separation", 4)
 	grid.add_theme_constant_override("v_separation", 4)
 	for item in [
-		["标准", {"dolly": 1.0, "zoom": 1.0, "rotation": 0.0, "tilt_x": 0.0, "tilt_y": 0.0, "ellipse": 1.0}],
+		["标准", {"dolly": 1.0, "rotation": 0.0}],
 		["推近", {"dolly": 1.25}],
 		["拉远", {"dolly": 0.8}],
 		["左滚", {"rotation": -15.0}],
 		["右滚", {"rotation": 15.0}],
-		["俯视", {"tilt_x": 25.0}],
-		["仰视", {"tilt_x": -25.0}],
-		["压扁", {"ellipse": 0.85}],
 	]:
 		var values: Dictionary = item[1]
 		grid.add_child(_small_button(String(item[0]), func() -> void:
@@ -358,47 +367,20 @@ func _build_camera_key(chart: Chart, state: ViewState) -> void:
 				for field in values.keys():
 					match String(field):
 						"dolly": state.dolly = float(values[field])
-						"zoom": state.zoom = float(values[field])
 						"rotation": state.rotation = float(values[field])
-						"tilt_x": state.tilt_x = float(values[field])
-						"tilt_y": state.tilt_y = float(values[field])
-						"ellipse": state.ellipse = float(values[field])
 			)
 		))
 	add_child(grid)
-	_add_hint("Estella 式：环始终在画面中心，推拉靠镜头距离，滚转只做轻微倾斜。")
+	_add_hint("Estella 式：环始终在画面中心，只做推拉和滚转。")
 	_add_sep()
 	_add_slider("推拉（1=标准）", state.dolly, 0.6, 1.6, 0.01, func(value: float) -> void:
 		_edit(func() -> void: state.dolly = value)
 	)
-	_add_slider("环缩放", state.zoom, 0.75, 1.4, 0.01, func(value: float) -> void:
-		_edit(func() -> void: state.zoom = value)
-	)
 	_add_slider("滚转（度）", state.rotation, -180.0, 180.0, 1.0, func(value: float) -> void:
 		_edit(func() -> void: state.rotation = value)
 	)
-	_add_slider("俯仰（度）", state.tilt_x, -60.0, 60.0, 1.0, func(value: float) -> void:
-		_edit(func() -> void: state.tilt_x = value)
-	)
-	_add_slider("侧倾（度）", state.tilt_y, -60.0, 60.0, 1.0, func(value: float) -> void:
-		_edit(func() -> void: state.tilt_y = value)
-	)
-	_add_slider("椭圆（横向拉伸）", state.ellipse, 0.5, 1.5, 0.01, func(value: float) -> void:
-		_edit(func() -> void: state.ellipse = value)
-	)
-	var face := CheckBox.new()
-	face.text = "正对镜头（忽略倾斜/椭圆）"
-	face.button_pressed = bool(chart.metadata.get("face_camera", true))
-	face.add_theme_font_size_override("font_size", 11)
-	face.toggled.connect(func(value: bool) -> void:
-		_edit(func() -> void: chart.metadata["face_camera"] = value)
-		# 不能在复选框自己的 toggled 回调里重建整页：会把复选框本身释放掉。
-		call_deferred("refresh")
-	)
-	add_child(face)
-	if bool(chart.metadata.get("face_camera", true)):
-		_add_hint("当前正对镜头开着：俯仰/侧倾/椭圆在预览和试玩里都会被忽略。")
 	_add_button("删除选中镜头帧 (Del)", func() -> void: timeline.delete_selection())
+	_add_button("＋ 在下一拍插入镜头帧", func() -> void: workspace.insert_next_view())
 	_add_sep()
 	var previous := _previous_key_beat(chart, "view", state.beat)
 	var span := maxf(0.0, state.beat - previous)
