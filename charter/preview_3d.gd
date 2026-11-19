@@ -153,8 +153,9 @@ var _sb_render_items: Array[Dictionary] = []
 ## 采样后按图层分桶：每层只遍历自己的对象，不用 7 个层各扫一遍全部 items。
 var _sb_layer_items: Dictionary = {}
 var _sb_additive_layer_items: Dictionary = {}
-## 引用文件的全路径只拼一次（以前每帧每张图都要 get_file() + 拼接）。
-var _sb_ref_full: PackedStringArray = PackedStringArray()
+## 贴图预取队列：storyboard 一次几百张图，全在用到的那一帧读会卡一下，
+## 改成每帧后台预取几张。
+var _sb_prefetch: Array[String] = []
 ## storyboard 的 Background 层里有谱面背景图时，静态背景层要关掉（对照 lazer ReplacesBackground）。
 var _storyboard_replaces_background := false
 ## 背景层（Background/Video）单独一层，垫在 3D 判定环下面。
@@ -806,8 +807,6 @@ func _process(_delta: float) -> void:
 		_mesh_dirty = false
 	_update_background(chart)
 	_update_video(chart, t)
-	# 逐帧预取：现在只做字典查重 + 每帧最多上传 2 张贴图。
-	# 之前 4Hz 节流会让 135 张图拖到十几秒才全部出现。
 	_prefetch_storyboard_textures()
 	var beat_phase := fposmod(t, 1.0)
 	_glow_material.albedo_color = Color(0.37, 0.92, 0.86, 0.10 + 0.09 * exp(-beat_phase * 7.0))
@@ -853,8 +852,7 @@ func _process(_delta: float) -> void:
 		# 采样间隔跟帧率上限/导出 fps；只有采样时刻变化（或几何/尺寸变了）才重绘。
 		var sb_ms := chart.timing.beat_to_chart_ms(t) - chart.offset_ms
 		_sb_sample_interval = _storyboard_sample_interval()
-		var has_storyboard_items := not _sb_layer_items.is_empty() or not _sb_additive_layer_items.is_empty()
-		if has_storyboard_items and (view_changed or flat_dirty or absf(sb_ms - _sb_queued_ms) >= maxf(0.0001, _sb_sample_interval)):
+		if view_changed or flat_dirty or absf(sb_ms - _sb_queued_ms) >= maxf(0.0001, _sb_sample_interval):
 			_sb_queued_ms = sb_ms
 			if _storyboard_bg != null:
 				_storyboard_bg.queue_redraw()
@@ -2565,7 +2563,7 @@ func _ensure_storyboard(chart: Chart) -> void:
 	_storyboard_replaces_background = false
 	_sb_sample_ms = -1.0e9
 	_sb_render_items = []
-	_sb_ref_full = PackedStringArray()
+	_sb_prefetch.clear()
 	if chart == null:
 		_refresh_background_layering()
 		return
@@ -2585,13 +2583,11 @@ func _ensure_storyboard(chart: Chart) -> void:
 	_sb_wide_detected = _detect_wide(board)
 	_update_storyboard_clip_rects()
 	_storyboard_replaces_background = _storyboard.replaces_background(String(chart.metadata.get("background", "")))
+	if _sb_prefetch.is_empty():
+		for ref in _storyboard.referenced_files:
+			if not _tex_cache.has(dir + "/" + String(ref).get_file()):
+				_sb_prefetch.append(ref)
 	_refresh_background_layering()
-
-## 准备阶段（READY/倒计时）把 storyboard 贴图先传上去：
-## 开局后每帧最多 2 张上传，135 张会在前 1 秒内一张张卡帧；藏在 READY 后面就看不见。
-func preload_storyboard_textures() -> void:
-	_prefetch_storyboard_textures()
-
 
 func _prefetch_storyboard_textures() -> void:
 	if _storyboard == null:
@@ -2622,11 +2618,11 @@ func _prefetch_storyboard_textures() -> void:
 	# 刚上传的贴图要重画一次：暂停/编辑器里没有 time_changed，否则会一直空着。
 	if uploaded > 0:
 		refresh_storyboard_layers()
-	# 还没排队的引用文件，趁早丢给后台线程（全路径已缓存，逐帧扫也不贵）。
-	if _sb_ref_full.is_empty() and not _storyboard.referenced_files.is_empty():
-		for ref in _storyboard.referenced_files:
-			_sb_ref_full.append(_storyboard_dir + "/" + String(ref).get_file())
-	for full in _sb_ref_full:
+	# 还没排队的引用文件，趁早丢给后台线程。
+	for ref in _storyboard.referenced_files:
+		var full := _storyboard_dir + "/" + String(ref).get_file()
+		if _storyboard == null:
+			break
 		_request_texture(full)
 
 
@@ -2716,6 +2712,14 @@ static func _decode_texture(full: String) -> void:
 	_tex_decoded[full] = [image, boost]
 	_tex_pending.erase(full)
 	_tex_mutex.unlock()
+
+
+func _storyboard_texture(path: String) -> Texture2D:
+	var full := _storyboard_dir + "/" + path.get_file()
+	var texture: Texture2D = _tex_cache.get(full)
+	if texture == null:
+		_request_texture(full)
+	return texture
 
 
 ## 把 storyboard 的 640x480 坐标场映射到预览区域：
@@ -2829,10 +2833,6 @@ func _draw_storyboard_layers(canvas: Control, chart: Chart, t: float, layers: Ar
 		_sb_layer_items.clear()
 		_sb_additive_layer_items.clear()
 		for entry in _sb_render_items:
-			# 贴图全路径与亮度在采样时算一次：以前每帧每张图都要拼字符串+查字典。
-			var full := _storyboard_dir + "/" + String(entry["path"]).get_file()
-			entry["full"] = full
-			entry["boost"] = float(_tex_boost.get(full, 1.0))
 			var key := String(entry["layer"])
 			var target := _sb_additive_layer_items if bool(entry.get("additive", false)) else _sb_layer_items
 			if not target.has(key):
@@ -2848,9 +2848,8 @@ func _draw_storyboard_layers(canvas: Control, chart: Chart, t: float, layers: Ar
 		if skip_background and (layer_name == "Background" or layer_name == "Video"):
 			continue
 		for item in group:
-			var full := String(item.get("full", ""))
-			if full.is_empty():
-				full = _storyboard_dir + "/" + String(item["path"]).get_file()
+			var tex_path := String(item["path"])
+			var full := _storyboard_dir + "/" + tex_path.get_file()
 			var texture: Texture2D = _tex_cache.get(full)
 			if texture == null:
 				_request_texture(full)
@@ -2858,7 +2857,7 @@ func _draw_storyboard_layers(canvas: Control, chart: Chart, t: float, layers: Ar
 			var sprite_size := Vector2(texture.get_width(), texture.get_height())
 			var anchor := _storyboard_anchor(int(item["origin"]), sprite_size)
 			var pos: Vector2 = offset + (item["pos"] as Vector2) * scale
-			var sprite_scale: Vector2 = item["scale"] * scale * float(item.get("boost", 1.0))
+			var sprite_scale: Vector2 = item["scale"] * scale * float(_tex_boost.get(full, 1.0))
 			var rotation := deg_to_rad(float(item["rotation"]))
 			# 屏幕外的 sprite 直接丢掉：storyboard 里数百张图会一直“可见”，
 			# 大部分已经被 M 命令挪出画面，不剔除的话每帧白画几百次。
