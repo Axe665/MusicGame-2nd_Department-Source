@@ -50,6 +50,9 @@ func _initialize() -> void:
 		"test_ring_span_end",
 		"test_ring_scrub_state",
 		"test_ring_lane_items_real_chart",
+		"test_ring_timeline_selection_ops",
+		"test_ring_playhead_only_redraws_overlay",
+		"test_ring_marquee_and_drag",
 		"test_shape_key_cache_invalidation",
 		"test_key_ids_and_v2_migration",
 		"test_camera_left_key_semantics",
@@ -1970,6 +1973,138 @@ func _make_full_chart() -> Chart:
 	return chart
 
 
+func test_ring_timeline_selection_ops() -> bool:
+	var app: App = load("res://charter/app.gd").new()
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	chart.shapes["S0"] = BoundaryShape.ellipse("S0", 300.0, 300.0, 48)
+	chart.shape_keys = [
+		{"beat": 0.0, "shape_id": "S0", "easing": "linear", "id": 1},
+		{"beat": 4.0, "shape_id": "S0", "easing": "linear", "id": 2},
+	]
+	chart.view_states = [
+		ViewState.new(0.0, 1.0, 0.0, 0.0, 1.0, 0.0, "linear"),
+		ViewState.new(2.0, 1.2, 0.0, 0.0, 1.0, 45.0, "linear"),
+	]
+	chart.view_states[0].id = 3
+	chart.view_states[1].id = 4
+	app.chart = chart
+	app.playhead_beat = 0.0
+	var workspace := RingWorkspace.new()
+	workspace._app = app
+	var timeline := RingTimeline.new(workspace)
+	workspace._timeline = timeline
+	# 多选 + 复制粘贴：保间距
+	timeline._select_only("shape", 1)
+	timeline._toggle_select("shape", 2)
+	eq(timeline.selection_count(), 2, "跨键多选")
+	timeline.copy_selection()
+	app.playhead_beat = 8.0
+	timeline.paste()
+	eq(chart.shape_keys.size(), 4, "粘贴新增两帧")
+	var beats: Array[float] = []
+	for key in chart.shape_keys:
+		beats.append(float(key.get("beat", 0.0)))
+	beats.sort()
+	near(beats[2], 8.0, 0.001, "粘贴起点是播放头")
+	near(beats[3], 12.0, 0.001, "粘贴保持相对间距")
+	# 冲突替换：在 8 拍再粘一次，不新增
+	app.playhead_beat = 8.0
+	timeline.paste()
+	eq(chart.shape_keys.size(), 4, "同拍粘贴替换而不是叠加")
+	# 删除选中
+	var doomed_id := 0
+	for key in chart.shape_keys:
+		if absf(float(key.get("beat", 0.0)) - 8.0) < 0.001:
+			doomed_id = int(key.get("id", 0))
+	timeline._select_only("shape", doomed_id)
+	timeline.delete_selection()
+	eq(chart.shape_keys.size(), 3, "删除选中帧")
+	# 插入只影响当前轨
+	timeline._select_only("shape", 1)
+	app.playhead_beat = 1.0
+	timeline.insert_frames(2.0)
+	var after: Array[float] = []
+	for key in chart.shape_keys:
+		after.append(float(key.get("beat", 0.0)))
+	after.sort()
+	near(after[0], 0.0, 0.001, "插入点之前的帧不动")
+	near(after[1], 6.0, 0.001, "插入点之后的形状帧右移")
+	near(chart.view_states[1].beat, 2.0, 0.001, "镜头轨不跟着移")
+	# 跨轨微移
+	timeline._toggle_select("view", 4)
+	timeline.nudge_selection(1.0)
+	near(chart.view_states[1].beat, 3.0, 0.001, "跨轨选中一起微移")
+	timeline.free()
+	workspace.free()
+	app.free()
+	return true
+
+
+func test_ring_playhead_only_redraws_overlay() -> bool:
+	var app: App = load("res://charter/app.gd").new()
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	chart.shape_keys = [{"beat": 0.0, "shape_id": "S0", "easing": "linear", "id": 1}]
+	app.chart = chart
+	var workspace := RingWorkspace.new()
+	workspace._app = app
+	var timeline := RingTimeline.new(workspace)
+	workspace._timeline = timeline
+	var before := timeline._content_invalidations
+	timeline.on_playhead_changed()
+	eq(timeline._content_invalidations, before, "拖播放头不重绘静态轨道体")
+	timeline.on_live_change()
+	eq(timeline._content_invalidations, before + 1, "谱面变化才重绘轨道体")
+	timeline.on_chart_changed()
+	eq(timeline._content_invalidations, before + 2, "谱面结构变化重绘轨道体")
+	timeline.free()
+	workspace.free()
+	app.free()
+	return true
+
+
+func test_ring_marquee_and_drag() -> bool:
+	var app: App = load("res://charter/app.gd").new()
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	chart.shapes["S0"] = BoundaryShape.ellipse("S0", 300.0, 300.0, 48)
+	chart.shape_keys = [
+		{"beat": 0.0, "shape_id": "S0", "easing": "linear", "id": 1},
+		{"beat": 4.0, "shape_id": "S0", "easing": "linear", "id": 2},
+	]
+	chart.view_states = [ViewState.new(0.0), ViewState.new(2.0)]
+	chart.view_states[0].id = 3
+	chart.view_states[1].id = 4
+	app.chart = chart
+	app.playhead_beat = 0.0
+	var workspace := RingWorkspace.new()
+	workspace._app = app
+	workspace._view_start = 0.0
+	workspace._zoom_index = 1
+	var timeline := RingTimeline.new(workspace)
+	workspace._timeline = timeline
+	timeline.size = Vector2(1600, 300)
+	# 框选跨两条轨
+	timeline._marquee_start = Vector2(190, 60)
+	timeline._marquee_current = Vector2(330, 190)
+	timeline._marquee_add = false
+	timeline._marquee_active = true
+	timeline._update_marquee_selection()
+	eq(timeline.selection_count(), 2, "框选同时选中形状帧与镜头帧")
+	# 跨轨整体拖动
+	var anywhere := Vector2(timeline._x_for(0.0), 100)
+	timeline._begin_key_drag(anywhere)
+	timeline._drag_keys(Vector2(timeline._x_for(2.0), 100))
+	timeline._release(Vector2(timeline._x_for(2.0), 100))
+	near(float(chart.shape_keys[0].get("beat", 0.0)), 2.0, 0.001, "形状帧跟着拖动")
+	near(chart.view_states[0].beat, 2.0, 0.001, "镜头帧一起拖动")
+	timeline.free()
+	workspace.free()
+	app.free()
+	return true
+
+
 func test_shape_key_cache_invalidation() -> bool:
 	# 真实编辑顺序：时间轴先画过一遍（排序缓存已热），再在播放头加一帧。
 	# 缓存失效一旦漏掉，App.mutate 会认为快照没变：不标脏、不记撤销、存盘丢帧。
@@ -2084,7 +2219,7 @@ func test_undo_memory_budget() -> bool:
 
 func test_ring_lane_items_real_chart() -> bool:
 	var workspace := RingWorkspace.new()
-	var timeline := RingWorkspace.Timeline.new(workspace)
+	var timeline := RingTimeline.new(workspace)
 	workspace._timeline = timeline
 	var chart := Chart.new()
 	chart.events = [
@@ -2093,20 +2228,24 @@ func test_ring_lane_items_real_chart() -> bool:
 	]
 	chart.timing.points = [TimingPoint.new(4.0, 120.0, 4), TimingPoint.new(0.0, 120.0, 4)]
 	chart.view_states = [ViewState.new(8.0), ViewState.new(0.0)]
-	var events: Array = timeline._lane_items(chart, 2)
+	var app: App = load("res://charter/app.gd").new()
+	app.chart = chart
+	workspace._app = app
+	var events: Array = timeline._lane_items(2)
 	eq(events.size(), 2, "边界事件轨拿得到旧谱事件")
 	if events.size() == 2:
 		near(events[0].start_beat, 1.0, 0.001, "事件按 start_beat 排序")
-	var points: Array = timeline._lane_items(chart, 3)
+	var points: Array = timeline._lane_items(3)
 	near(float(points[0].beat), 0.0, 0.001, "BPM 轨按拍排序")
 	timeline.free()
 	workspace.free()
+	app.free()
 	return true
 
 
 func test_ring_scrub_state() -> bool:
 	var workspace := RingWorkspace.new()
-	var timeline := RingWorkspace.Timeline.new(workspace)
+	var timeline := RingTimeline.new(workspace)
 	workspace._timeline = timeline
 	eq(workspace.scrubbing(), false, "没在拖播放头")
 	timeline._drag_kind = "playhead"

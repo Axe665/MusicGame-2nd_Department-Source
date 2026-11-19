@@ -22,7 +22,8 @@ static func chart_to_dict(chart: Chart) -> Dictionary:
 	sorted_keys.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
 		return float(a.get("beat", 0.0)) < float(b.get("beat", 0.0)))
 	var key_rows: Array[Dictionary] = []
-	for key in sorted_keys:
+	for index in sorted_keys.size():
+		var key: Dictionary = sorted_keys[index]
 		var row := {
 			"beat": snappedf(float(key.get("beat", 0.0)), 0.001),
 			"shape": String(key.get("shape_id", "")),
@@ -30,7 +31,8 @@ static func chart_to_dict(chart: Chart) -> Dictionary:
 			"id": int(key.get("id", 0)),
 		}
 		# 只在真的设过形变时长时才写；缺字段 = 整段都在变（旧谱语义）。
-		if float(key.get("morph", 0.0)) > 0.0:
+		# 最后一帧没有下一段，形变参数不生效，也不该把「保持到结尾」写成 429 拍。
+		if index < sorted_keys.size() - 1 and float(key.get("morph", 0.0)) > 0.0:
 			row["morph"] = snappedf(float(key.get("morph", 0.0)), 0.001)
 		var curve: Array = key.get("curve", [])
 		if curve.size() == 4:
