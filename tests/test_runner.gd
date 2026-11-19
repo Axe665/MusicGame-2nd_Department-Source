@@ -50,6 +50,7 @@ func _initialize() -> void:
 		"test_ring_span_end",
 		"test_ring_scrub_state",
 		"test_ring_lane_items_real_chart",
+		"test_shape_key_cache_invalidation",
 		"test_undo_memory_budget",
 		"test_full_chart_round_trip",
 		"test_difficulty_set_round_trip",
@@ -1964,6 +1965,35 @@ func _make_full_chart() -> Chart:
 		"flow_down": false, "beat_subdivisions": 8, "rail_snap": false,
 	}
 	return chart
+
+
+func test_shape_key_cache_invalidation() -> bool:
+	# 真实编辑顺序：时间轴先画过一遍（排序缓存已热），再在播放头加一帧。
+	# 缓存失效一旦漏掉，App.mutate 会认为快照没变：不标脏、不记撤销、存盘丢帧。
+	var app: App = load("res://charter/app.gd").new()
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	chart.shapes["S0"] = BoundaryShape.ellipse("S0", 300.0, 300.0, 48)
+	chart.shape_keys = [{"beat": 0.0, "shape_id": "S0", "easing": "linear"}]
+	app.chart = chart
+	eq(chart.sorted_shape_keys().size(), 1, "排序缓存先热起来")
+	app.mutate(func() -> void:
+		chart.shape_keys.append({"beat": 4.0, "shape_id": "S0", "easing": "in-out"})
+	)
+	eq(chart.shape_keys.size(), 2, "内存里多了一帧")
+	eq(chart.sorted_shape_keys().size(), 2, "时间轴排序缓存跟着失效")
+	eq((ChartIO.chart_to_dict(chart)["boundary_keys"] as Array).size(), 2, "存盘快照包含新帧")
+	ok(app.dirty, "加帧后标脏")
+	ok(chart.version > 0, "加帧后版本号增加")
+	# 删除走同一条缓存路径，不能出现「删了还在」
+	var doomed: Dictionary = chart.shape_keys[0]
+	app.mutate(func() -> void:
+		chart.shape_keys.erase(doomed)
+	)
+	eq(chart.sorted_shape_keys().size(), 1, "删除后缓存同步")
+	eq((ChartIO.chart_to_dict(chart)["boundary_keys"] as Array).size(), 1, "删除后快照只剩一帧")
+	app.free()
+	return true
 
 
 func test_undo_memory_budget() -> bool:

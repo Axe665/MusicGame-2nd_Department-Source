@@ -69,9 +69,12 @@ func mark_dirty() -> void:
 
 
 ## 便宜的变更指纹：版本号为主，尺寸/音频/offset 兜住绕过 mark_dirty 的批量改动。
+## 关键帧/形状的尺寸必须算进来：加一帧不改任何音符时，只靠 version 会被
+## 「先拍快照再改」的调用顺序绕过（App.mutate 先比较快照，发现没变就不 mark_dirty）。
 func _stamp() -> int:
 	return version * 1000003 + notes.size() * 10007 + regions.size() * 1009 \
 		+ events.size() * 101 + timing.points.size() * 17 \
+		+ shape_keys.size() * 104729 + view_states.size() * 1299709 + shapes.size() * 15485863 \
 		+ int(audio_length_ms() * 10.0) + int(offset_ms * 10.0)
 
 

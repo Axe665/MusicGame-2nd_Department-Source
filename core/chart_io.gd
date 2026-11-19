@@ -12,8 +12,13 @@ static func chart_to_dict(chart: Chart) -> Dictionary:
 	for point in chart.timing.points:
 		timing_points.append(point.to_dict())
 	var shape_code := BoundaryShape.shapes_to_code(chart.sorted_shapes())
+	# 直接对原始数组排序，不读 Chart 的排序缓存：缓存失效一旦漏掉，
+	# 这里会把新加的关键帧整帧丢掉（存盘/撤销快照都会少一帧）。
+	var sorted_keys: Array = chart.shape_keys.duplicate()
+	sorted_keys.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return float(a.get("beat", 0.0)) < float(b.get("beat", 0.0)))
 	var key_rows: Array[Dictionary] = []
-	for key in chart.sorted_shape_keys():
+	for key in sorted_keys:
 		var row := {
 			"beat": snappedf(float(key.get("beat", 0.0)), 0.001),
 			"shape": String(key.get("shape_id", "")),
@@ -30,18 +35,17 @@ static func chart_to_dict(chart: Chart) -> Dictionary:
 	else:
 		# 关键帧是真源；这里同时写一份旧事件，旧版本打开时还能看到形变。
 		var legacy_index := 0
-		var first := chart.sorted_shape_keys()[0]
+		var first: Dictionary = sorted_keys[0]
 		var default_shape := chart.get_default_shape()
 		var first_beat := float(first.get("beat", 0.0))
 		if default_shape != null and first_beat > 0.001 and String(first.get("shape_id", "")) != default_shape.id:
 			event_list.append(_legacy_event(legacy_index, 0.0, first_beat, default_shape.id,
 				String(first.get("shape_id", "")), String(first.get("easing", "in-out"))))
 			legacy_index += 1
-		var keys := chart.sorted_shape_keys()
-		for i in keys.size() - 1:
-			event_list.append(_legacy_event(legacy_index, float(keys[i].get("beat", 0.0)),
-				float(keys[i + 1].get("beat", 0.0)), String(keys[i].get("shape_id", "")),
-				String(keys[i + 1].get("shape_id", "")), String(keys[i].get("easing", "in-out"))))
+		for i in sorted_keys.size() - 1:
+			event_list.append(_legacy_event(legacy_index, float(sorted_keys[i].get("beat", 0.0)),
+				float(sorted_keys[i + 1].get("beat", 0.0)), String(sorted_keys[i].get("shape_id", "")),
+				String(sorted_keys[i + 1].get("shape_id", "")), String(sorted_keys[i].get("easing", "in-out"))))
 			legacy_index += 1
 	event_list.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
 		if float(a["start_beat"]) == float(b["start_beat"]):
