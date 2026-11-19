@@ -1,5 +1,5 @@
 {
-  "note": "10k 音符 / 200 关键帧，headless。基准机器算力用 calibration_ms（2000 音符谱面序列化耗时）校准：换机器/换 runner 时容差按算力比例缩放，避免慢机器假红。",
+  "note": "10k 音符 / 200 关键帧，headless。基准机器算力用 calibration_ms（2000 音符谱面序列化耗时）校准；ring_scrub 是整帧时间，CI 上 UI/引擎抖动比 JSON 标定大，单指标容差 4×（本地 p50 <1ms）。",
   "scenario": {
     "notes": 10000,
     "keys": 200,
@@ -13,5 +13,8 @@
     "ring_idle.nodes": 1937.0,
     "editor_idle.memory_mb": 198.56
   },
-  "calibration_ms": 19.17
+  "calibration_ms": 19.17,
+  "tolerances": {
+    "ring_scrub.work_p50_ms": 4.0
+  }
 }

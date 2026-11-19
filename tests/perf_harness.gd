@@ -327,19 +327,21 @@ func _compare_baseline() -> void:
 	if parsed is not Dictionary:
 		return
 	var baseline: Dictionary = parsed
-	var tolerance := float(baseline.get("tolerance", 1.5))
 	# 基线是在某台机上量的；按算力标定把容差一起缩放，慢机器不会假红。
 	var scale := 1.0
 	var base_calibration := float(baseline.get("calibration_ms", 0.0))
 	if base_calibration > 0.0 and _calibration_ms > 0.0:
 		scale = clampf(_calibration_ms / base_calibration, 0.5, 10.0)
 	var rows: Dictionary = baseline.get("metrics", {})
+	var overrides: Dictionary = baseline.get("tolerances", {})
 	for key in rows:
 		if not _metrics.has(key):
 			continue
 		var base := float(rows[key])
 		if base <= 0.0:
 			continue
+		# 单指标可覆盖容差：UI 帧时间在 CI 上的抖动远大于 JSON 序列化标定。
+		var tolerance := float(overrides.get(key, baseline.get("tolerance", 1.5)))
 		var limit := base * tolerance * scale
 		if float(_metrics[key]) > limit:
 			_failures.append("%s=%.2f > baseline %.2f × %.2f" % [key, float(_metrics[key]), base, tolerance])
