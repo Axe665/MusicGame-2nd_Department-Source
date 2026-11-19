@@ -37,9 +37,13 @@ var notes: Array[Note] = []
 ## 缓存版本：音符/关键帧/红区/事件/音频长度/offset 一旦变化就 +1。
 ## App.touch_chart()（拖动中）与 App._after_change()（提交）都会调 mark_dirty()。
 var version: int = 0
+## 音符/形状两套版本：拖形状帧时只让形状缓存失效，不能把 1 万音符的排序缓存也冲掉。
+var note_version: int = 0
+var ring_version: int = 0
 var _stamp_notes := -1
 var _stamp_shapes := -1
 var _stamp_keys := -1
+var _stamp_views := -1
 var _stamp_duration := -1
 var _stamp_anchors := -1
 var _stamp_by_id := -1
@@ -48,6 +52,7 @@ var _stamp_max_len := -1
 var _sorted_notes_cache: Array[Note] = []
 var _sorted_shapes_cache: Array[BoundaryShape] = []
 var _sorted_keys_cache: Array[Dictionary] = []
+var _sorted_views_cache: Array[ViewState] = []
 var _notes_by_id_cache: Dictionary = {}
 var _path_roots_cache: Array[Note] = []
 var _max_len_cache: float = 0.0
@@ -58,9 +63,12 @@ var _anchor_index: Dictionary = {}
 
 func mark_dirty() -> void:
 	version += 1
+	note_version += 1
+	ring_version += 1
 	_stamp_notes = -1
 	_stamp_shapes = -1
 	_stamp_keys = -1
+	_stamp_views = -1
 	_stamp_duration = -1
 	_stamp_anchors = -1
 	_stamp_by_id = -1
@@ -68,9 +76,31 @@ func mark_dirty() -> void:
 	_stamp_max_len = -1
 
 
-## 便宜的变更指纹：版本号为主，尺寸/音频/offset 兜住绕过 mark_dirty 的批量改动。
-func _stamp() -> int:
-	return version * 1000003 + notes.size() * 10007 + regions.size() * 1009 \
+## 只动形状/镜头：音符缓存保持有效，拖关键帧时不会每帧重排 1 万音符。
+func mark_ring_dirty() -> void:
+	version += 1
+	ring_version += 1
+	_stamp_shapes = -1
+	_stamp_keys = -1
+	_stamp_views = -1
+	_stamp_duration = -1
+
+
+## 音符缓存指纹：只跟音符数量和音符版本走。
+func _note_stamp() -> int:
+	return note_version * 1000003 + notes.size() * 10007
+
+
+## 形状缓存指纹：关键帧/形状数量必须算进来，否则「加一帧不改音符」时
+## App.mutate 的快照前后相同，会直接 early-return，帧在时间轴/存盘里消失。
+func _ring_stamp() -> int:
+	return ring_version * 1000003 + version * 31 \
+		+ shape_keys.size() * 104729 + view_states.size() * 1299709 + shapes.size() * 15485863
+
+
+## 内容末尾同时依赖音符与形状，所以两套版本都要算。
+func _duration_stamp() -> int:
+	return _note_stamp() * 31 + _ring_stamp() + regions.size() * 1009 \
 		+ events.size() * 101 + timing.points.size() * 17 \
 		+ int(audio_length_ms() * 10.0) + int(offset_ms * 10.0)
 
@@ -79,7 +109,7 @@ func _stamp() -> int:
 func anchor_partner(note: Note) -> Note:
 	if note.type != "anchor" or note.pair_id.is_empty():
 		return null
-	var stamp := _stamp()
+	var stamp := _note_stamp()
 	if stamp != _stamp_anchors:
 		_stamp_anchors = stamp
 		_anchor_index.clear()
@@ -133,6 +163,8 @@ var _next_event_id: int = 1
 func _init() -> void:
 	shapes["S0"] = BoundaryShape.circle("S0", 330.0, 48)
 	view_states = [ViewState.new(0.0, 1.0, 0.0, 0.0, 1.0, 0.0, "linear")]
+	# 镜头面板只保留推拉/滚转；保留 face_camera 兼容旧谱的倾斜/椭圆数据。
+	metadata["face_camera"] = true
 
 
 func get_shape(shape_id: String) -> BoundaryShape:
@@ -147,8 +179,59 @@ func get_default_shape() -> BoundaryShape:
 
 
 ## 只读：返回内部缓存，调用方不要改它（要改就改 shape_keys 再 mark_dirty）。
+## 稳定 id：多选、拖拽、撤销后选中都按 id 找键；旧文件在载入时补号。
+func ensure_key_ids() -> void:
+	var next := next_key_id()
+	for key in shape_keys:
+		if int(key.get("id", 0)) <= 0:
+			key["id"] = next
+			next += 1
+	for state in view_states:
+		if state.id <= 0:
+			state.id = next
+			next += 1
+
+
+func next_key_id() -> int:
+	var peak := 0
+	for key in shape_keys:
+		peak = maxi(peak, int(key.get("id", 0)))
+	for state in view_states:
+		peak = maxi(peak, state.id)
+	return peak + 1
+
+
+func shape_key_by_id(key_id: int) -> Dictionary:
+	for key in shape_keys:
+		if int(key.get("id", 0)) == key_id:
+			return key
+	return {}
+
+
+func view_state_by_id(state_id: int) -> ViewState:
+	for state in view_states:
+		if state.id == state_id:
+			return state
+	return null
+
+
+## 只读：镜头帧排序缓存。每帧 ViewState.evaluate 都要按拍找段，
+## 不能再让调用方 duplicate+sort 一遍。
+func sorted_view_states() -> Array[ViewState]:
+	var stamp := _ring_stamp()
+	if stamp == _stamp_views:
+		return _sorted_views_cache
+	_stamp_views = stamp
+	var result: Array[ViewState] = []
+	for state in view_states:
+		result.append(state)
+	result.sort_custom(func(a: ViewState, b: ViewState) -> bool: return a.beat < b.beat)
+	_sorted_views_cache = result
+	return _sorted_views_cache
+
+
 func sorted_shape_keys() -> Array[Dictionary]:
-	var stamp := _stamp()
+	var stamp := _ring_stamp()
 	if stamp == _stamp_keys:
 		return _sorted_keys_cache
 	_stamp_keys = stamp
@@ -171,7 +254,7 @@ func shape_key_at(beat: float) -> Dictionary:
 
 ## 只读：返回内部缓存。
 func sorted_shapes() -> Array[BoundaryShape]:
-	var stamp := _stamp()
+	var stamp := _ring_stamp()
 	if stamp == _stamp_shapes:
 		return _sorted_shapes_cache
 	_stamp_shapes = stamp
@@ -229,7 +312,7 @@ static func _position_angle(note: Note) -> float:
 
 ## 只读：返回内部缓存，调用方不要排序/修改它。
 func sorted_notes() -> Array[Note]:
-	var stamp := _stamp()
+	var stamp := _note_stamp()
 	if stamp == _stamp_notes:
 		return _sorted_notes_cache
 	_stamp_notes = stamp
@@ -241,7 +324,7 @@ func sorted_notes() -> Array[Note]:
 
 ## id → 音符（只读）。Path 链、命中检测每帧都要它，别再自己建 10k 字典。
 func notes_by_id() -> Dictionary:
-	var stamp := _stamp()
+	var stamp := _note_stamp()
 	if stamp == _stamp_by_id:
 		return _notes_by_id_cache
 	_stamp_by_id = stamp
@@ -254,7 +337,7 @@ func notes_by_id() -> Dictionary:
 
 ## 全谱最长的音符时长（拍）：Hold 的可见回溯窗口用它，别再写死 128 拍。
 func max_note_length_beats() -> float:
-	var stamp := _stamp()
+	var stamp := _note_stamp()
 	if stamp == _stamp_max_len:
 		return _max_len_cache
 	_stamp_max_len = stamp
@@ -267,7 +350,7 @@ func max_note_length_beats() -> float:
 
 ## Path 链的根（part0 或没有父链的 path），按拍排序（只读）。
 func path_roots() -> Array[Note]:
-	var stamp := _stamp()
+	var stamp := _note_stamp()
 	if stamp == _stamp_roots:
 		return _path_roots_cache
 	_stamp_roots = stamp
@@ -398,7 +481,7 @@ func ms_to_beat(ms: float) -> float:
 
 
 func duration_beats() -> float:
-	var stamp := _stamp()
+	var stamp := _duration_stamp()
 	if stamp == _stamp_duration:
 		return _duration_cache
 	_stamp_duration = stamp
@@ -409,6 +492,12 @@ func duration_beats() -> float:
 		last = maxf(last, region.end_beat)
 	for event in events:
 		last = maxf(last, event.end_beat + maxf(0.0, event.restore_duration))
+	# 形状/镜头关键帧也要算进内容末尾：否则时间轴「全部」和 seek 上限
+	# 只按音符算，落在音符之后的帧永远滚不到、跳不到。
+	for key in shape_keys:
+		last = maxf(last, float(key.get("beat", 0.0)))
+	for state in view_states:
+		last = maxf(last, state.beat)
 	_duration_cache = last
 	_content_end_cache = maxf(last, audio_end_beat())
 	return _duration_cache

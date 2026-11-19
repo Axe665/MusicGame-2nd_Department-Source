@@ -3,6 +3,8 @@ extends Node
 signal chart_changed
 signal chart_replaced
 signal chart_live_changed
+## 只动边界/镜头时发这个：预览不用重排 1 万音符，只更新环几何。
+signal ring_live_changed
 signal selection_changed
 signal playhead_changed(beat: float)
 ## 用户主动跳转（点时间轴、拖进度条）。播放中收到它会重新对齐音频。
@@ -126,6 +128,8 @@ var selected_event_id: String = ""
 var selected_shape_id: String = "S0"
 var selected_segment_index: int = -1
 var selected_view_index: int = -1
+## 镜头帧的稳定身份：时间轴会按拍原地排序，下标记不住选中的是哪一帧。
+var selected_view_id: int = 0
 
 var tool: String = "select"
 var snap_division: int = GridDivisions.DEFAULT_DIVISION
@@ -150,6 +154,7 @@ var undo := UndoStack.new()
 var _edit_before: Dictionary = {}
 var _editing: bool = false
 var _live_change_pending: bool = false
+var _ring_live_pending: bool = false
 ## 环工作区打开时，被盖住的检查器不用跟着重建。
 var ring_editor_open: bool = false
 var _validation_pending: bool = false
@@ -920,7 +925,16 @@ func _remember_snapshot(data: Dictionary) -> void:
 	_last_snapshot_chart = chart
 
 
-func mutate(callback: Callable) -> void:
+## 预热撤销基线：打开环编辑器后先拍一次快照，第一次拖关键帧就不会
+## 在鼠标按下那一帧卡一次全谱序列化。
+func warm_snapshot() -> void:
+	if chart == null:
+		return
+	if _last_snapshot_chart != chart or _last_snapshot.is_empty():
+		_remember_snapshot(snapshot())
+
+
+func mutate(callback: Callable, ring_only: bool = false) -> void:
 	if chart == null:
 		return
 	var before := _cached_snapshot()
@@ -931,18 +945,30 @@ func mutate(callback: Callable) -> void:
 		return
 	undo.record(before)
 	dirty = true
-	_after_change()
+	_after_change(ring_only)
+
+
+## 只动形状/镜头/边界的编辑：撤销照记，但不冲掉音符缓存。
+func mutate_ring(callback: Callable) -> void:
+	mutate(callback, true)
 
 
 ## 连续手势（滚轮缩放、步进按钮）：第一次 begin_edit，停手 0.6s 后 finish_edit。
 ## 一个手势只记一条撤销、只拍一次 before，不再每个滚轮档都做一次全谱快照。
-func gesture_mutate(callback: Callable) -> void:
+func gesture_mutate_ring(callback: Callable) -> void:
+	gesture_mutate(callback, true)
+
+
+func gesture_mutate(callback: Callable, ring_only: bool = false) -> void:
 	if chart == null:
 		return
 	if not _editing:
 		begin_edit()
 	callback.call()
-	touch_chart()
+	if ring_only:
+		touch_ring_chart()
+	else:
+		touch_chart()
 	if _gesture_timer == null:
 		_gesture_timer = Timer.new()
 		_gesture_timer.one_shot = true
@@ -975,10 +1001,13 @@ func finish_edit() -> void:
 	_after_change()
 
 
-func _after_change() -> void:
+func _after_change(ring_only: bool = false) -> void:
 	_commands_since_autosave += 1
 	if chart != null:
-		chart.mark_dirty()
+		if ring_only:
+			chart.mark_ring_dirty()
+		else:
+			chart.mark_dirty()
 	chart_changed.emit()
 	save_state_changed.emit()
 	status_changed.emit()
@@ -994,6 +1023,26 @@ func touch_chart() -> void:
 	_live_change_pending = true
 	if chart != null:
 		chart.mark_dirty()
+
+
+## 拖形状/镜头帧：只标形状脏，音符排序/路径缓存保持有效。
+func touch_ring_chart() -> void:
+	_live_change_pending = true
+	_ring_live_pending = true
+	if chart != null:
+		chart.mark_ring_dirty()
+
+
+func _flush_live_change() -> void:
+	if not _live_change_pending:
+		return
+	_live_change_pending = false
+	if _ring_live_pending:
+		_ring_live_pending = false
+		ring_live_changed.emit()
+	else:
+		chart_live_changed.emit()
+	status_changed.emit()
 
 
 func _process(delta: float) -> void:
@@ -1013,14 +1062,6 @@ func _process(delta: float) -> void:
 			_validation_full_pending = false
 			if chart != null:
 				validation_changed.emit(Validator.validate(chart, true))
-
-
-func _flush_live_change() -> void:
-	if not _live_change_pending:
-		return
-	_live_change_pending = false
-	chart_live_changed.emit()
-	status_changed.emit()
 
 
 func undo_chart() -> void:
@@ -1560,6 +1601,10 @@ func select_segment(index: int) -> void:
 
 func select_view(index: int) -> void:
 	selected_view_index = index
+	if chart != null and index >= 0 and index < chart.view_states.size():
+		selected_view_id = chart.view_states[index].id
+	else:
+		selected_view_id = 0
 	selection_changed.emit()
 	status_changed.emit()
 
@@ -1569,6 +1614,7 @@ func clear_selection() -> void:
 	selected_region_id = -1
 	selected_event_id = ""
 	selected_view_index = -1
+	selected_view_id = 0
 	selection_changed.emit()
 	status_changed.emit()
 
@@ -1625,7 +1671,13 @@ func get_selected_shape() -> BoundaryShape:
 
 
 func get_selected_view() -> ViewState:
-	if chart == null or selected_view_index < 0 or selected_view_index >= chart.view_states.size():
+	if chart == null:
+		return null
+	if selected_view_id > 0:
+		var by_id := chart.view_state_by_id(selected_view_id)
+		if by_id != null:
+			return by_id
+	if selected_view_index < 0 or selected_view_index >= chart.view_states.size():
 		return null
 	return chart.view_states[selected_view_index]
 
@@ -1654,6 +1706,15 @@ func _prune_selection() -> void:
 			selected_event_id = ""
 	if chart.get_shape(selected_shape_id) == null:
 		selected_shape_id = chart.default_shape_id
+	if selected_view_id > 0:
+		var state := chart.view_state_by_id(selected_view_id)
+		if state == null:
+			selected_view_id = 0
+			selected_view_index = -1
+		else:
+			selected_view_index = chart.view_states.find(state)
+	elif selected_view_index >= chart.view_states.size():
+		selected_view_index = -1
 	selected_segment_index = -1
 
 

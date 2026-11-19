@@ -54,12 +54,13 @@ static func make_demo() -> Chart:
 	chart.shapes["S2"] = BoundaryShape.ellipse("S2", 300.0, 400.0, 48)
 
 	chart.shape_keys = [
-		{"beat": 8.0, "shape_id": "S0", "easing": "in-out"},
-		{"beat": 12.0, "shape_id": "S1", "easing": "in-out"},
-		{"beat": 12.5, "shape_id": "S0", "easing": "in-out"},
-		{"beat": 20.0, "shape_id": "S0", "easing": "in-out"},
-		{"beat": 24.0, "shape_id": "S2", "easing": "in-out"},
-		{"beat": 24.5, "shape_id": "S0", "easing": "in-out"},
+		# v3 的 morph 存在目标帧上：旧 demo 的整段形变在这里显式写出来。
+		{"beat": 8.0, "shape_id": "S0", "easing": "in-out", "morph": 8.0},
+		{"beat": 12.0, "shape_id": "S1", "easing": "in-out", "morph": 4.0},
+		{"beat": 12.5, "shape_id": "S0", "easing": "in-out", "morph": 0.5},
+		{"beat": 20.0, "shape_id": "S0", "easing": "in-out", "morph": 7.5},
+		{"beat": 24.0, "shape_id": "S2", "easing": "in-out", "morph": 4.0},
+		{"beat": 24.5, "shape_id": "S0", "easing": "in-out", "morph": 0.5},
 	]
 	chart.refresh_ids()
 

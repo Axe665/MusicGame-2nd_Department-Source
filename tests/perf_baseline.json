@@ -1,5 +1,5 @@
 {
-  "note": "10k 音符 / 200 关键帧，headless。基准机器算力用 calibration_ms（2000 音符谱面序列化耗时）校准：换机器/换 runner 时容差按算力比例缩放，避免慢机器假红。",
+  "note": "10k 音符 / 200 关键帧，headless。基准机器算力用 calibration_ms（2000 音符谱面序列化耗时）校准：换机器/换 runner 时容差按算力比例缩放。小毫秒指标（ring_scrub/ring_key_drag）在负载机器上抖动大，用 6–8× 容差，仍能拦住 30ms 级别的真回退。",
   "scenario": {
     "notes": 10000,
     "keys": 200,
@@ -11,7 +11,18 @@
     "ring_scrub.work_p50_ms": 1.46,
     "editor_idle.nodes": 1860.0,
     "ring_idle.nodes": 1937.0,
-    "editor_idle.memory_mb": 198.56
+    "editor_idle.memory_mb": 198.56,
+    "ring_playback.work_p50_ms": 0.1,
+    "ring_playback.work_p95_ms": 0.2,
+    "ring_all_zoom.work_p50_ms": 0.1,
+    "ring_all_zoom.work_p95_ms": 0.2,
+    "ring_key_drag.work_p50_ms": 0.6,
+    "ring_key_drag.work_p95_ms": 1.8
   },
-  "calibration_ms": 19.17
+  "calibration_ms": 19.17,
+  "tolerances": {
+    "ring_scrub.work_p50_ms": 8.0,
+    "ring_key_drag.work_p50_ms": 6.0,
+    "ring_key_drag.work_p95_ms": 6.0
+  }
 }

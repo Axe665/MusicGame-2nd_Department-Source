@@ -50,6 +50,9 @@ var playtest_mode: bool = false
 var show_hud: bool = true
 ## 仅轨迹导出时关掉：不画音符/轨迹条/判定特效，只留背景与鼠标轨迹。
 var show_notes: bool = true
+## 拖形状/镜头关键帧时暂时不画音符：10k 音符重绘一次 ≈30ms，会把手感拖没。
+## 松手后恢复；环、红区、小节线和洋葱皮仍然画。
+var ring_drag_low_detail: bool = false
 ## 仅轨迹导出时关掉：不显示 3D 判定环。
 var show_playfield: bool = true
 var show_debug: bool = false
@@ -327,6 +330,7 @@ func _ready() -> void:
 	if _app != null:
 		_app.chart_changed.connect(_on_chart_changed)
 		_app.chart_live_changed.connect(_on_chart_live_changed)
+		_app.ring_live_changed.connect(_on_ring_live_changed)
 		_app.selection_changed.connect(_on_selection_changed)
 		_app.playhead_changed.connect(_on_playhead_changed)
 		_app.tool_changed.connect(_on_tool_changed)
@@ -955,26 +959,22 @@ func _update_transform(beat: float) -> bool:
 	var tilt_y := float(view.get("tilt_y", 0.0))
 	var zoom := float(view.get("zoom", 1.0))
 	var ellipse := float(view.get("ellipse", 1.0))
+	var dolly := float(view.get("dolly", 1.0))
 	if bool(chart.metadata.get("face_camera", true)):
 		# 正对镜头只忽略谱面 ViewState 的倾斜；鼠标视差仍然保留。
 		tilt_x = 0.0
 		tilt_y = 0.0
 		ellipse = 1.0
-	if playtest_mode:
-		# 试玩只保留平面内旋转 + 鼠标视差，不跟随谱面倾斜。
-		tilt_x = 0.0
-		tilt_y = 0.0
-		ellipse = 1.0
-	var key := "%.3f|%.3f|%.3f|%.3f|%.3f|%.3f|%.3f" % [rotation, tilt_x, tilt_y, zoom, ellipse, _tilt.x, _tilt.y]
+	var key := "%.3f|%.3f|%.3f|%.3f|%.3f|%.3f|%.3f|%.3f" % [rotation, tilt_x, tilt_y, zoom, ellipse, dolly, _tilt.x, _tilt.y]
 	if key == _last_view_key:
 		return false
 	_last_view_key = key
 	_ring_root.transform = ring_transform(rotation, tilt_x, tilt_y, zoom, ellipse, _tilt)
-	var fit_key := "%.3f|%.3f|%d|%.0f|%.0f|%.1f" % [zoom, ellipse, 1 if playtest_mode else 0, size.x, size.y,
+	var fit_key := "%.3f|%.3f|%.3f|%d|%.0f|%.0f|%.1f" % [zoom, ellipse, dolly, 1 if playtest_mode else 0, size.x, size.y,
 		0.0]
 	if fit_key != _last_fit_key:
 		_last_fit_key = fit_key
-		_update_camera_fit(chart, zoom, ellipse)
+		_update_camera_fit(chart, zoom, ellipse, dolly)
 	return true
 
 
@@ -991,15 +991,17 @@ func _ensure_design_radius(chart: Chart) -> float:
 	return _max_design_radius
 
 
-func _update_camera_fit(chart: Chart, zoom: float, ellipse: float) -> void:
+func _update_camera_fit(chart: Chart, zoom: float, ellipse: float, dolly: float = 1.0) -> void:
 	# 环工作区开关会把预览在两个容器间搬动，搬家途中 resized 先到、节点还没入树。
 	if not is_inside_tree() or _camera == null or not _camera.is_inside_tree():
 		return
 	_ensure_design_radius(chart)
 	var aspect := maxf(0.2, size.x / maxf(1.0, size.y))
-	# 试玩时把环放大到接近 Estella 的满屏比例；编辑器保持原来的留白。
+	# 试玩时把环放大到接近满屏比例；编辑器保持原来的留白。
 	var margin := 1.06 if playtest_mode else PREVIEW_MARGIN
-	var wanted := _max_design_radius * maxf(0.5, zoom) * maxf(0.5, ellipse) * margin
+	# dolly 是真正的镜头推拉：>1 相机靠近（环变大），<1 后退。
+	# zoom 仍走原来的取景补偿，所以旧谱默认 dolly=1 时外观不变。
+	var wanted := _max_design_radius * maxf(0.5, zoom) * maxf(0.5, ellipse) * margin / maxf(0.2, dolly)
 	var distance := wanted / tan(deg_to_rad(_camera.fov * 0.5)) / minf(1.0, aspect)
 	distance = clampf(distance, 500.0, 6000.0)
 	_camera.position = Vector3(0, 0, distance)
@@ -1448,6 +1450,27 @@ func _on_chart_live_changed() -> void:
 		_overlay.queue_redraw()
 
 
+## 只动形状/镜头：音符缓存（排序、Path 切割）全部保留，只更新环几何。
+func _on_ring_live_changed() -> void:
+	_boundary_frame_cache = null
+	if _mesh_dirty:
+		_max_design_radius = -1.0
+		_last_fit_key = ""
+		_avg_radius_key = ""
+		_force_3d_frame = true
+	if _overlay != null:
+		_overlay.queue_redraw()
+	# Note/region drags only change the overlay. Boundary dragging marks the
+	# mesh dirty in _update_drag(), where the actual geometry is edited.
+	if _mesh_dirty:
+		_max_design_radius = -1.0
+		_last_fit_key = ""
+		_avg_radius_key = ""
+		_force_3d_frame = true
+	if _overlay != null:
+		_overlay.queue_redraw()
+
+
 func _on_selection_changed() -> void:
 	queue_redraw()
 
@@ -1469,7 +1492,8 @@ func _on_resized() -> void:
 	var chart := get_chart()
 	if chart != null:
 		var view := current_view()
-		_update_camera_fit(chart, float(view.get("zoom", 1.0)), float(view.get("ellipse", 1.0)))
+		_update_camera_fit(chart, float(view.get("zoom", 1.0)), float(view.get("ellipse", 1.0)),
+			float(view.get("dolly", 1.0)))
 
 
 func _on_mouse_entered() -> void:
@@ -1683,7 +1707,7 @@ func _update_drag(screen_position: Vector2) -> void:
 	if not design.is_finite():
 		return
 	shape.set_vertex(_drag_vertex, design)
-	_app.touch_chart()
+	_app.touch_ring_chart()
 	_mesh_dirty = true
 
 
@@ -2290,7 +2314,7 @@ func _update_cursor() -> void:
 	var near_center := mouse_screen.distance_to(center) < average * 0.05
 	var valid := (inside_circle or distance <= threshold) and not near_center
 	if playtest_mode:
-		# Estella 式外环：内圈外整片有效，鼠标离开环/舞台后仍按最近 u 判定。
+		# 外环：内圈外整片有效，鼠标离开环/舞台后仍按最近 u 判定。
 		valid = mouse_screen.distance_to(center) >= average * 0.45
 	elif not mouse_inside:
 		valid = false
@@ -2365,24 +2389,25 @@ func draw_overlay(canvas: Control) -> void:
 	# Combo 单独压在音符层下面，下落音符可以盖住它；左右两列仍在 HUD 层。
 	if playtest_mode and show_hud:
 		_draw_play_combo_layer(canvas)
+	var draw_note_layers := show_notes and not ring_drag_low_detail
 	var sec_usec := Time.get_ticks_usec()
-	if show_notes:
+	if draw_note_layers:
 		_draw_seeks(canvas, chart, t)
 	var sec2 := Time.get_ticks_usec()
 	_perf_sections[0] += sec2 - sec_usec
-	if show_notes:
+	if draw_note_layers:
 		_draw_paths(canvas, chart, t, pre)
 	sec_usec = Time.get_ticks_usec()
 	_perf_sections[1] += sec_usec - sec2
-	if show_notes:
+	if draw_note_layers:
 		_draw_holds(canvas, chart, t, pre)
 	sec2 = Time.get_ticks_usec()
 	_perf_sections[2] += sec2 - sec_usec
-	if show_notes:
+	if draw_note_layers:
 		_draw_notes(canvas, chart, t, pre)
-	if show_path_judgement and show_notes:
+	if show_path_judgement and draw_note_layers:
 		_draw_path_judgement(canvas, chart, t, pre)
-	if show_notes:
+	if draw_note_layers:
 		_draw_note_pops(canvas)
 	sec_usec = Time.get_ticks_usec()
 	_perf_sections[3] += sec_usec - sec2
@@ -2497,7 +2522,8 @@ func refresh_storyboard_layers() -> void:
 	var chart := get_chart()
 	if chart != null:
 		var view := current_view()
-		_update_camera_fit(chart, float(view.get("zoom", 1.0)), float(view.get("ellipse", 1.0)))
+		_update_camera_fit(chart, float(view.get("zoom", 1.0)), float(view.get("ellipse", 1.0)),
+			float(view.get("dolly", 1.0)))
 	for layer in [_storyboard_bg, _storyboard_add_bg, _storyboard_fg, _storyboard_top, _storyboard_add_fg]:
 		if layer != null:
 			layer.queue_redraw()
@@ -4762,7 +4788,7 @@ func _draw_pulses(canvas: Control) -> void:
 			continue
 		canvas.draw_string_outline(UITheme.bold_font(), pos, label, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, outline_size, Color(0, 0, 0, outline_alpha))
 		canvas.draw_string(UITheme.bold_font(), pos, label, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, Color(color.r, color.g, color.b, label_alpha))
-		# 早/晚提示：Estella 被批评判定反馈不清，这里把偏差方向直接写在判定字下面。
+		# 早/晚提示：判定反馈不清时，把偏差方向直接写在判定字下面。
 		if not detail.is_empty():
 			# 这里原本用等宽字体，但它没有中文字形，每个不同的“早/晚 X ms”都会触发一次
 			# 系统字体回退查找（单次约 18ms），判定密集时会周期性卡顿。改用含中文的正文字体。
