@@ -997,7 +997,7 @@ func _update_camera_fit(chart: Chart, zoom: float, ellipse: float, dolly: float 
 		return
 	_ensure_design_radius(chart)
 	var aspect := maxf(0.2, size.x / maxf(1.0, size.y))
-	# 试玩时把环放大到接近 Estella 的满屏比例；编辑器保持原来的留白。
+	# 试玩时把环放大到接近满屏比例；编辑器保持原来的留白。
 	var margin := 1.06 if playtest_mode else PREVIEW_MARGIN
 	# dolly 是真正的镜头推拉：>1 相机靠近（环变大），<1 后退。
 	# zoom 仍走原来的取景补偿，所以旧谱默认 dolly=1 时外观不变。
@@ -2314,7 +2314,7 @@ func _update_cursor() -> void:
 	var near_center := mouse_screen.distance_to(center) < average * 0.05
 	var valid := (inside_circle or distance <= threshold) and not near_center
 	if playtest_mode:
-		# Estella 式外环：内圈外整片有效，鼠标离开环/舞台后仍按最近 u 判定。
+		# 外环：内圈外整片有效，鼠标离开环/舞台后仍按最近 u 判定。
 		valid = mouse_screen.distance_to(center) >= average * 0.45
 	elif not mouse_inside:
 		valid = false
@@ -4788,7 +4788,7 @@ func _draw_pulses(canvas: Control) -> void:
 			continue
 		canvas.draw_string_outline(UITheme.bold_font(), pos, label, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, outline_size, Color(0, 0, 0, outline_alpha))
 		canvas.draw_string(UITheme.bold_font(), pos, label, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, Color(color.r, color.g, color.b, label_alpha))
-		# 早/晚提示：Estella 被批评判定反馈不清，这里把偏差方向直接写在判定字下面。
+		# 早/晚提示：判定反馈不清时，把偏差方向直接写在判定字下面。
 		if not detail.is_empty():
 			# 这里原本用等宽字体，但它没有中文字形，每个不同的“早/晚 X ms”都会触发一次
 			# 系统字体回退查找（单次约 18ms），判定密集时会周期性卡顿。改用含中文的正文字体。

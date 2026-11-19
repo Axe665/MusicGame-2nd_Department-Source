@@ -349,29 +349,7 @@ func _build_camera_key(chart: Chart, state: ViewState) -> void:
 		)
 	)
 	_add_sep()
-	# 只保留推拉和滚转：预设也只改这两项，不再暴露缩放/倾斜/椭圆。
-	var grid := GridContainer.new()
-	grid.columns = 3
-	grid.add_theme_constant_override("h_separation", 4)
-	grid.add_theme_constant_override("v_separation", 4)
-	for item in [
-		["标准", {"dolly": 1.0, "rotation": 0.0}],
-		["推近", {"dolly": 1.25}],
-		["拉远", {"dolly": 0.8}],
-		["左滚", {"rotation": -15.0}],
-		["右滚", {"rotation": 15.0}],
-	]:
-		var values: Dictionary = item[1]
-		grid.add_child(_small_button(String(item[0]), func() -> void:
-			_edit(func() -> void:
-				for field in values.keys():
-					match String(field):
-						"dolly": state.dolly = float(values[field])
-						"rotation": state.rotation = float(values[field])
-			)
-		))
-	add_child(grid)
-	_add_hint("Estella 式：环始终在画面中心，只做推拉和滚转。")
+	_add_hint("环始终在画面中心，只做推拉和滚转。")
 	_add_sep()
 	_add_slider("推拉（1=标准）", state.dolly, 0.6, 1.6, 0.01, func(value: float) -> void:
 		_edit(func() -> void: state.dolly = value)

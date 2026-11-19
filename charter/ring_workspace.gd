@@ -1140,7 +1140,7 @@ func _apply_view(key: String, value: float) -> void:
 
 
 func _on_ring_zoom(delta: float) -> void:
-	# 预览里滚轮是 Estella 式推拉：改镜头距离，不改环的世界缩放。
+	# 预览里滚轮是推拉：改镜头距离，不改环的世界缩放。
 	var view := _active_view()
 	var target := clampf(float(view.get("dolly", 1.0)) + delta, 0.6, 1.6)
 	gesture_mutate_chart(func() -> void: _apply_view("dolly", target))

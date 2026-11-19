@@ -10,7 +10,7 @@ signal playtest_settings_requested
 const PERFECT_MS := 65.0
 const GREAT_MS := 115.0
 const GOOD_MS := 170.0
-## Estella 式 BAD 档：超出 GOOD 但在这一档内算 BAD（不断连、不计命中）。
+## BAD 档：超出 GOOD 但在这一档内算 BAD（不断连、不计命中）。
 ## 收窄到 200ms：与下一颗的窗口重叠更少，前一颗不容易把按键吃掉。
 const BAD_MS := 200.0
 const HIT_WINDOW_MS := BAD_MS
