@@ -820,7 +820,7 @@ func _draw_overlay(canvas: CanvasItem) -> void:
 	if chart == null:
 		return
 	var x := _x_for(workspace.playhead())
-	if x >= GUTTER - 1.0 or x <= size.x + 1.0:
+	if x >= GUTTER - 1.0 and x <= size.x + 1.0:
 		canvas.draw_line(Vector2(x, RULER_H - 12.0), Vector2(x, size.y - FOOTER_H),
 			UITheme.CORAL, 1.5)
 		canvas.draw_colored_polygon(PackedVector2Array([
