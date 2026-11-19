@@ -76,7 +76,7 @@ static func pair_at(chart: Chart, beat: float) -> Dictionary:
 		if base == null or first_beat <= 0.000001:
 			return {"from": first_shape, "to": first_shape, "p": 0.0}
 		var intro_span := morph_beats(first, first_beat)
-		var intro := Ease.apply(String(first.get("easing", "in-out")), clampf(beat / intro_span, 0.0, 1.0))
+		var intro := Ease.apply_curve(String(first.get("easing", "in-out")), first.get("curve", []), clampf(beat / intro_span, 0.0, 1.0))
 		return {"from": base, "to": first_shape, "p": intro}
 	for i in keys.size() - 1:
 		var a: Dictionary = keys[i]
@@ -90,13 +90,13 @@ static func pair_at(chart: Chart, beat: float) -> Dictionary:
 		if from_shape == null or to_shape == null:
 			continue
 		var span := maxf(0.000001, b_beat - a_beat)
-		var p := Ease.apply(String(a.get("easing", "in-out")), clampf((beat - a_beat) / morph_beats(a, span), 0.0, 1.0))
+		var p := Ease.apply_curve(String(a.get("easing", "in-out")), a.get("curve", []), clampf((beat - a_beat) / morph_beats(a, span), 0.0, 1.0))
 		return {"from": from_shape, "to": to_shape, "p": p}
 	return {}
 
 
 static func eval_view(chart: Chart, beat: float) -> Dictionary:
-	return ViewState.evaluate(chart.view_states, beat)
+	return ViewState.evaluate(chart.sorted_view_states(), beat)
 
 
 static func nearest_u(chart: Chart, beat: float, screen_point: Vector2, projector: Callable, samples: int = 512, frame: BoundaryFrame = null) -> Dictionary:

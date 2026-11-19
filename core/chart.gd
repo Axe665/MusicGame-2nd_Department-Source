@@ -40,6 +40,7 @@ var version: int = 0
 var _stamp_notes := -1
 var _stamp_shapes := -1
 var _stamp_keys := -1
+var _stamp_views := -1
 var _stamp_duration := -1
 var _stamp_anchors := -1
 var _stamp_by_id := -1
@@ -48,6 +49,7 @@ var _stamp_max_len := -1
 var _sorted_notes_cache: Array[Note] = []
 var _sorted_shapes_cache: Array[BoundaryShape] = []
 var _sorted_keys_cache: Array[Dictionary] = []
+var _sorted_views_cache: Array[ViewState] = []
 var _notes_by_id_cache: Dictionary = {}
 var _path_roots_cache: Array[Note] = []
 var _max_len_cache: float = 0.0
@@ -61,6 +63,7 @@ func mark_dirty() -> void:
 	_stamp_notes = -1
 	_stamp_shapes = -1
 	_stamp_keys = -1
+	_stamp_views = -1
 	_stamp_duration = -1
 	_stamp_anchors = -1
 	_stamp_by_id = -1
@@ -150,6 +153,57 @@ func get_default_shape() -> BoundaryShape:
 
 
 ## 只读：返回内部缓存，调用方不要改它（要改就改 shape_keys 再 mark_dirty）。
+## 稳定 id：多选、拖拽、撤销后选中都按 id 找键；旧文件在载入时补号。
+func ensure_key_ids() -> void:
+	var next := next_key_id()
+	for key in shape_keys:
+		if int(key.get("id", 0)) <= 0:
+			key["id"] = next
+			next += 1
+	for state in view_states:
+		if state.id <= 0:
+			state.id = next
+			next += 1
+
+
+func next_key_id() -> int:
+	var peak := 0
+	for key in shape_keys:
+		peak = maxi(peak, int(key.get("id", 0)))
+	for state in view_states:
+		peak = maxi(peak, state.id)
+	return peak + 1
+
+
+func shape_key_by_id(key_id: int) -> Dictionary:
+	for key in shape_keys:
+		if int(key.get("id", 0)) == key_id:
+			return key
+	return {}
+
+
+func view_state_by_id(state_id: int) -> ViewState:
+	for state in view_states:
+		if state.id == state_id:
+			return state
+	return null
+
+
+## 只读：镜头帧排序缓存。每帧 ViewState.evaluate 都要按拍找段，
+## 不能再让调用方 duplicate+sort 一遍。
+func sorted_view_states() -> Array[ViewState]:
+	var stamp := _stamp()
+	if stamp == _stamp_views:
+		return _sorted_views_cache
+	_stamp_views = stamp
+	var result: Array[ViewState] = []
+	for state in view_states:
+		result.append(state)
+	result.sort_custom(func(a: ViewState, b: ViewState) -> bool: return a.beat < b.beat)
+	_sorted_views_cache = result
+	return _sorted_views_cache
+
+
 func sorted_shape_keys() -> Array[Dictionary]:
 	var stamp := _stamp()
 	if stamp == _stamp_keys:

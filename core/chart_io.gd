@@ -2,12 +2,16 @@ class_name ChartIO
 extends RefCounted
 
 const FORMAT := "tamaki3-chart"
-const VERSION := 1
+## v2：形状/镜头关键帧带稳定 id 与每段 cubic-bezier 曲线。
+## 读 v1 时自动补 id，并把镜头缓动从「目标帧」搬回「左帧」（保持旧演出）。
+const VERSION := 2
 
 static var last_error: String = ""
 
 
 static func chart_to_dict(chart: Chart) -> Dictionary:
+	# 序列化前补稳定 id：旧内存谱面也能写出可往返的 v2。
+	chart.ensure_key_ids()
 	var timing_points: Array[Dictionary] = []
 	for point in chart.timing.points:
 		timing_points.append(point.to_dict())
@@ -23,10 +27,15 @@ static func chart_to_dict(chart: Chart) -> Dictionary:
 			"beat": snappedf(float(key.get("beat", 0.0)), 0.001),
 			"shape": String(key.get("shape_id", "")),
 			"easing": String(key.get("easing", "in-out")),
+			"id": int(key.get("id", 0)),
 		}
 		# 只在真的设过形变时长时才写；缺字段 = 整段都在变（旧谱语义）。
 		if float(key.get("morph", 0.0)) > 0.0:
 			row["morph"] = snappedf(float(key.get("morph", 0.0)), 0.001)
+		var curve: Array = key.get("curve", [])
+		if curve.size() == 4:
+			row["curve"] = [snappedf(float(curve[0]), 0.001), snappedf(float(curve[1]), 0.001),
+				snappedf(float(curve[2]), 0.001), snappedf(float(curve[3]), 0.001)]
 		key_rows.append(row)
 	var event_list: Array[Dictionary] = []
 	if key_rows.is_empty():
@@ -328,8 +337,12 @@ static func chart_from_dict(data: Dictionary) -> Chart:
 	if String(data.get("format", FORMAT)) != FORMAT:
 		last_error = "不是 Tamaki₃ 谱面文件"
 		return null
+	var file_version := int(data.get("version", 1))
+	if file_version > VERSION:
+		last_error = "谱面版本过新（v%d），请升级制谱器" % file_version
+		return null
 	var chart := Chart.new()
-	chart.format_version = int(data.get("version", VERSION))
+	chart.format_version = file_version
 	var general: Dictionary = data.get("general", {})
 	chart.audio_path = String(general.get("audio", ""))
 	chart.video_path = String(general.get("video", ""))
@@ -396,9 +409,14 @@ static func chart_from_dict(data: Dictionary) -> Chart:
 				"beat": float(raw.get("beat", 0.0)),
 				"shape_id": String(raw.get("shape", raw.get("shape_id", ""))),
 				"easing": String(raw.get("easing", "in-out")),
+				"id": int(raw.get("id", 0)),
 			}
 			if raw.has("morph"):
 				key_row["morph"] = float(raw.get("morph", 0.0))
+			var raw_curve: Variant = raw.get("curve", [])
+			if raw_curve is Array and (raw_curve as Array).size() == 4:
+				key_row["curve"] = [float(raw_curve[0]), float(raw_curve[1]),
+					float(raw_curve[2]), float(raw_curve[3])]
 			chart.shape_keys.append(key_row)
 	for raw in data.get("events", []):
 		if raw is Dictionary:
@@ -417,6 +435,11 @@ static func chart_from_dict(data: Dictionary) -> Chart:
 			chart.view_states.append(ViewState.from_dict(raw))
 	if chart.view_states.is_empty():
 		chart.view_states.append(ViewState.new())
+	chart.view_states.sort_custom(func(a: ViewState, b: ViewState) -> bool: return a.beat < b.beat)
+	if file_version < 2:
+		# v1 的镜头缓动存在目标帧上；搬到左帧后，新运行时与原演出等价。
+		for i in range(chart.view_states.size() - 1):
+			chart.view_states[i].easing = chart.view_states[i + 1].easing
 	chart.regions.clear()
 	for raw in data.get("regions", []):
 		if raw is Dictionary:
@@ -470,6 +493,7 @@ static func chart_from_dict(data: Dictionary) -> Chart:
 	chart.merge_center_bells()
 	chart.editor = data.get("editor", {}).duplicate(true)
 	chart.refresh_ids()
+	chart.ensure_key_ids()
 	return chart
 
 

@@ -257,8 +257,7 @@ class Timeline:
 			0:
 				return chart.sorted_shape_keys()
 			1:
-				_sort_in_place(chart.view_states, func(a: ViewState, b: ViewState) -> bool: return a.beat < b.beat)
-				return chart.view_states
+				return chart.sorted_view_states()
 			2:
 				_sort_in_place(chart.events, func(a, b) -> bool: return a.start_beat < b.start_beat)
 				return chart.events
@@ -1658,6 +1657,7 @@ func _add_view_keyframe() -> void:
 	var current := _active_view()
 	var state := ViewState.new(playhead(), float(current.get("zoom", 1.0)), float(current.get("tilt_x", 0.0)),
 		float(current.get("tilt_y", 0.0)), float(current.get("ellipse", 1.0)), float(current.get("rotation", 0.0)))
+	state.id = chart_data.next_key_id()
 	_app.mutate(func() -> void:
 		chart_data.view_states.append(state)
 		chart_data.view_states.sort_custom(func(a: ViewState, b: ViewState) -> bool: return a.beat < b.beat)
@@ -1720,7 +1720,8 @@ func _add_key() -> void:
 	var shape := _snapshot_shape(beat)
 	_app.mutate(func() -> void:
 		chart_data.shapes[shape.id] = shape
-		chart_data.shape_keys.append({"beat": beat, "shape_id": shape.id, "easing": "in-out"})
+		chart_data.shape_keys.append({"beat": beat, "shape_id": shape.id, "easing": "in-out",
+			"id": chart_data.next_key_id()})
 		_app.select_shape(shape.id)
 		_app.select_segment(0)
 	)

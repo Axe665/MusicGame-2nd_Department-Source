@@ -8,6 +8,10 @@ var tilt_y: float = 0.0
 var ellipse: float = 1.0
 var rotation: float = 0.0
 var easing: String = "linear"
+## 稳定身份：多选、撤销、拖拽都按 id 找键，不靠数组下标。
+var id: int = 0
+## 每段一条 cubic-bezier；空数组 = 用 easing 预设。
+var curve: Array = []
 
 
 func _init(
@@ -29,7 +33,7 @@ func _init(
 
 
 func to_dict() -> Dictionary:
-	return {
+	var data := {
 		"beat": snappedf(beat, 0.001),
 		"zoom": snappedf(zoom, 0.001),
 		"tilt_x": snappedf(tilt_x, 0.001),
@@ -38,10 +42,16 @@ func to_dict() -> Dictionary:
 		"rotation": snappedf(rotation, 0.001),
 		"easing": easing,
 	}
+	if id > 0:
+		data["id"] = id
+	if curve.size() == 4:
+		data["curve"] = [snappedf(float(curve[0]), 0.001), snappedf(float(curve[1]), 0.001),
+			snappedf(float(curve[2]), 0.001), snappedf(float(curve[3]), 0.001)]
+	return data
 
 
 static func from_dict(data: Dictionary) -> ViewState:
-	return ViewState.new(
+	var state := ViewState.new(
 		float(data.get("beat", 0.0)),
 		float(data.get("zoom", 1.0)),
 		float(data.get("tilt_x", 0.0)),
@@ -50,6 +60,12 @@ static func from_dict(data: Dictionary) -> ViewState:
 		float(data.get("rotation", 0.0)),
 		String(data.get("easing", "linear"))
 	)
+	state.id = int(data.get("id", 0))
+	var raw_curve: Variant = data.get("curve", [])
+	if raw_curve is Array and (raw_curve as Array).size() == 4:
+		for value in raw_curve:
+			state.curve.append(float(value))
+	return state
 
 
 static func default_state() -> Dictionary:
@@ -65,8 +81,12 @@ static func default_state() -> Dictionary:
 static func evaluate(states: Array[ViewState], beat: float) -> Dictionary:
 	if states.is_empty():
 		return default_state()
-	var sorted := states.duplicate()
-	sorted.sort_custom(func(a: ViewState, b: ViewState) -> bool: return a.beat < b.beat)
+	var sorted: Array[ViewState] = states
+	if not _is_sorted(states):
+		sorted = []
+		for state in states:
+			sorted.append(state)
+		sorted.sort_custom(func(a: ViewState, b: ViewState) -> bool: return a.beat < b.beat)
 	if beat <= sorted[0].beat:
 		return _state_dict(sorted[0])
 	if beat >= sorted[-1].beat:
@@ -76,18 +96,25 @@ static func evaluate(states: Array[ViewState], beat: float) -> Dictionary:
 		var b: ViewState = sorted[i + 1]
 		if beat >= a.beat and beat <= b.beat:
 			var span := maxf(0.000001, b.beat - a.beat)
-			var p := Ease.apply(b.easing, (beat - a.beat) / span)
+			# 缓动归左帧（出向），和形状关键帧一致；曲线优先于预设。
+			var p := Ease.apply_curve(a.easing, a.curve, (beat - a.beat) / span)
 			# 旋转走最短弧：350°→10° 是 +20°，不是反向绕 340°。
 			var turn := JudgeMath.angle_delta(a.rotation, b.rotation)
-			# zoom/rotation 平滑插值；tilt/ellipse 到关键帧瞬切（不动就按左帧）。
 			return {
 				"zoom": lerpf(a.zoom, b.zoom, p),
 				"rotation": wrapf(a.rotation + turn * p, -180.0, 180.0),
-				"tilt_x": a.tilt_x,
-				"tilt_y": a.tilt_y,
-				"ellipse": a.ellipse,
+				"tilt_x": lerpf(a.tilt_x, b.tilt_x, p),
+				"tilt_y": lerpf(a.tilt_y, b.tilt_y, p),
+				"ellipse": lerpf(a.ellipse, b.ellipse, p),
 			}
 	return _state_dict(sorted[-1])
+
+
+static func _is_sorted(states: Array[ViewState]) -> bool:
+	for i in range(1, states.size()):
+		if states[i].beat < states[i - 1].beat:
+			return false
+	return true
 
 
 static func _state_dict(state: ViewState) -> Dictionary:

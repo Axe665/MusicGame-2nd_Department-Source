@@ -51,6 +51,9 @@ func _initialize() -> void:
 		"test_ring_scrub_state",
 		"test_ring_lane_items_real_chart",
 		"test_shape_key_cache_invalidation",
+		"test_key_ids_and_v2_migration",
+		"test_camera_left_key_semantics",
+		"test_ease_bezier",
 		"test_undo_memory_budget",
 		"test_full_chart_round_trip",
 		"test_difficulty_set_round_trip",
@@ -474,8 +477,8 @@ func test_ring_compat_rules() -> bool:
 	var mid := ViewState.evaluate(chart.view_states, 2.0)
 	near(float(mid["zoom"]), 1.1, 0.001, "zoom interpolates")
 	near(float(mid["rotation"]), 20.0, 0.001, "rotation interpolates")
-	near(float(mid["tilt_x"]), 0.0, 0.001, "tilt steps on the left keyframe")
-	eq(float(mid["ellipse"]), 1.0, "ellipse steps on the left keyframe")
+	near(float(mid["tilt_x"]), 10.0, 0.001, "tilt interpolates")
+	near(float(mid["ellipse"]), 1.1, 0.001, "ellipse interpolates")
 	return true
 
 
@@ -1993,6 +1996,71 @@ func test_shape_key_cache_invalidation() -> bool:
 	eq(chart.sorted_shape_keys().size(), 1, "删除后缓存同步")
 	eq((ChartIO.chart_to_dict(chart)["boundary_keys"] as Array).size(), 1, "删除后快照只剩一帧")
 	app.free()
+	return true
+
+
+func test_key_ids_and_v2_migration() -> bool:
+	# v1 没有 id / 没有曲线；载入时补 id，并把镜头缓动从目标帧搬到左帧。
+	var v1 := {
+		"format": "tamaki3-chart", "version": 1,
+		"timing": {"points": [{"beat": 0.0, "bpm": 120.0, "beats_per_bar": 4}]},
+		"shapes": [{"id": "S0", "closed": true, "segments": []}],
+		"boundary_keys": [
+			{"beat": 0.0, "shape": "S0", "easing": "linear"},
+			{"beat": 4.0, "shape": "S0", "easing": "in-out"},
+		],
+		"view_states": [
+			{"beat": 0.0, "zoom": 1.0, "rotation": 0.0, "easing": "linear"},
+			{"beat": 4.0, "zoom": 1.2, "rotation": 40.0, "easing": "in-out"},
+		],
+	}
+	var chart := ChartIO.chart_from_dict(v1)
+	ok(chart != null, "v1 谱面能打开")
+	if chart == null:
+		return true
+	var id0 := int(chart.shape_keys[0].get("id", 0))
+	ok(id0 > 0, "形状键自动补 id")
+	ok(int(chart.shape_keys[1].get("id", 0)) != id0, "id 不重复")
+	eq(chart.view_states[0].easing, "in-out", "v1 镜头缓动搬到左帧")
+	near(float(BoundaryRuntime.eval_view(chart, 2.0)["zoom"]), 1.1, 0.001, "迁移后旧演出不变")
+	var data := ChartIO.chart_to_dict(chart)
+	eq(int(data["version"]), 2, "写回 v2")
+	ok(int((data["boundary_keys"] as Array)[0].get("id", 0)) > 0, "写回带 id")
+	chart.shape_keys[0]["curve"] = [0.2, 0.0, 0.8, 1.0]
+	chart.view_states[0].curve = [0.42, 0.0, 0.58, 1.0]
+	var back := ChartIO.from_json(ChartIO.to_json(chart))
+	ok(back != null, "v2 往返不报错")
+	if back != null:
+		eq((back.shape_keys[0].get("curve", []) as Array).size(), 4, "形状曲线往返")
+		eq(back.view_states[0].curve.size(), 4, "镜头曲线往返")
+		near(Ease.apply_curve("linear", back.shape_keys[0].get("curve", []), 0.5), 0.5, 0.02, "曲线中点")
+	var future := data.duplicate(true)
+	future["version"] = 99
+	ok(ChartIO.chart_from_dict(future) == null, "过新版本拒绝打开")
+	ok(ChartIO.last_error.contains("过新"), "拒绝原因说明版本")
+	return true
+
+
+func test_camera_left_key_semantics() -> bool:
+	var chart := Chart.new()
+	chart.view_states = [
+		ViewState.new(0.0, 1.0, 0.0, 0.0, 1.0, 0.0, "linear"),
+		ViewState.new(4.0, 1.2, 20.0, 10.0, 1.2, 40.0, "in-out"),
+	]
+	# 段缓动看左帧：左帧 linear 时 1/4 处就是 0.25，不受右帧 in-out 影响。
+	near(float(BoundaryRuntime.eval_view(chart, 1.0)["zoom"]), 1.05, 0.001, "缓动归左帧")
+	near(float(BoundaryRuntime.eval_view(chart, 2.0)["tilt_x"]), 10.0, 0.001, "横倾插值")
+	near(float(BoundaryRuntime.eval_view(chart, 2.0)["ellipse"]), 1.1, 0.001, "椭圆比插值")
+	chart.view_states[0].easing = "in-out"
+	near(float(BoundaryRuntime.eval_view(chart, 1.0)["zoom"]), 1.03125, 0.001, "左帧改缓入缓出")
+	return true
+
+
+func test_ease_bezier() -> bool:
+	near(Ease.bezier([0.0, 0.0, 1.0, 1.0], 0.25), 0.25, 0.001, "线性贝塞尔")
+	near(Ease.bezier([0.42, 0.0, 1.0, 1.0], 0.5), 0.315, 0.02, "缓入曲线")
+	near(Ease.apply_curve("linear", [0.0, 0.0, 1.0, 1.0], 0.75), 0.75, 0.001, "曲线优先于预设")
+	near(Ease.apply_curve("in-out", [], 0.25), 0.15625, 0.001, "无曲线时退回预设")
 	return true
 
 
