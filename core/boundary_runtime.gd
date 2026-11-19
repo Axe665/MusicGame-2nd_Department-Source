@@ -47,21 +47,23 @@ static func eval_shape(chart: Chart, beat: float, samples: int = 256) -> Array[D
 	return result
 
 
-## 从 a 到 b 的形变进度：形变时长（拍）取自 a 的 "morph"，缺省 = 整段
-## （旧谱行为不变）。设短于整段时先变完、剩下的时间保持 b 的形状。
+## 本帧入场过渡的实际拍数：0 = 硬切，缺省 = 0（v3 新帧）。
+## v1/v2 文件在 ChartIO 里把「缺字段 = 整段」显式写成 span，旧演出不变。
 static func morph_beats(key: Dictionary, span: float) -> float:
 	span = maxf(0.000001, span)
-	return clampf(float(key.get("morph", span)), 0.000001, span)
+	return clampf(float(key.get("morph", 0.0)), 0.0, span)
 
 
 ## 当前拍落在哪两个形状之间：{from, to, p}。
-## 空谱面或没有关键帧时返回空；第一帧之前从默认形状渐变到第一帧。
+## 过渡归目标帧：在 b 之前 morph 拍内完成 a→b，之前保持 a；0 就是 b 拍硬切。
+## 没有关键帧时返回空，运行时回退默认圆；第一帧之前也保持默认圆。
 static func pair_at(chart: Chart, beat: float) -> Dictionary:
 	var keys := chart.sorted_shape_keys()
 	if keys.is_empty():
 		return {}
 	var last: Dictionary = keys[keys.size() - 1]
-	if beat >= float(last.get("beat", 0.0)) - 0.000001:
+	var last_beat := float(last.get("beat", 0.0))
+	if beat >= last_beat - 0.000001:
 		var last_shape := chart.get_shape(String(last.get("shape_id", "")))
 		if last_shape == null:
 			return {}
@@ -73,24 +75,40 @@ static func pair_at(chart: Chart, beat: float) -> Dictionary:
 		if first_shape == null:
 			return {}
 		var base := chart.get_default_shape()
-		if base == null or first_beat <= 0.000001:
+		if base == null or first_beat <= 0.000001 or beat >= first_beat - 0.000001:
 			return {"from": first_shape, "to": first_shape, "p": 0.0}
-		var intro_span := morph_beats(first, first_beat)
-		var intro := Ease.apply_curve(String(first.get("easing", "in-out")), first.get("curve", []), clampf(beat / intro_span, 0.0, 1.0))
+		var intro_span := maxf(0.000001, first_beat)
+		var intro_duration := morph_beats(first, intro_span)
+		if intro_duration <= 0.000001:
+			return {"from": base, "to": base, "p": 0.0}
+		var intro_start := first_beat - intro_duration
+		var intro := 0.0
+		if beat > intro_start:
+			intro = Ease.apply_curve(String(first.get("easing", "in-out")), first.get("curve", []),
+				(beat - intro_start) / intro_duration)
 		return {"from": base, "to": first_shape, "p": intro}
 	for i in keys.size() - 1:
 		var a: Dictionary = keys[i]
 		var b: Dictionary = keys[i + 1]
 		var a_beat := float(a.get("beat", 0.0))
 		var b_beat := float(b.get("beat", 0.0))
-		if beat < a_beat or beat > b_beat:
+		if beat < a_beat:
+			continue
+		if beat >= b_beat:
 			continue
 		var from_shape := chart.get_shape(String(a.get("shape_id", "")))
 		var to_shape := chart.get_shape(String(b.get("shape_id", "")))
 		if from_shape == null or to_shape == null:
 			continue
 		var span := maxf(0.000001, b_beat - a_beat)
-		var p := Ease.apply_curve(String(a.get("easing", "in-out")), a.get("curve", []), clampf((beat - a_beat) / morph_beats(a, span), 0.0, 1.0))
+		var duration := morph_beats(b, span)
+		if duration <= 0.000001:
+			return {"from": from_shape, "to": from_shape, "p": 0.0}
+		var start := b_beat - duration
+		var p := 0.0
+		if beat > start:
+			p = Ease.apply_curve(String(b.get("easing", "in-out")), b.get("curve", []),
+				(beat - start) / duration)
 		return {"from": from_shape, "to": to_shape, "p": p}
 	return {}
 

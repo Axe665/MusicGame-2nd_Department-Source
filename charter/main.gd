@@ -3401,6 +3401,10 @@ func _input(event: InputEvent) -> void:
 			typing = true
 		if typing and event.keycode != KEY_F5 and event.keycode != KEY_F6:
 			return
+		# 环编辑器打开时，主画布是隐藏的：Delete/Backspace 不能再删下面那层
+		# 仍然存在的选中音符；K 也不能把环编辑器重新打开一遍。
+		if _app != null and _app.ring_editor_open and event.keycode in [KEY_DELETE, KEY_BACKSPACE, KEY_K]:
+			return
 		if _canvas != null and _canvas.has_pending_seek() and event.keycode in [KEY_W, KEY_S]:
 			_canvas.set_pending_seek_orientation(1 if event.keycode == KEY_W else 0)
 			accept_event()

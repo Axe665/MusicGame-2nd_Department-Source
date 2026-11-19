@@ -102,7 +102,7 @@ func _scenario_list() -> Array[String]:
 		if text.begins_with("--scenario="):
 			requested = text.split("=", true, 1)[1]
 	if requested == "all":
-		return ["editor_idle", "ring_idle", "ring_scrub", "playtest"]
+		return ["editor_idle", "ring_idle", "ring_scrub", "ring_playback", "ring_all_zoom", "ring_key_drag", "playtest"]
 	var result: Array[String] = []
 	for name in requested.split(",", false):
 		result.append(name)
@@ -154,9 +154,15 @@ func _run(scenario: String) -> void:
 		"editor_idle":
 			await _with_editor(func() -> String: return "editor_idle")
 		"ring_idle":
-			await _with_ring(false)
+			await _with_ring("idle")
 		"ring_scrub":
-			await _with_ring(true)
+			await _with_ring("scrub")
+		"ring_playback":
+			await _with_ring("playback")
+		"ring_all_zoom":
+			await _with_ring("all_zoom")
+		"ring_key_drag":
+			await _with_ring("key_drag")
 		"playtest":
 			await _with_playtest()
 		_:
@@ -187,7 +193,7 @@ func _with_editor(scrub: Callable) -> void:
 	await _frames(4)
 
 
-func _with_ring(scrub: bool) -> void:
+func _with_ring(mode: String) -> void:
 	var app := get_node_or_null("/root/App")
 	var chart := _chart()
 	app.chart = chart
@@ -199,20 +205,43 @@ func _with_ring(scrub: bool) -> void:
 	var workspace: RingWorkspace = _main._ring_workspace
 	workspace.seek(float(chart.shape_keys[0].get("beat", 0.0)) if not chart.shape_keys.is_empty() else 0.0)
 	await _frames(_warmup)
-	if scrub:
-		workspace._timeline._drag_kind = "playhead"
-		var key_count := chart.shape_keys.size()
-		var steps := float(_sample_frames)
-		var beats_per_step := 0.25
-		await _sample("ring_scrub", func(index: int) -> void:
-			var beat := float(index) * beats_per_step
-			if key_count > 1:
-				beat = fposmod(beat, float(key_count) * 4.0 - 0.5)
-			workspace.seek(beat))
-		workspace._timeline._drag_kind = ""
-		workspace.finish_scrub()
-	else:
-		await _sample("ring_idle")
+	match mode:
+		"scrub":
+			workspace._timeline._drag_kind = "playhead"
+			var key_count := chart.shape_keys.size()
+			var beats_per_step := 0.25
+			await _sample("ring_scrub", func(index: int) -> void:
+				var beat := float(index) * beats_per_step
+				if key_count > 1:
+					beat = fposmod(beat, float(key_count) * 4.0 - 0.5)
+				workspace.seek(beat))
+			workspace._timeline._drag_kind = ""
+			workspace.finish_scrub()
+		"playback":
+			var beat := 0.0
+			await _sample("ring_playback", func(_index: int) -> void:
+				beat += 1.0 / 60.0
+				workspace.seek(beat))
+		"all_zoom":
+			workspace.fit_all_timeline()
+			await _frames(2)
+			await _sample("ring_all_zoom", func(_index: int) -> void:
+				# 强制静态内容层每帧重画：模拟缩放/滚动时的最坏情况。
+				workspace._timeline.invalidate())
+		"key_drag":
+			if not chart.shape_keys.is_empty():
+				var key: Dictionary = chart.shape_keys[0]
+				workspace._timeline._select_only("shape", int(key.get("id", 0)))
+				workspace.begin_key_drag(key)
+				await _sample("ring_key_drag", func(index: int) -> void:
+					# 真实拖动每帧都有输入；不刷新活动时间会被静止降帧误判成 10fps。
+					_main._last_activity_ms = Time.get_ticks_msec()
+					workspace.drag_to(2.0 + float(index) * 0.25))
+				workspace.end_drag()
+			else:
+				await _sample("ring_key_drag")
+		_:
+			await _sample("ring_idle")
 	_main.queue_free()
 	_main = null
 	await _frames(4)

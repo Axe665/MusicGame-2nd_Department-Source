@@ -8,7 +8,8 @@ signal closed
 signal play_toggled
 signal loop_requested(start: float, end: float, enabled: bool)
 
-const ZOOM_LEVELS := [8.0, 16.0, 32.0, 64.0]
+const MIN_VIEW_BEATS := 1.0
+const MAX_VIEW_BEATS := 4096.0
 const THUMB_SIZE := Vector2(64, 64)
 
 
@@ -72,7 +73,9 @@ var _beat_spin: SpinBox = null
 var _time_label: Label = null
 var _fps_label: Label = null
 var _fps_accum := 0.0
-var _zoom_index := 1
+## 连续缩放：窗口里放多少拍。8/16/32 档位会被 Ctrl+滚轮连续缩放取代。
+var _view_beats := 16.0
+var _zoom_label: Label = null
 ## 播放时时间轴是否跟着播放头滚（时间轴选项里可关）。
 var follow_playhead_view := true
 var _view_start := 0.0
@@ -82,6 +85,8 @@ var _play_button: Button = null
 var _loop_button: Button = null
 var _loop_on := false
 var _pad: ShapePadOverlay = null
+var _insert_menu: PopupMenu = null
+var _shape_pick: PopupMenu = null
 
 var _thumb_signature := ""
 var _drag_kind := ""
@@ -91,6 +96,10 @@ var _last_key_beat: float = -999.0
 var _sync_last_msec: int = 0
 var _sync_last_beat: float = -99999.0
 var _sync_last_spin: float = -99999.0
+## 拖动关键帧时冻结内容末尾：每帧 mark_dirty 会让 content_end 重扫 10k 音符。
+var _drag_content_end: float = -1.0
+## 滑杆/滚轮这类连续手势结束后再恢复音符层；拖关键帧走 begin/end_preview_drag。
+var _preview_gesture_timer: Timer = null
 
 
 class ShapeThumb:
@@ -113,6 +122,10 @@ class ShapeThumb:
 		var shape := chart.get_shape(shape_id)
 		if shape == null:
 			return
+		if shape_id == chart.default_shape_id:
+			tooltip_text = shape_id + "（基础圆，锁定）"
+		else:
+			tooltip_text = shape_id
 		var center := size * 0.5
 		var scale := minf(size.x, size.y) * 0.42 / 400.0
 		var points := PackedVector2Array()
@@ -121,14 +134,22 @@ class ShapeThumb:
 			if bool(data.get("gap", false)):
 				continue
 			points.append(center + (data.point as Vector2) * scale)
+		var locked := shape_id == chart.default_shape_id
+		var tint := UITheme.MUTED if locked else (UITheme.CORAL if selected else UITheme.CYAN)
 		if points.size() > 1:
-			draw_polyline(points, UITheme.CORAL if selected else UITheme.CYAN, 2.0, true)
-		if selected:
+			draw_polyline(points, tint, 2.0, true)
+		if selected and not locked:
 			draw_rect(Rect2(Vector2.ZERO, size), UITheme.CORAL, false, 1.0)
+		if locked:
+			draw_string(UITheme.FONT_REGULAR, Vector2(size.x - 14, 13), "锁",
+				HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(1, 1, 1, 0.42))
 
 	func _gui_input(event: InputEvent) -> void:
 		if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
-			workspace.open_pad_for_shape(shape_id)
+			if workspace.chart() != null and shape_id == workspace.chart().default_shape_id:
+				workspace._set_hint("基础圆 S0 已锁定；点「复制」建一个可编辑的形状。")
+			else:
+				workspace.open_pad_for_shape(shape_id)
 			accept_event()
 
 
@@ -343,17 +364,19 @@ class ShapePadOverlay:
 				if event.double_click:
 					var index: int = _nearest_segment(event.position)
 					if index >= 0:
-						workspace._app.mutate(func() -> void: shape.insert_vertex(index))
+						workspace._app.mutate_ring(func() -> void: shape.insert_vertex(index))
 						_canvas.queue_redraw()
 					return
 				_drag_vertex = _pick(event.position)
 				if _drag_vertex >= 0:
 					workspace._app.select_segment(_drag_vertex)
+					workspace.begin_preview_drag()
 					workspace._app.begin_edit()
 					_canvas.queue_redraw()
 			else:
 				if _drag_vertex >= 0:
 					_drag_vertex = -1
+					workspace.end_preview_drag()
 					workspace._app.finish_edit()
 			_canvas.accept_event()
 		elif event is InputEventMouseMotion and _drag_vertex >= 0:
@@ -405,7 +428,7 @@ class ShapePadOverlay:
 		for point in vertices:
 			centroid += point
 		centroid /= float(vertices.size())
-		workspace._app.mutate(func() -> void:
+		workspace._app.mutate_ring(func() -> void:
 			for i in vertices.size():
 				shape.set_vertex(i, centroid + (vertices[i] - centroid) * factor)
 		)
@@ -419,7 +442,7 @@ class ShapePadOverlay:
 		for point in vertices:
 			centroid += point
 		centroid /= float(vertices.size())
-		workspace._app.mutate(func() -> void:
+		workspace._app.mutate_ring(func() -> void:
 			for i in vertices.size():
 				shape.set_vertex(i, vertices[i] - centroid)
 		)
@@ -433,7 +456,7 @@ class ShapePadOverlay:
 		for point in vertices:
 			total += point.length()
 		var radius := total / float(vertices.size())
-		workspace._app.mutate(func() -> void:
+		workspace._app.mutate_ring(func() -> void:
 			for i in vertices.size():
 				var direction := vertices[i].normalized()
 				if direction.length_squared() < 0.0001:
@@ -456,7 +479,7 @@ class ShapePadOverlay:
 				replacement.segments[0].gap = true
 			_:
 				return
-		workspace._app.mutate(func() -> void:
+		workspace._app.mutate_ring(func() -> void:
 			shape.segments = replacement.segments
 			shape.closed = replacement.closed
 		)
@@ -464,7 +487,7 @@ class ShapePadOverlay:
 
 	func _add_vertex() -> void:
 		var index: int = maxi(0, int(workspace._app.selected_segment_index))
-		workspace._app.mutate(func() -> void:
+		workspace._app.mutate_ring(func() -> void:
 			shape.insert_vertex(index)
 			workspace._app.select_segment(mini(index + 1, shape.vertex_count() - 1))
 		)
@@ -472,7 +495,7 @@ class ShapePadOverlay:
 
 	func _delete_vertex() -> void:
 		var index: int = maxi(0, int(workspace._app.selected_segment_index))
-		workspace._app.mutate(func() -> void:
+		workspace._app.mutate_ring(func() -> void:
 			shape.remove_vertex(index)
 			workspace._app.select_segment(clampi(index, 0, shape.vertex_count() - 1))
 		)
@@ -495,8 +518,18 @@ func _ready() -> void:
 	_build()
 	_pad = ShapePadOverlay.new(self)
 	add_child(_pad)
+	_preview_gesture_timer = Timer.new()
+	_preview_gesture_timer.one_shot = true
+	_preview_gesture_timer.wait_time = 0.75
+	_preview_gesture_timer.timeout.connect(end_preview_drag)
+	add_child(_preview_gesture_timer)
 	if _app != null:
 		_app.chart_live_changed.connect(func() -> void:
+			_timeline.on_live_change()
+			if _pad.visible:
+				_pad._canvas.queue_redraw()
+		)
+		_app.ring_live_changed.connect(func() -> void:
 			_timeline.on_live_change()
 			if _pad.visible:
 				_pad._canvas.queue_redraw()
@@ -514,6 +547,11 @@ func _ready() -> void:
 				_timeline.invalidate()
 			else:
 				_timeline.on_playhead_changed()
+		)
+		# 选中形状帧时左侧形状库跟着高亮；「复制/删除」就作用在眼前这个形状上。
+		_app.selection_changed.connect(func() -> void:
+			if visible:
+				_rebuild_thumbs()
 		)
 
 
@@ -612,17 +650,13 @@ func _build() -> void:
 	time_row.add_child(_play_button)
 	_loop_button = _button("循环本段", _toggle_loop)
 	time_row.add_child(_loop_button)
-	var zoom_option := OptionButton.new()
-	for value in ["8 拍", "16 拍", "32 拍", "64 拍", "全部"]:
-		zoom_option.add_item(value)
-	zoom_option.selected = _zoom_index
-	zoom_option.add_theme_font_size_override("font_size", 11)
-	zoom_option.item_selected.connect(func(index: int) -> void:
-		_zoom_index = clampi(index, 0, ZOOM_LEVELS.size())
-		_follow_playhead(true)
-		_timeline.invalidate()
-	)
-	time_row.add_child(zoom_option)
+	time_row.add_child(_button("−", func() -> void: zoom_timeline(1)))
+	time_row.add_child(_button("＋", func() -> void: zoom_timeline(-1)))
+	time_row.add_child(_button("适配帧 (F)", fit_key_range_timeline))
+	time_row.add_child(_button("全部", fit_all_timeline))
+	_zoom_label = Label.new()
+	UITheme.style_mono(_zoom_label, 11, UITheme.MUTED)
+	time_row.add_child(_zoom_label)
 	var onion := CheckBox.new()
 	onion.text = "洋葱皮"
 	onion.tooltip_text = "显示当前关键帧前后各 N 帧的环轮廓"
@@ -645,23 +679,6 @@ func _build() -> void:
 		_update_onion()
 	)
 	time_row.add_child(onion_n)
-	var fps_label := Label.new()
-	fps_label.text = "帧率"
-	UITheme.style_mono(fps_label, 11, UITheme.MUTED)
-	time_row.add_child(fps_label)
-	var fps_keys: Array[String] = ["vsync", "60", "120", "144", "240", "unlimited"]
-	var fps_labels: Array[String] = ["跟随屏幕", "60", "120", "144", "240", "不限"]
-	var fps_option := OptionButton.new()
-	for item in fps_labels:
-		fps_option.add_item(item)
-	fps_option.selected = maxi(0, fps_keys.find(String(_app.frame_cap)))
-	fps_option.add_theme_font_size_override("font_size", 11)
-	fps_option.item_selected.connect(func(index: int) -> void:
-		_app.frame_cap = fps_keys[index]
-		_app.apply_frame_cap()
-		_app.save_settings()
-	)
-	time_row.add_child(fps_option)
 	_time_label = Label.new()
 	UITheme.style_mono(_time_label, 12, UITheme.CYAN)
 	_time_label.add_theme_font_override("font", UITheme.FONT_REGULAR)
@@ -670,7 +687,7 @@ func _build() -> void:
 	UITheme.style_mono(_fps_label, 12, UITheme.MUTED)
 	time_row.add_child(_fps_label)
 	var hint := Label.new()
-	hint.text = "拖动方块改时间，双击画形状"
+	hint.text = "拖关键帧改时间；点色带选中过渡段；F 适配关键帧；Ctrl+滚轮缩放，滚轮平移。"
 	UITheme.style_mono(hint, 11, UITheme.MUTED)
 	time_row.add_child(hint)
 
@@ -682,11 +699,6 @@ func _build() -> void:
 		_timeline.selection_changed.connect(func() -> void: _inspector.call_deferred("refresh", true))
 	# 选中变化时标题也要立刻跟着变（镜头帧/形状帧），不能等下一次跨拍。
 	_timeline.selection_changed.connect(func() -> void: _sync_time_tool(true))
-	var explain := Label.new()
-	explain.text = "块=这一帧保持到下一帧，块越长隔得越久；半透明段=形变已完成、在原地保持（检查器「形变时长」）；拖方块改时间，拖块右缘改下一帧；滚轮滚动，Ctrl+滚轮缩放。"
-	explain.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	UITheme.style_mono(explain, 11, UITheme.MUTED)
-	root.add_child(explain)
 
 
 ## 复用主预览：把同一个 Preview3D 挪进来，省掉第二个 3D 视口。
@@ -723,13 +735,21 @@ func open_workspace(preview: Preview3D = null, restore: Callable = Callable()) -
 	_follow_playhead(true)
 	if chart() != null and (not chart().shape_keys.is_empty() or chart().view_states.size() > 1):
 		fit_key_range_timeline()
+	# 形状库高亮当前播放头这一帧实际用的形状，别让 S0 抢了 S5 的选中框。
+	var at_key := current_key()
+	if not at_key.is_empty():
+		_app.select_shape(String(at_key.get("shape_id", "")))
 	_refresh()
+	# 打开后再预热，不阻塞第一帧；第一次拖关键帧就不用再拍一次冷快照。
+	if _app != null and _app.has_method("warm_snapshot"):
+		_app.call_deferred("warm_snapshot")
 
 
 func close_workspace() -> void:
 	if _pad != null and _pad.visible:
 		_pad.close_pad()
 		return
+	end_preview_drag()
 	visible = false
 	if _preview != null and _preview.get_parent() == _preview_slot:
 		_preview_slot.remove_child(_preview)
@@ -743,17 +763,42 @@ func chart() -> Chart:
 	return _app.chart if _app != null else null
 
 
+## 拖动期间用冻结值；松手后重新扫描一次。
+func content_end_beat() -> float:
+	if _drag_content_end >= 0.0:
+		return _drag_content_end
+	var chart_data := chart()
+	return chart_data.content_end_beat() if chart_data != null else 0.0
+
+
+func begin_preview_drag() -> void:
+	if _preview_gesture_timer != null:
+		_preview_gesture_timer.stop()
+	if _preview != null:
+		_preview.ring_drag_low_detail = true
+		_preview.queue_redraw()
+
+
+func end_preview_drag() -> void:
+	if _preview != null:
+		_preview.ring_drag_low_detail = false
+		_preview.queue_redraw()
+
+
+func begin_content_freeze() -> void:
+	_drag_content_end = content_end_beat()
+
+
+func end_content_freeze() -> void:
+	_drag_content_end = -1.0
+
+
 func playhead() -> float:
 	return float(_app.playhead_beat) if _app != null else 0.0
 
 
 func view_beats() -> float:
-	if _zoom_index >= ZOOM_LEVELS.size():
-		# 「全部」：按内容长度铺满，再留 1 小节给最后一段的端帽。
-		if chart() == null:
-			return 16.0
-		return maxf(8.0, chart().content_end_beat() + chart().bar_length())
-	return float(ZOOM_LEVELS[clampi(_zoom_index, 0, ZOOM_LEVELS.size() - 1)])
+	return clampf(_view_beats, MIN_VIEW_BEATS, MAX_VIEW_BEATS)
 
 
 func window_start() -> float:
@@ -777,34 +822,51 @@ func fit_key_range_timeline() -> void:
 			high = maxf(high, state.beat)
 	if not is_finite(low) or not is_finite(high):
 		return
-	var span := maxf(1.0, high - low)
-	for i in ZOOM_LEVELS.size():
-		if float(ZOOM_LEVELS[i]) >= span + 2.0:
-			_zoom_index = i
-			_view_start = maxf(0.0, low - 1.0)
-			_timeline.invalidate()
-			return
-	_zoom_index = ZOOM_LEVELS.size()
-	_view_start = 0.0
+	# 关键帧很少时也至少给 16 拍：只有一帧在第 0 拍时，4 拍窗口看不清前后关系。
+	_view_beats = clampf(maxf(16.0, high - low + 2.0), MIN_VIEW_BEATS, MAX_VIEW_BEATS)
+	_view_start = maxf(0.0, low - 1.0)
+	_update_zoom_label()
 	_timeline.invalidate()
 
 
 ## 「适配全部」：缩放到能看到整张谱。
 func fit_all_timeline() -> void:
-	_zoom_index = ZOOM_LEVELS.size()
+	_view_beats = clampf(content_end_beat() + chart().bar_length() if chart() != null else 16.0,
+		MIN_VIEW_BEATS, MAX_VIEW_BEATS)
 	_view_start = 0.0
+	_update_zoom_label()
 	_timeline.invalidate()
 
 
+## step > 0 看更多拍（缩小），step < 0 看更少拍（放大）。
 func zoom_timeline(step: int) -> void:
-	_zoom_index = clampi(_zoom_index + step, 0, ZOOM_LEVELS.size())
-	_follow_playhead(true)
+	var factor := pow(1.25, float(step))
+	zoom_view_at(playhead(), factor)
+
+
+## 以某个拍为锚点缩放：锚点在屏幕上的位置保持不动，光标下的内容不跑。
+func zoom_view_at(anchor_beat: float, factor: float) -> void:
+	var old_span := view_beats()
+	var new_span := clampf(old_span * factor, MIN_VIEW_BEATS, MAX_VIEW_BEATS)
+	if is_equal_approx(new_span, old_span):
+		return
+	var ratio := clampf((anchor_beat - _view_start) / maxf(0.0001, old_span), 0.0, 1.0)
+	_view_beats = new_span
+	_view_start = maxf(0.0, anchor_beat - ratio * new_span)
+	_update_zoom_label()
 	_timeline.invalidate()
+
+
+func _update_zoom_label() -> void:
+	if _zoom_label == null:
+		return
+	var span := view_beats()
+	_zoom_label.text = ("%.0f 拍" % span) if span >= 10.0 else ("%.1f 拍" % span)
 
 
 func scroll_timeline(direction: float) -> void:
 	var ahead := view_beats() * 0.15 * direction
-	var end := chart().content_end_beat() + chart().bar_length() if chart() != null else 0.0
+	var end := content_end_beat() + chart().bar_length() if chart() != null else 0.0
 	_view_start = clampf(_view_start + ahead, 0.0, maxf(0.0, end - view_beats()))
 	_timeline.invalidate()
 
@@ -814,7 +876,7 @@ func _follow_playhead(force: bool = false) -> bool:
 		return false
 	var before := _view_start
 	var span := view_beats()
-	if chart() != null and span >= chart().content_end_beat() + chart().bar_length():
+	if chart() != null and span >= content_end_beat() + chart().bar_length():
 		# 「全部」能看到整张谱：播放头走动时不要把它重新滚走。
 		_view_start = 0.0
 		return not is_equal_approx(before, _view_start)
@@ -862,6 +924,7 @@ func _refresh() -> void:
 	_rebuild_thumbs()
 	_rebuild_panel()
 	_sync_time_tool()
+	_update_zoom_label()
 	_timeline.invalidate()
 
 
@@ -878,7 +941,7 @@ func begin_edit() -> void:
 
 func touch_chart() -> void:
 	if _app != null:
-		_app.touch_chart()
+		_app.touch_ring_chart()
 
 
 func finish_edit() -> void:
@@ -888,12 +951,16 @@ func finish_edit() -> void:
 
 func mutate_chart(callback: Callable) -> void:
 	if _app != null:
-		_app.mutate(callback)
+		_app.mutate_ring(callback)
 
 
 func gesture_mutate_chart(callback: Callable) -> void:
-	if _app != null:
-		_app.gesture_mutate(callback)
+	if _app == null:
+		return
+	begin_preview_drag()
+	_app.gesture_mutate_ring(callback)
+	if _preview_gesture_timer != null:
+		_preview_gesture_timer.start()
 
 
 ## 按当前吸附细分步进播放头：1/4、1/8… 没有吸附时退 1/4 拍。
@@ -959,10 +1026,22 @@ func _sync_time_tool(force: bool = false) -> void:
 
 
 func _current_shape() -> BoundaryShape:
-	var key := current_key()
+	var key: Dictionary = _timeline.primary_key() if _timeline != null else {}
+	if key.is_empty():
+		key = current_key()
 	if not key.is_empty():
 		return chart().get_shape(String(key.get("shape_id", "")))
 	return null
+
+
+## 形状库按钮作用在「当前选中的库形状」上；没有就退回播放头关键帧的形状。
+func _library_shape() -> BoundaryShape:
+	var chart_data := chart()
+	if chart_data != null and _app != null:
+		var picked := chart_data.get_shape(String(_app.selected_shape_id))
+		if picked != null:
+			return picked
+	return _current_shape()
 
 
 func _rebuild_thumbs() -> void:
@@ -1031,6 +1110,7 @@ func _active_view() -> Dictionary:
 		return {
 			"zoom": selected.zoom, "rotation": selected.rotation,
 			"tilt_x": selected.tilt_x, "tilt_y": selected.tilt_y, "ellipse": selected.ellipse,
+			"dolly": selected.dolly,
 		}
 	return BoundaryRuntime.eval_view(chart_data, playhead())
 
@@ -1047,6 +1127,8 @@ func _apply_view(key: String, value: float) -> void:
 	match key:
 		"zoom":
 			state.zoom = value
+		"dolly":
+			state.dolly = value
 		"rotation":
 			state.rotation = value
 		"tilt_x":
@@ -1058,16 +1140,17 @@ func _apply_view(key: String, value: float) -> void:
 
 
 func _on_ring_zoom(delta: float) -> void:
+	# 预览里滚轮是 Estella 式推拉：改镜头距离，不改环的世界缩放。
 	var view := _active_view()
-	var target := clampf(float(view.get("zoom", 1.0)) + delta, 0.75, 1.4)
-	_app.gesture_mutate(func() -> void: _apply_view("zoom", target))
+	var target := clampf(float(view.get("dolly", 1.0)) + delta, 0.6, 1.6)
+	gesture_mutate_chart(func() -> void: _apply_view("dolly", target))
 
 
 func _on_ring_rotate(degrees: float) -> void:
 	var view := _active_view()
 	var target := clampf(float(view.get("rotation", 0.0)) + degrees, -180.0, 180.0)
 	# 旋转是拖动出来的连续量：整段拖动合成一条撤销。
-	_app.gesture_mutate(func() -> void: _apply_view("rotation", target))
+	gesture_mutate_chart(func() -> void: _apply_view("rotation", target))
 	_preview.queue_redraw()
 
 
@@ -1084,9 +1167,11 @@ func _add_view_keyframe() -> void:
 			return
 	var current := BoundaryRuntime.eval_view(chart_data, at)
 	var state := ViewState.new(at, float(current.get("zoom", 1.0)), float(current.get("tilt_x", 0.0)),
-		float(current.get("tilt_y", 0.0)), float(current.get("ellipse", 1.0)), float(current.get("rotation", 0.0)))
+		float(current.get("tilt_y", 0.0)), float(current.get("ellipse", 1.0)), float(current.get("rotation", 0.0)),
+		"in-out", float(current.get("dolly", 1.0)))
+	state.morph = -1.0
 	state.id = chart_data.next_key_id()
-	_app.mutate(func() -> void:
+	_app.mutate_ring(func() -> void:
 		chart_data.view_states.append(state)
 		chart_data.view_states.sort_custom(func(a: ViewState, b: ViewState) -> bool: return a.beat < b.beat)
 		_app.select_view(chart_data.view_states.find(state))
@@ -1106,7 +1191,7 @@ func _delete_view_keyframe() -> void:
 	var state: ViewState = _app.get_selected_view()
 	if state == null:
 		return
-	_app.mutate(func() -> void:
+	_app.mutate_ring(func() -> void:
 		chart_data.view_states.erase(state)
 		_app.select_view(-1)
 	)
@@ -1142,27 +1227,114 @@ func _snapshot_shape(beat: float) -> BoundaryShape:
 	return shape
 
 
+## 插入形状帧：当前轮廓 / 已有形状 / 基础圆，三选一。
 func _add_key() -> void:
+	open_insert_menu()
+
+
+func open_insert_menu() -> void:
+	if chart() == null:
+		return
+	_ensure_insert_menu()
+	_insert_menu.popup_centered(Vector2i(300, 170))
+
+
+func _ensure_insert_menu() -> void:
+	if _insert_menu != null:
+		return
+	_insert_menu = PopupMenu.new()
+	_insert_menu.add_item("用当前轮廓新建形状", 1)
+	_insert_menu.add_item("使用已有形状…", 2)
+	_insert_menu.add_item("放一个圆（S0）", 3)
+	_insert_menu.id_pressed.connect(_on_insert_menu)
+	add_child(_insert_menu)
+	_shape_pick = PopupMenu.new()
+	_shape_pick.id_pressed.connect(_on_shape_pick)
+	add_child(_shape_pick)
+
+
+func _on_insert_menu(id: int) -> void:
+	match id:
+		1:
+			_insert_key_snapshot()
+		2:
+			_popup_shape_pick()
+		3:
+			var chart_data := chart()
+			if chart_data != null:
+				_insert_key_with_shape(chart_data.default_shape_id)
+
+
+func _popup_shape_pick() -> void:
 	var chart_data := chart()
 	if chart_data == null:
 		return
-	if not current_key().is_empty():
-		_set_hint("播放头已经在关键帧上了。")
+	_shape_pick.clear()
+	var ids: Array = chart_data.shapes.keys()
+	ids.sort()
+	for i in ids.size():
+		var shape_id := String(ids[i])
+		var label := shape_id
+		if shape_id == chart_data.default_shape_id:
+			label += "（基础圆，锁定）"
+		_shape_pick.add_item(label, i)
+	_shape_pick.popup_centered(Vector2i(240, 220))
+
+
+func _on_shape_pick(index: int) -> void:
+	var chart_data := chart()
+	if chart_data == null:
+		return
+	var ids: Array = chart_data.shapes.keys()
+	ids.sort()
+	if index >= 0 and index < ids.size():
+		_insert_key_with_shape(String(ids[index]))
+
+
+func _insert_key_snapshot() -> void:
+	var chart_data := chart()
+	if chart_data == null:
 		return
 	var beat := playhead()
 	var shape := _snapshot_shape(beat)
-	_app.mutate(func() -> void:
+	var existing := current_key()
+	_app.mutate_ring(func() -> void:
 		chart_data.shapes[shape.id] = shape
-		chart_data.shape_keys.append({"beat": beat, "shape_id": shape.id, "easing": "in-out",
-			"id": chart_data.next_key_id()})
-		_app.select_shape(shape.id)
-		_app.select_segment(0)
+		if existing.is_empty():
+			var key := {"beat": beat, "shape_id": shape.id, "easing": "linear", "morph": 0.0,
+				"id": chart_data.next_key_id()}
+			chart_data.shape_keys.append(key)
+			_app.select_shape(shape.id)
+			_app.select_segment(0)
+		else:
+			existing["shape_id"] = shape.id
+			_app.select_shape(shape.id)
 	)
 	var created := chart_data.shape_key_at(beat)
 	if not created.is_empty() and _timeline != null:
 		_timeline._select_only("shape", int(created.get("id", 0)))
 	_refresh()
-	_set_hint("已加关键帧 %s；点「编辑形状（2D）」开始画。" % shape.id)
+	_set_hint("已插入形状帧 %s；点「编辑形状（2D）」开始画。" % shape.id)
+
+
+func _insert_key_with_shape(shape_id: String) -> void:
+	var chart_data := chart()
+	if chart_data == null or chart_data.get_shape(shape_id) == null:
+		return
+	var beat := playhead()
+	var existing := current_key()
+	_app.mutate_ring(func() -> void:
+		if existing.is_empty():
+			chart_data.shape_keys.append({"beat": beat, "shape_id": shape_id, "easing": "linear",
+				"morph": 0.0, "id": chart_data.next_key_id()})
+		else:
+			existing["shape_id"] = shape_id
+		_app.select_shape(shape_id)
+	)
+	var created := chart_data.shape_key_at(beat)
+	if not created.is_empty() and _timeline != null:
+		_timeline._select_only("shape", int(created.get("id", 0)))
+	_refresh()
 
 
 func _delete_key() -> void:
@@ -1176,7 +1348,7 @@ func _delete_key() -> void:
 		if other != key and String(other.get("shape_id", "")) == shape_id:
 			still_used = true
 			break
-	_app.mutate(func() -> void:
+	_app.mutate_ring(func() -> void:
 		chart_data.shape_keys.erase(key)
 		if not still_used and shape_id != chart_data.default_shape_id and shape_id != "":
 			chart_data.shapes.erase(shape_id)
@@ -1189,8 +1361,12 @@ func _toggle_gap() -> void:
 	if shape == null:
 		_set_hint("先选中一个形状关键帧。")
 		return
+	var chart_data := chart()
+	if chart_data != null and shape.id == chart_data.default_shape_id:
+		_set_hint("基础圆 S0 已锁定；复制一个形状再切缺口。")
+		return
 	var index: int = clampi(int(_app.selected_segment_index), 0, shape.vertex_count() - 1)
-	_app.mutate(func() -> void: shape.set_gap(index, not shape.segment_has_gap(index)))
+	_app.mutate_ring(func() -> void: shape.set_gap(index, not shape.segment_has_gap(index)))
 	_refresh()
 
 
@@ -1199,7 +1375,7 @@ func _new_shape() -> void:
 	if chart_data == null:
 		return
 	var id := _next_shape_id()
-	_app.mutate(func() -> void:
+	_app.mutate_ring(func() -> void:
 		chart_data.shapes[id] = BoundaryShape.circle(id, 330.0, BoundaryShape.DEFAULT_VERTICES)
 	)
 	_app.select_shape(id)
@@ -1207,13 +1383,13 @@ func _new_shape() -> void:
 
 
 func _duplicate_shape() -> void:
-	var shape := _current_shape()
+	var shape := _library_shape()
 	var chart_data := chart()
 	if shape == null or chart_data == null:
 		return
 	var copy := BoundaryShape.from_dict(shape.to_dict())
 	copy.id = _next_shape_id()
-	_app.mutate(func() -> void:
+	_app.mutate_ring(func() -> void:
 		chart_data.shapes[copy.id] = copy
 	)
 	_app.select_shape(copy.id)
@@ -1221,14 +1397,18 @@ func _duplicate_shape() -> void:
 
 
 func _delete_shape() -> void:
-	var shape := _current_shape()
+	var shape := _library_shape()
 	var chart_data := chart()
 	if shape == null or chart_data == null or chart_data.shapes.size() <= 1:
 		return
 	if shape.id == chart_data.default_shape_id:
-		_set_hint("默认形状不能删。")
+		_set_hint("基础圆 S0 已锁定，不能删。")
 		return
-	_app.mutate(func() -> void:
+	for key in chart_data.shape_keys:
+		if String(key.get("shape_id", "")) == shape.id:
+			_set_hint("形状 %s 还被关键帧引用，先换掉那些帧再删。" % shape.id)
+			return
+	_app.mutate_ring(func() -> void:
 		chart_data.shapes.erase(shape.id)
 	)
 	_refresh()
@@ -1293,7 +1473,7 @@ func open_pad_for_current() -> void:
 		seek(float(primary.get("beat", 0.0)))
 	var key := current_key()
 	if key.is_empty():
-		_add_key()
+		_insert_key_snapshot()
 		key = current_key()
 		if key.is_empty():
 			return
@@ -1302,6 +1482,10 @@ func open_pad_for_current() -> void:
 
 func open_pad_for_shape(shape_id: String) -> void:
 	if shape_id.is_empty():
+		return
+	var chart_data := chart()
+	if chart_data != null and shape_id == chart_data.default_shape_id:
+		_set_hint("基础圆 S0 已锁定；点「复制」建一个可编辑的形状。")
 		return
 	_app.select_shape(shape_id)
 	_pad.open(shape_id)
@@ -1312,6 +1496,8 @@ func open_pad_for_shape(shape_id: String) -> void:
 func begin_key_drag(key: Dictionary) -> void:
 	_drag_kind = "key"
 	_drag_key = key
+	begin_preview_drag()
+	begin_content_freeze()
 	_app.begin_edit()
 
 
@@ -1319,6 +1505,8 @@ func begin_view_drag(state: ViewState) -> void:
 	_drag_kind = "view"
 	_drag_view = state
 	_app.select_view(chart().view_states.find(state))
+	begin_preview_drag()
+	begin_content_freeze()
 	_app.begin_edit()
 
 
@@ -1337,6 +1525,8 @@ func end_drag() -> void:
 	_drag_kind = ""
 	_drag_key = {}
 	_drag_view = null
+	end_preview_drag()
+	end_content_freeze()
 	chart().shape_keys.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return float(a.get("beat", 0.0)) < float(b.get("beat", 0.0)))
 	_app.finish_edit()
 	_refresh()
@@ -1373,7 +1563,7 @@ func _input(event: InputEvent) -> void:
 			if not key.is_empty():
 				var step := -0.25 if event.keycode == KEY_LEFT else 0.25
 				var beat := maxf(0.0, float(key.get("beat", 0.0)) + step)
-				_app.mutate(func() -> void:
+				_app.mutate_ring(func() -> void:
 					key["beat"] = beat
 					chart().shape_keys.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return float(a.get("beat", 0.0)) < float(b.get("beat", 0.0)))
 				)

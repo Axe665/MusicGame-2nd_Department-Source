@@ -2,9 +2,9 @@ class_name ChartIO
 extends RefCounted
 
 const FORMAT := "tamaki3-chart"
-## v2：形状/镜头关键帧带稳定 id 与每段 cubic-bezier 曲线。
-## 读 v1 时自动补 id，并把镜头缓动从「目标帧」搬回「左帧」（保持旧演出）。
-const VERSION := 2
+## v3：形状/镜头关键帧的过渡改为「目标帧前完成」，新增镜头 dolly/入场过渡时长；
+## 不再双写旧 events。v1/v2 读入时自动迁移，保持旧演出。
+const VERSION := 3
 
 static var last_error: String = ""
 
@@ -22,42 +22,32 @@ static func chart_to_dict(chart: Chart) -> Dictionary:
 	sorted_keys.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
 		return float(a.get("beat", 0.0)) < float(b.get("beat", 0.0)))
 	var key_rows: Array[Dictionary] = []
+	var previous_beat := 0.0
 	for index in sorted_keys.size():
 		var key: Dictionary = sorted_keys[index]
+		var key_beat := float(key.get("beat", 0.0))
 		var row := {
-			"beat": snappedf(float(key.get("beat", 0.0)), 0.001),
+			"beat": snappedf(key_beat, 0.001),
 			"shape": String(key.get("shape_id", "")),
 			"easing": String(key.get("easing", "in-out")),
 			"id": int(key.get("id", 0)),
 		}
-		# 只在真的设过形变时长时才写；缺字段 = 整段都在变（旧谱语义）。
-		# 最后一帧没有下一段，形变参数不生效，也不该把「保持到结尾」写成 429 拍。
-		if index < sorted_keys.size() - 1 and float(key.get("morph", 0.0)) > 0.0:
-			row["morph"] = snappedf(float(key.get("morph", 0.0)), 0.001)
+		# morph = 进入本帧的过渡拍数：0 = 硬切，span = 整段。第一帧的上一帧
+		# 是 0 拍的默认圆，所以它的上限就是自己的拍号。
+		var max_morph := maxf(0.0, key_beat - previous_beat)
+		row["morph"] = snappedf(clampf(float(key.get("morph", 0.0)), 0.0, max_morph), 0.001)
 		var curve: Array = key.get("curve", [])
 		if curve.size() == 4:
 			row["curve"] = [snappedf(float(curve[0]), 0.001), snappedf(float(curve[1]), 0.001),
 				snappedf(float(curve[2]), 0.001), snappedf(float(curve[3]), 0.001)]
 		key_rows.append(row)
+		previous_beat = key_beat
+	# 现代谱只写 boundary_keys，不再生成旧 events 副本：副本会在删光关键帧后
+	# 被当成真源，重开时把已删的动画带回来。只有纯旧谱（没有关键帧）才保留。
 	var event_list: Array[Dictionary] = []
 	if key_rows.is_empty():
 		for event in chart.events:
 			event_list.append(event.to_dict())
-	else:
-		# 关键帧是真源；这里同时写一份旧事件，旧版本打开时还能看到形变。
-		var legacy_index := 0
-		var first: Dictionary = sorted_keys[0]
-		var default_shape := chart.get_default_shape()
-		var first_beat := float(first.get("beat", 0.0))
-		if default_shape != null and first_beat > 0.001 and String(first.get("shape_id", "")) != default_shape.id:
-			event_list.append(_legacy_event(legacy_index, 0.0, first_beat, default_shape.id,
-				String(first.get("shape_id", "")), String(first.get("easing", "in-out"))))
-			legacy_index += 1
-		for i in sorted_keys.size() - 1:
-			event_list.append(_legacy_event(legacy_index, float(sorted_keys[i].get("beat", 0.0)),
-				float(sorted_keys[i + 1].get("beat", 0.0)), String(sorted_keys[i].get("shape_id", "")),
-				String(sorted_keys[i + 1].get("shape_id", "")), String(sorted_keys[i].get("easing", "in-out"))))
-			legacy_index += 1
 	event_list.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
 		if float(a["start_beat"]) == float(b["start_beat"]):
 			return String(a["id"]) < String(b["id"])
@@ -116,6 +106,8 @@ static func chart_to_dict(chart: Chart) -> Dictionary:
 	# 宽屏故事板标志：不存的话重开谱面会退回按内容猜（854/640 混判）。
 	if bool(chart.metadata.get("widescreen", false)):
 		meta["widescreen"] = 1
+	# 正对镜头：旧谱没有这个键时按 true 读，保持原来的「倾斜不参与演出」。
+	meta["face_camera"] = 1 if bool(chart.metadata.get("face_camera", true)) else 0
 	# 紧凑代码丢不掉的字段旁挂在这里；旧版本读到会直接忽略。
 	var note_extras := {}
 	for note in chart.notes:
@@ -196,36 +188,29 @@ static func _keys_from_events(chart: Chart) -> Array[Dictionary]:
 	var events := chart.events.duplicate()
 	events.sort_custom(func(a: BoundaryEvent, b: BoundaryEvent) -> bool: return a.start_beat < b.start_beat)
 	for event in events:
-		keys.append({"beat": event.start_beat, "shape_id": event.from_shape, "easing": event.easing})
-		var restore_easing: String = event.restore_easing if event.end_behavior == "restore" else "in-out"
-		keys.append({"beat": event.end_beat, "shape_id": event.to_shape, "easing": restore_easing})
+		# 事件开始：硬切成 from_shape；事件结束：在 end 前整段完成到 to_shape。
+		keys.append({"beat": event.start_beat, "shape_id": event.from_shape,
+			"morph": 0.0, "easing": "linear"})
+		keys.append({"beat": event.end_beat, "shape_id": event.to_shape,
+			"morph": maxf(0.0, event.end_beat - event.start_beat), "easing": event.easing})
 		if event.end_behavior == "restore" and event.restore_duration > 0.0001:
-			keys.append({"beat": event.end_beat + event.restore_duration, "shape_id": event.from_shape, "easing": "in-out"})
-	# 同一拍只留最后一个。
+			keys.append({"beat": event.end_beat + event.restore_duration, "shape_id": event.from_shape,
+				"morph": event.restore_duration, "easing": event.restore_easing})
+	# 同一拍只留一个：同形状时保留更长的入场过渡（事件首尾相接的链），
+	# 不同形状时后一个事件硬切，保持旧事件的覆盖顺序。
 	var merged: Array[Dictionary] = []
 	for key in keys:
-		if not merged.is_empty() and absf(float(merged[-1]["beat"]) - float(key["beat"])) < 0.0005:
-			merged[-1] = key
-		else:
+		if merged.is_empty() or absf(float(merged[-1]["beat"]) - float(key["beat"])) >= 0.0005:
 			merged.append(key)
+			continue
+		var previous: Dictionary = merged[-1]
+		if String(previous.get("shape_id", "")) == String(key.get("shape_id", "")):
+			if float(key.get("morph", 0.0)) > float(previous.get("morph", 0.0)):
+				previous["morph"] = key.get("morph", 0.0)
+				previous["easing"] = key.get("easing", "in-out")
+		else:
+			merged[-1] = key
 	return merged
-
-
-## 旧版本只认 BoundaryEvent：由关键帧推导出等价的 hold 链。
-static func _legacy_event(index: int, start: float, end: float, from_id: String, to_id: String, easing: String) -> Dictionary:
-	return {
-		"id": "E%d" % (index + 1),
-		"start_beat": snappedf(start, 0.001),
-		"end_beat": snappedf(end, 0.001),
-		"target_u0": 0.0,
-		"target_u1": 1.0,
-		"from_shape": from_id,
-		"to_shape": to_id,
-		"easing": easing,
-		"end_behavior": "hold",
-		"restore_duration": 0.0,
-		"restore_easing": "in-out",
-	}
 
 
 ## note_extras 侧表：补齐紧凑代码丢掉的 Hold/Path/Bell 字段。
@@ -360,6 +345,8 @@ static func chart_from_dict(data: Dictionary) -> Chart:
 	# 兼容旧存档：没有这个键就交给故事板内容启发式判断。
 	if meta.has("widescreen"):
 		chart.metadata["widescreen"] = int(meta.get("widescreen", 0)) != 0
+	# 旧谱没有 face_camera：按 true 读，保持倾斜/椭圆不进入演出的旧行为。
+	chart.metadata["face_camera"] = int(meta.get("face_camera", 1)) != 0
 	var timing_data: Dictionary = data.get("timing", {})
 	chart.timing = TimingMap.new()
 	chart.timing.points.clear()
@@ -413,6 +400,7 @@ static func chart_from_dict(data: Dictionary) -> Chart:
 				"easing": String(raw.get("easing", "in-out")),
 				"id": int(raw.get("id", 0)),
 			}
+			# v3 总是写 morph（0 = 硬切）；v1/v2 缺字段表示整段，迁移时补。
 			if raw.has("morph"):
 				key_row["morph"] = float(raw.get("morph", 0.0))
 			var raw_curve: Variant = raw.get("curve", [])
@@ -423,7 +411,11 @@ static func chart_from_dict(data: Dictionary) -> Chart:
 	for raw in data.get("events", []):
 		if raw is Dictionary:
 			chart.events.append(BoundaryEvent.from_dict(raw))
-	if chart.shape_keys.is_empty() and not chart.events.is_empty():
+	if not chart.shape_keys.is_empty():
+		# 形状帧是真源：旧文件里那份等价的 events 直接丢掉，避免事件轨重复
+		# 和「删光关键帧后旧 events 把动画带回来」。
+		chart.events.clear()
+	elif not chart.events.is_empty():
 		# 旧谱的局部 u 事件没有对应的关键帧表达：拒绝打开，避免悄悄改掉形变。
 		for event in chart.events:
 			if event.target_u0 > 0.0001 or event.target_u1 < 0.9999:
@@ -431,6 +423,29 @@ static func chart_from_dict(data: Dictionary) -> Chart:
 				return null
 		chart.shape_keys = _keys_from_events(chart)
 		chart.events.clear()
+	chart.shape_keys.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return float(a.get("beat", 0.0)) < float(b.get("beat", 0.0)))
+	if file_version < 3 and not chart.shape_keys.is_empty():
+		# v1/v2：旧 key[i] 的 morph/easing 管 i→i+1（离开源帧就开始变）。
+		# v3 改成目标帧前完成，等价迁移是把 i 的过渡搬到 i+1；整段过渡完全等价，
+		# 短过渡会从「变完再保持」变成「保持到目标帧前再变」。
+		var shifted := false
+		for i in range(chart.shape_keys.size() - 1, 0, -1):
+			var before: Dictionary = chart.shape_keys[i - 1]
+			var target: Dictionary = chart.shape_keys[i]
+			var span := maxf(0.0, float(target.get("beat", 0.0)) - float(before.get("beat", 0.0)))
+			var old_morph := float(before.get("morph", span))
+			if old_morph > 0.0001 and old_morph < span - 0.0001:
+				shifted = true
+			target["easing"] = String(before.get("easing", "in-out"))
+			target["curve"] = (before.get("curve", []) as Array).duplicate()
+			target["morph"] = clampf(old_morph, 0.0, span)
+		var first: Dictionary = chart.shape_keys[0]
+		if not first.has("morph"):
+			# 旧谱第一帧之前从默认圆整段渐变到第一帧。
+			first["morph"] = maxf(0.0, float(first.get("beat", 0.0)))
+		if shifted:
+			chart.load_warnings.append("旧谱的短形变已改为在目标帧前完成，请检查过渡位置")
 	chart.view_states.clear()
 	for raw in data.get("view_states", []):
 		if raw is Dictionary:
@@ -438,10 +453,12 @@ static func chart_from_dict(data: Dictionary) -> Chart:
 	if chart.view_states.is_empty():
 		chart.view_states.append(ViewState.new())
 	chart.view_states.sort_custom(func(a: ViewState, b: ViewState) -> bool: return a.beat < b.beat)
-	if file_version < 2:
-		# v1 的镜头缓动存在目标帧上；搬到左帧后，新运行时与原演出等价。
-		for i in range(chart.view_states.size() - 1):
-			chart.view_states[i].easing = chart.view_states[i + 1].easing
+	if file_version == 2:
+		# v2 的镜头缓动存在左帧（出向）；v3 归目标帧（入场），等价迁移是
+		# 把左帧的 easing/curve 搬到右帧。v1 本来就用目标帧，不需要动。
+		for i in range(chart.view_states.size() - 2, -1, -1):
+			chart.view_states[i + 1].easing = chart.view_states[i].easing
+			chart.view_states[i + 1].curve = (chart.view_states[i].curve as Array).duplicate()
 	chart.regions.clear()
 	for raw in data.get("regions", []):
 		if raw is Dictionary:

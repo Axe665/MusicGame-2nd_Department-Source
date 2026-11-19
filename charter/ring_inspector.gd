@@ -162,7 +162,7 @@ func _build_empty(chart: Chart) -> void:
 	_add_hint("点关键帧选中；Ctrl/Shift 加选；拖空白框选。\n选中色带可编辑这一段；选中关键帧可改参数。")
 	_add_sep()
 	_add_info("播放头", "%.2f 拍" % workspace.playhead())
-	_add_button("＋ 在播放头加形状帧", func() -> void: workspace._add_key())
+	_add_button("＋ 在播放头插入形状帧", func() -> void: workspace.open_insert_menu())
 	_add_button("＋ 在播放头打镜头帧", func() -> void: workspace._add_view_keyframe())
 	_add_sep()
 	_add_info("形状数", str(chart.shapes.size()))
@@ -193,62 +193,95 @@ func _selection_start(shapes: Array, views: Array) -> float:
 	return 0.0 if not is_finite(low) else low
 
 
+## 目标帧的入场过渡从哪一拍开始：上一帧；第一帧则是 0 拍的基础圆。
+func _previous_key_beat(chart: Chart, lane: String, beat: float) -> float:
+	var previous := 0.0
+	if lane == "shape":
+		for key in chart.sorted_shape_keys():
+			var value := float(key.get("beat", 0.0))
+			if value < beat - 0.0001:
+				previous = maxf(previous, value)
+	else:
+		for state in chart.sorted_view_states():
+			if state.beat < beat - 0.0001:
+				previous = maxf(previous, state.beat)
+	return previous
+
+
 func _build_segment(chart: Chart) -> void:
 	var key: Dictionary = timeline.segment_shape_key()
 	var view: ViewState = timeline.segment_view()
-	var beat := 0.0
-	var next_beat := 0.0
+	var target_beat := 0.0
+	var lane := ""
 	var easing := "linear"
 	var curve: Array = []
-	var lane := ""
+	var morph := 0.0
 	if not key.is_empty():
 		lane = "shape"
-		beat = float(key.get("beat", 0.0))
+		target_beat = float(key.get("beat", 0.0))
 		easing = String(key.get("easing", "in-out"))
 		curve = key.get("curve", [])
 	elif view != null:
 		lane = "view"
-		beat = view.beat
+		target_beat = view.beat
 		easing = view.easing
 		curve = view.curve
-	next_beat = _next_key_beat(chart, lane, beat)
-	_add_title("段落")
-	_add_info("起点", "%.2f 拍" % beat)
-	_add_info("终点", "%.2f 拍" % next_beat if next_beat > beat else "最后一帧")
-	if next_beat > beat:
-		var secs := (chart.timing.beat_to_chart_ms(next_beat) - chart.timing.beat_to_chart_ms(beat)) * 0.001
-		_add_info("时长", "%s · %.2f 秒" % [RingWorkspace.span_label(next_beat - beat, maxf(1.0, chart.timing.beats_per_bar_at(beat))), secs])
-	_add_sep()
-	if next_beat <= beat:
-		_add_hint("最后一帧会一直保持到结尾，形变与缓动不生效。")
+	var previous := _previous_key_beat(chart, lane, target_beat)
+	var span := maxf(0.0, target_beat - previous)
+	if lane == "shape" and not key.is_empty():
+		morph = BoundaryRuntime.morph_beats(key, span)
+	elif view != null:
+		morph = view.morph_beats(span)
+	_add_title("过渡段")
+	_add_info("方向", "%.2f 拍 → %.2f 拍（目标帧）" % [previous, target_beat])
+	if span <= 0.0001:
+		_add_hint("目标帧在第 0 拍：没有入场过渡可调。")
 		_add_sep()
-		_add_button("选中这一段的左键", func() -> void:
-			timeline._select_only("shape" if lane == "shape" else "view", int(key.get("id", 0) if lane == "shape" else (view.id if view != null else 0)))
+		_add_button("选中目标帧", func() -> void:
+			timeline._select_only(lane, int(key.get("id", 0) if lane == "shape" else (view.id if view != null else 0)))
 		)
 		return
-	if lane == "shape" and not key.is_empty():
-		var span := maxf(0.05, next_beat - beat)
-		var morph := BoundaryRuntime.morph_beats(key, span)
-		_add_slider("形变时长（拍）", morph, 0.05, span, 0.05, func(value: float) -> void:
-			_edit(func() -> void: key["morph"] = clampf(value, 0.05, span))
+	_add_info("段长", RingWorkspace.span_label(span, maxf(1.0, chart.timing.beats_per_bar_at(previous))))
+	_add_sep()
+	_add_slider("过渡时长（拍）", morph, 0.0, span, 0.05, func(value: float) -> void:
+		_edit(func() -> void:
+			if lane == "shape":
+				key["morph"] = clampf(value, 0.0, span)
+			elif view != null:
+				view.morph = clampf(value, 0.0, span)
 		)
-		_add_button("整段都在变（清除形变时长）", func() -> void:
-			_edit(func() -> void: key.erase("morph"))
+	)
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 4)
+	row.add_child(_small_button("硬切", func() -> void:
+		_edit(func() -> void:
+			if lane == "shape":
+				key["morph"] = 0.0
+			elif view != null:
+				view.morph = 0.0
 		)
+	))
+	row.add_child(_small_button("整段", func() -> void:
+		_edit(func() -> void:
+			if lane == "shape":
+				key["morph"] = span
+			elif view != null:
+				view.morph = span
+		)
+	))
+	add_child(row)
+	_add_hint("过渡在目标帧前完成：0 拍 = 目标帧处硬切，整段 = 从头到尾一直在变。")
 	_add_segment_easing(easing, curve, lane, key if lane == "shape" else view)
 	_add_sep()
-	_add_button("选中这一段的左键", func() -> void:
-		if lane == "shape":
-			timeline._select_only("shape", int(key.get("id", 0)))
-		elif view != null:
-			timeline._select_only("view", view.id)
+	_add_button("选中目标帧", func() -> void:
+		timeline._select_only(lane, int(key.get("id", 0) if lane == "shape" else (view.id if view != null else 0)))
 	)
 
 
 func _build_shape_key(chart: Chart, key: Dictionary) -> void:
 	var beat := float(key.get("beat", 0.0))
-	var next_key := _next_key_beat(chart, "shape", beat)
-	var span := maxf(0.0, next_key - beat)
+	var previous := _previous_key_beat(chart, "shape", beat)
+	var span := maxf(0.0, beat - previous)
 	_add_title("形状关键帧")
 	_add_info("编号", str(int(key.get("id", 0))))
 	_add_spin("拍", beat, 0.0, 100000.0, 0.05, func(value: float) -> void:
@@ -265,27 +298,33 @@ func _build_shape_key(chart: Chart, key: Dictionary) -> void:
 	_add_option("形状", ids, maxi(0, current), func(index: int) -> void:
 		_edit(func() -> void: key["shape_id"] = String(ids[index]))
 	)
+	var locked_shape := String(key.get("shape_id", "")) == chart.default_shape_id
 	_add_button("编辑形状（2D）", func() -> void:
 		workspace.seek(beat)
 		workspace.open_pad_for_current()
 	)
+	if locked_shape:
+		_add_hint("这是基础圆 S0（锁定）；先「复制」一个形状再编辑。")
 	_add_button("切断/恢复这一段 (G)", func() -> void:
 		workspace.seek(beat)
 		workspace._toggle_gap()
 	)
 	_add_button("删除这一帧 (Del)", func() -> void: timeline.delete_selection())
 	_add_sep()
-	if span > 0.001:
+	if span > 0.0001:
 		var morph := BoundaryRuntime.morph_beats(key, span)
-		_add_slider("形变时长（拍）", morph, 0.05, span, 0.05, func(value: float) -> void:
-			_edit(func() -> void: key["morph"] = clampf(value, 0.05, span))
+		_add_info("入场", "%.2f 拍 → 本帧" % previous)
+		_add_slider("过渡时长（拍）", morph, 0.0, span, 0.05, func(value: float) -> void:
+			_edit(func() -> void: key["morph"] = clampf(value, 0.0, span))
 		)
-		_add_button("整段都在变", func() -> void:
-			_edit(func() -> void: key.erase("morph"))
-		)
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 4)
+		row.add_child(_small_button("硬切", func() -> void: _edit(func() -> void: key["morph"] = 0.0)))
+		row.add_child(_small_button("整段", func() -> void: _edit(func() -> void: key["morph"] = span)))
+		add_child(row)
 		_add_segment_easing(key.get("easing", "in-out"), key.get("curve", []), "shape", key)
 	else:
-		_add_hint("最后一帧：一直保持到结尾，形变与缓动不生效。")
+		_add_hint("第 0 拍是起点：没有入场过渡。")
 
 
 func _build_camera_key(chart: Chart, state: ViewState) -> void:
@@ -298,33 +337,85 @@ func _build_camera_key(chart: Chart, state: ViewState) -> void:
 		)
 	)
 	_add_sep()
-	_add_slider("缩放", state.zoom, 0.75, 1.4, 0.01, func(value: float) -> void:
+	# 常用演出预设：只改对应的几项，不覆盖作者已经调好的其他参数。
+	var grid := GridContainer.new()
+	grid.columns = 4
+	grid.add_theme_constant_override("h_separation", 4)
+	grid.add_theme_constant_override("v_separation", 4)
+	for item in [
+		["标准", {"dolly": 1.0, "zoom": 1.0, "rotation": 0.0, "tilt_x": 0.0, "tilt_y": 0.0, "ellipse": 1.0}],
+		["推近", {"dolly": 1.25}],
+		["拉远", {"dolly": 0.8}],
+		["左滚", {"rotation": -15.0}],
+		["右滚", {"rotation": 15.0}],
+		["俯视", {"tilt_x": 25.0}],
+		["仰视", {"tilt_x": -25.0}],
+		["压扁", {"ellipse": 0.85}],
+	]:
+		var values: Dictionary = item[1]
+		grid.add_child(_small_button(String(item[0]), func() -> void:
+			_edit(func() -> void:
+				for field in values.keys():
+					match String(field):
+						"dolly": state.dolly = float(values[field])
+						"zoom": state.zoom = float(values[field])
+						"rotation": state.rotation = float(values[field])
+						"tilt_x": state.tilt_x = float(values[field])
+						"tilt_y": state.tilt_y = float(values[field])
+						"ellipse": state.ellipse = float(values[field])
+			)
+		))
+	add_child(grid)
+	_add_hint("Estella 式：环始终在画面中心，推拉靠镜头距离，滚转只做轻微倾斜。")
+	_add_sep()
+	_add_slider("推拉（1=标准）", state.dolly, 0.6, 1.6, 0.01, func(value: float) -> void:
+		_edit(func() -> void: state.dolly = value)
+	)
+	_add_slider("环缩放", state.zoom, 0.75, 1.4, 0.01, func(value: float) -> void:
 		_edit(func() -> void: state.zoom = value)
 	)
-	_add_slider("平面旋转（度）", state.rotation, -180.0, 180.0, 1.0, func(value: float) -> void:
+	_add_slider("滚转（度）", state.rotation, -180.0, 180.0, 1.0, func(value: float) -> void:
 		_edit(func() -> void: state.rotation = value)
 	)
-	_add_slider("横向倾斜", state.tilt_x, -60.0, 60.0, 1.0, func(value: float) -> void:
+	_add_slider("俯仰（度）", state.tilt_x, -60.0, 60.0, 1.0, func(value: float) -> void:
 		_edit(func() -> void: state.tilt_x = value)
 	)
-	_add_slider("纵向倾斜", state.tilt_y, -60.0, 60.0, 1.0, func(value: float) -> void:
+	_add_slider("侧倾（度）", state.tilt_y, -60.0, 60.0, 1.0, func(value: float) -> void:
 		_edit(func() -> void: state.tilt_y = value)
 	)
-	_add_slider("椭圆比（横向拉伸）", state.ellipse, 0.5, 1.5, 0.01, func(value: float) -> void:
+	_add_slider("椭圆（横向拉伸）", state.ellipse, 0.5, 1.5, 0.01, func(value: float) -> void:
 		_edit(func() -> void: state.ellipse = value)
 	)
+	var face := CheckBox.new()
+	face.text = "正对镜头（忽略倾斜/椭圆）"
+	face.button_pressed = bool(chart.metadata.get("face_camera", true))
+	face.add_theme_font_size_override("font_size", 11)
+	face.toggled.connect(func(value: bool) -> void:
+		_edit(func() -> void: chart.metadata["face_camera"] = value)
+		# 不能在复选框自己的 toggled 回调里重建整页：会把复选框本身释放掉。
+		call_deferred("refresh")
+	)
+	add_child(face)
 	if bool(chart.metadata.get("face_camera", true)):
-		_add_hint("当前「正对镜头」开着：横倾/纵倾/椭圆比在预览里会被忽略。")
-		_add_button("关闭「正对镜头」", func() -> void:
-			_edit(func() -> void: chart.metadata["face_camera"] = false)
-			refresh()
-		)
+		_add_hint("当前正对镜头开着：俯仰/侧倾/椭圆在预览和试玩里都会被忽略。")
 	_add_button("删除选中镜头帧 (Del)", func() -> void: timeline.delete_selection())
-	var next_key := _next_key_beat(chart, "view", state.beat)
-	if next_key > state.beat:
+	_add_sep()
+	var previous := _previous_key_beat(chart, "view", state.beat)
+	var span := maxf(0.0, state.beat - previous)
+	if span > 0.0001:
+		var morph := state.morph_beats(span)
+		_add_info("入场", "%.2f 拍 → 本帧" % previous)
+		_add_slider("过渡时长（拍）", morph, 0.0, span, 0.05, func(value: float) -> void:
+			_edit(func() -> void: state.morph = clampf(value, 0.0, span))
+		)
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 4)
+		row.add_child(_small_button("硬切", func() -> void: _edit(func() -> void: state.morph = 0.0)))
+		row.add_child(_small_button("整段", func() -> void: _edit(func() -> void: state.morph = span)))
+		add_child(row)
 		_add_segment_easing(state.easing, state.curve, "view", state)
 	else:
-		_add_hint("最后一帧：保持到结尾，缓动不生效。")
+		_add_hint("第 0 拍是起点：镜头没有入场过渡。")
 
 
 func _add_segment_easing(easing: String, curve: Array, lane: String, holder) -> void:
@@ -333,7 +424,7 @@ func _add_segment_easing(easing: String, curve: Array, lane: String, holder) -> 
 		label_index = 4
 	if label_index < 0:
 		label_index = 0
-	_add_option("到下一帧的缓动", EASING_LABELS, label_index, func(index: int) -> void:
+	_add_option("进入目标帧的缓动", EASING_LABELS, label_index, func(index: int) -> void:
 		var picked: String = String(EASING_KEYS[index])
 		_edit(func() -> void:
 			if lane == "shape":
@@ -357,7 +448,9 @@ func _add_segment_easing(easing: String, curve: Array, lane: String, holder) -> 
 		display = CURVE_PRESETS.get(easing, CURVE_PRESETS["in-out"])
 	_curve = CurveEdit.new()
 	_curve.set_values(display)
-	_curve.drag_started.connect(func() -> void: workspace.begin_edit())
+	_curve.drag_started.connect(func() -> void:
+		workspace.begin_preview_drag()
+		workspace.begin_edit())
 	_curve.curve_changed.connect(func(values: Array) -> void:
 		_editing = true
 		if lane == "shape":
@@ -368,11 +461,12 @@ func _add_segment_easing(easing: String, curve: Array, lane: String, holder) -> 
 	)
 	_curve.drag_finished.connect(func() -> void:
 		_editing = false
+		workspace.end_preview_drag()
 		workspace.finish_edit()
 		refresh()
 	)
 	add_child(_curve)
-	_add_hint("拖两个手柄改曲线；x 是时间，y 是进度。")
+	_add_hint("拖两个手柄改曲线；x 是时间，y 是进度。只在过渡段生效。")
 
 
 func _next_key_beat(chart: Chart, lane: String, beat: float) -> float:
@@ -391,6 +485,15 @@ func _next_key_beat(chart: Chart, lane: String, beat: float) -> float:
 
 
 # ---------------------------------------------------------------- 小部件
+
+
+func _small_button(text: String, callback: Callable) -> Button:
+	var button := Button.new()
+	button.text = text
+	button.add_theme_font_size_override("font_size", 10)
+	button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	button.pressed.connect(callback)
+	return button
 
 
 func _add_title(text: String) -> void:

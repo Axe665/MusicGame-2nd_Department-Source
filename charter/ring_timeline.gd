@@ -52,6 +52,8 @@ var _marquee_current := Vector2.ZERO
 var _marquee_add := false
 var _hover_lane := -1
 var _hover_index := -1
+## 段 hover 与关键帧 hover 分开：段命中返回的是目标帧下标，不能拿它当色带下标。
+var _hover_segment := -1
 var _hover_pos := Vector2(-9999, -9999)
 
 var _clipboard: Array[Dictionary] = []
@@ -127,7 +129,7 @@ func _on_menu(id: int) -> void:
 			workspace._view_start = 0.0
 			invalidate()
 		3:
-			workspace.seek(workspace.chart().content_end_beat() if workspace.chart() != null else 0.0)
+			workspace.seek(workspace.content_end_beat())
 			invalidate()
 		4:
 			show_grid = not show_grid
@@ -481,11 +483,11 @@ func _draw_content(canvas: CanvasItem) -> void:
 	for lane in [LANE_SHAPE, LANE_CAMERA]:
 		if hidden_lanes.has(lane):
 			continue
-		_draw_lane(canvas, lane, _lane_items(lane), chart, bpb, chart.content_end_beat())
+		_draw_lane(canvas, lane, _lane_items(lane), chart, bpb, workspace.content_end_beat())
 	if aux_open and not hidden_lanes.has(LANE_EVENTS):
-		_draw_lane(canvas, LANE_EVENTS, _lane_items(LANE_EVENTS), chart, bpb, chart.content_end_beat())
+		_draw_lane(canvas, LANE_EVENTS, _lane_items(LANE_EVENTS), chart, bpb, workspace.content_end_beat())
 	if aux_open and not hidden_lanes.has(LANE_BPM):
-		_draw_lane(canvas, LANE_BPM, _lane_items(LANE_BPM), chart, bpb, chart.content_end_beat())
+		_draw_lane(canvas, LANE_BPM, _lane_items(LANE_BPM), chart, bpb, workspace.content_end_beat())
 	_draw_gutter(canvas, chart)
 	_draw_footer(canvas, chart)
 
@@ -535,23 +537,55 @@ func _draw_common_grid(canvas: CanvasItem, start: float, span: float, bpb: float
 				Color(_lane_colour(lane).r, _lane_colour(lane).g, _lane_colour(lane).b, 0.02))
 	if not show_grid or beat_px <= 0.0001:
 		return
-	var snap_step := GridDivisions.step_beats(workspace.snap_division())
-	var sub_visible := snap_step * beat_px >= 7.0
-	for beat in range(floori(start), ceili(start + span) + 1):
-		var x := _x_for(float(beat))
-		if x < GUTTER or x > size.x:
+	# 小节格：至少 12px 才画，格数随缩放抽稀；「全部」时不会再画两万条线。
+	var bar_px := beat_px * maxf(1.0, bpb)
+	var bar_step := 1
+	while bar_px * float(bar_step) < 12.0:
+		bar_step *= 2
+	var first_bar := int(floor(start / bpb / float(bar_step))) * bar_step
+	var last_bar := int(ceil((start + span) / bpb / float(bar_step))) * bar_step + bar_step
+	for bar in range(first_bar, last_bar, bar_step):
+		var x := _x_for(float(bar) * bpb)
+		if x < GUTTER - 1.0 or x > size.x + 1.0:
 			continue
-		var is_bar := posmod(beat, int(maxf(1.0, bpb))) == 0
-		canvas.draw_line(Vector2(x, top), Vector2(x, bottom),
-			Color(1, 1, 1, 0.09 if is_bar else 0.04), 1.0)
-		if sub_visible and snap_step > 0.0001:
-			var sub := snap_step
-			while sub < 1.0 - 0.0001:
-				var sx := _x_for(float(beat) + sub)
-				if sx >= GUTTER and sx <= size.x:
-					canvas.draw_line(Vector2(sx, _lane_top(LANE_SHAPE)),
-						Vector2(sx, _lane_top(LANE_CAMERA) + LANE_H), Color(1, 1, 1, 0.022), 1.0)
-				sub += snap_step
+		var next_x := _x_for(float(bar + bar_step) * bpb)
+		if int(bar / bar_step) % 2 == 0 and next_x > x:
+			canvas.draw_rect(Rect2(Vector2(x, top), Vector2(next_x - x, bottom - top)),
+				Color(1, 1, 1, 0.014))
+		canvas.draw_line(Vector2(x, top), Vector2(x, bottom), Color(1, 1, 1, 0.075), 1.0)
+	# 拍格：放得下才画，且按 1/2/4/8 拍抽稀。
+	if beat_px >= 6.0:
+		var beat_step := 1
+		while float(beat_step) * beat_px < 6.0:
+			beat_step *= 2
+		var first_beat := int(floor(start / float(beat_step))) * beat_step
+		var last_beat := int(ceil((start + span) / float(beat_step))) * beat_step + beat_step
+		for beat in range(first_beat, last_beat, beat_step):
+			var x := _x_for(float(beat))
+			if x < GUTTER or x > size.x:
+				continue
+			canvas.draw_line(Vector2(x, top), Vector2(x, bottom), Color(1, 1, 1, 0.035), 1.0)
+	# 吸附细分：只在放得下时画，避免密集小格糊成一片。
+	var snap_step := GridDivisions.step_beats(workspace.snap_division())
+	if beat_px >= 18.0 and snap_step > 0.0001 and snap_step * beat_px >= 7.0:
+		var first: float = floor(start / snap_step) * snap_step
+		var b: float = first
+		while b <= start + span:
+			if absf(b - round(b)) > 0.001:
+				var x := _x_for(b)
+				if x >= GUTTER and x <= size.x:
+					canvas.draw_line(Vector2(x, _lane_top(LANE_SHAPE)),
+						Vector2(x, _lane_top(LANE_CAMERA) + LANE_H), Color(1, 1, 1, 0.018), 1.0)
+			b += snap_step
+
+
+func _lane_morph(lane: int, target, span: float) -> float:
+	span = maxf(0.000001, span)
+	if lane == LANE_SHAPE and target is Dictionary:
+		return BoundaryRuntime.morph_beats(target, span)
+	if lane == LANE_CAMERA and target is ViewState:
+		return (target as ViewState).morph_beats(span)
+	return span
 
 
 func _draw_lane(canvas: CanvasItem, lane: int, items: Array, chart: Chart, bpb: float, content_end: float) -> void:
@@ -560,12 +594,26 @@ func _draw_lane(canvas: CanvasItem, lane: int, items: Array, chart: Chart, bpb: 
 	var bar_h := BAR_H if lane <= LANE_CAMERA else AUX_ROW_H - 4.0
 	var top := center - bar_h * 0.5
 	if items.is_empty():
-		canvas.draw_string(UITheme.FONT_REGULAR, Vector2(GUTTER + 8, center + 4), "还没有关键帧",
-			HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(1, 1, 1, 0.28))
+		if lane == LANE_SHAPE:
+			# 没有形状帧 = 全程基础圆：画一条空心保持带，作者一眼能看出当前状态。
+			var x0 := clampf(_x_for(workspace.window_start()), GUTTER + 1.0, size.x - 1.0)
+			var x1 := size.x - 1.0
+			var rect := Rect2(Vector2(x0, top), Vector2(maxf(2.0, x1 - x0), bar_h))
+			canvas.draw_rect(rect, Color(color.r, color.g, color.b, 0.05))
+			canvas.draw_dashed_line(Vector2(x0, center), Vector2(x1, center),
+				Color(color.r, color.g, color.b, 0.35), 1.0, 6.0)
+			canvas.draw_string(UITheme.FONT_REGULAR, Vector2(x0 + 8, center + 4),
+				"基础圆（没有形状帧）", HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(1, 1, 1, 0.45))
+		else:
+			canvas.draw_string(UITheme.FONT_REGULAR, Vector2(GUTTER + 8, center + 4), "还没有关键帧",
+				HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(1, 1, 1, 0.28))
 		return
 	var beats: Array[float] = []
 	for item in items:
 		beats.append(_beat_of(item))
+	# 第一帧之前：从 0 拍到第一帧的「基础圆 → 第一帧」带，目标帧拥有这段过渡。
+	if lane == LANE_SHAPE and beats[0] > 0.001:
+		_draw_intro_segment(canvas, lane, items[0], chart, bpb, top, center, bar_h, color)
 	for i in items.size():
 		var start := beats[i]
 		var seg_bpb := maxf(1.0, chart.timing.beats_per_bar_at(start))
@@ -582,39 +630,62 @@ func _draw_lane(canvas: CanvasItem, lane: int, items: Array, chart: Chart, bpb: 
 		x0 = clampf(x0, GUTTER + 1.0, size.x - 1.0)
 		x1 = clampf(x1, GUTTER + 1.0, size.x - 1.0)
 		var selected := _is_selected(lane, items[i])
-		var segment := _is_segment(lane, items[i])
 		var hovered := _hover_lane == lane and _hover_index == i
-		var fill_alpha := 0.30 if selected else (0.22 if hovered else 0.15)
-		var border_alpha := 0.95 if selected else (0.68 if hovered else 0.42)
+		var seg_hovered := _hover_lane == lane and _hover_segment == i + 1
+		var fill_alpha := 0.24 if selected else (0.18 if (hovered or seg_hovered) else 0.12)
+		var border_alpha := 0.95 if selected else (0.68 if (hovered or seg_hovered) else 0.42)
 		var rect := Rect2(Vector2(x0, top), Vector2(maxf(2.0, x1 - x0), bar_h))
 		var span_beats := end - start
 		var is_last := i == items.size() - 1
 		var clipped_start: bool = start < workspace.window_start() - 0.0001
 		var clipped_end: bool = x1 >= size.x - 2.0
+		var has_target := i + 1 < items.size()
 		var morph := span_beats
-		if lane == LANE_SHAPE and items[i] is Dictionary and not is_last:
-			morph = BoundaryRuntime.morph_beats(items[i], span_beats)
+		var easing := "linear"
+		var curve: Array = []
+		var target: Variant = items[i + 1] if has_target else null
+		if has_target:
+			morph = _lane_morph(lane, target, span_beats)
+			easing = _easing_of(target)
+			curve = _curve_of(target)
+		var transition_selected := has_target and _is_segment(lane, target)
+		# 保持段压暗，过渡段提亮：过渡只发生在目标帧前的 morph 拍里。
 		canvas.draw_rect(rect, Color(color.r, color.g, color.b, fill_alpha))
-		if not is_last and morph < span_beats - 0.0001:
-			var hold_x := clampf(_x_for(start + morph), x0, x1)
-			canvas.draw_rect(Rect2(Vector2(hold_x, top), Vector2(maxf(0.0, x1 - hold_x), bar_h)),
-				Color(0.02, 0.03, 0.04, 0.62))
-			canvas.draw_line(Vector2(hold_x, top), Vector2(hold_x, top + bar_h),
-				Color(color.r, color.g, color.b, 0.8), 1.0)
-		canvas.draw_rect(rect, Color(color.r, color.g, color.b, border_alpha), false, 1.0 if not selected else 2.0)
-		if segment:
+		var transition_x := x1
+		if has_target and lane <= LANE_CAMERA:
+			if morph <= 0.0001:
+				transition_x = x1
+			elif morph >= span_beats - 0.0001:
+				transition_x = x0
+			else:
+				transition_x = clampf(_x_for(end - morph), x0, x1)
+			var tail_w := maxf(0.0, x1 - transition_x)
+			if tail_w > 0.5:
+				canvas.draw_rect(Rect2(Vector2(transition_x, top), Vector2(tail_w, bar_h)),
+					Color(color.r, color.g, color.b, 0.26 if not selected else 0.34))
+				_draw_easing(canvas, Rect2(Vector2(transition_x, top), Vector2(tail_w, bar_h)),
+					easing, curve, color)
+			if morph <= 0.0001:
+				# 硬切：在目标帧处画一条亮线，明确「到这一拍才换」。
+				canvas.draw_line(Vector2(x1, top), Vector2(x1, top + bar_h),
+					Color(color.r, color.g, color.b, 0.95), 2.0)
+			elif morph < span_beats - 0.0001:
+				canvas.draw_line(Vector2(transition_x, top), Vector2(transition_x, top + bar_h),
+					Color(color.r, color.g, color.b, 0.85), 1.0)
+		else:
+			# 最后一帧之后：保持到内容结尾，没有过渡。
+			canvas.draw_rect(rect, Color(0.02, 0.03, 0.04, 0.42))
+		canvas.draw_rect(rect, Color(color.r, color.g, color.b, border_alpha), false, 2.0 if selected else 1.0)
+		if transition_selected:
 			canvas.draw_line(Vector2(x0, top + bar_h - 1.5), Vector2(x1, top + bar_h - 1.5), UITheme.CORAL, 2.0)
-		# 段方向：左端小三角 + 右端小三角；贴到窗口边缘时不画，避免误读。
-		if not clipped_start:
+		# 方向：只在过渡段里画一个小三角，避免把保持段误读成动画。
+		if has_target and morph > 0.0001 and not clipped_end:
+			var ax := minf(x1 - 7.0, maxf(transition_x + 5.0, x1 - 10.0))
 			canvas.draw_colored_polygon(PackedVector2Array([
-				Vector2(x0 + 4.0, center - 3.5), Vector2(x0 + 9.0, center), Vector2(x0 + 4.0, center + 3.5),
-			]), Color(color.r, color.g, color.b, 0.9))
-		if not clipped_end:
-			canvas.draw_colored_polygon(PackedVector2Array([
-				Vector2(x1 - 9.0, center - 3.5), Vector2(x1 - 4.0, center), Vector2(x1 - 9.0, center + 3.5),
+				Vector2(ax, center - 3.5), Vector2(ax + 5.0, center), Vector2(ax, center + 3.5),
 			]), Color(color.r, color.g, color.b, 0.9))
 		_draw_segment_content(canvas, lane, items[i], rect, chart, start, end, span_beats, morph, color,
-			is_last, clipped_start, clipped_end)
+			is_last, clipped_start, clipped_end, has_target, target)
 		_draw_key_marker(canvas, lane, items[i], x0, center, color, selected, key_visible)
 		if lane <= LANE_CAMERA and x1 <= size.x - 1.0 and not is_last:
 			canvas.draw_line(Vector2(x1, center - bar_h * 0.5), Vector2(x1, center + bar_h * 0.5),
@@ -624,9 +695,55 @@ func _draw_lane(canvas: CanvasItem, lane: int, items: Array, chart: Chart, bpb: 
 					Color(color.r, color.g, color.b, 0.75), false, 1.0)
 
 
+## 0 拍 → 第一帧的「基础圆」带：目标帧的 morph/easing 决定这段的过渡。
+func _draw_intro_segment(canvas: CanvasItem, lane: int, first: Variant, chart: Chart, bpb: float,
+		top: float, center: float, bar_h: float, color: Color) -> void:
+	var end_beat := float((first as Dictionary).get("beat", 0.0))
+	if end_beat <= 0.001:
+		return
+	var x0 := clampf(_x_for(0.0), GUTTER + 1.0, size.x - 1.0)
+	var x1 := clampf(_x_for(end_beat), GUTTER + 1.0, size.x - 1.0)
+	if x1 <= x0 + 1.0:
+		return
+	var span := end_beat
+	var morph := _lane_morph(lane, first, span)
+	var easing := _easing_of(first)
+	var curve := _curve_of(first)
+	var rect := Rect2(Vector2(x0, top), Vector2(x1 - x0, bar_h))
+	var selected := _is_segment(lane, first)
+	var hovered := _hover_lane == lane and _hover_segment == 0
+	canvas.draw_rect(rect, Color(color.r, color.g, color.b, 0.12 if selected else (0.09 if hovered else 0.06)))
+	var tx := x1
+	if morph <= 0.0001:
+		tx = x1
+		canvas.draw_line(Vector2(x1, top), Vector2(x1, top + bar_h),
+			Color(color.r, color.g, color.b, 0.95), 2.0)
+	elif morph >= span - 0.0001:
+		tx = x0
+	else:
+		tx = clampf(_x_for(end_beat - morph), x0, x1)
+		canvas.draw_line(Vector2(tx, top), Vector2(tx, top + bar_h),
+			Color(color.r, color.g, color.b, 0.85), 1.0)
+	if morph > 0.0001:
+		canvas.draw_rect(Rect2(Vector2(tx, top), Vector2(maxf(0.0, x1 - tx), bar_h)),
+			Color(color.r, color.g, color.b, 0.20))
+		_draw_easing(canvas, Rect2(Vector2(tx, top), Vector2(maxf(0.0, x1 - tx), bar_h)), easing, curve, color)
+	canvas.draw_dashed_line(Vector2(x0, center), Vector2(x1, center),
+		Color(color.r, color.g, color.b, 0.35), 1.0, 6.0)
+	if selected:
+		canvas.draw_rect(rect, UITheme.CORAL, false, 2.0)
+	var label := "基础圆 → %s" % String((first as Dictionary).get("shape_id", ""))
+	if morph <= 0.0001:
+		label += " · 硬切"
+	else:
+		label += " · 过渡 %.2f 拍" % morph
+	canvas.draw_string(UITheme.FONT_REGULAR, Vector2(x0 + 8, center + 4), label,
+		HORIZONTAL_ALIGNMENT_LEFT, maxf(0.0, x1 - x0 - 12.0), 10, Color(1, 1, 1, 0.62))
+
+
 func _draw_segment_content(canvas: CanvasItem, lane: int, item, rect: Rect2, chart: Chart,
 		start: float, end: float, span_beats: float, morph: float, color: Color,
-		is_last: bool, clipped_start: bool, clipped_end: bool) -> void:
+		is_last: bool, clipped_start: bool, clipped_end: bool, has_target: bool, target) -> void:
 	var width := rect.size.x
 	if width < 30.0:
 		return
@@ -644,21 +761,21 @@ func _draw_segment_content(canvas: CanvasItem, lane: int, item, rect: Rect2, cha
 			label = "保持到结尾"
 		else:
 			label = "%s · %.2f 秒" % [RingWorkspace.span_label(span_beats, maxf(1.0, chart.timing.beats_per_bar_at(start))), secs]
+			if has_target and target is Dictionary and width >= 180.0:
+				label += " → %s" % String((target as Dictionary).get("shape_id", ""))
 			if width >= 210.0:
-				label = "%.2f→%.2f 拍 · %s · 形变 %.2f 拍" % [start, end, label,
-					morph if morph < span_beats - 0.0001 else span_beats]
-		if not is_last and width >= 104.0:
-			_draw_easing(canvas, Rect2(Vector2(rect.position.x, rect.position.y), Vector2(rect.size.x, rect.size.y)),
-				_easing_of(item), _curve_of(item), color)
+				label += " · " + ("硬切" if morph <= 0.0001 else ("过渡 %.2f 拍" % morph))
 	elif lane == LANE_CAMERA and item is ViewState:
-		var state := item as ViewState
+		var shown: ViewState = (target as ViewState) if has_target and target is ViewState else (item as ViewState)
+		var head := "x%.2f · %.0f°" % [shown.zoom, shown.rotation]
+		if absf(shown.dolly - 1.0) > 0.001:
+			head += " · 推拉 %.2f" % shown.dolly
 		if is_last:
-			label = "保持到结尾 · x%.2f · %.0f°" % [state.zoom, state.rotation]
+			label = "保持到结尾 · " + head
 		else:
-			label = "%.2f 拍 · %.2f 秒 · x%.2f · %.0f°" % [span_beats, secs, state.zoom, state.rotation]
-			if width < 190.0:
-				label = "%.2f 拍 · x%.2f" % [span_beats, state.zoom]
-			_draw_easing(canvas, rect, _easing_of(item), _curve_of(item), color)
+			label = "%.2f 拍 → %s" % [span_beats, head]
+			if width >= 200.0:
+				label += " · " + ("硬切" if morph <= 0.0001 else ("过渡 %.2f 拍" % morph))
 	elif lane == LANE_EVENTS and item is BoundaryEvent:
 		label = "事件 %s" % (item as BoundaryEvent).id
 	elif lane == LANE_BPM:
@@ -885,7 +1002,8 @@ func _gui_input(event: InputEvent) -> void:
 		if event.button_index in [MOUSE_BUTTON_WHEEL_UP, MOUSE_BUTTON_WHEEL_DOWN]:
 			var dir := -1.0 if event.button_index == MOUSE_BUTTON_WHEEL_UP else 1.0
 			if event.ctrl_pressed:
-				workspace.zoom_timeline(-1 if dir < 0 else 1)
+				# 以光标下的拍为锚点连续缩放：放大时内容不会从指针底下跑掉。
+				workspace.zoom_view_at(_beat_at(event.position.x), 0.8 if dir < 0 else 1.25)
 			else:
 				workspace.scroll_timeline(dir)
 			invalidate()
@@ -999,6 +1117,8 @@ func _release(pos: Vector2) -> void:
 		return
 	if _drag_kind == "keys":
 		_drag_kind = ""
+		workspace.end_preview_drag()
+		workspace.end_content_freeze()
 		var chart: Chart = workspace.chart()
 		if chart != null:
 			chart.shape_keys.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
@@ -1022,22 +1142,28 @@ func _hit_key(lane: int, items: Array, pos: Vector2) -> int:
 
 
 func _hit_segment(lane: int, items: Array, pos: Vector2) -> int:
-	if pos.x < GUTTER:
+	if pos.x < GUTTER or items.is_empty():
 		return -1
+	# 第一帧之前的「基础圆」带：目标就是第一帧。
+	if lane == LANE_SHAPE:
+		var first_beat := _beat_of(items[0])
+		if first_beat > 0.001 and pos.x >= _x_for(0.0) and pos.x <= _x_for(first_beat):
+			return 0
+	# 第 i 段（i → i+1）的过渡归目标帧 i+1。
+	for i in items.size() - 1:
+		if pos.x >= _x_for(_beat_of(items[i])) and pos.x <= _x_for(_beat_of(items[i + 1])):
+			return i + 1
+	# 最后一帧之后的保持带：点中它选中最后一帧（它的入场过渡就是上一段）。
 	var chart: Chart = workspace.chart()
-	for i in items.size():
-		var start := _beat_of(items[i])
-		var end := start + 0.25
-		if i + 1 < items.size():
-			end = _beat_of(items[i + 1])
-		elif lane == LANE_EVENTS and items[i] is BoundaryEvent:
-			end = (items[i] as BoundaryEvent).end_beat
-		elif chart != null:
-			# 和色带绘制用同一条「最后一段到内容结束/至少一小节」规则。
-			var bpb := maxf(1.0, chart.timing.beats_per_bar_at(start))
-			end = RingWorkspace.span_end([start], 0, chart.content_end_beat(), bpb)
+	if chart != null:
+		var last := items.size() - 1
+		var start := _beat_of(items[last])
+		var bpb := maxf(1.0, chart.timing.beats_per_bar_at(start))
+		var end := RingWorkspace.span_end([start], 0, workspace.content_end_beat(), bpb)
+		if lane == LANE_EVENTS and items[last] is BoundaryEvent:
+			end = maxf(start, (items[last] as BoundaryEvent).end_beat)
 		if pos.x >= _x_for(start) and pos.x <= _x_for(end):
-			return i
+			return last
 	return -1
 
 
@@ -1050,15 +1176,18 @@ func _update_hover(pos: Vector2) -> void:
 		if _hover_lane != -1:
 			_hover_lane = -1
 			_hover_index = -1
+			_hover_segment = -1
 			invalidate_overlay()
 		return
 	var items := _lane_items(lane)
 	var index := _hit_key(lane, items, pos)
+	var segment := -1
 	if index < 0:
-		index = _hit_segment(lane, items, pos)
-	if index != _hover_index or lane != _hover_lane:
+		segment = _hit_segment(lane, items, pos)
+	if index != _hover_index or segment != _hover_segment or lane != _hover_lane:
 		_hover_lane = lane
 		_hover_index = index
+		_hover_segment = segment
 		invalidate_overlay()
 
 
@@ -1070,6 +1199,8 @@ func _begin_key_drag(pos: Vector2) -> void:
 		_drag_bases.append({"kind": "shape", "id": int(key.get("id", 0)), "beat": float(key.get("beat", 0.0))})
 	for state in selected_views():
 		_drag_bases.append({"kind": "view", "id": state.id, "beat": state.beat})
+	workspace.begin_preview_drag()
+	workspace.begin_content_freeze()
 	workspace.begin_edit()
 
 
@@ -1158,7 +1289,7 @@ func handle_key(event: InputEventKey) -> bool:
 			return true
 		KEY_END:
 			if workspace.chart() != null:
-				workspace.seek(workspace.chart().content_end_beat())
+				workspace.seek(workspace.content_end_beat())
 			return true
 		KEY_F:
 			workspace.fit_key_range_timeline()

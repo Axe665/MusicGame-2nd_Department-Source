@@ -56,6 +56,14 @@ func _initialize() -> void:
 		"test_shape_key_cache_invalidation",
 		"test_key_ids_and_v2_migration",
 		"test_camera_left_key_semantics",
+		"test_shape_transition_incoming",
+		"test_content_end_includes_ring_keys",
+		"test_v2_camera_easing_migration",
+		"test_v3_round_trip_fields",
+		"test_legacy_events_no_resurrection",
+		"test_camera_dolly_interpolates",
+		"test_ring_segment_targets",
+		"test_ring_undo_and_default_circle",
 		"test_ease_bezier",
 		"test_undo_memory_budget",
 		"test_full_chart_round_trip",
@@ -376,19 +384,20 @@ func test_boundary_keys_io() -> bool:
 	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
 	chart.shapes["S1"] = BoundaryShape.circle("S1", 200.0, 12)
 	chart.shape_keys = [
-		{"beat": 2.0, "shape_id": "S1", "easing": "linear"},
-		{"beat": 4.0, "shape_id": "S0", "easing": "linear"},
+		{"beat": 2.0, "shape_id": "S1", "easing": "linear", "morph": 1.0},
+		{"beat": 4.0, "shape_id": "S0", "easing": "linear", "morph": 1.0},
 	]
-	# 首帧之前从默认形状渐变过去：S0 330 → S1 200。
-	near(BoundaryRuntime.eval_point(chart, 0.0, 1.0).point.x, 265.0, 0.5, "intro morphs default → first key")
-	near(BoundaryRuntime.eval_point(chart, 0.0, 3.0).point.x, 265.0, 0.5, "keyframe morph midpoint")
+	# 过渡在目标帧前完成：0–1 保持默认圆，1–2 变到 S1；3–4 变回 S0。
+	near(BoundaryRuntime.eval_point(chart, 0.0, 0.5).point.x, 330.0, 0.5, "intro holds the default circle")
+	near(BoundaryRuntime.eval_point(chart, 0.0, 1.5).point.x, 265.0, 0.5, "intro transition ends at the first key")
+	near(BoundaryRuntime.eval_point(chart, 0.0, 3.5).point.x, 265.0, 0.5, "transition ends at the next key")
 	near(BoundaryRuntime.eval_point(chart, 0.0, 5.0).point.x, 330.0, 0.5, "last key holds after the end")
 	var data := ChartIO.chart_to_dict(chart)
 	ok(data.has("boundary_keys"), "keys are written to json")
-	ok(data.has("events") and (data["events"] as Array).size() >= 2, "legacy events are dual-written")
+	ok((data["events"] as Array).is_empty(), "modern charts do not dual-write legacy events")
 	var back := ChartIO.from_json(ChartIO.to_json(chart))
 	eq(back.shape_keys.size(), 2, "keys survive the roundtrip")
-	near(BoundaryRuntime.eval_point(back, 0.0, 3.0).point.x, 265.0, 0.5, "roundtrip keeps the morph")
+	near(BoundaryRuntime.eval_point(back, 0.0, 3.5).point.x, 265.0, 0.5, "roundtrip keeps the morph")
 	# 旧谱只有事件：载入时迁移成关键帧。
 	var legacy := {
 		"format": "tamaki3-chart",
@@ -415,20 +424,21 @@ func test_shape_morph_duration_and_camera_arc() -> bool:
 	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
 	chart.shapes["S1"] = BoundaryShape.circle("S1", 200.0, 12)
 	chart.shape_keys = [
-		{"beat": 2.0, "shape_id": "S1", "easing": "linear"},
-		{"beat": 6.0, "shape_id": "S0", "easing": "linear"},
+		{"beat": 2.0, "shape_id": "S1", "easing": "linear", "morph": 0.0},
+		{"beat": 6.0, "shape_id": "S0", "easing": "linear", "morph": 0.0},
 	]
-	near(BoundaryRuntime.eval_point(chart, 0.0, 4.0).point.x, 265.0, 0.5, "默认形变时长 = 整段")
-	chart.shape_keys[0]["morph"] = 1.0
-	near(BoundaryRuntime.eval_point(chart, 0.0, 2.5).point.x, 265.0, 0.5, "形变时长内仍按缓动插值")
-	near(BoundaryRuntime.eval_point(chart, 0.0, 3.0).point.x, 330.0, 0.5, "形变完成后保持下一帧形状")
+	# v3 默认硬切：4 拍仍保持 S1，到 6 拍才回 S0。
+	near(BoundaryRuntime.eval_point(chart, 0.0, 4.0).point.x, 200.0, 0.5, "默认硬切：目标帧之前保持源形状")
+	chart.shape_keys[1]["morph"] = 2.0
+	near(BoundaryRuntime.eval_point(chart, 0.0, 5.0).point.x, 265.0, 0.5, "过渡在目标帧前 2 拍内按缓动插值")
+	near(BoundaryRuntime.eval_point(chart, 0.0, 6.5).point.x, 330.0, 0.5, "目标帧之后保持目标形状")
 	near(BoundaryRuntime.morph_beats({"morph": 99.0}, 3.0), 3.0, 0.0001, "形变时长最多等于整段")
-	near(BoundaryRuntime.morph_beats({}, 3.0), 3.0, 0.0001, "缺字段时等于整段（旧谱兼容）")
+	near(BoundaryRuntime.morph_beats({}, 3.0), 0.0, 0.0001, "v3 缺字段 = 硬切")
 	var data := ChartIO.chart_to_dict(chart)
-	eq(float((data["boundary_keys"] as Array)[0].get("morph", 0.0)), 1.0, "形变时长写进 json")
+	eq(float((data["boundary_keys"] as Array)[1].get("morph", 0.0)), 2.0, "入场过渡写进 json")
 	var back := ChartIO.from_json(ChartIO.to_json(chart))
-	eq(float(back.shape_keys[0].get("morph", 0.0)), 1.0, "形变时长读回")
-	near(BoundaryRuntime.eval_point(back, 0.0, 3.0).point.x, 330.0, 0.5, "读回后形变节奏不变")
+	eq(float(back.shape_keys[1].get("morph", 0.0)), 2.0, "入场过渡读回")
+	near(BoundaryRuntime.eval_point(back, 0.0, 5.0).point.x, 265.0, 0.5, "读回后过渡节奏不变")
 	var states: Array[ViewState] = [
 		ViewState.new(0.0, 1.0, 0.0, 0.0, 1.0, 170.0),
 		ViewState.new(2.0, 1.0, 0.0, 0.0, 1.0, -170.0),
@@ -1527,8 +1537,8 @@ func test_shrink_example() -> bool:
 	chart.shapes["S0"] = BoundaryShape.circle("S0", 330.0, 64)
 	chart.shapes["S1"] = BoundaryShape.circle("S1", 180.0, 64)
 	chart.shape_keys = [
-		{"beat": 0.0, "shape_id": "S0", "easing": "linear"},
-		{"beat": 1.0, "shape_id": "S1", "easing": "linear"},
+		{"beat": 0.0, "shape_id": "S0", "easing": "linear", "morph": 0.0},
+		{"beat": 1.0, "shape_id": "S1", "easing": "linear", "morph": 1.0},
 	]
 	# 飞行时长 1 秒（60 BPM = 1 拍）：从 0 拍到 1 拍走完。
 	var u := 0.0
@@ -1545,9 +1555,9 @@ func test_event_restore() -> bool:
 	chart.shapes["S0"] = BoundaryShape.circle("S0", 330.0, 64)
 	chart.shapes["S1"] = BoundaryShape.circle("S1", 180.0, 64)
 	chart.shape_keys = [
-		{"beat": 0.0, "shape_id": "S0", "easing": "linear"},
-		{"beat": 1.0, "shape_id": "S1", "easing": "linear"},
-		{"beat": 2.0, "shape_id": "S0", "easing": "linear"},
+		{"beat": 0.0, "shape_id": "S0", "easing": "linear", "morph": 0.0},
+		{"beat": 1.0, "shape_id": "S1", "easing": "linear", "morph": 1.0},
+		{"beat": 2.0, "shape_id": "S0", "easing": "linear", "morph": 1.0},
 	]
 	var mid: Vector2 = BoundaryRuntime.eval_point(chart, 0.0, 0.5).point
 	near(mid.x, 255.0, 0.5, "event mid 255px")
@@ -2081,7 +2091,7 @@ func test_ring_marquee_and_drag() -> bool:
 	var workspace := RingWorkspace.new()
 	workspace._app = app
 	workspace._view_start = 0.0
-	workspace._zoom_index = 1
+	workspace._view_beats = 16.0
 	var timeline := RingTimeline.new(workspace)
 	workspace._timeline = timeline
 	timeline.size = Vector2(1600, 300)
@@ -2159,10 +2169,12 @@ func test_key_ids_and_v2_migration() -> bool:
 	var id0 := int(chart.shape_keys[0].get("id", 0))
 	ok(id0 > 0, "形状键自动补 id")
 	ok(int(chart.shape_keys[1].get("id", 0)) != id0, "id 不重复")
-	eq(chart.view_states[0].easing, "in-out", "v1 镜头缓动搬到左帧")
+	eq(chart.view_states[0].easing, "linear", "v1 左帧缓动保持")
+	eq(chart.view_states[1].easing, "in-out", "v1 目标帧缓动保持")
 	near(float(BoundaryRuntime.eval_view(chart, 2.0)["zoom"]), 1.1, 0.001, "迁移后旧演出不变")
+	near(float(chart.shape_keys[1].get("morph", -1.0)), 4.0, 0.001, "v1 整段过渡迁移为显式 4 拍")
 	var data := ChartIO.chart_to_dict(chart)
-	eq(int(data["version"]), 2, "写回 v2")
+	eq(int(data["version"]), 3, "写回 v3")
 	ok(int((data["boundary_keys"] as Array)[0].get("id", 0)) > 0, "写回带 id")
 	chart.shape_keys[0]["curve"] = [0.2, 0.0, 0.8, 1.0]
 	chart.view_states[0].curve = [0.42, 0.0, 0.58, 1.0]
@@ -2185,12 +2197,12 @@ func test_camera_left_key_semantics() -> bool:
 		ViewState.new(0.0, 1.0, 0.0, 0.0, 1.0, 0.0, "linear"),
 		ViewState.new(4.0, 1.2, 20.0, 10.0, 1.2, 40.0, "in-out"),
 	]
-	# 段缓动看左帧：左帧 linear 时 1/4 处就是 0.25，不受右帧 in-out 影响。
-	near(float(BoundaryRuntime.eval_view(chart, 1.0)["zoom"]), 1.05, 0.001, "缓动归左帧")
+	# 段缓动看目标帧：右帧 in-out 时 1/4 处就是 0.15625，不受左帧 linear 影响。
+	near(float(BoundaryRuntime.eval_view(chart, 1.0)["zoom"]), 1.03125, 0.001, "缓动归目标帧")
 	near(float(BoundaryRuntime.eval_view(chart, 2.0)["tilt_x"]), 10.0, 0.001, "横倾插值")
 	near(float(BoundaryRuntime.eval_view(chart, 2.0)["ellipse"]), 1.1, 0.001, "椭圆比插值")
-	chart.view_states[0].easing = "in-out"
-	near(float(BoundaryRuntime.eval_view(chart, 1.0)["zoom"]), 1.03125, 0.001, "左帧改缓入缓出")
+	chart.view_states[1].easing = "linear"
+	near(float(BoundaryRuntime.eval_view(chart, 1.0)["zoom"]), 1.05, 0.001, "目标帧改匀速")
 	return true
 
 
@@ -2199,6 +2211,204 @@ func test_ease_bezier() -> bool:
 	near(Ease.bezier([0.42, 0.0, 1.0, 1.0], 0.5), 0.315, 0.02, "缓入曲线")
 	near(Ease.apply_curve("linear", [0.0, 0.0, 1.0, 1.0], 0.75), 0.75, 0.001, "曲线优先于预设")
 	near(Ease.apply_curve("in-out", [], 0.25), 0.15625, 0.001, "无曲线时退回预设")
+	return true
+
+
+## 过渡在目标帧前完成：0 拍硬切，整段 = 连续变化。
+func test_shape_transition_incoming() -> bool:
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	chart.shapes["S1"] = BoundaryShape.circle("S1", 200.0, 48)
+	chart.shape_keys = [
+		{"beat": 2.0, "shape_id": "S1", "morph": 1.0, "easing": "linear"},
+		{"beat": 4.0, "shape_id": "S0", "morph": 1.0, "easing": "linear"},
+	]
+	near(BoundaryRuntime.eval_point(chart, 0.0, 0.5).point.x, 330.0, 0.5, "首帧前保持基础圆")
+	near(BoundaryRuntime.eval_point(chart, 0.0, 1.5).point.x, 265.0, 0.5, "首帧前 1 拍过渡")
+	near(BoundaryRuntime.eval_point(chart, 0.0, 2.5).point.x, 200.0, 0.5, "第一帧后保持 S1")
+	near(BoundaryRuntime.eval_point(chart, 0.0, 3.5).point.x, 265.0, 0.5, "目标帧前 1 拍过渡回圆")
+	near(BoundaryRuntime.eval_point(chart, 0.0, 4.5).point.x, 330.0, 0.5, "目标帧后保持圆")
+	chart.shape_keys[1]["morph"] = 0.0
+	near(BoundaryRuntime.eval_point(chart, 0.0, 3.5).point.x, 200.0, 0.5, "目标帧硬切前保持 S1")
+	chart.shape_keys[0]["morph"] = 0.0
+	near(BoundaryRuntime.eval_point(chart, 0.0, 1.5).point.x, 330.0, 0.5, "首帧硬切前保持圆")
+	near(BoundaryRuntime.eval_point(chart, 0.0, 2.0).point.x, 200.0, 0.5, "首帧拍点硬切到 S1")
+	return true
+
+
+## 内容末尾必须算上形状/镜头帧，否则时间轴滚不到、seek 也跳不到。
+func test_content_end_includes_ring_keys() -> bool:
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	chart.shape_keys = [{"beat": 10.0, "shape_id": "S0", "morph": 0.0}]
+	chart.view_states = [ViewState.new(12.0)]
+	near(chart.content_end_beat(), 12.0, 0.001, "镜头帧参与内容末尾")
+	ok(chart.end_limit_beat() >= 12.0, "可跳转上限覆盖镜头帧")
+	chart.shape_keys = [{"beat": 20.0, "shape_id": "S0", "morph": 0.0}]
+	chart.mark_dirty()
+	near(chart.content_end_beat(), 20.0, 0.001, "形状帧参与内容末尾")
+	return true
+
+
+## v2 的镜头缓动存在左帧；v3 归目标帧，读 v2 时要搬到右帧，旧演出不变。
+func test_v2_camera_easing_migration() -> bool:
+	var v2 := {
+		"format": "tamaki3-chart", "version": 2,
+		"timing": {"points": [{"beat": 0.0, "bpm": 120.0, "beats_per_bar": 4}]},
+		"shapes": [{"id": "S0", "closed": true, "segments": []}, {"id": "S1", "closed": true, "segments": []}],
+		"boundary_keys": [
+			{"beat": 0.0, "shape": "S0", "easing": "linear"},
+			{"beat": 4.0, "shape": "S1", "easing": "in-out"},
+		],
+		"view_states": [
+			{"beat": 0.0, "zoom": 1.0, "easing": "in-out"},
+			{"beat": 4.0, "zoom": 1.2, "easing": "linear"},
+		],
+	}
+	var chart := ChartIO.chart_from_dict(v2)
+	ok(chart != null, "v2 谱面能打开")
+	if chart == null:
+		return true
+	eq(chart.view_states[1].easing, "in-out", "v2 左帧缓动搬到目标帧")
+	near(float(BoundaryRuntime.eval_view(chart, 1.0)["zoom"]), 1.03125, 0.001, "迁移后旧镜头演出不变")
+	near(float(chart.shape_keys[1].get("morph", -1.0)), 4.0, 0.001, "v2 形状整段过渡改成显式 4 拍")
+	eq(String(chart.shape_keys[1].get("easing", "")), "linear", "v2 形状左帧缓动搬到目标帧")
+	return true
+
+
+## v3 字段：稳定 id、入场过渡、镜头 dolly、每段曲线、face_camera 都要往返。
+func test_v3_round_trip_fields() -> bool:
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	chart.shapes["S1"] = BoundaryShape.circle("S1", 200.0, 48)
+	chart.shape_keys = [
+		{"beat": 0.0, "shape_id": "S0", "easing": "linear", "morph": 0.0, "id": 1},
+		{"beat": 4.0, "shape_id": "S1", "easing": "in-out", "morph": 1.5, "id": 2,
+			"curve": [0.2, 0.0, 0.8, 1.0]},
+	]
+	chart.view_states = [ViewState.new(0.0), ViewState.new(4.0)]
+	chart.view_states[0].id = 3
+	chart.view_states[1].id = 4
+	chart.view_states[1].dolly = 1.2
+	chart.view_states[1].morph = 0.5
+	chart.view_states[1].curve = [0.42, 0.0, 0.58, 1.0]
+	chart.metadata["face_camera"] = false
+	var data := ChartIO.chart_to_dict(chart)
+	eq(int(data["version"]), 3, "写回 v3")
+	eq((data["events"] as Array).size(), 0, "现代谱不写旧 events")
+	var back := ChartIO.from_json(ChartIO.to_json(chart))
+	ok(back != null, "v3 往返不报错")
+	if back == null:
+		return true
+	near(float(back.shape_keys[1].get("morph", -1.0)), 1.5, 0.001, "形状入场过渡往返")
+	eq((back.shape_keys[1].get("curve", []) as Array).size(), 4, "形状曲线往返")
+	eq(int(back.shape_keys[1].get("id", 0)), 2, "形状 id 往返")
+	near(back.view_states[1].dolly, 1.2, 0.001, "镜头 dolly 往返")
+	near(back.view_states[1].morph, 0.5, 0.001, "镜头入场过渡往返")
+	eq(back.view_states[1].curve.size(), 4, "镜头曲线往返")
+	eq(back.view_states[1].id, 4, "镜头 id 往返")
+	eq(bool(back.metadata.get("face_camera", true)), false, "face_camera 往返")
+	return true
+
+
+## 现代谱不再双写 events；删光关键帧后重开也不能把动画复活。
+func test_legacy_events_no_resurrection() -> bool:
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	chart.shape_keys = [
+		{"beat": 0.0, "shape_id": "S0", "morph": 0.0, "easing": "linear"},
+		{"beat": 4.0, "shape_id": "S0", "morph": 0.0, "easing": "linear"},
+	]
+	chart.events.append(BoundaryEvent.from_dict({
+		"id": "E1", "start_beat": 0.0, "end_beat": 4.0, "target_u0": 0.0, "target_u1": 1.0,
+		"from_shape": "S0", "to_shape": "S0", "easing": "linear", "end_behavior": "hold",
+		"restore_duration": 0.0, "restore_easing": "in-out",
+	}))
+	var data := ChartIO.chart_to_dict(chart)
+	eq((data["events"] as Array).size(), 0, "有关键帧时不写旧 events")
+	var loaded := ChartIO.chart_from_dict(data)
+	ok(loaded != null, "现代谱能重开")
+	if loaded == null:
+		return true
+	eq(loaded.events.size(), 0, "载入时丢掉重复 events")
+	loaded.shape_keys.clear()
+	var emptied := ChartIO.chart_to_dict(loaded)
+	eq((emptied["boundary_keys"] as Array).size(), 0, "删光关键帧后 boundary_keys 为空")
+	eq((emptied["events"] as Array).size(), 0, "删光关键帧后 events 也为空")
+	var reopened := ChartIO.chart_from_dict(emptied)
+	ok(reopened != null, "空谱能重开")
+	if reopened != null:
+		eq(reopened.shape_keys.size(), 0, "关键帧没有复活")
+	return true
+
+
+## dolly 是镜头距离：默认整段平滑，hard cut 在目标帧处切换。
+func test_camera_dolly_interpolates() -> bool:
+	var states: Array[ViewState] = [ViewState.new(0.0), ViewState.new(4.0)]
+	states[1].dolly = 1.4
+	states[1].morph = -1.0
+	near(float(ViewState.evaluate(states, 2.0)["dolly"]), 1.2, 0.001, "dolly 整段插值")
+	states[1].morph = 0.0
+	near(float(ViewState.evaluate(states, 3.9)["dolly"]), 1.0, 0.001, "硬切前保持左帧 dolly")
+	near(float(ViewState.evaluate(states, 4.0)["dolly"]), 1.4, 0.001, "目标帧处硬切")
+	return true
+
+
+## 点色带选中的是目标帧：introduction 段返回第一帧，最后保持段返回最后一帧。
+func test_ring_segment_targets() -> bool:
+	var app: App = load("res://charter/app.gd").new()
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	chart.shape_keys = [
+		{"beat": 0.0, "shape_id": "S0", "morph": 0.0, "easing": "linear", "id": 1},
+		{"beat": 4.0, "shape_id": "S0", "morph": 0.0, "easing": "linear", "id": 2},
+	]
+	app.chart = chart
+	var workspace := RingWorkspace.new()
+	workspace._app = app
+	workspace._view_beats = 16.0
+	var timeline := RingTimeline.new(workspace)
+	workspace._timeline = timeline
+	timeline.size = Vector2(1600, 300)
+	var items := chart.sorted_shape_keys()
+	eq(timeline._hit_segment(0, items, Vector2(timeline._x_for(2.0), 100)), 1, "中间段命中目标帧")
+	eq(timeline._hit_segment(0, items, Vector2(timeline._x_for(6.0), 100)), 1, "最后保持段命中最后一帧")
+	var intro_chart := Chart.new()
+	intro_chart.shape_keys = [{"beat": 2.0, "shape_id": "S0", "morph": 0.0, "easing": "linear", "id": 3}]
+	app.chart = intro_chart
+	var intro_items := intro_chart.sorted_shape_keys()
+	eq(timeline._hit_segment(0, intro_items, Vector2(timeline._x_for(1.0), 100)), 0, "第一帧前的圆带命中第一帧")
+	timeline.free()
+	workspace.free()
+	app.free()
+	return true
+
+
+## 环编辑的增删也要能撤销；没有形状帧时整首是基础圆。
+func test_ring_undo_and_default_circle() -> bool:
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	near(BoundaryRuntime.eval_point(chart, 0.0, 40.0).point.x, 330.0, 0.5, "没有形状帧时保持基础圆")
+	ok(BoundaryRuntime.pair_at(chart, 40.0).is_empty(), "没有形状帧时不进入过渡")
+	var app: App = load("res://charter/app.gd").new()
+	app.chart = chart
+	app.mutate_ring(func() -> void:
+		chart.shape_keys.append({"beat": 4.0, "shape_id": "S0", "easing": "linear", "morph": 0.0,
+			"id": chart.next_key_id()})
+	)
+	eq(app.chart.shape_keys.size(), 1, "环编辑加帧")
+	eq(app.chart.sorted_shape_keys().size(), 1, "加帧后时间轴缓存同步")
+	eq((ChartIO.chart_to_dict(app.chart)["boundary_keys"] as Array).size(), 1, "加帧后存盘快照同步")
+	app.mutate_ring(func() -> void:
+		app.chart.view_states.append(ViewState.new(8.0))
+	)
+	eq(app.chart.sorted_view_states().size(), 2, "加镜头帧后缓存同步")
+	app.undo_chart()
+	app.undo_chart()
+	eq(app.chart.shape_keys.size(), 0, "环编辑撤销")
+	app.redo_chart()
+	eq(app.chart.shape_keys.size(), 1, "环编辑重做")
+	app.free()
 	return true
 
 

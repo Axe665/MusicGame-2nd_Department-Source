@@ -128,6 +128,8 @@ static func _check_view_states(chart: Chart, issues: Array[Dictionary]) -> void:
 			_add(issues, "warning", "视角 %.2f 超出 0.75–1.4 建议范围" % state.zoom, "view")
 		if state.ellipse < 0.5 or state.ellipse > 1.5:
 			_add(issues, "warning", "椭圆系数 %.2f 偏离较大" % state.ellipse, "view")
+		if state.dolly < 0.6 or state.dolly > 1.6:
+			_add(issues, "warning", "镜头推拉 %.2f 超出 0.6–1.6 建议范围" % state.dolly, "view")
 
 
 static func _check_regions(chart: Chart, issues: Array[Dictionary]) -> void:
