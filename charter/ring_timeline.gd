@@ -32,7 +32,7 @@ var locked_lanes: Dictionary = {}
 var show_grid := true
 var aux_open := false
 
-## 选中集合：键 "shape:<id>" / "view:<id>"。段选中单独记左键。
+## 选中集合：键 "shape:<id>" / "view:<id>"；段选中单独记左键。
 var _selected: Dictionary = {}
 var _primary := ""
 var _segment := ""
@@ -52,7 +52,7 @@ var _marquee_current := Vector2.ZERO
 var _marquee_add := false
 var _hover_lane := -1
 var _hover_index := -1
-## 段 hover 与关键帧 hover 分开：段命中返回的是目标帧下标，不能拿它当色带下标。
+## 段 hover 与关键帧 hover 分开：段命中返回目标帧下标，不能当作色带下标。
 var _hover_segment := -1
 var _hover_pos := Vector2(-9999, -9999)
 
@@ -163,12 +163,12 @@ func on_chart_changed() -> void:
 
 
 func on_live_change() -> void:
-	# 拖动关键帧时谱面在变：色带必须跟着动。拖播放头不走这里。
+	# 拖动关键帧会改变谱面：色带必须跟着重绘。拖播放头不走这里。
 	invalidate()
 
 
 func on_playhead_changed() -> void:
-	# 播放/擦洗只动覆盖层。
+	# 播放/擦洗只重绘覆盖层。
 	invalidate_overlay()
 
 
@@ -314,7 +314,7 @@ func _select_segment(kind: String, id: int) -> void:
 	selection_changed.emit()
 
 
-## 选中后同步 App 的旧选择字段，预览滚轮/画形板仍能跟着走。
+## 选中后同步 App 的旧选择字段，预览滚轮和画形板仍能跟随。
 func _sync_app_selection(kind: String, id: int) -> void:
 	var chart: Chart = workspace.chart()
 	if chart == null or workspace._app == null:
@@ -537,7 +537,7 @@ func _draw_common_grid(canvas: CanvasItem, start: float, span: float, bpb: float
 				Color(_lane_colour(lane).r, _lane_colour(lane).g, _lane_colour(lane).b, 0.02))
 	if not show_grid or beat_px <= 0.0001:
 		return
-	# 小节格：至少 12px 才画，格数随缩放抽稀；「全部」时不会再画两万条线。
+	# 小节格：至少 12px 才画，格数随缩放抽稀；「全部」时不会画两万条线。
 	var bar_px := beat_px * maxf(1.0, bpb)
 	var bar_step := 1
 	while bar_px * float(bar_step) < 12.0:
@@ -553,7 +553,7 @@ func _draw_common_grid(canvas: CanvasItem, start: float, span: float, bpb: float
 			canvas.draw_rect(Rect2(Vector2(x, top), Vector2(next_x - x, bottom - top)),
 				Color(1, 1, 1, 0.014))
 		canvas.draw_line(Vector2(x, top), Vector2(x, bottom), Color(1, 1, 1, 0.075), 1.0)
-	# 拍格：放得下才画，且按 1/2/4/8 拍抽稀。
+	# 拍格：放得下才画，按 1/2/4/8 拍抽稀。
 	if beat_px >= 6.0:
 		var beat_step := 1
 		while float(beat_step) * beat_px < 6.0:
@@ -595,7 +595,7 @@ func _draw_lane(canvas: CanvasItem, lane: int, items: Array, chart: Chart, bpb: 
 	var top := center - bar_h * 0.5
 	if items.is_empty():
 		if lane == LANE_SHAPE:
-			# 没有形状帧 = 全程基础圆：画一条空心保持带，作者一眼能看出当前状态。
+			# 没有形状帧 = 全程基础圆：画一条空心保持带，明确当前状态。
 			var x0 := clampf(_x_for(workspace.window_start()), GUTTER + 1.0, size.x - 1.0)
 			var x1 := size.x - 1.0
 			var rect := Rect2(Vector2(x0, top), Vector2(maxf(2.0, x1 - x0), bar_h))
@@ -611,7 +611,7 @@ func _draw_lane(canvas: CanvasItem, lane: int, items: Array, chart: Chart, bpb: 
 	var beats: Array[float] = []
 	for item in items:
 		beats.append(_beat_of(item))
-	# 第一帧之前：从 0 拍到第一帧的「基础圆 → 第一帧」带，目标帧拥有这段过渡。
+	# 第一帧之前：0 拍到第一帧的「基础圆 → 第一帧」带，过渡归目标帧。
 	if lane == LANE_SHAPE and beats[0] > 0.001:
 		_draw_intro_segment(canvas, lane, items[0], chart, bpb, top, center, bar_h, color)
 	for i in items.size():
@@ -649,7 +649,7 @@ func _draw_lane(canvas: CanvasItem, lane: int, items: Array, chart: Chart, bpb: 
 			easing = _easing_of(target)
 			curve = _curve_of(target)
 		var transition_selected := has_target and _is_segment(lane, target)
-		# 保持段压暗，过渡段提亮：过渡只发生在目标帧前的 morph 拍里。
+		# 保持段压暗、过渡段提亮：过渡只发生在目标帧前的 morph 拍内。
 		canvas.draw_rect(rect, Color(color.r, color.g, color.b, fill_alpha))
 		var transition_x := x1
 		if has_target and lane <= LANE_CAMERA:
@@ -666,7 +666,7 @@ func _draw_lane(canvas: CanvasItem, lane: int, items: Array, chart: Chart, bpb: 
 				_draw_easing(canvas, Rect2(Vector2(transition_x, top), Vector2(tail_w, bar_h)),
 					easing, curve, color)
 			if morph <= 0.0001:
-				# 硬切：在目标帧处画一条亮线，明确「到这一拍才换」。
+				# 硬切：在目标帧处画一条亮线，表示到这一拍才切换。
 				canvas.draw_line(Vector2(x1, top), Vector2(x1, top + bar_h),
 					Color(color.r, color.g, color.b, 0.95), 2.0)
 			elif morph < span_beats - 0.0001:
@@ -1000,7 +1000,7 @@ func _gui_input(event: InputEvent) -> void:
 		if event.button_index in [MOUSE_BUTTON_WHEEL_UP, MOUSE_BUTTON_WHEEL_DOWN]:
 			var dir := -1.0 if event.button_index == MOUSE_BUTTON_WHEEL_UP else 1.0
 			if event.ctrl_pressed:
-				# 以光标下的拍为锚点连续缩放：放大时内容不会从指针底下跑掉。
+				# 以光标下的拍为锚点连续缩放，放大时内容不会从指针下跑掉。
 				workspace.zoom_view_at(_beat_at(event.position.x), 0.8 if dir < 0 else 1.25)
 			else:
 				workspace.scroll_timeline(dir)
@@ -1033,7 +1033,7 @@ func _gui_input(event: InputEvent) -> void:
 
 func _press(pos: Vector2, event: InputEventMouseButton) -> void:
 	var lane := _lane_at(pos.y)
-	# 左侧图层头：眼睛/锁/辅助折叠
+	# 左侧图层头：眼睛 / 锁 / 辅助折叠。
 	if pos.x <= GUTTER:
 		if aux_open or pos.y < _aux_header_top() + AUX_HEAD_H:
 			if lane >= 0:
@@ -1056,7 +1056,7 @@ func _press(pos: Vector2, event: InputEventMouseButton) -> void:
 			custom_minimum_size.y = 286.0 + (AUX_HEAD_H + AUX_ROW_H * 2.0 + 4.0 if aux_open else 0.0)
 			invalidate()
 			return
-	# 标尺：擦洗
+	# 标尺：擦洗。
 	if pos.y <= RULER_H:
 		_drag_kind = "playhead"
 		workspace.seek(workspace.snap(_beat_at(pos.x)))
@@ -1069,7 +1069,7 @@ func _press(pos: Vector2, event: InputEventMouseButton) -> void:
 		return
 	if hidden_lanes.has(lane):
 		return
-	# 键命中
+	# 关键帧命中。
 	var items := _lane_items(lane)
 	var hit := _hit_key(lane, items, pos)
 	if hit >= 0:
@@ -1088,7 +1088,7 @@ func _press(pos: Vector2, event: InputEventMouseButton) -> void:
 		if not locked_lanes.has(lane) and (lane == LANE_SHAPE or lane == LANE_CAMERA):
 			_begin_key_drag(pos)
 		return
-	# 段命中：选中段并 seek
+	# 段命中：选中段并 seek。
 	var seg := _hit_segment(lane, items, pos)
 	if seg >= 0:
 		var item = items[seg]
@@ -1097,7 +1097,7 @@ func _press(pos: Vector2, event: InputEventMouseButton) -> void:
 			_select_segment("shape" if lane == LANE_SHAPE else "view", int(String(token).split(":")[1]))
 			workspace.seek(workspace.snap(_beat_at(pos.x)))
 			return
-	# 空白：清选 + 框选
+	# 空白：清选 + 框选。
 	if not (event.ctrl_pressed or event.shift_pressed):
 		clear_selection()
 	_marquee_active = true
@@ -1151,7 +1151,7 @@ func _hit_segment(lane: int, items: Array, pos: Vector2) -> int:
 	for i in items.size() - 1:
 		if pos.x >= _x_for(_beat_of(items[i])) and pos.x <= _x_for(_beat_of(items[i + 1])):
 			return i + 1
-	# 最后一帧之后的保持带：点中它选中最后一帧（它的入场过渡就是上一段）。
+	# 最后一帧之后的保持带：点中它选中最后一帧（入场过渡属于上一段）。
 	var chart: Chart = workspace.chart()
 	if chart != null:
 		var last := items.size() - 1

@@ -2,7 +2,7 @@ class_name RingWorkspace
 extends Control
 
 ## 环编辑工作区：形状关键帧 + 形变时间轴 + 镜头，一屏直操作。
-## 形状关键帧是唯一真源；BoundaryEvent 只在存盘时双写给旧版本。
+## 形状关键帧是唯一真源；v1/v2 的旧 BoundaryEvent 只读兼容，不再双写。
 
 signal closed
 signal play_toggled
@@ -73,7 +73,7 @@ var _beat_spin: SpinBox = null
 var _time_label: Label = null
 var _fps_label: Label = null
 var _fps_accum := 0.0
-## 连续缩放：窗口里放多少拍。8/16/32 档位会被 Ctrl+滚轮连续缩放取代。
+## 时间轴窗口宽度（拍）。Ctrl+滚轮连续缩放，不再使用固定档位。
 var _view_beats := 16.0
 var _zoom_label: Label = null
 ## 播放时时间轴是否跟着播放头滚（时间轴选项里可关）。
@@ -96,9 +96,9 @@ var _last_key_beat: float = -999.0
 var _sync_last_msec: int = 0
 var _sync_last_beat: float = -99999.0
 var _sync_last_spin: float = -99999.0
-## 拖动关键帧时冻结内容末尾：每帧 mark_dirty 会让 content_end 重扫 10k 音符。
+## 拖动关键帧期间冻结内容末尾，避免每帧 mark_dirty 重扫 10k 音符。
 var _drag_content_end: float = -1.0
-## 滑杆/滚轮这类连续手势结束后再恢复音符层；拖关键帧走 begin/end_preview_drag。
+## 滑杆/滚轮等连续手势结束后恢复音符层；拖关键帧走 begin/end_preview_drag。
 var _preview_gesture_timer: Timer = null
 
 
@@ -548,7 +548,7 @@ func _ready() -> void:
 			else:
 				_timeline.on_playhead_changed()
 		)
-		# 选中形状帧时左侧形状库跟着高亮；「复制/删除」就作用在眼前这个形状上。
+		# 选中形状帧时同步高亮左侧形状库；复制/删除作用于当前形状。
 		_app.selection_changed.connect(func() -> void:
 			if visible:
 				_rebuild_thumbs()
@@ -695,17 +695,16 @@ func _build() -> void:
 	root.add_child(_timeline)
 	if _inspector != null:
 		_inspector.timeline = _timeline
-		# 延迟到当前信号结束再重建，避免在按钮自己的 pressed 回调里释放按钮。
+		# 延迟到当前信号结束后重建，避免在按钮的 pressed 回调里释放按钮。
 		_timeline.selection_changed.connect(func() -> void: _inspector.call_deferred("refresh", true))
-	# 选中变化时标题也要立刻跟着变（镜头帧/形状帧），不能等下一次跨拍。
+	# 选中变化时立即更新标题（镜头帧/形状帧），不等下一次跨拍。
 	_timeline.selection_changed.connect(func() -> void: _sync_time_tool(true))
 
 
 ## 复用主预览：把同一个 Preview3D 挪进来，省掉第二个 3D 视口。
 func open_workspace(preview: Preview3D = null, restore: Callable = Callable()) -> void:
 	visible = true
-	# 每次打开都要把预览搬进来并重新记下恢复回调：关闭时预览会回到主界面，
-	# 只搬第一次的话，第二次打开预览槽是空的，关闭时也没人把主界面显示回来。
+	# 每次打开都要重新搬入预览并记录恢复回调；只搬第一次会导致第二次打开时预览槽为空。
 	if preview != null:
 		if preview.get_parent() != _preview_slot:
 			if preview.get_parent() != null:
@@ -735,12 +734,12 @@ func open_workspace(preview: Preview3D = null, restore: Callable = Callable()) -
 	_follow_playhead(true)
 	if chart() != null and (not chart().shape_keys.is_empty() or chart().view_states.size() > 1):
 		fit_key_range_timeline()
-	# 形状库高亮当前播放头这一帧实际用的形状，别让 S0 抢了 S5 的选中框。
+	# 形状库高亮播放头当前实际使用的形状，避免基础圆盖住当前形状的选中框。
 	var at_key := current_key()
 	if not at_key.is_empty():
 		_app.select_shape(String(at_key.get("shape_id", "")))
 	_refresh()
-	# 打开后再预热，不阻塞第一帧；第一次拖关键帧就不用再拍一次冷快照。
+	# 打开后再预热，避免阻塞首帧；第一次拖关键帧不必再拍一次冷快照。
 	if _app != null and _app.has_method("warm_snapshot"):
 		_app.call_deferred("warm_snapshot")
 
@@ -763,7 +762,7 @@ func chart() -> Chart:
 	return _app.chart if _app != null else null
 
 
-## 拖动期间用冻结值；松手后重新扫描一次。
+## 拖动期间使用冻结值；松手后重新扫描一次。
 func content_end_beat() -> float:
 	if _drag_content_end >= 0.0:
 		return _drag_content_end
@@ -805,7 +804,7 @@ func window_start() -> float:
 	return _view_start
 
 
-## 「适配关键帧」：只框住形状/镜头关键帧，不按整首歌压缩。
+## 「适配关键帧」：只框住形状/镜头关键帧，不压缩整首歌。
 func fit_key_range_timeline() -> void:
 	var chart_data := chart()
 	if chart_data == null:
@@ -822,7 +821,7 @@ func fit_key_range_timeline() -> void:
 			high = maxf(high, state.beat)
 	if not is_finite(low) or not is_finite(high):
 		return
-	# 关键帧很少时也至少给 16 拍：只有一帧在第 0 拍时，4 拍窗口看不清前后关系。
+	# 关键帧很少时也至少给 16 拍：只有一帧在 0 拍时，4 拍窗口看不清前后关系。
 	_view_beats = clampf(maxf(16.0, high - low + 2.0), MIN_VIEW_BEATS, MAX_VIEW_BEATS)
 	_view_start = maxf(0.0, low - 1.0)
 	_update_zoom_label()
@@ -838,13 +837,13 @@ func fit_all_timeline() -> void:
 	_timeline.invalidate()
 
 
-## step > 0 看更多拍（缩小），step < 0 看更少拍（放大）。
+## step > 0 缩小（显示更多拍），step < 0 放大（显示更少拍）。
 func zoom_timeline(step: int) -> void:
 	var factor := pow(1.25, float(step))
 	zoom_view_at(playhead(), factor)
 
 
-## 以某个拍为锚点缩放：锚点在屏幕上的位置保持不动，光标下的内容不跑。
+## 以指定拍为锚点缩放：锚点在屏幕上的位置保持不动。
 func zoom_view_at(anchor_beat: float, factor: float) -> void:
 	var old_span := view_beats()
 	var new_span := clampf(old_span * factor, MIN_VIEW_BEATS, MAX_VIEW_BEATS)
@@ -877,11 +876,11 @@ func _follow_playhead(force: bool = false) -> bool:
 	var before := _view_start
 	var span := view_beats()
 	if chart() != null and span >= content_end_beat() + chart().bar_length():
-		# 「全部」能看到整张谱：播放头走动时不要把它重新滚走。
+		# 「全部」视图下播放头走动时不要把它滚走。
 		_view_start = 0.0
 		return not is_equal_approx(before, _view_start)
 	var beat := playhead()
-	# 按页跳而不是每帧连续滚：静态内容层不用每帧重绘。
+	# 按页跳动，避免静态内容层每帧重绘。
 	if force or beat < _view_start or beat > _view_start + span * 0.9:
 		_view_start = maxf(0.0, beat - span * 0.3)
 	return not is_equal_approx(before, _view_start)
@@ -896,13 +895,13 @@ func dragging() -> bool:
 	return not _drag_kind.is_empty() or scrubbing()
 
 
-## 正在拖时间轴的播放头。拖过关键帧时不要重建面板：一次重建 ≈70–80 个控件，
-## 拖动时每跨一帧都要付两遍（进/出各一次），这就是「经过关键帧极卡」的来源。
+## 正在拖动时间轴播放头。拖动时不要重建面板：一次重建约 70–80 个控件，
+## 跨帧时进出各一次，是拖过关键帧卡顿的主要来源。
 func scrubbing() -> bool:
 	return _timeline != null and _timeline._drag_kind == "playhead"
 
 
-## 拖动播放头结束：面板与洋葱皮补一次，拖动过程中全部跳过。
+## 拖动播放头结束：面板与洋葱皮补一次，拖动过程中跳过。
 func finish_scrub() -> void:
 	var key := current_key()
 	_last_key_beat = float(key.get("beat", -999.0)) if not key.is_empty() else -999.0
@@ -963,7 +962,7 @@ func gesture_mutate_chart(callback: Callable) -> void:
 		_preview_gesture_timer.start()
 
 
-## 按当前吸附细分步进播放头：1/4、1/8… 没有吸附时退 1/4 拍。
+## 按当前吸附细分步进播放头：1/4、1/8…；没有吸附时退到 1/4 拍。
 func _step_frame(direction: int) -> void:
 	var step := GridDivisions.step_beats(snap_division())
 	if step <= 0.0001:
@@ -985,8 +984,8 @@ func _process(delta: float) -> void:
 
 
 func _sync_time_tool(force: bool = false) -> void:
-	# 每帧写 Label / SpinBox 会让整页 UI 重新排版（实测 78ms/帧）；
-	# 只在显示值变化时写，并且限到 ~12Hz。播放头位置本身仍然是逐帧的。
+	# 每帧写 Label / SpinBox 会触发整页重新排版（实测 78ms/帧）；
+	# 只在显示值变化时写，并限到约 12Hz。播放头位置本身仍然逐帧更新。
 	var now := Time.get_ticks_msec()
 	if not force and now - _sync_last_msec < 80:
 		return
@@ -994,8 +993,8 @@ func _sync_time_tool(force: bool = false) -> void:
 	var beat := playhead()
 	if not is_equal_approx(beat, _sync_last_beat):
 		_sync_last_beat = beat
-		# SpinBox / Label 的文本一变就会触发整页重新排版（实测 ~40ms），
-		# 所以只在显示值真的变了才写：拍数按 1/4 拍、时间按 0.1 拍。
+		# SpinBox / Label 文本变化会触发整页重新排版（实测约 40ms），
+		# 所以只在显示值真正变化时写：拍数按 1/4 拍、时间按 0.1 拍。
 		if _beat_spin != null:
 			var spin_value := snappedf(beat, 0.25)
 			if not is_equal_approx(spin_value, _sync_last_spin):
@@ -1017,7 +1016,7 @@ func _sync_time_tool(force: bool = false) -> void:
 		var text := "拍 %.1f，%s" % [beat, suffix]
 		if _title.text != text:
 			_title.text = text
-	# 播放/拖时间跨过关键帧时，右侧按钮跟着换。
+	# 播放或拖动跨过关键帧时，右侧按钮跟着换。
 	var key_beat := float(key.get("beat", -999.0)) if not key.is_empty() else -999.0
 	if not is_equal_approx(key_beat, _last_key_beat) and not dragging():
 		_last_key_beat = key_beat
@@ -1034,7 +1033,7 @@ func _current_shape() -> BoundaryShape:
 	return null
 
 
-## 形状库按钮作用在「当前选中的库形状」上；没有就退回播放头关键帧的形状。
+## 形状库按钮作用于当前选中的库形状；没有选中时退回播放头关键帧的形状。
 func _library_shape() -> BoundaryShape:
 	var chart_data := chart()
 	if chart_data != null and _app != null:
@@ -1140,7 +1139,7 @@ func _apply_view(key: String, value: float) -> void:
 
 
 func _on_ring_zoom(delta: float) -> void:
-	# 预览里滚轮是推拉：改镜头距离，不改环的世界缩放。
+	# 预览里的滚轮是推拉：改镜头距离，不改环的世界缩放。
 	var view := _active_view()
 	var target := clampf(float(view.get("dolly", 1.0)) + delta, 0.6, 1.6)
 	gesture_mutate_chart(func() -> void: _apply_view("dolly", target))
@@ -1149,12 +1148,12 @@ func _on_ring_zoom(delta: float) -> void:
 func _on_ring_rotate(degrees: float) -> void:
 	var view := _active_view()
 	var target := clampf(float(view.get("rotation", 0.0)) + degrees, -180.0, 180.0)
-	# 旋转是拖动出来的连续量：整段拖动合成一条撤销。
+	# 旋转是连续拖动量：整段拖动合并为一条撤销。
 	gesture_mutate_chart(func() -> void: _apply_view("rotation", target))
 	_preview.queue_redraw()
 
 
-## 从 after 之后找第一个没有对应关键帧的吸附拍：放帧不再覆盖/卡死在同一拍。
+## 从 after 之后找第一个没有对应关键帧的吸附拍，插入时不再覆盖同一拍。
 func _free_beat(after: float, kind: String) -> float:
 	var chart_data := chart()
 	if chart_data == null:
@@ -1185,7 +1184,7 @@ func _add_view_keyframe() -> void:
 	var at := playhead()
 	for existing in chart_data.view_states:
 		if absf(existing.beat - at) < 0.001:
-			# 播放头已有镜头帧：自动放到下一拍，连点可以连续打帧。
+			# 播放头已有镜头帧：自动放到下一拍，连点可连续打帧。
 			at = _free_beat(at, "view")
 			seek(at)
 			break
@@ -1234,7 +1233,7 @@ func _next_shape_id() -> String:
 	return "S%d" % index
 
 
-## 把当前拍实际显示的轮廓定型成一个新形状。
+## 把当前拍实际显示的轮廓定型为一个新形状。
 func _snapshot_shape(beat: float) -> BoundaryShape:
 	var shape := BoundaryShape.new()
 	shape.id = _next_shape_id()
@@ -1362,7 +1361,7 @@ func _insert_key_with_shape(shape_id: String) -> void:
 	_refresh()
 
 
-## 从当前选中的帧复制到下一个空吸附格：连点可以连续铺帧，不覆盖已有帧。
+## 从当前选中的帧复制到下一个空吸附格：连点可连续铺帧，不覆盖已有帧。
 func insert_next_shape() -> void:
 	var chart_data := chart()
 	if chart_data == null:

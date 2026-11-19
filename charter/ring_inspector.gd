@@ -1,7 +1,7 @@
 class_name RingInspector
 extends VBoxContainer
 
-## 右侧属性面板：单键 / 多选 / 段三种状态。所有标签中文。
+## 右侧属性面板：单键 / 多选 / 段三种状态；所有标签使用中文。
 ## 面板只在选中或谱面结构变化时重建；拖动滑块期间不重建。
 
 const CURVE_PRESETS := {
@@ -579,7 +579,7 @@ func _add_option(text: String, items: Array, selected: int, callback: Callable) 
 func _edit(callback: Callable) -> void:
 	if workspace == null:
 		return
-	# 连续拖动/步进合成一条撤销；0.7s 后重建面板一次。
+	# 连续拖动/步进合并为一条撤销；0.7s 后重建面板一次。
 	_editing = true
 	workspace.gesture_mutate_chart(callback)
 	if _gesture_timer != null:

@@ -451,9 +451,6 @@ func _start_countdown() -> void:
 func _process_ready(delta: float) -> void:
 	if _ready_layer == null:
 		return
-	# 准备层还盖着的时候把 storyboard 贴图传完，开局后不再逐帧上传。
-	if _preview != null:
-		_preview.preload_storyboard_textures()
 	if _ready_phase == "load":
 		# 准备层已经画出来，音频还在后面同步加载；圆环先保持空。
 		_ready_layer.queue_redraw()
