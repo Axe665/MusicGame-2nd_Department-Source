@@ -68,7 +68,7 @@ func _ready() -> void:
 
 
 func _build_tabs() -> void:
-	for title in ["音符", "区域", "视图", "时间", "谱面"]:
+	for title in ["音符", "区域", "视图", "时间", "组", "谱面"]:
 		var scroll := ScrollContainer.new()
 		scroll.name = title
 		scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -171,6 +171,8 @@ func _rebuild() -> void:
 		3:
 			_build_timing_page(host)
 		4:
+			_build_group_page(host)
+		5:
 			_build_chart_page(host)
 	current_page.add_child(host)
 	if current_tab != 0:
@@ -242,7 +244,9 @@ func _page_key(tab: int) -> String:
 		3:
 			return "%s|timing:%d" % [chart_id, _app.chart.timing.points.size()]
 		4:
-			return "%s|palette:%d|shapes:%d" % [chart_id, _app.chart.palette.size(), _app.chart.shapes.size()]
+			return "%s|palette:%d|shapes:%d|groups:%d|notes:%d|group:%d" % [
+				chart_id, _app.chart.palette.size(), _app.chart.shapes.size(),
+				_app.chart.groups.size(), _app.chart.notes.size(), _app.chart.current_group]
 	return chart_id
 
 
@@ -255,7 +259,8 @@ func refresh_tab_titles() -> void:
 	set_tab_title(1, "区域" if _app.selected_region_id < 0 else "区域 %d" % _app.selected_region_id)
 	set_tab_title(2, "视图")
 	set_tab_title(3, "时间")
-	set_tab_title(4, "谱面")
+	set_tab_title(4, "组")
+	set_tab_title(5, "谱面")
 	if note_count > 0:
 		set_tab_title(0, "音符 %d" % note_count)
 
@@ -496,6 +501,32 @@ func _build_note_page_for(page: VBoxContainer, note: Note) -> void:
 	var id_value := _readonly("")
 	_note_rows["id"] = _row(common, "id", id_value)
 	_note_widgets["id"] = id_value
+	var group_names: Array[String] = []
+	var group_selected := 0
+	for group in _app.chart.groups:
+		group_names.append("组 %d" % int(group.get("id", 0)))
+		if int(group.get("id", 0)) == note.group_id:
+			group_selected = group_names.size() - 1
+	var group_option := _option(common, "所属组", group_names, group_selected, func(index: int) -> void:
+		if _active_note == null or index < 0 or index >= _app.chart.groups.size():
+			return
+		_app.begin_edit()
+		_active_note.group_id = int(_app.chart.groups[index].get("id", 0))
+		_app.finish_edit())
+	group_option.get_popup().max_size = Vector2i(260, 120)
+	_note_widgets["group"] = group_option
+	var note_state := CheckBox.new()
+	note_state.text = "音符状态 True"
+	note_state.button_pressed = note.enabled
+	note_state.toggled.connect(func(value: bool) -> void:
+		if _active_note == null:
+			return
+		_app.begin_edit()
+		_active_note.enabled = value
+		note_state.text = "音符状态 True" if value else "音符状态 False"
+		_app.finish_edit())
+	common.add_child(note_state)
+	_note_widgets["enabled"] = note_state
 	var start_edit := _beat(common, "开始拍", note.beat, func(value: float) -> void:
 		var n := _active_note
 		if n == null:
@@ -815,6 +846,86 @@ func _build_note_page_for(page: VBoxContainer, note: Note) -> void:
 	_note_widgets["seek_orien"] = seek_orien
 	_label(seek_body, "外 = 滚轮上滑；里 = 滚轮下滑。", 11, UITheme.MUTED)
 
+	var mods_body := _note_group(page, "mods", "演出修饰")
+	var hs_spin := _spin(mods_body, "下落速度 HS", note.hs, 0.2, 4.0, 0.05, func(value: float) -> void:
+		if _active_note != null:
+			_active_note.hs = clampf(value, 0.2, 4.0)
+	)
+	hs_spin.tooltip_text = "音符自身下落速度倍率；与原版一致，只在音符出生瞬间取一次。"
+	_note_widgets["mod_hs"] = hs_spin
+	_remember_row("mod_hs", hs_spin)
+	hs_spin.get_parent().visible = false
+	var sv_spin := _spin(mods_body, "时间流速 SV", note.sv, 0.25, 4.0, 0.05, func(value: float) -> void:
+		if _active_note != null:
+			_active_note.sv = clampf(value, 0.25, 4.0)
+	)
+	sv_spin.tooltip_text = "时间轴滚动倍率，影响音符与边界靠近判定环的速度。"
+	_note_widgets["mod_sv"] = sv_spin
+	_remember_row("mod_sv", sv_spin)
+	sv_spin.get_parent().visible = false
+	var head_spin := _spin(mods_body, "滑条头部速度", note.head_speed, 0.25, 4.0, 0.05, func(value: float) -> void:
+		if _active_note != null:
+			_active_note.head_speed = clampf(value, 0.25, 4.0)
+	)
+	head_spin.tooltip_text = "只作用于 Hold / Path 的头部（星星）落速；身体与尾巴仍按 SV 走。"
+	_note_widgets["mod_head"] = head_spin
+	_remember_row("mod_head", head_spin)
+	var spawn_ctl := _spin_slider(mods_body, "出生半径 spawn", note.spawn, 0.0, 1.0, 0.01, func(value: float) -> void:
+		if _active_note != null:
+			_active_note.spawn = clampf(value, 0.0, 1.0)
+	, true)
+	_note_widgets["mod_spawn"] = spawn_ctl["spin"]
+	_note_widgets["mod_spawn_slider"] = spawn_ctl["slider"]
+	_remember_row("mod_spawn", spawn_ctl["spin"])
+	var bounce_ctl := _spin_slider(mods_body, "弹跳幅度 bounce", note.bounce, 0.0, 2.0, 0.01, func(value: float) -> void:
+		if _active_note != null:
+			_active_note.bounce = clampf(value, 0.0, 2.0)
+	, true)
+	_note_widgets["mod_bounce"] = bounce_ctl["spin"]
+	_note_widgets["mod_bounce_slider"] = bounce_ctl["slider"]
+	_remember_row("mod_bounce", bounce_ctl["spin"])
+	var bounce_dir := _option(mods_body, "弹跳方向", ["内凹", "外凸"], note.bounce_dir, func(index: int) -> void:
+		if _active_note != null:
+			_active_note.bounce_dir = 1 if index == 1 else 0
+	)
+	_note_widgets["mod_bounce_dir"] = bounce_dir
+	_remember_row("mod_bounce_dir", bounce_dir)
+	var touch_start := _text(mods_body, "触摸起点", note.touch_start, func(value: String) -> void:
+		if _active_note == null:
+			return
+		var text := value.strip_edges().to_upper()
+		_active_note.touch_start = text if Note.is_touch_position(text) else ""
+	)
+	touch_start.placeholder_text = "例如 A1 / B8（留空＝环上键位）"
+	_note_widgets["mod_touch_start"] = touch_start
+	_remember_row("mod_touch_start", touch_start)
+	var touch_end := _text(mods_body, "触摸终点", note.touch_end, func(value: String) -> void:
+		if _active_note == null:
+			return
+		var text := value.strip_edges().to_upper()
+		_active_note.touch_end = text if Note.is_touch_position(text) else ""
+	)
+	touch_end.placeholder_text = "例如 C / E8（留空＝普通滑条）"
+	_note_widgets["mod_touch_end"] = touch_end
+	_remember_row("mod_touch_end", touch_end)
+	_buttons(mods_body, [{"text": "复位修饰", "callback": func() -> void:
+		if _active_note == null:
+			return
+		var n := _active_note
+		_apply(func() -> void:
+			n.hs = 1.0
+			n.sv = 1.0
+			n.head_speed = 1.0
+			n.spawn = 0.0
+			n.bounce = 0.0
+			n.bounce_dir = 0
+			n.touch_start = ""
+			n.touch_end = ""
+		)
+		_refresh_note_page()
+	}])
+	_label(mods_body, "HS/SV/spawn/bounce 是单音符修饰；触摸区写成字母编号（A1–A8、B1–B8、C、D1–D8、E1–E8）即自动变成 touch slide。判定线、文本与滤镜在「环编辑」工作区的时间轴编辑。", 11, UITheme.MUTED)
+
 	var misc := _note_group(page, "misc", "通用")
 	var color_group := _option(misc, "配色组", ["默认"], 0, func(index: int) -> void:
 		if _active_note != null:
@@ -889,11 +1000,23 @@ func _refresh_note_page() -> void:
 	if note == null or not _note_page_ready:
 		return
 	_active_note = note
+	_app.chart.ensure_groups()
 	if _note_empty_label != null and is_instance_valid(_note_empty_label):
 		_note_empty_label.visible = false
 	_applying = true
 	_note_widgets["type"].text = note.type
-	_note_widgets["id"].text = str(note.id)
+	_note_widgets["id"].text = str(note.local_id if note.local_id > 0 else note.id)
+	var group_option: OptionButton = _note_widgets["group"]
+	group_option.clear()
+	var selected_group := 0
+	for i in _app.chart.groups.size():
+		var gid := int(_app.chart.groups[i].get("id", 0))
+		group_option.add_item("组 %d" % gid)
+		if gid == note.group_id:
+			selected_group = i
+	group_option.selected = clampi(selected_group, 0, maxi(0, group_option.item_count - 1))
+	_note_widgets["enabled"].button_pressed = note.enabled
+	_note_widgets["enabled"].text = "音符状态 True" if note.enabled else "音符状态 False"
 	_note_widgets["start"].text = _app.chart.timing.format_beat(note.beat)
 	_note_widgets["end"].text = _app.chart.timing.format_beat(note.end_beat)
 	_note_widgets["angle"].value = note.angle
@@ -908,12 +1031,12 @@ func _refresh_note_page() -> void:
 	_note_groups["common"].visible = true
 	_note_groups["misc"].visible = true
 	var can_color := note.supports_custom_color()
-	var group_option: OptionButton = _note_widgets["color_group"]
-	group_option.clear()
-	group_option.add_item("默认")
+	var color_option: OptionButton = _note_widgets["color_group"]
+	color_option.clear()
+	color_option.add_item("默认")
 	for index in range(_app.chart.palette.size()):
-		group_option.add_item(_app.chart.palette_name(index + 1))
-	group_option.selected = clampi(note.color, 0, maxi(0, group_option.item_count - 1))
+		color_option.add_item(_app.chart.palette_name(index + 1))
+	color_option.selected = clampi(note.color, 0, maxi(0, color_option.item_count - 1))
 	_note_widgets["color_group"].get_parent().visible = can_color
 	_note_rows["custom_color"].visible = can_color
 	var fallback := UITheme.PINK if note.type == "tap" else (UITheme.GOLD if note.type == "hold" else Note.DEFAULT_PATH_COLOR)
@@ -927,6 +1050,21 @@ func _refresh_note_page() -> void:
 	_note_groups["hold"].visible = note.type == "hold"
 	_note_groups["seek"].visible = note.type == "seek"
 	_note_groups["anchor"].visible = note.type == "anchor"
+	_note_groups["mods"].visible = true
+	_note_widgets["mod_hs"].value = note.hs
+	_note_widgets["mod_sv"].value = note.sv
+	_note_widgets["mod_head"].value = note.head_speed
+	_note_widgets["mod_spawn"].value = note.spawn
+	_note_widgets["mod_spawn_slider"].value = note.spawn
+	_note_widgets["mod_bounce"].value = note.bounce
+	_note_widgets["mod_bounce_slider"].value = note.bounce
+	_note_widgets["mod_bounce_dir"].selected = 1 if note.bounce_dir == 1 else 0
+	_note_widgets["mod_touch_start"].text = note.touch_start
+	_note_widgets["mod_touch_end"].text = note.touch_end
+	_note_rows["mod_head"].visible = note.type in ["hold", "path"]
+	_note_rows["mod_touch_start"].visible = note.type == "path"
+	_note_rows["mod_touch_end"].visible = note.type == "path"
+	_note_widgets["mod_bounce_dir"].get_parent().visible = note.bounce > 0.0001
 	_note_widgets["bell_u"].value = note.center_u
 	_note_widgets["bell_w"].value = note.bell_width()
 	_note_widgets["bell_preview"].set_arc_width(note.bell_width())
@@ -1188,6 +1326,89 @@ func _build_view_page(page: VBoxContainer) -> void:
 	_label(page, "RingState 关键帧在「视图 → 环编辑」里用滚轮/菱形调。", 11, UITheme.MUTED)
 
 
+func _build_group_page(page: VBoxContainer) -> void:
+	var chart: Chart = _app.chart
+	if chart == null:
+		return
+	chart.ensure_groups()
+	_section(page, "组")
+	_label(page, "当前组：组 %d。编辑区只允许编辑当前组；其他组以 25% 标记显示。" % chart.current_group, 12, UITheme.MUTED)
+	for group in chart.groups:
+		var gid := int(group.get("id", 0))
+		var box := VBoxContainer.new()
+		box.add_theme_constant_override("separation", 4)
+		page.add_child(box)
+		var head_row := HBoxContainer.new()
+		head_row.add_theme_constant_override("separation", 6)
+		var heading := Button.new()
+		heading.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		heading.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		heading.text = "%s组 %d  ·  %d 音符%s" % ["▶ " if gid == chart.current_group else "", gid,
+			chart.group_note_count(gid), "" if bool(group.get("enabled", true)) else "  [False]"]
+		heading.pressed.connect(func() -> void:
+			chart.current_group = gid
+			_app.clear_selection()
+			_app.chart_changed.emit()
+		)
+		head_row.add_child(heading)
+		var remove_button := Button.new()
+		remove_button.text = "－"
+		remove_button.tooltip_text = "删除组 %d 及其全部音符" % gid
+		remove_button.custom_minimum_size = Vector2(32, 0)
+		remove_button.pressed.connect(_remove_group.bind(gid))
+		head_row.add_child(remove_button)
+		box.add_child(head_row)
+		var bpm_spin := _spin(box, "基准 BPM", float(group.get("bpm", chart.timing.bpm_at(0.0))), 20.0, 1000.0, 0.001,
+			func(value: float) -> void:
+				_app.begin_edit()
+				group["bpm"] = value
+				var pts: Array[TimingPoint] = chart.group_bpm_points_for(gid)
+				if not pts.is_empty():
+					pts[0].bpm = value
+					chart.group_bpm_points[gid] = pts
+				_app.finish_edit())
+		bpm_spin.editable = gid == chart.current_group
+		var alpha_spin := _spin(box, "组透明度", float(group.get("alpha", 255)), 0.0, 255.0, 1.0,
+			func(value: float) -> void:
+				_app.begin_edit()
+				group["alpha"] = clampi(int(value), 0, 255)
+				_app.finish_edit())
+		alpha_spin.editable = gid == chart.current_group
+		var state := CheckBox.new()
+		state.text = "音符状态 True"
+		state.button_pressed = bool(group.get("enabled", true))
+		state.disabled = gid != chart.current_group
+		state.toggled.connect(func(value: bool) -> void:
+			_app.begin_edit()
+			group["enabled"] = value
+			state.text = "音符状态 True" if value else "音符状态 False"
+			_app.finish_edit())
+		box.add_child(state)
+		var spacer := HSeparator.new()
+		page.add_child(spacer)
+	_buttons(page, [{
+		"text": "新建组",
+		"callback": func() -> void:
+			_app.begin_edit()
+			var gid := chart.add_group()
+			chart.current_group = gid
+			_app.finish_edit()
+			_app.clear_selection()
+	}])
+
+
+func _remove_group(group_id: int) -> void:
+	if _app == null or _app.chart == null:
+		return
+	if _app.chart.groups.size() <= 1:
+		_app.notice.emit("至少要保留一个组。", "warning")
+		return
+	_app.begin_edit()
+	_app.chart.remove_group(group_id)
+	_app.finish_edit()
+	_app.clear_selection()
+
+
 func _build_chart_page(page: VBoxContainer) -> void:
 	var chart: Chart = _app.chart
 	_section(page, "曲目")
@@ -1285,21 +1506,39 @@ func _timing_row_text(chart: Chart, index: int, point: TimingPoint) -> String:
 
 func _build_timing_page(page: VBoxContainer) -> void:
 	var chart: Chart = _app.chart
+	chart.ensure_groups()
+	var current_group_data: Dictionary = chart.group_data(chart.current_group)
+	_section(page, "当前组 BPM")
+	_label(page, "组 %d 的基准 BPM。切换组时这里和音符速度会一起切换。" % chart.current_group, 11, UITheme.MUTED)
+	_spin(page, "当前组 BPM", float(current_group_data.get("bpm", chart.timing.bpm_at(0.0))), 20.0, 600.0, 0.001,
+		func(value: float) -> void:
+			_app.begin_edit()
+			current_group_data["bpm"] = value
+			var pts: Array[TimingPoint] = chart.group_bpm_points_for(chart.current_group)
+			if not pts.is_empty():
+				pts[0].bpm = value
+				chart.group_bpm_points[chart.current_group] = pts
+			_app.finish_edit())
 	_section(page, "速度与偏移")
 	_label(page, "BPM 点按拍定位；offset = 第 0 拍对应的音频时刻（正数 = 音频整体延后）。", 11, UITheme.MUTED)
-	var points := chart.timing.points
+	var points: Array[TimingPoint] = chart.group_bpm_points_for(chart.current_group)
 	if points.is_empty():
 		_label(page, "没有 BPM 点，先添加一个。", 12, UITheme.RED)
 		_buttons(page, [{"text": "在播放头添加 BPM", "callback": func() -> void: _add_timing_point()}])
 		return
 	_timing_chart = chart
 	var base: TimingPoint = points[0]
-	_timing_base_spin = _spin(page, "基准 BPM", base.bpm, 20.0, 600.0, 0.1, func(value: float) -> void:
-		_apply_timing_bpm(chart.timing.points[0], value)
+	_timing_base_spin = _spin(page, "组基准 BPM", base.bpm, 0.01, 600.0, 0.01, func(value: float) -> void:
+		var first: TimingPoint = points[0]
+		first.bpm = value
+		var group: Dictionary = chart.group_data(chart.current_group)
+		group["bpm"] = value
+		chart.group_bpm_points[chart.current_group] = points
+		_refresh_timing_list_text()
 	)
 	_buttons(page, [
-		{"text": "×2", "callback": func() -> void: _scale_timing_bpm(chart.timing.points[0], 2.0)},
-		{"text": "÷2", "callback": func() -> void: _scale_timing_bpm(chart.timing.points[0], 0.5)},
+		{"text": "×2", "callback": func() -> void: _scale_timing_bpm(points[0], 2.0)},
+		{"text": "÷2", "callback": func() -> void: _scale_timing_bpm(points[0], 0.5)},
 	])
 	_offset_spin = _spin(page, "音频 offset (ms)", chart.offset_ms, -10000.0, 10000.0, 1.0, func(value: float) -> void:
 		_set_offset(value)
@@ -1336,19 +1575,21 @@ func _build_timing_page(page: VBoxContainer) -> void:
 	if _selected_timing < list.item_count:
 		list.select(_selected_timing)
 	var refresh_list := func() -> void:
-		for i in chart.timing.points.size():
+		for i in points.size():
 			if i >= list.item_count:
 				break
-			list.set_item_text(i, _timing_row_text(chart, i, chart.timing.points[i]))
+			list.set_item_text(i, _timing_row_text(chart, i, points[i]))
 	list.item_selected.connect(func(index: int) -> void:
 		_selected_timing = index
 		_rebuild()
 	)
 	list.item_activated.connect(func(index: int) -> void:
-		if index >= 0 and index < chart.timing.points.size():
-			_app.set_playhead(chart.timing.points[index].beat)
+		if index >= 0 and index < points.size():
+			_app.set_playhead(points[index].beat)
 	)
 	page.add_child(list)
+	var sync_points := func() -> void:
+		chart.group_bpm_points[chart.current_group] = points
 	_buttons(page, [
 		{"text": "在播放头添加", "callback": func() -> void: _add_timing_point()},
 		{"text": "删除选中", "callback": func() -> void: _delete_timing_point()},
@@ -1359,10 +1600,12 @@ func _build_timing_page(page: VBoxContainer) -> void:
 			refresh_list.call()
 		_beat(page, "生效位置（拍）", point.beat, func(value: float) -> void:
 			point.beat = value
-			chart.timing.sort_points()
+			points.sort_custom(func(a: TimingPoint, b: TimingPoint) -> bool: return a.beat < b.beat)
+			sync_points.call()
 			refresh_item.call()
 		)
-		_spin(page, "BPM", point.bpm, 20.0, 600.0, 0.1, func(value: float) -> void:
+		var point_max := maxf(0.01, base.bpm * 10.0)
+		_spin(page, "BPM", point.bpm, 0.01, point_max, 0.01, func(value: float) -> void:
 			_apply_timing_bpm(point, value)
 			refresh_item.call()
 		)
@@ -1372,7 +1615,8 @@ func _build_timing_page(page: VBoxContainer) -> void:
 		])
 		_spin(page, "每小节拍数 (x/4)", point.beats_per_bar, 1.0, 16.0, 1.0, func(value: float) -> void:
 			point.beats_per_bar = int(value)
-			chart.timing.sort_points()
+			points.sort_custom(func(a: TimingPoint, b: TimingPoint) -> bool: return a.beat < b.beat)
+			sync_points.call()
 			refresh_item.call()
 		)
 		_buttons(page, [
@@ -1384,7 +1628,6 @@ func _build_timing_page(page: VBoxContainer) -> void:
 	_label(page, "列表按拍排序；双击一行跳到该点。逐点改 BPM 不会移动已放置的音符（音符存的是拍位）。", 11, UITheme.MUTED)
 
 
-## 改 offset：只动音频与拍线的对齐，不动音符拍位。
 func _set_offset(value: float) -> void:
 	if _app == null or _app.chart == null:
 		return
@@ -1426,7 +1669,6 @@ func _build_offset_strip(page: VBoxContainer, chart: Chart) -> void:
 			_set_offset(clampf(float(strip.get_meta("start_offset")) - dx * ms_per_px, -10000.0, 10000.0))
 			strip.accept_event()
 	)
-	# 滚轮不归波形条管：留给外层 ScrollContainer 翻页。
 	page.add_child(strip)
 	_offset_strip = strip
 
@@ -1467,7 +1709,6 @@ func _draw_offset_strip(strip: Control, chart: Chart) -> void:
 	var ms_per_px := OFFSET_STRIP_SEC * 1000.0 / width
 	var px_per_ms := 1.0 / ms_per_px
 	var offset := chart.offset_ms
-	# 拍 0 的竖线固定在 40% 处；波形按 offset 平移。
 	var zero_x := width * 0.4
 	strip.draw_line(Vector2(zero_x, 0.0), Vector2(zero_x, bounds.y), Color(UITheme.ACCENT.r, UITheme.ACCENT.g, UITheme.ACCENT.b, 0.85), 2.0)
 	if not _offset_peaks.is_empty():
@@ -1483,15 +1724,21 @@ func _draw_offset_strip(strip: Control, chart: Chart) -> void:
 	strip.draw_string(UITheme.mono_font(), Vector2(6.0, bounds.y - 6.0), "offset %+.0f ms" % offset, HORIZONTAL_ALIGNMENT_LEFT, -1, 10, UITheme.MUTED)
 
 
-## 改某一拍上的 BPM；“保持毫秒位置”开着时，后面的内容按新旧 BPM 比例重排拍位。
+## 改当前组某一拍上的 BPM；“保持毫秒位置”开着时，后面的内容按新旧 BPM 比例重排拍位。
 func _apply_timing_bpm(point: TimingPoint, value: float) -> void:
-	var target := clampf(value, 20.0, 600.0)
+	var chart: Chart = _app.chart
+	var base_bpm := float(chart.group_data(chart.current_group).get("bpm", 120.0))
+	var target := clampf(value, 0.01, maxf(0.01, base_bpm * 10.0))
 	_apply(func() -> void:
 		var old := point.bpm
 		point.bpm = target
 		if _app.bpm_lock_ms and old > 0.0 and not is_equal_approx(old, target):
-			_app.chart.scale_beats_after(point.beat, target / old)
-		_app.chart.timing.sort_points()
+			chart.scale_beats_after(point.beat, target / old)
+		var points: Array[TimingPoint] = chart.group_bpm_points_for(chart.current_group)
+		points.sort_custom(func(a: TimingPoint, b: TimingPoint) -> bool: return a.beat < b.beat)
+		if not points.is_empty() and points[0] == point:
+			chart.group_data(chart.current_group)["bpm"] = target
+		chart.group_bpm_points[chart.current_group] = points
 	)
 	_refresh_timing_list_text()
 
@@ -1501,12 +1748,14 @@ func _scale_timing_bpm(point: TimingPoint, factor: float) -> void:
 
 
 func _set_timing_beat(point: TimingPoint) -> void:
+	var points: Array[TimingPoint] = _app.chart.group_bpm_points_for(_app.chart.current_group)
 	_apply(func() -> void:
 		point.beat = _app.snap_beat(_app.playhead_beat)
-		_app.chart.timing.sort_points()
+		points.sort_custom(func(a: TimingPoint, b: TimingPoint) -> bool: return a.beat < b.beat)
+		_app.chart.group_bpm_points[_app.chart.current_group] = points
 	)
-	for i in _app.chart.timing.points.size():
-		if _app.chart.timing.points[i] == point:
+	for i in points.size():
+		if points[i] == point:
 			_selected_timing = i
 			break
 	_rebuild()
@@ -1515,15 +1764,18 @@ func _set_timing_beat(point: TimingPoint) -> void:
 func _add_timing_point() -> void:
 	var chart: Chart = _app.chart
 	var beat: float = _app.snap_beat(_app.playhead_beat)
-	var bpm := chart.timing.bpm_at(beat)
+	var points: Array[TimingPoint] = chart.group_bpm_points_for(chart.current_group)
+	var bpm: float = chart.group_bpm_at(chart.current_group, beat)
 	var bpb := chart.timing.beats_per_bar_at(beat)
 	_app.begin_edit()
-	chart.timing.points.append(TimingPoint.new(beat, bpm, bpb))
-	chart.timing.sort_points()
+	var point := TimingPoint.new(beat, bpm, bpb)
+	points.append(point)
+	points.sort_custom(func(a: TimingPoint, b: TimingPoint) -> bool: return a.beat < b.beat)
+	chart.group_bpm_points[chart.current_group] = points
 	_app.finish_edit()
 	_selected_timing = 0
-	for i in chart.timing.points.size():
-		if is_equal_approx(chart.timing.points[i].beat, beat):
+	for i in points.size():
+		if points[i] == point:
 			_selected_timing = i
 			break
 	_rebuild()
@@ -1532,23 +1784,26 @@ func _add_timing_point() -> void:
 func _refresh_timing_list_text() -> void:
 	if _timing_list == null or _timing_chart == null:
 		return
-	var count := mini(_timing_list.item_count, _timing_chart.timing.points.size())
+	var points: Array[TimingPoint] = _timing_chart.group_bpm_points_for(_timing_chart.current_group)
+	var count := mini(_timing_list.item_count, points.size())
 	for i in count:
-		_timing_list.set_item_text(i, _timing_row_text(_timing_chart, i, _timing_chart.timing.points[i]))
+		_timing_list.set_item_text(i, _timing_row_text(_timing_chart, i, points[i]))
 
 
 func _delete_timing_point() -> void:
 	var chart: Chart = _app.chart
-	if chart.timing.points.size() <= 1:
+	var points: Array[TimingPoint] = chart.group_bpm_points_for(chart.current_group)
+	if points.size() <= 1:
 		_app.notice.emit("至少要保留 1 个 BPM 点（它定义开头速度）。", "warning")
 		return
-	if _selected_timing < 0 or _selected_timing >= chart.timing.points.size():
+	if _selected_timing < 0 or _selected_timing >= points.size():
 		return
 	_app.begin_edit()
-	chart.timing.points.remove_at(_selected_timing)
-	chart.timing.sort_points()
+	points.remove_at(_selected_timing)
+	points.sort_custom(func(a: TimingPoint, b: TimingPoint) -> bool: return a.beat < b.beat)
+	chart.group_bpm_points[chart.current_group] = points
 	_app.finish_edit()
-	_selected_timing = clampi(_selected_timing, 0, chart.timing.points.size() - 1)
+	_selected_timing = clampi(_selected_timing, 0, points.size() - 1)
 	_rebuild()
 
 
@@ -1638,6 +1893,7 @@ func _duplicate_note(note: Note) -> void:
 	_app.begin_edit()
 	for copy in copies:
 		_app.chart.notes.append(copy)
+	_app.chart.reassign_note_ids()
 	_app.finish_edit()
 	_app.select_note(copies[0].id)
 

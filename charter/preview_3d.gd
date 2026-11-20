@@ -357,6 +357,7 @@ func _ready() -> void:
 	_app = get_node_or_null("/root/App")
 	_build_layers()
 	_build_3d()
+	_build_filter_layer()
 	mouse_entered.connect(_on_mouse_entered)
 	mouse_exited.connect(_on_mouse_exited)
 	resized.connect(_on_resized)
@@ -377,6 +378,8 @@ func _exit_tree() -> void:
 
 ## 画质档：0 = 全开，1 = 省电（只降 3D 背景的渲染分辨率，音符永远按全画质画）。
 ## 试玩里由实测帧时自动降档，只为让弱机也能稳住节奏。
+## 全屏滤镜层（屏幕采样 shader）；由 <FLASH>/<HUE>/<ZOOM> 等滤镜指令逐帧驱动。
+var _filter_layer: ColorRect = null
 var quality_level: int = 0
 ## 音符弧带采样精度：true = 1/4°（全画质），false = 1/6°（省电，边缘略方）。
 var note_detail_fine: bool = true
@@ -2215,13 +2218,37 @@ func _pre_read_ms(chart: Chart, _beat: float = 0.0) -> float:
 
 
 ## 这个音符开始从圆心飞出的拍号（毫秒反推，变 BPM 处连续）。
-func _spawn_beat(chart: Chart, target_beat: float) -> float:
-	return chart.timing.spawn_beat(target_beat, _pre_read_ms(chart, target_beat))
+func _group_base_bpm(chart: Chart, group_id: int = -1, beat: float = 0.0) -> float:
+	if chart == null:
+		return 120.0
+	if group_id >= 0:
+		var data := chart.group_data(group_id)
+		if not data.is_empty() and float(data.get("bpm", 0.0)) > 0.0:
+			return float(data["bpm"])
+	return chart.timing.bpm_at(beat)
+
+
+func _group_current_bpm(chart: Chart, group_id: int, beat: float) -> float:
+	return chart.group_bpm_at(group_id, beat) if group_id >= 0 else chart.timing.bpm_at(beat)
+
+
+func _spawn_beat(chart: Chart, target_beat: float, group_id: int = -1) -> float:
+	# Base BPM defines the reference speed; a higher current BPM slows the
+	# visual approach by (current / base), per the chart speed formula.
+	var base := maxf(1.0, _group_base_bpm(chart, group_id, target_beat))
+	var current := maxf(1.0, _group_current_bpm(chart, group_id, target_beat))
+	var travel_ms := _pre_read_ms(chart, target_beat) * current / base
+	return target_beat - travel_ms * current / 60000.0
 
 
 ## 0..1 的接近进度（毫秒恒速，不会在变 BPM 时忽然跳到一半）。
-func _approach(chart: Chart, target_beat: float, current_beat: float) -> float:
-	return chart.timing.approach(target_beat, current_beat, _pre_read_ms(chart, target_beat))
+func _approach(chart: Chart, target_beat: float, current_beat: float, group_id: int = -1) -> float:
+	var base := maxf(1.0, _group_base_bpm(chart, group_id, target_beat))
+	var current := maxf(1.0, _group_current_bpm(chart, group_id, target_beat))
+	var travel_ms := _pre_read_ms(chart, target_beat) * current / base
+	var elapsed_beats := maxf(0.0, target_beat - current_beat)
+	var elapsed_ms := elapsed_beats * 60000.0 / current
+	return clampf(1.0 - elapsed_ms / maxf(1.0, travel_ms), 0.0, 1.0)
 
 
 ## 星星从圆心落到环上的时长（固定 0.5 秒，换算成拍；不超过预读）。
@@ -2248,15 +2275,18 @@ func _radial_scale(point: Vector2, min_scale: float, max_scale: float, beat: flo
 
 
 ## 星星开始下落（落到环上 0.5 秒前）的拍号。
-func _fall_beat(chart: Chart, target_beat: float) -> float:
-	return chart.timing.spawn_beat(target_beat, minf(_pre_read_ms(chart, target_beat), 500.0))
+func _fall_beat(chart: Chart, target_beat: float, group_id: int = -1) -> float:
+	var base := maxf(1.0, _group_base_bpm(chart, group_id, target_beat))
+	var current := maxf(1.0, _group_current_bpm(chart, group_id, target_beat))
+	var travel_ms := minf(_pre_read_ms(chart, target_beat), 500.0) * current / base
+	return target_beat - travel_ms * current / 60000.0
 
 
-func _flying_position(chart: Chart, angle: float, target_beat: float, current_beat: float, _pre: float) -> Vector2:
+func _flying_position(chart: Chart, angle: float, target_beat: float, current_beat: float, _pre: float, group_id: int = -1) -> Vector2:
 	var u := fposmod(angle, 360.0) / 360.0
 	var boundary := project_u(u, current_beat)
 	var center := project_design(Vector2.ZERO)
-	return center.lerp(boundary, _approach(chart, target_beat, current_beat))
+	return center.lerp(boundary, _approach(chart, target_beat, current_beat, group_id))
 
 
 func _update_cursor_trail(delta: float) -> void:
@@ -2394,10 +2424,12 @@ func project_u(u: float, beat: float) -> Vector2:
 
 func draw_overlay(canvas: Control) -> void:
 	var chart := get_chart()
+	var t := get_time_beat()
+	# 先无条件写一遍滤镜 uniform：指令被删掉或谱面被换掉时也要把画面还原成恒等透传。
+	_apply_filters(chart, t)
 	if chart == null:
 		return
 	var started_usec := Time.get_ticks_usec()
-	var t := get_time_beat()
 	var pre := _pre_read_beats(chart, t)
 	if not use_3d_ring:
 		_draw_flat_stage(canvas, chart, t)
@@ -2428,6 +2460,7 @@ func draw_overlay(canvas: Control) -> void:
 	_perf_sections[2] += sec2 - sec_usec
 	if draw_note_layers:
 		_draw_notes(canvas, chart, t, pre)
+	_draw_alpha_commands(canvas, chart, t)
 	if show_path_judgement and draw_note_layers:
 		_draw_path_judgement(canvas, chart, t, pre)
 	if draw_note_layers:
@@ -3180,7 +3213,8 @@ func _pick_visual_node(screen_position: Vector2) -> int:
 
 ## 音符最终颜色：单音符覆盖 > 配色组 > 类型默认；预览与试玩共用同一条路径。
 func _note_tint(note: Note, fallback: Color) -> Color:
-	return note.resolved_color(get_chart(), fallback)
+	var chart := get_chart()
+	return note.resolved_color(chart, fallback)
 
 
 func _invalidate_path_index() -> void:
@@ -3237,7 +3271,8 @@ func _visible_paths(chart: Chart, beat: float) -> Array[Note]:
 		if entry.last_beat < beat:
 			continue
 		for part in entry.parts:
-			if beat > part.end_beat + 0.5 or beat < _spawn_beat(chart, part.beat):
+			var spawn_beat: float = chart.timing.spawn_beat(part.beat, _pre_read_ms(chart, part.beat))
+			if beat > part.end_beat + 0.5 or beat < spawn_beat:
 				continue
 			if entry.note == null:
 				entry.note = build_path_chain_note(entry.parts[0], entry.parts)
@@ -3390,13 +3425,17 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, project
 	var total := note.duration()
 	if total <= 0.001:
 		return
+	var group_mul := chart.group_alpha(note.group_id) / 255.0
+	var decorative := not chart.note_enabled(note)
 	# 尾判后 0.1s 内整条轨迹（轨迹 / 进度球 / 尾环）一起淡出，不再等到 end+0.5 拍硬消失。
 	var end_span := end_fade_beats(chart.timing.bpm_at(note.beat))
 	var end_fade := clampf(1.0 - (t - note.end_beat) / end_span, 0.0, 1.0)
 	# 先铺轨迹，再落星星：轨迹从生成开始淡入，星星落下的那一刻正好铺满。
-	var spawn_beat := _spawn_beat(chart, note.beat)
-	var fall_beat := _fall_beat(chart, note.beat)
-	var trail_fade := smoothstep(0.0, 1.0, chart.timing.ms_fraction(spawn_beat, fall_beat, t))
+	var spawn_beat := _spawn_beat(chart, note.beat, note.group_id)
+	var fall_beat := _fall_beat(chart, note.beat, note.group_id)
+	var trail_fade := smoothstep(0.0, 1.0, chart.timing.ms_fraction(spawn_beat, fall_beat, t)) * group_mul
+	if decorative:
+		trail_fade = 0.0
 	var ns := _note_scale()
 	var wait := clampf(note.wait_beat, 0.0, maxf(0.0, total - 0.001))
 	var q := clampf((t - note.beat - wait) / maxf(0.001, total - wait), 0.0, 1.0)
@@ -3493,7 +3532,7 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, project
 		if remain <= 2.0 and remain > -end_span:
 			var k := clampf(1.0 - remain / 2.0, 0.0, 1.0)
 			var ring_radius := lerpf(52.0, 14.0, k) * ns
-			var ring_alpha := lerpf(0.10, 0.95, k * k) * maxf(dim, 0.75) * trail_fade * end_fade
+			var ring_alpha := lerpf(0.10, 0.95, k * k) * maxf(dim, 0.75) * end_fade * group_mul
 			canvas.draw_arc(tail, ring_radius, 0.0, TAU, 40, Color(accent.r, accent.g, accent.b, ring_alpha), 2.6, false)
 			if active:
 				canvas.draw_arc(tail, ring_radius + 3.5, 0.0, TAU, 40, Color(1, 1, 1, 0.30 * ring_alpha), 1.2, false)
@@ -3507,8 +3546,12 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, project
 	var fade_start := maxf(note.beat, state_beat) if head_hit else state_beat
 	var fade_beats := 0.3 * chart.timing.bpm_at(note.beat) / 60.0
 	var head_alpha := 1.0 - clampf((t - fade_start) / maxf(0.001, fade_beats), 0.0, 1.0)
-	# 头部标记和轨迹一起淡入，避免轨迹还没亮就先蹦出一个满不透明的圆。
-	var head_fade := head_alpha * dim * trail_fade
+	# 假 Path：轨迹隐藏，星头直接从落点淡入一拍；真 Path 仍随轨迹淡入。
+	var head_fade := 0.0
+	if decorative:
+		head_fade = clampf(t - note.beat, 0.0, 1.0) * dim * group_mul
+	else:
+		head_fade = head_alpha * dim * trail_fade * group_mul
 	var ring_mul := 0.5 if note.path_chain else 1.0
 	var wait_mode := String(_app.path_wait_indicator) if _app != null else "progress"
 	var wait_state := path_wait_indicator_state(chart.timing, note, t)
@@ -3528,8 +3571,12 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, project
 			_draw_arrowhead(canvas, ring_head + (ahead - ring_head).normalized() * 29.0 * ns * PATH_SIZE_SCALE, ahead - ring_head, Color(1, 1, 1, 0.95 * head_fade))
 		if show_debug:
 			canvas.draw_string(UITheme.bold_font(), ring_head + Vector2(-12, -22), "PATH", HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(UITheme.CORAL.r, UITheme.CORAL.g, UITheme.CORAL.b, 0.85))
-	# 滑动开始后星星交给进度球，不再留在起点。星星在轨迹铺满之后才开始下落。
-	if head_alpha > 0.01 and t >= fall_beat and t < note.beat + wait + 0.02 and _valid_point(ring_head):
+	# 假 Path 的星头不飞，直接在落点淡入；真 Path 仍从圆心飞到落点。
+	if decorative:
+		var false_fade := clampf(t - note.beat, 0.0, 1.0) * group_mul
+		if false_fade > 0.01 and _valid_point(ring_head):
+			_draw_path_star(canvas, ring_head, ns * PATH_SIZE_SCALE * PATH_HEAD_SCALE, accent, false_fade)
+	elif head_alpha > 0.01 and t >= fall_beat and t < note.beat + wait + 0.02 and _valid_point(ring_head):
 		var star_in := clampf(fall_progress / 0.55, 0.0, 1.0)
 		var star_head := project_design(Vector2.ZERO).lerp(ring_head, fall_progress)
 		# 离圆心越远，星头越大：飞到环上时回到 1.0。
@@ -3539,7 +3586,7 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, project
 	_draw_path_tail(canvas, tail, true, ns * PATH_SIZE_SCALE, accent, dim * trail_fade * end_fade)
 	# 大号发光球 + 短拖尾：当前进度点始终比星头更亮，方向一目了然。
 	if t >= note.beat and t <= note.end_beat + end_span:
-		var ball_dim := dim * end_fade
+		var ball_dim := dim * end_fade * group_mul
 		var rel := note.path_motion_beat(progress)
 		for trail_index in range(4, 0, -1):
 			var trail_rel := rel - float(trail_index) * 0.035 * total
@@ -4067,7 +4114,7 @@ func _draw_hold_sector(canvas: Control, chart: Chart, note: Note, t: float, pre:
 	var half := width * 0.5
 	var steps := clampi(int(width / 3.0), 8, 48)
 	var duration := maxf(0.001, note.duration())
-	var head_start := _spawn_beat(chart, note.beat)
+	var head_start := _spawn_beat(chart, note.beat, note.group_id)
 	var read := maxf(0.001, note.beat - head_start)
 	var outer_scale := clampf((t - head_start) / read, 0.0, 1.0)
 	var inner_scale := clampf((t - note.beat - duration + read) / read, 0.0, 1.0)
@@ -4153,7 +4200,7 @@ func _draw_bent_hold(canvas: Control, chart: Chart, note: Note, t: float, pre: f
 		for point in design_points:
 			var p := _hold_node_screen(chart, note, float(point.get("db", 0.0)), float(point.get("da", 0.0)), t)
 			if _valid_point(p):
-				body.append(center.lerp(p, _approach(chart, note.beat, t)))
+				body.append(center.lerp(p, _approach(chart, note.beat, t, note.group_id)))
 	if body.size() < 2:
 		return
 	var boundary: Vector2 = body[-1]
@@ -4216,7 +4263,7 @@ func _draw_holds(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 		if note.type != "hold":
 			continue
 		var fade_beats := end_fade_beats(chart.timing.bpm_at(note.beat))
-		if t >= _spawn_beat(chart, note.beat) and t <= note.end_beat + maxf(0.3, fade_beats):
+		if t >= _spawn_beat(chart, note.beat, note.group_id) and t <= note.end_beat + maxf(0.3, fade_beats):
 			visible.append(note)
 	visible.sort_custom(func(a: Note, b: Note) -> bool: return a.beat > b.beat)
 	var draw: Dictionary = {}
@@ -4225,6 +4272,7 @@ func _draw_holds(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 	for note in visible:
 		var state := note_state(note.id)
 		var tint := _note_tint(note, UITheme.HOLD)
+		var group_mul := chart.group_alpha(note.group_id) / 255.0
 		var fade_beats := end_fade_beats(chart.timing.bpm_at(note.beat))
 		var fade := 1.0
 		if state == "hit":
@@ -4237,6 +4285,7 @@ func _draw_holds(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 			fade = clampf(1.0 - (t - note.end_beat) / fade_beats, 0.0, 1.0)
 		if state == "slip":
 			fade *= HOLD_SLIP_DIM
+		fade *= group_mul
 		if fade <= 0.01:
 			continue
 		var hide_head := state == "holding" or state == "slip" or t >= note.end_beat
@@ -4282,7 +4331,7 @@ func _draw_notes(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 	for note in _notes_around(chart, t, 0.1, 0.1):
 		if note.type in ["path", "hold", "seek"]:
 			continue
-		if t >= _spawn_beat(chart, note.beat) and t <= note.beat + tail_beats:
+		if t >= _spawn_beat(chart, note.beat, note.group_id) and t <= note.beat + tail_beats:
 			visible.append(note)
 	visible.sort_custom(func(a: Note, b: Note) -> bool: return a.beat > b.beat)
 	for note in visible:
@@ -4292,28 +4341,31 @@ func _draw_notes(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 			"tap":
 				_draw_tap_note(canvas, chart, note, t, pre)
 			"anchor":
-				var grow := _approach(chart, note.beat, t)
-				var p := _flying_position(chart, note.angle, note.beat, t, pre)
+				var grow := _approach(chart, note.beat, t, note.group_id)
+				var p := _flying_position(chart, note.angle, note.beat, t, pre, note.group_id)
 				var ns := maxf(1.0, _note_scale())
+				var group_mul := chart.group_alpha(note.group_id) / 255.0
 				if _valid_point(p):
-					canvas.draw_circle(p, 40.0 * ns * grow, Color(UITheme.VIOLET.r, UITheme.VIOLET.g, UITheme.VIOLET.b, 0.14))
+					canvas.draw_circle(p, 40.0 * ns * grow, Color(UITheme.VIOLET.r, UITheme.VIOLET.g, UITheme.VIOLET.b, 0.14 * group_mul))
 				# 多押线：两颗锚点之间一条细实线，随下落逐渐显现。
 				var partner := chart.anchor_partner(note)
 				if partner != null and note.id < partner.id:
-					var q := _flying_position(chart, partner.angle, partner.beat, t, pre)
+					var q := _flying_position(chart, partner.angle, partner.beat, t, pre, partner.group_id)
 					if _valid_point(p) and _valid_point(q):
-						canvas.draw_line(p, q, Color(UITheme.VIOLET.r, UITheme.VIOLET.g, UITheme.VIOLET.b, 0.55 * grow), 2.0, true)
-				_draw_diamond(canvas, p, 24.0 * ns * clampf(grow, 0.35, 1.0), UITheme.VIOLET)
+						canvas.draw_line(p, q, Color(UITheme.VIOLET.r, UITheme.VIOLET.g, UITheme.VIOLET.b, 0.55 * grow * group_mul), 2.0, true)
+				_draw_diamond(canvas, p, 24.0 * ns * clampf(grow, 0.35, 1.0), Color(UITheme.VIOLET.r, UITheme.VIOLET.g, UITheme.VIOLET.b, group_mul))
 			"bell":
 				_draw_bell(canvas, chart, note, t)
 
 
 func _draw_tap_note(canvas: Control, chart: Chart, note: Note, t: float, pre: float) -> void:
 	# 长度系统：普通 Tap = 0.5 l，大小 Tap = size_ratio × l；条带随半径从 1/6 长到 1。
-	var progress := _approach(chart, note.beat, t)
-	var q := lerpf(Note.SPAWN_LENGTH_RATIO, 1.0, progress)
+	# 修饰：HS 改变下落进度；spawn 抬高出生半径；bounce 让落点外凸/内凹；alpha 整体淡出。
+	var progress := _note_progress(chart, note, t)
+	var q := _note_radius_scale(note, progress)
 	var tint := _note_tint(note, UITheme.PINK)
-	var center_point := _draw_length_band(canvas, chart, note.angle, note.arc_width(), q, t, tint)
+	var center_point := _draw_length_band(canvas, chart, note.angle, note.arc_width(), q, t, tint,
+		chart.group_alpha(note.group_id) / 255.0)
 	if show_debug and _valid_point(center_point):
 		var ns := _note_scale()
 		canvas.draw_string(UITheme.bold_font(), center_point + Vector2(-12, -22), "TAP %.0f°%s" % [note.arc_width(), " ×l %.2f" % note.size_ratio if note.sized else ""], HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(tint.r, tint.g, tint.b, 0.85))
@@ -4323,7 +4375,7 @@ func _draw_tap_note(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 ## 返回中心点屏幕坐标（可能为 INF）。
 func _draw_length_band(canvas: Control, chart: Chart, angle: float, width: float, radius_scale: float, t: float, color: Color, alpha: float = 1.0) -> Vector2:
 	var ns := _note_scale()
-	var radius := clampf(radius_scale, 0.0, 1.0)
+	var radius := maxf(0.0, radius_scale)
 	if width <= 0.05:
 		# 长度为 0 的大小 Tap 仍然占一个位置，留一个点提示它存在。
 		var tip := _boundary_point(chart, fposmod(angle, 360.0) / 360.0, t)
@@ -4389,15 +4441,16 @@ func _draw_seeks(canvas: Control, chart: Chart, t: float) -> void:
 	var now_ms := chart.timing.beat_to_chart_ms(t)
 	# 必须把整个预读窗口都取进来：Seek 从 note.beat - pre 就开始从圆心长大。
 	for note in _notes_around(chart, t, 2.0, 0.5):
-		if note.type != "seek" or t < _spawn_beat(chart, note.beat) or t > note.beat + 0.5:
+		if note.type != "seek" or t < _spawn_beat(chart, note.beat, note.group_id) or t > note.beat + 0.5:
 			continue
-		var grow := _approach(chart, note.beat, t)
+		var grow := _approach(chart, note.beat, t, note.group_id)
 		var since_ms := grow * pre_ms
 		var state := note_state(note.id)
 		var exit_ms := -1.0
 		if note_state_beats.has(note.id):
 			exit_ms = (t - float(note_state_beats[note.id])) * 60000.0 / maxf(1.0, chart.timing.bpm_at(t))
 		var color := UITheme.SEEK_IN if note.seek_orien == 1 else UITheme.SEEK_OUT
+		var group_mul := chart.group_alpha(note.group_id) / 255.0
 		var fade := 1.0
 		var ring_scale := 1.0
 		var push := 0.0
@@ -4416,6 +4469,7 @@ func _draw_seeks(canvas: Control, chart: Chart, t: float) -> void:
 			flash = 1.0 if fposmod(maxf(0.0, exit_ms), 60.0) < 30.0 else 0.0
 		elif t > note.beat:
 			fade = clampf((note.beat + 0.5 - t) / 0.5, 0.0, 1.0)
+		fade *= group_mul
 		# 和 Tap/Bell 同一条下落曲线：出生在 1/6 环半径，判定那一拍正好落到环上。
 		# 原来用「屏幕最大半径的正圆」，椭圆环上会在 60% 进度就撞到短轴边界，
 		# 看起来就是 seek 比别的音符早到、也更快。
@@ -5705,21 +5759,23 @@ func _draw_diamond(canvas: Control, point: Vector2, radius: float, color: Color)
 ## 金键：环上一段白描边金键（圆头 + 金色核心）。所有 Bell 都在判定环上。
 ## 长度走 Note.bell_width()，和 Tap 到环时的 31° 同级；不再是一条长 45° 的金板。
 func _draw_bell(canvas: Control, chart: Chart, note: Note, t: float) -> void:
-	var q := lerpf(Note.SPAWN_LENGTH_RATIO, 1.0, _approach(chart, note.beat, t))
+	var q := _note_radius_scale(note, _note_progress(chart, note, t))
+	var alpha := chart.group_alpha(note.group_id) / 255.0
 	var half := BELL_BAND_HALF * _note_scale() * float(_skin()["scale"])
+	var group_mul := chart.group_alpha(note.group_id) / 255.0
 	var breathe := 0.5 + 0.5 * sin(_anim_ms() / 1000.0 * 2.4)
 	# 和 Tap / Hold 同一套语言：白色外壳 + 彩色核心，两端圆头。
 	_bell_capsule(canvas, note, t, q, -half - 5.0, half + 5.0,
-		Color(UITheme.KEY_YELLOW.r, UITheme.KEY_YELLOW.g, UITheme.KEY_YELLOW.b, 0.07 + 0.05 * breathe))
-	_bell_capsule(canvas, note, t, q, -half - 2.0, half + 2.0, Color(0, 0, 0, 0.55))
-	_bell_capsule(canvas, note, t, q, -half, half, Color(1, 1, 1, 0.94))
-	_bell_capsule(canvas, note, t, q, -half * 0.62, half * 0.62, UITheme.KEY_YELLOW)
+		Color(UITheme.KEY_YELLOW.r, UITheme.KEY_YELLOW.g, UITheme.KEY_YELLOW.b, (0.07 + 0.05 * breathe) * alpha))
+	_bell_capsule(canvas, note, t, q, -half - 2.0, half + 2.0, Color(0, 0, 0, 0.55 * alpha))
+	_bell_capsule(canvas, note, t, q, -half, half, Color(1, 1, 1, 0.94 * alpha))
+	_bell_capsule(canvas, note, t, q, -half * 0.62, half * 0.62, Color(UITheme.KEY_YELLOW.r, UITheme.KEY_YELLOW.g, UITheme.KEY_YELLOW.b, alpha))
 	# 扫键串的铃判定放宽到 75px，就把这个范围画出来：看到多大 = 能打多大。
 	if bool(path_judgement_states.get(note.id, {}).get("sweep_chain", false)):
 		var halo := _bell_ring_point(chart, note.center_u * 360.0, t, q)
 		if halo.is_finite():
 			canvas.draw_arc(halo, BELL_CHAIN_TOLERANCE * _note_scale(), 0.0, TAU, 64,
-				Color(UITheme.KEY_YELLOW.r, UITheme.KEY_YELLOW.g, UITheme.KEY_YELLOW.b, 0.2), 1.6, true)
+				Color(UITheme.KEY_YELLOW.r, UITheme.KEY_YELLOW.g, UITheme.KEY_YELLOW.b, 0.2 * alpha), 1.6, true)
 
 
 ## 弧带 + 两端圆头：画成一根沿环的胶囊。
@@ -5846,7 +5902,7 @@ func bell_live_band(note: Note, beat: float) -> Array[Vector2]:
 	var empty: Array[Vector2] = []
 	if chart == null:
 		return empty
-	var grow := lerpf(Note.SPAWN_LENGTH_RATIO, 1.0, _approach(chart, note.beat, beat))
+	var grow := lerpf(Note.SPAWN_LENGTH_RATIO, 1.0, _approach(chart, note.beat, beat, note.group_id))
 	return bell_band_points(note, beat, grow)
 
 
@@ -5882,7 +5938,7 @@ func note_live_band(note: Note, beat: float, pad: float = 0.0) -> PackedVector2A
 	if chart == null:
 		return PackedVector2Array()
 	var pre := _pre_read_beats(chart, beat)
-	var progress := _approach(chart, note.beat, beat)
+	var progress := _approach(chart, note.beat, beat, note.group_id)
 	var grow := lerpf(Note.SPAWN_LENGTH_RATIO, 1.0, progress)
 	return note_band_points(note.angle, note.arc_width() + pad, beat, grow)
 
@@ -5960,3 +6016,348 @@ func _note_scale() -> float:
 
 func _valid_point(point: Vector2) -> bool:
 	return is_finite(point.x) and is_finite(point.y) and point.x < 1.0e9 and point.y < 1.0e9
+
+
+## 演出指令叠加层：判定线 / 文本 / 滤镜。
+## 滤镜不做真正的 shader 后处理，只叠加可读的画面提示 + 右上角活动清单，让作者看见"此刻生效了什么"。
+func _draw_alpha_commands(canvas: Control, chart: Chart, t: float) -> void:
+	if chart == null or chart.commands.is_empty():
+		return
+	var area := canvas.get_rect()
+	var chips: Array[String] = []
+	for command in chart.commands:
+		if not command.enabled:
+			continue
+		var env := command.envelope_at(t)
+		var in_window := t >= command.beat - 0.0001 and t <= command.end_beat() + 0.0001
+		if not in_window:
+			continue
+		if command.category() == AlphaCommand.CATEGORY_FILTER:
+			# 滤镜在起手段包络为 0 也要显示，否则刚好停在起始拍会以为没生效。
+			chips.append("%s %.0f%%" % [command.label(), env * 100.0])
+			continue
+		if env <= 0.01:
+			continue
+		if command.category() == AlphaCommand.CATEGORY_JLINE:
+			_draw_jline_command(canvas, area, command, env)
+		elif command.category() == AlphaCommand.CATEGORY_TEXT:
+			_draw_text_command(canvas, area, command, env)
+	if chips.is_empty():
+		return
+	var font := UITheme.bold_font()
+	var y := area.position.y + 20.0
+	for i in mini(chips.size(), 6):
+		canvas.draw_string(font, Vector2(area.end.x - 8.0, y), chips[i], HORIZONTAL_ALIGNMENT_RIGHT, 220.0, 11,
+			Color(1, 1, 1, 0.55))
+		y += 14.0
+
+
+func _draw_jline_command(canvas: Control, area: Rect2, command: AlphaCommand, env: float) -> void:
+	var color := command.color_value("color", Color.WHITE)
+	var alpha := clampf(command.number("alpha", 1.0), 0.0, 1.0) * env
+	if alpha <= 0.01:
+		return
+	var width := clampf(command.number("width", 6.0), 0.5, 24.0)
+	var expand := clampf(command.number("expand", 0.0), 0.0, 1.0)
+	var y := area.get_center().y + area.size.y * 0.34
+	var half := area.size.x * (0.26 + expand * 0.2)
+	var from := Vector2(area.get_center().x - half, y)
+	var to := Vector2(area.get_center().x + half, y)
+	canvas.draw_line(from, to, Color(color.r, color.g, color.b, 0.16 * alpha), width * 3.0, true)
+	canvas.draw_line(from, to, Color(color.r, color.g, color.b, 0.85 * alpha), width, true)
+	canvas.draw_string(UITheme.bold_font(), to + Vector2(6, 4), command.name, HORIZONTAL_ALIGNMENT_LEFT, -1, 10,
+		Color(color.r, color.g, color.b, 0.7 * alpha))
+
+
+func _draw_text_command(canvas: Control, area: Rect2, command: AlphaCommand, env: float) -> void:
+	# JUDGETEXT 没有 content：它的 alpha 只该作用在判定文字上，预览层不画。
+	var content := command.text_value("content", "")
+	if content.is_empty():
+		return
+	var alpha := clampf(command.number("alpha", 1.0), 0.0, 1.0) * env
+	if alpha <= 0.01:
+		return
+	var font_size := int(clampf(command.number("size", 48.0), 10.0, 200.0))
+	var offset := Vector2(clampf(command.number("x", 0.0), -1.0, 1.0), clampf(command.number("y", 0.0), -1.0, 1.0))
+	var center := area.get_center() + Vector2(offset.x * area.size.x * 0.5, offset.y * area.size.y * 0.5)
+	var color := command.color_value("color", Color.WHITE)
+	canvas.draw_string(UITheme.bold_font(), Vector2(center.x - area.size.x * 0.5, center.y), content,
+		HORIZONTAL_ALIGNMENT_CENTER, area.size.x, font_size, Color(color.r, color.g, color.b, alpha))
+
+
+## 音符下落进度：HS 越大越早冲到判定环，只影响该音符自身。
+func _note_progress(chart: Chart, note: Note, t: float) -> float:
+	var progress := _approach(chart, note.beat, t)
+	var speed := note.speed_scale()
+	if absf(speed - 1.0) > 0.001:
+		progress = clampf(progress * speed, 0.0, 1.0)
+	return progress
+
+
+## 音符视觉半径倍率：出生半径（spawn）+ 落点弹跳（bounce）。返回可 > 1，表示越过判定环外侧。
+func _note_radius_scale(note: Note, progress: float) -> float:
+	var q := lerpf(Note.SPAWN_LENGTH_RATIO, 1.0, progress)
+	if note.spawn > 0.001:
+		q = maxf(q, lerpf(note.spawn, 1.0, progress))
+	if note.bounce > 0.001:
+		q = maxf(0.0, q * note.bounce_radius(progress))
+	return q
+
+
+## 滤镜后处理：整块预览画面走一次屏幕采样 shader。
+## 指令名与默认值照搬 MajdataPlay 的滤镜目录，效果是同一语义的近似实现（不是移植它的 shader）。
+const FILTER_SHADER := """shader_type canvas_item;
+
+uniform sampler2D screen_tex : hint_screen_texture, filter_linear_mipmap;
+uniform float brightness = 0.0;
+uniform float contrast = 1.0;
+uniform float saturation = 1.0;
+uniform float hue_shift = 0.0;
+uniform float vignette = 0.0;
+uniform float zoom = 1.0;
+uniform float pixelate = 0.0;
+uniform float glitch = 0.0;
+uniform float invert = 0.0;
+uniform float posterize = 0.0;
+uniform float split = 0.0;
+uniform float ripple = 0.0;
+uniform float radial = 0.0;
+uniform float kaleido = 0.0;
+uniform float kaleido_segments = 6.0;
+uniform float rotate = 0.0;
+uniform float bloom = 0.0;
+uniform vec2 move = vec2(0.0);
+uniform float shake = 0.0;
+uniform float shake_freq = 12.0;
+uniform vec4 tint = vec4(1.0);
+uniform float tint_amount = 0.0;
+uniform vec4 flash = vec4(1.0, 1.0, 1.0, 0.0);
+uniform vec4 fade = vec4(0.0, 0.0, 0.0, 0.0);
+
+vec3 rgb2hsv(vec3 c) {
+	vec4 k = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+	vec4 p = mix(vec4(c.bg, k.wz), vec4(c.gb, k.xy), step(c.b, c.g));
+	vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));
+	float d = q.x - min(q.w, q.y);
+	float e = 1.0e-10;
+	return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
+}
+
+vec3 hsv2rgb(vec3 c) {
+	vec4 k = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+	vec3 p = abs(fract(c.xxx + k.xyz) * 6.0 - k.www);
+	return c.z * mix(k.xxx, clamp(p - k.xxx, 0.0, 1.0), c.y);
+}
+
+void fragment() {
+	vec2 uv = SCREEN_UV - move;
+	vec2 center = vec2(0.5);
+	vec2 offset = uv - center;
+	float tremor = sin(TIME * shake_freq) * 0.006 * shake;
+	uv += vec2(tremor, cos(TIME * shake_freq * 1.7) * 0.006 * shake);
+
+	vec2 warped = center + (uv - center) / max(zoom, 0.05);
+	float cs = cos(rotate);
+	float sn = sin(rotate);
+	warped = center + mat2(vec2(cs, -sn), vec2(sn, cs)) * (warped - center);
+
+	if (kaleido > 0.001) {
+		vec2 d = warped - center;
+		float radius = length(d);
+		float angle = atan(d.y, d.x);
+		float segment = 6.2831853 / max(kaleido_segments, 2.0);
+		angle = abs(mod(angle, segment) - segment * 0.5);
+		warped = center + vec2(cos(angle), sin(angle)) * radius;
+	}
+
+	float wave = sin(length(warped - center) * 46.0 - TIME * 7.0) * 0.012 * ripple;
+	warped += normalize(warped - center + vec2(0.0001)) * wave;
+
+	if (glitch > 0.001) {
+		float band = floor(warped.y * 42.0);
+		float noise = fract(sin(band * 12.9898 + floor(TIME * 14.0) * 7.233) * 43758.5453);
+		warped.x += (noise - 0.5) * 0.12 * glitch * step(0.55, noise);
+	}
+
+	if (pixelate > 0.001) {
+		float cells = mix(640.0, 36.0, clamp(pixelate, 0.0, 1.0));
+		warped = floor(warped * cells) / cells;
+	}
+
+	vec3 col;
+	if (split > 0.001) {
+		float shift = 0.004 * clamp(split, 0.0, 1.0);
+		col.r = texture(screen_tex, warped + vec2(shift, 0.0)).r;
+		col.g = texture(screen_tex, warped).g;
+		col.b = texture(screen_tex, warped - vec2(shift, 0.0)).b;
+	} else if (radial > 0.001) {
+		vec3 acc = vec3(0.0);
+		for (int i = 0; i < 6; i++) {
+			float scale = 1.0 - float(i) * 0.032 * clamp(radial, 0.0, 1.0);
+			acc += texture(screen_tex, center + (warped - center) * scale).rgb;
+		}
+		col = acc / 6.0;
+	} else if (bloom > 0.001) {
+		float amount = clamp(bloom, 0.0, 4.0);
+		col = texture(screen_tex, warped).rgb;
+		for (int i = 1; i <= 3; i++) {
+			float spread = 0.0035 * float(i) * amount;
+			float weight = 0.4 / float(i);
+			col += texture(screen_tex, warped + vec2(spread, 0.0)).rgb * weight;
+			col += texture(screen_tex, warped - vec2(spread, 0.0)).rgb * weight;
+			col += texture(screen_tex, warped + vec2(0.0, spread)).rgb * weight;
+			col += texture(screen_tex, warped - vec2(0.0, spread)).rgb * weight;
+		}
+		col /= 1.0 + 1.6 * amount;
+	} else {
+		col = texture(screen_tex, warped).rgb;
+	}
+
+	col = (col - 0.5) * contrast + 0.5;
+	col += brightness;
+
+	vec3 hsv = rgb2hsv(clamp(col, 0.0, 1.0));
+	hsv.x = fract(hsv.x + hue_shift / 6.2831853);
+	hsv.y = clamp(hsv.y * saturation, 0.0, 1.0);
+	col = hsv2rgb(hsv);
+
+	if (posterize > 0.5) {
+		float steps = max(posterize, 2.0);
+		col = floor(col * steps) / steps;
+	}
+
+	col = mix(col, vec3(1.0) - col, clamp(invert, 0.0, 1.0));
+	col = mix(col, tint.rgb, clamp(tint_amount * tint.a, 0.0, 1.0));
+
+	float curve = smoothstep(0.95, 0.26, length(offset) * 1.45);
+	col *= mix(1.0, curve, clamp(vignette, 0.0, 1.0));
+
+	col = mix(col, flash.rgb, clamp(flash.a, 0.0, 1.0));
+	col = mix(col, fade.rgb, clamp(fade.a, 0.0, 1.0));
+
+	COLOR = vec4(clamp(col, 0.0, 1.0), 1.0);
+}
+"""
+
+
+func _build_filter_layer() -> void:
+	if _filter_layer != null:
+		return
+	var shader := Shader.new()
+	shader.code = FILTER_SHADER
+	var material := ShaderMaterial.new()
+	material.shader = shader
+	_filter_layer = ColorRect.new()
+	_filter_layer.name = "FilterLayer"
+	_filter_layer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_filter_layer.color = Color.WHITE
+	_filter_layer.material = material
+	# 常驻可见：没有滤镜时 shader 是恒等透传，换来的是切滤镜时不会临时编译卡一下。
+	_filter_layer.visible = true
+	add_child(_filter_layer)
+	_filter_layer.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+
+
+## 把当前拍点上所有启用中的滤镜指令合成为一组 shader 参数。
+func _filter_state(chart: Chart, t: float) -> Dictionary:
+	var state := {
+		"brightness": 0.0, "contrast": 1.0, "saturation": 1.0, "hue_shift": 0.0,
+		"vignette": 0.0, "zoom": 1.0, "pixelate": 0.0, "glitch": 0.0, "invert": 0.0,
+		"posterize": 0.0, "split": 0.0, "ripple": 0.0, "radial": 0.0, "kaleido": 0.0,
+		"kaleido_segments": 6.0,
+		"rotate": 0.0, "bloom": 0.0, "move": Vector2.ZERO, "shake": 0.0, "shake_freq": 12.0,
+		"tint": Color(1, 1, 1, 1), "tint_amount": 0.0,
+		"flash": Color(1, 1, 1, 0), "fade": Color(0, 0, 0, 0),
+	}
+	if chart == null:
+		return {"uniforms": state, "active": false}
+	var active := false
+	for command in chart.commands:
+		if not command.enabled or command.category() != AlphaCommand.CATEGORY_FILTER:
+			continue
+		var env := command.envelope_at(t)
+		var in_window := t >= command.beat - 0.0001 and t <= command.end_beat() + 0.0001
+		if env <= 0.001:
+			if not in_window:
+				continue
+			# 停在指令起始拍时包络正好是 0，给一个可见的预览底噪，免得以为指令没生效。
+			env = 0.35
+		active = true
+		var strength := clampf(command.number("strength", 0.8), 0.0, 4.0) * env
+		match command.name:
+			"FLASH":
+				state["flash"] = _stronger_color(state["flash"], Color(1, 1, 1, clampf(strength, 0.0, 1.0)))
+			"FADE":
+				state["fade"] = _stronger_color(state["fade"], Color(0, 0, 0, clampf(strength, 0.0, 1.0)))
+			"BRIGHTNESS":
+				state["brightness"] = float(state["brightness"]) + command.number("value", 0.5) * env * 0.6
+			"SATURATION":
+				state["saturation"] = maxf(float(state["saturation"]) * maxf(1.0 + command.number("value", 0.5) * env, 0.0), 0.0)
+			"CONTRAST":
+				state["contrast"] = maxf(float(state["contrast"]) * maxf(1.0 + (command.number("value", 1.2) - 1.0) * env, 0.1), 0.1)
+			"HUE":
+				state["hue_shift"] = float(state["hue_shift"]) + deg_to_rad(command.number("value", 45.0)) * env
+			"ZOOM":
+				state["zoom"] = maxf(float(state["zoom"]) * maxf(lerpf(1.0, command.number("value", 1.5), env), 0.05), 0.05)
+			"VIGNETTE":
+				state["vignette"] = maxf(float(state["vignette"]), clampf(strength, 0.0, 1.0))
+			"ROTATE":
+				state["rotate"] = float(state["rotate"]) + deg_to_rad(command.number("value", 10.0)) * env
+			"KALEIDOSCOPE":
+				# on=false 表示在这段时长里从满强度过渡回关闭，而不是永久保持。
+				var fade_out := 1.0 - command.progress_at(t) if not command.flag("on", true) else 1.0
+				state["kaleido"] = maxf(float(state["kaleido"]), env * fade_out)
+				state["kaleido_segments"] = clampf(command.number("segments", 6.0), 2.0, 16.0)
+			"BLOOM":
+				state["bloom"] = maxf(float(state["bloom"]), clampf(strength, 0.0, 4.0))
+			"INVERT":
+				state["invert"] = maxf(float(state["invert"]), clampf(strength, 0.0, 1.0))
+			"POSTERIZE":
+				state["posterize"] = maxf(float(state["posterize"]), maxf(command.number("levels", 6.0) * env, 2.0))
+			"PIXELATE":
+				state["pixelate"] = maxf(float(state["pixelate"]), clampf(command.number("size", 8.0) / 32.0, 0.05, 1.0) * env)
+			"GLITCH", "SHATTER", "TVNOISE":
+				state["glitch"] = maxf(float(state["glitch"]), clampf(strength, 0.0, 1.0))
+			"SPLIT":
+				state["split"] = maxf(float(state["split"]), clampf(command.number("offset", 0.1) / 0.1, 0.0, 1.0) * env)
+			"RIPPLE":
+				state["ripple"] = maxf(float(state["ripple"]), clampf(strength, 0.0, 1.0))
+			"RADIALBLUR", "GAUSSIAN", "TRAIL", "LENSDISTORT":
+				state["radial"] = maxf(float(state["radial"]), clampf(strength, 0.0, 1.0))
+			"TINT":
+				state["tint"] = command.color_value("color", Color(1, 0.4, 0.8))
+				state["tint_amount"] = maxf(float(state["tint_amount"]), clampf(strength, 0.0, 1.0))
+			"NEON":
+				state["tint"] = command.color_value("color", Color(0.25, 0.9, 1.0))
+				state["tint_amount"] = maxf(float(state["tint_amount"]), 0.55 * env)
+				state["bloom"] = maxf(float(state["bloom"]), env)
+				state["saturation"] = maxf(float(state["saturation"]), 1.25)
+			"RAINBOW":
+				var spin := fmod(Time.get_ticks_msec() / 1000.0 * 2.0, TAU)
+				state["hue_shift"] = float(state["hue_shift"]) + spin * clampf(strength, 0.0, 1.0)
+			"SHAKE":
+				state["shake"] = maxf(float(state["shake"]), clampf(command.number("strength", 0.5), 0.0, 1.0))
+				state["shake_freq"] = command.number("frequency", 12.0)
+			"MOVE":
+				state["move"] = Vector2(command.number("x", 0.0), command.number("y", 0.0)) * env * 0.25
+			_:
+				pass
+	return {"uniforms": state, "active": active}
+
+
+func _stronger_color(current: Variant, candidate: Color) -> Color:
+	var existing: Color = current
+	return candidate if candidate.a > existing.a else existing
+
+
+func _apply_filters(chart: Chart, t: float) -> void:
+	if _filter_layer == null:
+		return
+	var material := _filter_layer.material as ShaderMaterial
+	if material == null:
+		return
+	var state := _filter_state(chart, t)
+	var uniforms: Dictionary = state["uniforms"]
+	for key in uniforms:
+		material.set_shader_parameter(String(key), uniforms[key])
+

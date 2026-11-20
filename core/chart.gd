@@ -33,6 +33,9 @@ var load_warnings: Array[String] = []
 var view_states: Array[ViewState] = []
 var regions: Array[Region] = []
 var notes: Array[Note] = []
+## When loaded from / saved to a chart project folder.
+var project_dir: String = ""
+var project_main_path: String = ""
 
 ## 缓存版本：音符/关键帧/红区/事件/音频长度/offset 一旦变化就 +1。
 ## App.touch_chart()（拖动中）与 App._after_change()（提交）都会调 mark_dirty()。
@@ -103,6 +106,8 @@ func _duration_stamp() -> int:
 	return _note_stamp() * 31 + _ring_stamp() + regions.size() * 1009 \
 		+ events.size() * 101 + timing.points.size() * 17 \
 		+ int(audio_length_ms() * 10.0) + int(offset_ms * 10.0)
+## 演出指令：判定线 / 文本 / 滤镜。只在环编辑工作区里增删，预览按拍采样。
+var commands: Array[AlphaCommand] = []
 
 
 ## Anchor 的配对：同一 pairId、同一拍即可，角度自由。
@@ -155,14 +160,197 @@ const PALETTE_DEFAULTS := {
 }
 var palette: Array[Dictionary] = []
 
-var _next_note_id: int = 1
+## Editor groups. Every note belongs to one group; group 0 always exists.
+## {id:int, name:String, bpm:float, alpha:int 0..255, enabled:bool}
+var groups: Array[Dictionary] = []
+var current_group: int = 0
+## Per-group BPM points (speed reference). The chart timing map remains the
+## audio/judgement clock; group BPM controls visual note speed.
+var group_bpm_points: Dictionary = {}
+
+var _next_note_id: int = 0
 var _next_region_id: int = 1
 var _next_event_id: int = 1
+var _next_command_id: int = 1
 
 
 func _init() -> void:
 	shapes["S0"] = BoundaryShape.circle("S0", 330.0, 48)
 	view_states = [ViewState.new(0.0, 1.0, 0.0, 0.0, 1.0, 0.0, "linear")]
+	ensure_groups()
+
+
+## Create group 0 if loading an older chart, and keep group records valid.
+func ensure_groups() -> void:
+	if groups.is_empty():
+		groups.append({
+			"id": 0, "name": "组 0", "bpm": timing.bpm_at(0.0),
+			"alpha": 255, "enabled": true,
+		})
+	for group in groups:
+		group["id"] = int(group.get("id", 0))
+		group["name"] = String(group.get("name", "组 %d" % group["id"]))
+		group["bpm"] = float(group.get("bpm", timing.bpm_at(0.0)))
+		group["alpha"] = clampi(int(group.get("alpha", 255)), 0, 255)
+		group["enabled"] = bool(group.get("enabled", true))
+	if group_index(current_group) < 0:
+		current_group = int(groups[0].get("id", 0))
+	for group in groups:
+		var gid := int(group.get("id", 0))
+		if not group_bpm_points.has(gid):
+			var bpm := float(group.get("bpm", timing.bpm_at(0.0)))
+			group_bpm_points[gid] = [TimingPoint.new(0.0, bpm, int(timing.beats_per_bar_at(0.0)))]
+	group_bpm_points[0] = group_bpm_points.get(0, [TimingPoint.new(0.0, timing.bpm_at(0.0), 4)])
+	# Migrate legacy global BPM changes into group 0 the first time a chart is
+	# loaded; new edits are per-group and live in bpmlist.json.
+	if timing.points.size() > 1 and group_bpm_points[0].size() <= 1:
+		var migrated: Array[TimingPoint] = []
+		for point in timing.points:
+			migrated.append(TimingPoint.new(point.beat, point.bpm, point.beats_per_bar))
+		group_bpm_points[0] = migrated
+
+
+func group_index(group_id: int) -> int:
+	for i in groups.size():
+		if int(groups[i].get("id", 0)) == group_id:
+			return i
+	return -1
+
+
+func group_data(group_id: int) -> Dictionary:
+	var index := group_index(group_id)
+	return groups[index] if index >= 0 else {}
+
+
+func group_alpha(group_id: int) -> int:
+	return clampi(int(group_data(group_id).get("alpha", 255)), 0, 255)
+
+
+func group_enabled(group_id: int) -> bool:
+	return bool(group_data(group_id).get("enabled", true))
+
+
+func note_enabled(note: Note) -> bool:
+	return note != null and note.enabled and group_enabled(note.group_id)
+
+
+func group_note_count(group_id: int) -> int:
+	var total := 0
+	for note in notes:
+		if note.group_id == group_id:
+			total += 1
+	return total
+
+
+## Stable, chart-wide ID rule: first note = 0, then beat ascending, then angle
+## ascending. A Seek at the same beat sorts after every other note (its
+## effective angle is 360°). Path links are remapped together with the IDs.
+func reassign_note_ids() -> void:
+	var sorted := notes.duplicate()
+	sorted.sort_custom(func(a: Note, b: Note) -> bool:
+		if not is_equal_approx(a.beat, b.beat):
+			return a.beat < b.beat
+		var a_seek := a.type == "seek"
+		var b_seek := b.type == "seek"
+		if a_seek != b_seek:
+			return b_seek
+		var a_angle := 360.0 if a_seek else fposmod(a.angle, 360.0)
+		var b_angle := 360.0 if b_seek else fposmod(b.angle, 360.0)
+		if not is_equal_approx(a_angle, b_angle):
+			return a_angle < b_angle
+		return a.id < b.id)
+	var old_to_new := {}
+	for i in sorted.size():
+		old_to_new[(sorted[i] as Note).id] = i
+	for i in sorted.size():
+		var note: Note = sorted[i]
+		note.id = i
+		note.local_id = i
+	for note in notes:
+		if note.type != "path":
+			continue
+		if old_to_new.has(note.path_prev_id):
+			note.path_prev_id = int(old_to_new[note.path_prev_id])
+		if old_to_new.has(note.path_next_id):
+			note.path_next_id = int(old_to_new[note.path_next_id])
+	_next_note_id = notes.size()
+
+
+func ensure_note_local_ids() -> void:
+	reassign_note_ids()
+
+
+func group_bpm_points_for(group_id: int) -> Array[TimingPoint]:
+	ensure_groups()
+	var raw: Variant = group_bpm_points.get(group_id, [])
+	var result: Array[TimingPoint] = []
+	if raw is Array:
+		for item in raw:
+			if item is TimingPoint:
+				result.append(item)
+			elif item is Dictionary:
+				result.append(TimingPoint.from_dict(item))
+	if result.is_empty():
+		result.append(TimingPoint.new(0.0, float(group_data(group_id).get("bpm", timing.bpm_at(0.0))), 4))
+	result.sort_custom(func(a: TimingPoint, b: TimingPoint) -> bool: return a.beat < b.beat)
+	return result
+
+
+func group_bpm_at(group_id: int, beat: float) -> float:
+	var result := float(group_data(group_id).get("bpm", timing.bpm_at(0.0)))
+	for point in group_bpm_points_for(group_id):
+		if point.beat <= beat + 0.0001:
+			result = point.bpm
+		else:
+			break
+	return maxf(1.0, result)
+
+
+func note_by_group_local(group_id: int, local_id: int) -> Note:
+	for note in notes:
+		if note.group_id == group_id and note.local_id == local_id:
+			return note
+	return null
+
+
+func add_group(bpm: float = -1.0) -> int:
+	ensure_groups()
+	var next_id := 0
+	for group in groups:
+		next_id = maxi(next_id, int(group.get("id", 0)) + 1)
+	groups.append({
+		"id": next_id, "name": "组 %d" % next_id,
+		"bpm": bpm if bpm > 0.0 else timing.bpm_at(0.0),
+		"alpha": 255, "enabled": true,
+	})
+	group_bpm_points[next_id] = [TimingPoint.new(0.0, bpm if bpm > 0.0 else timing.bpm_at(0.0), 4)]
+	return next_id
+
+
+## Remove a group and every note that belongs to it. Later groups move up by
+## one so ids stay contiguous (0,1,2,...), and their notes follow the renumber.
+func remove_group(group_id: int) -> bool:
+	ensure_groups()
+	if groups.size() <= 1 or group_index(group_id) < 0:
+		return false
+	notes = notes.filter(func(note: Note) -> bool: return note.group_id != group_id)
+	var old_points := group_bpm_points.duplicate()
+	groups.remove_at(group_index(group_id))
+	for i in groups.size():
+		var group: Dictionary = groups[i]
+		var old_id := int(group.get("id", i))
+		group["id"] = i
+		group["name"] = "组 %d" % i
+		group_bpm_points[i] = old_points.get(old_id, [TimingPoint.new(0.0, float(group.get("bpm", timing.bpm_at(0.0))), 4)])
+	for note in notes:
+		if note.group_id > group_id:
+			note.group_id -= 1
+	if current_group == group_id:
+		current_group = clampi(group_id, 0, groups.size() - 1)
+	elif current_group > group_id:
+		current_group -= 1
+	reassign_note_ids()
+	return true
 	# 镜头面板只保留推拉/滚转；保留 face_camera 兼容旧谱的倾斜/椭圆数据。
 	metadata["face_camera"] = true
 
@@ -391,9 +579,18 @@ func mirrored_copy(mode: String) -> Chart:
 	result.load_warnings = load_warnings
 	result.editor = editor
 	result.palette = palette
+	result.groups = groups.duplicate(true)
+	result.current_group = current_group
+	result.group_bpm_points = {}
+	for k in group_bpm_points.keys():
+		var points: Array[TimingPoint] = []
+		for p in group_bpm_points[k]:
+			points.append(TimingPoint.new(p.beat, p.bpm, p.beats_per_bar))
+		result.group_bpm_points[int(k)] = points
 	result._next_note_id = _next_note_id
 	result._next_region_id = _next_region_id
 	result._next_event_id = _next_event_id
+	result._next_command_id = _next_command_id
 	result.notes = []
 	for note in notes:
 		var copy := Note.from_dict(note.to_dict())
@@ -408,6 +605,9 @@ func mirrored_copy(mode: String) -> Chart:
 		var flipped := 180.0 - copy.angle if mode == "lr" else copy.angle + 180.0
 		copy.angle = fposmod(flipped, 360.0)
 		result.regions.append(copy)
+	result.commands = []
+	for command in commands:
+		result.commands.append(AlphaCommand.from_dict(command.to_dict()))
 	return result
 
 
@@ -429,11 +629,14 @@ func next_event_id() -> String:
 	return result
 
 
+func next_command_id() -> String:
+	var result := "C%d" % _next_command_id
+	_next_command_id += 1
+	return result
+
+
 func refresh_ids() -> void:
-	var max_note := 0
-	for note in notes:
-		max_note = maxi(max_note, note.id)
-	_next_note_id = max_note + 1
+	reassign_note_ids()
 	var max_region := 0
 	for region in regions:
 		max_region = maxi(max_region, region.id)
@@ -444,6 +647,12 @@ func refresh_ids() -> void:
 		if digits.is_valid_int():
 			max_event = maxi(max_event, int(digits))
 	_next_event_id = max_event + 1
+	var max_command := 0
+	for command in commands:
+		var digits := command.id.trim_prefix("C")
+		if digits.is_valid_int():
+			max_command = maxi(max_command, int(digits))
+	_next_command_id = max_command + 1
 
 
 ## 同一条 Path 链上的全部 part（含自身），从 root 到末段。复制/粘贴要整链一起，
@@ -470,6 +679,51 @@ func path_chain(note: Note) -> Array[Note]:
 		chain.append(current)
 		guard += 1
 	return chain
+func notes_at(beat: float, tolerance: float = 0.001) -> Array[Note]:
+	var result: Array[Note] = []
+	for note in notes:
+		if absf(note.beat - beat) <= tolerance:
+			result.append(note)
+	return result
+
+
+func sorted_commands() -> Array[AlphaCommand]:
+	var result := commands.duplicate()
+	result.sort_custom(func(a: AlphaCommand, b: AlphaCommand) -> bool: return a.beat < b.beat)
+	return result
+
+
+func commands_in(category: String) -> Array[AlphaCommand]:
+	var result: Array[AlphaCommand] = []
+	for command in commands:
+		if command.category() == category:
+			result.append(command)
+	result.sort_custom(func(a: AlphaCommand, b: AlphaCommand) -> bool: return a.beat < b.beat)
+	return result
+
+
+## 在工作区里放一条指令：自动编号、夹在合法范围内。
+func add_command(command_name: String, beat: float) -> AlphaCommand:
+	var command := AlphaCommand.new(command_name, maxf(0.0, beat))
+	command.id = next_command_id()
+	commands.append(command)
+	return command
+
+
+func remove_command(command: AlphaCommand) -> bool:
+	var index := commands.find(command)
+	if index < 0:
+		return false
+	commands.remove_at(index)
+	return true
+
+
+func regions_at(beat: float) -> Array[Region]:
+	var result: Array[Region] = []
+	for region in regions:
+		if region.active_at(beat):
+			result.append(region)
+	return result
 
 
 func beat_to_ms(beat: float) -> float:
@@ -492,6 +746,8 @@ func duration_beats() -> float:
 		last = maxf(last, region.end_beat)
 	for event in events:
 		last = maxf(last, event.end_beat + maxf(0.0, event.restore_duration))
+	for command in commands:
+		last = maxf(last, command.end_beat())
 	# 形状/镜头关键帧也要算进内容末尾：否则时间轴「全部」和 seek 上限
 	# 只按音符算，落在音符之后的帧永远滚不到、跳不到。
 	for key in shape_keys:

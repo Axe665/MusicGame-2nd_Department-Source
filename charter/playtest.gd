@@ -1031,6 +1031,8 @@ func _judgement_notes() -> Array[Note]:
 		by_id[note.id] = note
 	var result: Array[Note] = []
 	for note in chart.sorted_notes():
+		if not chart.note_enabled(note):
+			continue
 		if note.type == "path" and note.path_part > 0:
 			continue
 		if note.type != "path":

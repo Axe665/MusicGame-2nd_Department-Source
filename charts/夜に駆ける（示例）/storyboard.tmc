@@ -1,0 +1,6 @@
+!tmc-story 1
+event={"easing":"in-out","end_beat":12.0,"end_behavior":"hold","from_shape":"S0","id":"E1","restore_duration":0.0,"restore_easing":"in-out","start_beat":8.0,"target_u0":0.0,"target_u1":1.0,"to_shape":"S1"}
+event={"easing":"in-out","end_beat":12.5,"end_behavior":"hold","from_shape":"S1","id":"E2","restore_duration":0.0,"restore_easing":"in-out","start_beat":12.0,"target_u0":0.0,"target_u1":1.0,"to_shape":"S0"}
+event={"easing":"in-out","end_beat":20.0,"end_behavior":"hold","from_shape":"S0","id":"E3","restore_duration":0.0,"restore_easing":"in-out","start_beat":12.5,"target_u0":0.0,"target_u1":1.0,"to_shape":"S0"}
+event={"easing":"in-out","end_beat":24.0,"end_behavior":"hold","from_shape":"S0","id":"E4","restore_duration":0.0,"restore_easing":"in-out","start_beat":20.0,"target_u0":0.0,"target_u1":1.0,"to_shape":"S2"}
+event={"easing":"in-out","end_beat":24.5,"end_behavior":"hold","from_shape":"S2","id":"E5","restore_duration":0.0,"restore_easing":"in-out","start_beat":24.0,"target_u0":0.0,"target_u1":1.0,"to_shape":"S0"}
