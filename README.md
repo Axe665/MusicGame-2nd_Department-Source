@@ -225,7 +225,7 @@ godot --headless --path . --script res://tests/test_runner.gd
 godot --headless --path . --script res://tests/alpha_commands.gd
 ```
 
-当前结果：**2063 passed, 0 failed**。测试覆盖：
+当前结果：**2201 passed, 0 failed**。测试覆盖：
 
 - 120 BPM / 变速 / offset 的时间换算与反解
 - 新建谱面 BPM 三位小数/一位小数取整与 offset 三位小数规范化
