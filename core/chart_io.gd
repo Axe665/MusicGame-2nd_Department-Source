@@ -1346,6 +1346,8 @@ static func _tmc_value(text: String) -> Variant:
 
 
 static func _parse_main_tmc(text: String) -> Dictionary:
+	# _tmc_value 会把 1 解析成 float；GDScript 的 String(number) 会直接报错，
+	# 所以文本字段统一走 str()，否则 chart_version=1 这类工程会打不开。
 	var fields := {}
 	for line in _tmc_lines(text):
 		var at := line.find("=")
@@ -1355,35 +1357,35 @@ static func _parse_main_tmc(text: String) -> Dictionary:
 	var view := {
 		"editor": fields.get("editor", {}),
 		"view_states": fields.get("view_states", []),
-		"default_shape": String(fields.get("default_shape", "S0")),
+		"default_shape": str(fields.get("default_shape", "S0")),
 	}
 	return {
 		"format": PROJECT_FORMAT,
 		"version": PROJECT_VERSION,
-		"title": String(fields.get("title", "")),
-		"artist": String(fields.get("artist", "")),
-		"charter": String(fields.get("charter", fields.get("creator", ""))),
-		"creator": String(fields.get("creator", fields.get("charter", ""))),
-		"difficulty": String(fields.get("difficulty", "")),
+		"title": str(fields.get("title", "")),
+		"artist": str(fields.get("artist", "")),
+		"charter": str(fields.get("charter", fields.get("creator", ""))),
+		"creator": str(fields.get("creator", fields.get("charter", ""))),
+		"difficulty": str(fields.get("difficulty", "")),
 		"difficulty_list": fields.get("difficulty_list", []),
 		"bpm": float(fields.get("bpm", 120.0)),
 		"beats_per_bar": int(fields.get("beats_per_bar", 4)),
 		"offset_ms": float(fields.get("offset_ms", 0.0)),
 		"pre_read_ms": float(fields.get("pre_read_ms", 1000.0)),
-		"music": String(fields.get("music", "")),
-		"audio_source": String(fields.get("audio_source", "")),
-		"jacket": String(fields.get("jacket", "")),
-		"video": String(fields.get("video", "")),
+		"music": str(fields.get("music", "")),
+		"audio_source": str(fields.get("audio_source", "")),
+		"jacket": str(fields.get("jacket", "")),
+		"video": str(fields.get("video", "")),
 		"video_offset_ms": float(fields.get("video_offset_ms", 0.0)),
 		"video_fps": float(fields.get("video_fps", 60.0)),
 		"video_opacity": float(fields.get("video_opacity", 0.35)),
-		"tags": String(fields.get("tags", "")),
-		"license": String(fields.get("license", "")),
-		"background": String(fields.get("background", "")),
-		"storyboard": String(fields.get("storyboard", "")),
-		"chart_version": String(fields.get("chart_version", fields.get("difficulty", ""))),
+		"tags": str(fields.get("tags", "")),
+		"license": str(fields.get("license", "")),
+		"background": str(fields.get("background", "")),
+		"storyboard": str(fields.get("storyboard", "")),
+		"chart_version": str(fields.get("chart_version", fields.get("difficulty", ""))),
 		"widescreen": int(fields.get("widescreen", 0)),
-		"source": String(fields.get("source", "")),
+		"source": str(fields.get("source", "")),
 		"view": view,
 	}
 

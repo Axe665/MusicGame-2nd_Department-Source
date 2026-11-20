@@ -1008,8 +1008,11 @@ func _sync_time_tool(force: bool = false) -> void:
 	var key := current_key()
 	if _title != null:
 		var view: ViewState = _timeline.primary_view() if _timeline != null else null
+		var command: AlphaCommand = _timeline.selected_command() if _timeline != null else null
 		var suffix := "无关键帧"
-		if view != null:
+		if command != null:
+			suffix = "指令 " + command.label()
+		elif view != null:
 			suffix = "镜头帧 %d" % view.id
 		elif not key.is_empty():
 			suffix = "形状帧 " + String(key.get("shape_id", ""))

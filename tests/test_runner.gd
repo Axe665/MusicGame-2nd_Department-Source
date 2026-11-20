@@ -54,6 +54,7 @@ func _initialize() -> void:
 		"test_ring_scrub_state",
 		"test_ring_lane_items_real_chart",
 		"test_ring_timeline_selection_ops",
+		"test_ring_timeline_command_lanes",
 		"test_ring_playhead_only_redraws_overlay",
 		"test_ring_marquee_and_drag",
 		"test_shape_key_cache_invalidation",
@@ -248,6 +249,7 @@ func _initialize() -> void:
 		"test_note_mods_io",
 		"test_note_touch_zones",
 		"test_chart_commands_roundtrip",
+		"test_alpha_command_save_load_chain",
 	]
 	for test_name in tests:
 		if call(test_name) != true:
@@ -2148,6 +2150,51 @@ func test_ring_timeline_selection_ops() -> bool:
 	timeline._toggle_select("view", 4)
 	timeline.nudge_selection(1.0)
 	near(chart.view_states[1].beat, 3.0, 0.001, "跨轨选中一起微移")
+	timeline.free()
+	workspace.free()
+	app.free()
+	return true
+
+
+## 演出指令轨：新增、选择、微移、命中、分组和删除都要和图表一致。
+func test_ring_timeline_command_lanes() -> bool:
+	var app: App = load("res://charter/app.gd").new()
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	app.chart = chart
+	app.playhead_beat = 0.0
+	var workspace := RingWorkspace.new()
+	workspace._app = app
+	workspace._view_beats = 16.0
+	var timeline := RingTimeline.new(workspace)
+	workspace._timeline = timeline
+	timeline.size = Vector2(1600, 420)
+	ok(timeline._lane_top(RingTimeline.LANE_COMMAND_JLINE) > timeline._lane_top(RingTimeline.LANE_BPM),
+		"指令轨排在 BPM 轨下面")
+	eq(timeline._lane_height(RingTimeline.LANE_COMMAND_FILTER), RingTimeline.COMMAND_ROW_H,
+		"指令轨使用自己的行高")
+	timeline.add_command_at(RingTimeline.LANE_COMMAND_FILTER, 4.0)
+	eq(chart.commands.size(), 1, "双击滤镜轨空白新增一条")
+	var command := chart.commands[0]
+	eq(command.category(), AlphaCommand.CATEGORY_FILTER, "新增的是滤镜指令")
+	near(command.beat, 4.0, 0.001, "按落点拍新增")
+	ok(timeline.selected_command() == command, "新增后自动选中")
+	timeline.nudge_selection(0.5)
+	near(command.beat, 4.5, 0.001, "方向键微移指令")
+	var items := timeline._lane_items(RingTimeline.LANE_COMMAND_FILTER)
+	eq(items.size(), 1, "滤镜轨按类别取到指令")
+	eq(timeline._hit_command(RingTimeline.LANE_COMMAND_FILTER, items,
+		Vector2(timeline._x_for(command.beat), 1.0)), 0, "点指令块能命中")
+	timeline.delete_selected_command()
+	eq(chart.commands.size(), 0, "删除选中指令")
+	timeline.add_command_of("TEXT", 2.0)
+	timeline.add_command_of("JLINE", 3.0)
+	eq(chart.commands.size(), 2, "按名字添加指令")
+	eq(timeline._lane_items(RingTimeline.LANE_COMMAND_TEXT).size(), 1, "文本轨只显示文本指令")
+	eq(timeline._lane_items(RingTimeline.LANE_COMMAND_JLINE).size(), 1, "判定线轨只显示判定线指令")
+	timeline.select_command(chart.commands[0])
+	eq(timeline.selection_count(), 1, "指令单选")
+	eq(timeline.selected_command(), chart.commands[0], "selected_command 返回当前指令")
 	timeline.free()
 	workspace.free()
 	app.free()
@@ -6494,6 +6541,151 @@ func test_chart_commands_roundtrip() -> bool:
 	})
 	ok(legacy != null and legacy.commands.is_empty(), "charts without commands still load")
 	return true
+
+
+## 演出指令 + 音符修饰在 dict / JSON / 单文件 / 三文件 / TMC 工程里都要原样往返。
+func test_alpha_command_save_load_chain() -> bool:
+	var root := "user://alpha_chain_test"
+	_remove_alpha_chain_dir(root)
+	var chart := _make_alpha_chain_chart()
+	var data := ChartIO.chart_to_dict(chart)
+	ok(data.has("commands"), "chart_to_dict 写出 commands")
+	ok(_check_alpha_chain("dict", ChartIO.chart_from_dict(data)), "dict 往返")
+	var json := ChartIO.to_json(chart)
+	ok(json.contains("\"commands\""), "JSON 写出 commands")
+	ok(_check_alpha_chain("json", ChartIO.from_json(json)), "JSON 往返")
+	var single := root.path_join("single.json")
+	eq(ChartIO.save_chart_file(chart, single), OK, "单文件保存")
+	ok(_check_alpha_chain("single", ChartIO.load_chart(single)), "单文件读取")
+	var three := root.path_join("three")
+	eq(ChartIO.save_three_file(chart, three), OK, "三文件保存")
+	ok(_check_alpha_chain("three", ChartIO.load_three_file(three)), "三文件读取")
+	var three_json := FileAccess.get_file_as_string(three.path_join("chart.json"))
+	ok(three_json.contains("\"commands\""), "三文件 chart.json 带 commands")
+	var app: App = load("res://charter/app.gd").new()
+	app.chart = chart
+	var app_dir := root.path_join("app_three")
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(app_dir))
+	app.chart_path = app_dir
+	ok(app.save_chart(), "App 三文件保存")
+	ok(app.load_chart(app_dir), "App 三文件读取")
+	ok(_check_alpha_chain("app-three", app.chart), "App 三文件往返")
+	app.free()
+	var project := root.path_join("project")
+	var second := ChartIO.chart_from_dict(ChartIO.chart_to_dict(chart))
+	second.metadata["version"] = "2"
+	second.commands_in("text")[0].params["content"] = "WORLD"
+	eq(ChartIO.save_project([{"name": "test", "chart": chart}, {"name": "second", "chart": second}],
+		project.path_join("main.tmc")), OK, "TMC 工程保存")
+	var loaded_project := ChartIO.load_project(project.path_join("main.tmc"))
+	ok(bool(loaded_project.get("ok", false)), "TMC 工程读取")
+	var entries: Array = loaded_project.get("entries", [])
+	eq(entries.size(), 2, "TMC 工程难度数量")
+	if entries.size() == 2:
+		var first_chart: Chart = entries[0].get("chart", null) as Chart
+		var second_chart: Chart = entries[1].get("chart", null) as Chart
+		ok(_check_alpha_chain("tmc-1", first_chart), "TMC 第一难度往返")
+		ok(_check_alpha_chain("tmc-2", second_chart, "WORLD"), "TMC 第二难度往返")
+		eq(second_chart.commands_in("text")[0].text_value("content"), "WORLD", "第二难度保留自己的文本")
+	var chart_tmc := FileAccess.get_file_as_string(project.path_join("chart0.tmc"))
+	ok(chart_tmc.contains("command="), "TMC chart0 写出 command=")
+	ok(chart_tmc.contains("HELLO"), "TMC chart0 写出文本内容")
+	var second_tmc := FileAccess.get_file_as_string(project.path_join("chart1.tmc"))
+	ok(second_tmc.contains("WORLD"), "TMC chart1 写出自己的文本")
+	_remove_alpha_chain_dir(root)
+	return true
+
+
+func _make_alpha_chain_chart() -> Chart:
+	var chart := Chart.new()
+	chart.timing.points.clear()
+	chart.timing.points.append(TimingPoint.new(0.0, 120.0, 4))
+	chart.metadata["title"] = "chain"
+	chart.metadata["artist"] = "test"
+	chart.metadata["creator"] = "test"
+	chart.metadata["version"] = "1"
+	var note := Note.new("tap", 1.0, 90.0, 60.0)
+	note.id = 1
+	note.hs = 1.5
+	note.sv = 2.0
+	note.head_speed = 1.2
+	note.spawn = 0.3
+	note.bounce = 0.4
+	note.bounce_dir = 1
+	note.touch_start = "A1"
+	note.touch_end = "B8"
+	chart.notes.append(note)
+	var jline := chart.add_command("JLINE", 2.0)
+	jline.params["color"] = "#123456"
+	jline.params["width"] = 8.0
+	var text := chart.add_command("TEXT", 4.0)
+	text.params["content"] = "HELLO"
+	text.params["size"] = 64.0
+	text.duration = 2.5
+	text.easing = "ease_in_out"
+	var flash := chart.add_command("FLASH", 6.0)
+	flash.params["strength"] = 0.6
+	flash.enabled = false
+	chart.refresh_ids()
+	return chart
+
+
+func _check_alpha_chain(label: String, loaded: Chart, expected_text: String = "HELLO") -> bool:
+	if loaded == null:
+		ok(false, "%s 读取失败" % label)
+		return false
+	eq(loaded.commands.size(), 3, "%s 指令数量" % label)
+	var by_name := {}
+	for command in loaded.commands:
+		by_name[command.name] = command
+	var jline: AlphaCommand = by_name.get("JLINE") as AlphaCommand
+	ok(jline != null, "%s JLINE 存在" % label)
+	if jline != null:
+		near(jline.beat, 2.0, 0.001, "%s JLINE 拍" % label)
+		eq(String(jline.params.get("color", "")), "#123456", "%s JLINE 颜色" % label)
+		near(float(jline.params.get("width", 0.0)), 8.0, 0.001, "%s JLINE 粗细" % label)
+	var text: AlphaCommand = by_name.get("TEXT") as AlphaCommand
+	ok(text != null, "%s TEXT 存在" % label)
+	if text != null:
+		eq(text.text_value("content"), expected_text, "%s TEXT 内容" % label)
+		near(text.duration, 2.5, 0.001, "%s TEXT 时长" % label)
+		eq(text.easing, "ease_in_out", "%s TEXT 缓动" % label)
+	var flash: AlphaCommand = by_name.get("FLASH") as AlphaCommand
+	ok(flash != null, "%s FLASH 存在" % label)
+	if flash != null:
+		ok(not flash.enabled, "%s FLASH 停用" % label)
+		near(float(flash.params.get("strength", 0.0)), 0.6, 0.001, "%s FLASH 强度" % label)
+	eq(loaded.notes.size(), 1, "%s 音符数量" % label)
+	if loaded.notes.size() == 1:
+		var note := loaded.notes[0]
+		near(note.hs, 1.5, 0.001, "%s hs" % label)
+		near(note.sv, 2.0, 0.001, "%s sv" % label)
+		near(note.head_speed, 1.2, 0.001, "%s head_speed" % label)
+		near(note.spawn, 0.3, 0.001, "%s spawn" % label)
+		near(note.bounce, 0.4, 0.001, "%s bounce" % label)
+		eq(note.bounce_dir, 1, "%s bounce_dir" % label)
+		eq(note.touch_start, "A1", "%s touch_start" % label)
+		eq(note.touch_end, "B8", "%s touch_end" % label)
+	eq(loaded.next_command_id(), "C4", "%s 下一条指令 id" % label)
+	return true
+
+
+func _remove_alpha_chain_dir(path: String) -> void:
+	var absolute := ProjectSettings.globalize_path(path)
+	var dir := DirAccess.open(absolute)
+	if dir == null:
+		return
+	dir.list_dir_begin()
+	var name := dir.get_next()
+	while not name.is_empty():
+		if name != "." and name != "..":
+			if dir.current_is_dir():
+				_remove_alpha_chain_dir(path.path_join(name))
+			else:
+				DirAccess.remove_absolute(absolute.path_join(name))
+		name = dir.get_next()
+	dir.list_dir_end()
+	DirAccess.remove_absolute(absolute)
 
 
 ## Path 方向箭头：固定弧长间距；锯齿状轨迹再按屏幕距离去重。

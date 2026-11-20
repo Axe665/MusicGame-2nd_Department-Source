@@ -141,6 +141,10 @@ func _build() -> void:
 	if timeline == null:
 		_add_hint("时间轴还没准备好。")
 		return
+	var command: AlphaCommand = timeline.selected_command()
+	if command != null:
+		_build_command(chart, command)
+		return
 	var shapes: Array = timeline.selected_shape_keys()
 	var views: Array = timeline.selected_views()
 	if shapes.is_empty() and views.is_empty():
@@ -175,6 +179,7 @@ func _build_empty(chart: Chart) -> void:
 	_add_info("形状数", str(chart.shapes.size()))
 	_add_info("形状帧", str(chart.shape_keys.size()))
 	_add_info("镜头帧", str(chart.view_states.size()))
+	_build_command_sections(chart)
 
 
 func _build_multi(chart: Chart, shapes: Array, views: Array) -> void:
@@ -189,6 +194,133 @@ func _build_multi(chart: Chart, shapes: Array, views: Array) -> void:
 	_add_button("插入 1 拍（当前轨）", func() -> void: timeline.insert_frames(1.0))
 	_add_sep()
 	_add_info("起点", "%.2f 拍" % _selection_start(shapes, views))
+	_build_command_sections(chart)
+
+
+## 演出指令参数页：起始拍、持续拍数、缓动、启用和各指令自己的参数。
+func _build_command(chart: Chart, command: AlphaCommand) -> void:
+	_add_title("演出指令 · " + command.label())
+	_add_info("类别", command.category_label())
+	_add_info("编号", command.id)
+	if not command.hint().is_empty():
+		_add_hint(command.hint())
+	_add_sep()
+	_add_spin("起始拍", command.beat, 0.0, 100000.0, 0.05, func(value: float) -> void:
+		_edit(func() -> void:
+			command.beat = maxf(0.0, value)
+			chart.commands.sort_custom(func(a: AlphaCommand, b: AlphaCommand) -> bool: return a.beat < b.beat)
+		)
+	)
+	_add_spin("持续拍数", command.duration, 0.0, 64.0, 0.25, func(value: float) -> void:
+		_edit(func() -> void: command.duration = maxf(0.0, value))
+	)
+	_add_hint("三段包络的起手/收尾各占 25%；持续拍数为 0 时按瞬时指令处理。")
+	var easing_keys := ["linear", "ease_in", "ease_out", "ease_in_out"]
+	var easing_labels := ["线性", "缓入", "缓出", "缓入缓出"]
+	var easing_index := easing_keys.find(command.easing)
+	_add_option("过渡曲线", easing_labels, maxi(0, easing_index), func(index: int) -> void:
+		_edit(func() -> void: command.easing = easing_keys[clampi(index, 0, easing_keys.size() - 1)])
+	)
+	_add_check("启用", command.enabled, func(value: bool) -> void:
+		_edit(func() -> void: command.enabled = value)
+	)
+	_add_sep()
+	for entry in command.spec().get("params", []):
+		_build_command_param(command, entry as Dictionary)
+	_add_sep()
+	_add_button("删除这条指令 (Del)", func() -> void: timeline.delete_command(command))
+	_add_button("播放头跳到这里", func() -> void: workspace.seek(command.beat))
+
+
+func _build_command_param(command: AlphaCommand, param: Dictionary) -> void:
+	var key := String(param.get("key", ""))
+	if key.is_empty():
+		return
+	var kind := String(param.get("type", "float"))
+	var label := String(param.get("label", key))
+	match kind:
+		"bool":
+			_add_check(label, command.flag(key), func(value: bool) -> void:
+				_edit(func() -> void: command.params[key] = value)
+			)
+		"text":
+			var edit := LineEdit.new()
+			edit.text = command.text_value(key)
+			edit.placeholder_text = label
+			edit.add_theme_font_size_override("font_size", 11)
+			edit.text_changed.connect(func(value: String) -> void:
+				_edit(func() -> void: command.params[key] = value)
+			)
+			add_child(edit)
+		"color":
+			_add_info(label, command.text_value(key, "#ffffff"))
+			var picker := ColorPickerButton.new()
+			picker.edit_alpha = true
+			picker.color = command.color_value(key)
+			picker.custom_minimum_size = Vector2(0, 26)
+			picker.color_changed.connect(func(value: Color) -> void:
+				_edit(func() -> void: command.params[key] = value.to_html(true))
+			)
+			add_child(picker)
+		"option":
+			var options: Array = param.get("options", [])
+			if options.is_empty():
+				return
+			var current := String(command.params.get(key, param.get("default", "")))
+			var index := options.find(current)
+			_add_option(label, options, maxi(0, index), func(picked: int) -> void:
+				_edit(func() -> void:
+					command.params[key] = String(options[clampi(picked, 0, options.size() - 1)])
+				)
+			)
+		_:
+			var step := float(param.get("step", 1.0))
+			var minimum := float(param.get("min", 0.0))
+			var maximum := float(param.get("max", 100.0))
+			_add_spin(label, command.number(key), minimum, maximum, step, func(value: float) -> void:
+				_edit(func() -> void: command.params[key] = int(value) if kind == "int" else value)
+			)
+
+
+## 没有选中指令时，在属性页底部给出三类指令的“添加”入口和已有列表。
+func _build_command_sections(chart: Chart) -> void:
+	_add_sep()
+	_add_title("演出指令")
+	_add_hint("双击时间轴「判定线 / 文本 / 滤镜」轨空白处也能新增；点指令块选中后在这里改参数。")
+	for category in [AlphaCommand.CATEGORY_JLINE, AlphaCommand.CATEGORY_TEXT, AlphaCommand.CATEGORY_FILTER]:
+		var entries := AlphaCommand.catalog(category)
+		if entries.is_empty():
+			continue
+		var commands := chart.commands_in(category)
+		_add_info(String(AlphaCommand.CATEGORY_LABELS.get(category, category)), "%d 条" % commands.size())
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 4)
+		var picker := OptionButton.new()
+		picker.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		picker.add_theme_font_size_override("font_size", 11)
+		for entry in entries:
+			picker.add_item(String(entry.get("label", entry.get("name", ""))))
+		row.add_child(picker)
+		var chosen: Array = [0]
+		picker.item_selected.connect(func(index: int) -> void: chosen[0] = index)
+		row.add_child(_small_button("＋ 播放头", func() -> void:
+			var index := clampi(int(chosen[0]), 0, entries.size() - 1)
+			timeline.add_command_of(String(entries[index].get("name", "")), workspace.playhead())
+		))
+		add_child(row)
+		for entry in commands:
+			var command := entry as AlphaCommand
+			if command == null:
+				continue
+			var picked: AlphaCommand = command
+			var line := HBoxContainer.new()
+			line.add_theme_constant_override("separation", 4)
+			var select := _small_button("%s  @%.2f" % [picked.label(), picked.beat],
+				func() -> void: timeline.select_command(picked))
+			select.alignment = HORIZONTAL_ALIGNMENT_LEFT
+			line.add_child(select)
+			line.add_child(_tiny_button("×", func() -> void: timeline.delete_command(picked)))
+			add_child(line)
 
 
 func _selection_start(shapes: Array, views: Array) -> float:
@@ -454,6 +586,25 @@ func _small_button(text: String, callback: Callable) -> Button:
 	button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	button.pressed.connect(callback)
 	return button
+
+
+func _tiny_button(text: String, callback: Callable) -> Button:
+	var button := Button.new()
+	button.text = text
+	button.add_theme_font_size_override("font_size", 10)
+	button.custom_minimum_size.x = 26.0
+	button.pressed.connect(callback)
+	return button
+
+
+func _add_check(text: String, value: bool, callback: Callable) -> CheckButton:
+	var check := CheckButton.new()
+	check.text = text
+	check.button_pressed = value
+	check.add_theme_font_size_override("font_size", 11)
+	check.toggled.connect(callback)
+	add_child(check)
+	return check
 
 
 func _add_title(text: String) -> void:

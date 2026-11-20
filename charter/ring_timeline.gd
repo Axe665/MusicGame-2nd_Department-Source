@@ -25,6 +25,16 @@ const LANE_SHAPE := 0
 const LANE_CAMERA := 1
 const LANE_EVENTS := 2
 const LANE_BPM := 3
+const LANE_COMMAND_JLINE := 4
+const LANE_COMMAND_TEXT := 5
+const LANE_COMMAND_FILTER := 6
+const COMMAND_LANES := [LANE_COMMAND_JLINE, LANE_COMMAND_TEXT, LANE_COMMAND_FILTER]
+const COMMAND_CATEGORIES := ["jline", "text", "filter"]
+
+## 演出指令区比辅助行高一点：要放得下指令块和 attack/release 两条刻度。
+const COMMAND_HEAD_H := 18.0
+const COMMAND_ROW_H := 30.0
+const COMMAND_GAP := 6.0
 
 var workspace
 var hidden_lanes: Dictionary = {}
@@ -36,6 +46,8 @@ var aux_open := false
 var _selected: Dictionary = {}
 var _primary := ""
 var _segment := ""
+## 演出指令单选：和形状/镜头多选分开，避免把两种编辑对象混在一起。
+var _selected_command: AlphaCommand = null
 
 var _content: Control
 var _overlay: Control
@@ -46,6 +58,8 @@ var _content_invalidations := 0
 var _drag_kind := ""
 var _drag_start_beat := 0.0
 var _drag_bases: Array[Dictionary] = []
+var _drag_command: AlphaCommand = null
+var _drag_command_origin := 0.0
 var _marquee_active := false
 var _marquee_start := Vector2.ZERO
 var _marquee_current := Vector2.ZERO
@@ -84,7 +98,7 @@ class OverlayLayer:
 
 func _init(p_workspace) -> void:
 	workspace = p_workspace
-	custom_minimum_size = Vector2(0, 286)
+	custom_minimum_size = Vector2(0, _timeline_height())
 	mouse_filter = Control.MOUSE_FILTER_STOP
 	focus_mode = Control.FOCUS_ALL
 	clip_contents = true
@@ -173,7 +187,12 @@ func on_playhead_changed() -> void:
 
 
 func selection_count() -> int:
-	return _selected.size()
+	return _selected.size() + (1 if _selected_command != null else 0)
+
+
+## 当前选中的演出指令；没有选中返回 null。
+func selected_command() -> AlphaCommand:
+	return _selected_command
 
 
 func primary_key() -> Dictionary:
@@ -189,6 +208,8 @@ func primary_view() -> ViewState:
 
 
 func primary_kind() -> String:
+	if _selected_command != null:
+		return "command"
 	if _primary.begins_with("shape:"):
 		return "shape"
 	if _primary.begins_with("view:"):
@@ -238,21 +259,25 @@ func segment_view() -> ViewState:
 
 
 func clear_selection() -> void:
-	if _selected.is_empty() and _segment.is_empty():
+	if _selected.is_empty() and _segment.is_empty() and _selected_command == null:
 		return
 	_selected.clear()
 	_primary = ""
 	_segment = ""
+	_selected_command = null
 	invalidate()
 	selection_changed.emit()
 
 
 func prune_selection() -> void:
-	if _selected.is_empty() and _segment.is_empty():
-		return
 	var chart: Chart = workspace.chart()
 	if chart == null:
 		clear_selection()
+		return
+	if _selected_command != null and not chart.commands.has(_selected_command):
+		_selected_command = null
+		selection_changed.emit()
+	if _selected.is_empty() and _segment.is_empty():
 		return
 	for key in _selected.keys():
 		var text := String(key)
@@ -277,12 +302,13 @@ func prune_selection() -> void:
 
 func _select_only(kind: String, id: int) -> void:
 	var token := "%s:%d" % [kind, id]
-	if _selected.size() == 1 and _selected.has(token) and _segment.is_empty():
+	if _selected.size() == 1 and _selected.has(token) and _segment.is_empty() and _selected_command == null:
 		return
 	_selected.clear()
 	_selected[token] = true
 	_primary = token
 	_segment = ""
+	_selected_command = null
 	_sync_app_selection(kind, id)
 	invalidate()
 	selection_changed.emit()
@@ -290,6 +316,7 @@ func _select_only(kind: String, id: int) -> void:
 
 func _toggle_select(kind: String, id: int) -> void:
 	var token := "%s:%d" % [kind, id]
+	_selected_command = null
 	if _selected.has(token):
 		_selected.erase(token)
 		if _primary == token:
@@ -306,12 +333,34 @@ func _toggle_select(kind: String, id: int) -> void:
 func _select_segment(kind: String, id: int) -> void:
 	var token := "%s:%d" % [kind, id]
 	_selected.clear()
+	_selected_command = null
 	_selected[token] = true
 	_primary = token
 	_segment = token
 	_sync_app_selection(kind, id)
 	invalidate()
 	selection_changed.emit()
+
+
+func _select_command(command: AlphaCommand) -> void:
+	if command == null:
+		return
+	if _selected_command == command and _selected.is_empty() and _segment.is_empty():
+		return
+	_selected.clear()
+	_primary = ""
+	_segment = ""
+	_selected_command = command
+	invalidate()
+	selection_changed.emit()
+
+
+## 检查器/指令列表点一条指令：选中并把播放头放到它的起始拍。
+func select_command(command: AlphaCommand) -> void:
+	if command == null:
+		return
+	_select_command(command)
+	workspace.seek(command.beat)
 
 
 ## 选中后同步 App 的旧选择字段，预览滚轮和画形板仍能跟随。
@@ -345,6 +394,8 @@ func _lane_top(lane: int) -> float:
 		return LANE_TOP
 	if lane == LANE_CAMERA:
 		return LANE_TOP + LANE_H + LANE_GAP
+	if lane >= LANE_COMMAND_JLINE:
+		return _command_lane_top(lane - LANE_COMMAND_JLINE)
 	var base := LANE_TOP + (LANE_H + LANE_GAP) * 2.0 + AUX_GAP + AUX_HEAD_H
 	if lane == LANE_EVENTS:
 		return base
@@ -352,7 +403,11 @@ func _lane_top(lane: int) -> float:
 
 
 func _lane_height(lane: int) -> float:
-	return LANE_H if lane <= LANE_CAMERA else AUX_ROW_H
+	if lane <= LANE_CAMERA:
+		return LANE_H
+	if lane <= LANE_BPM:
+		return AUX_ROW_H
+	return COMMAND_ROW_H
 
 
 func _lane_center(lane: int) -> float:
@@ -363,6 +418,33 @@ func _aux_header_top() -> float:
 	return LANE_TOP + (LANE_H + LANE_GAP) * 2.0 + AUX_GAP
 
 
+func _aux_bottom() -> float:
+	var bottom := _aux_header_top() + AUX_HEAD_H
+	if aux_open:
+		bottom += AUX_ROW_H * 2.0 + 4.0
+	return bottom
+
+
+func _command_header_top() -> float:
+	return _aux_bottom() + COMMAND_GAP
+
+
+func _command_lane_top(index: int) -> float:
+	return _command_header_top() + COMMAND_HEAD_H + float(index) * (COMMAND_ROW_H + LANE_GAP)
+
+
+func _command_bottom() -> float:
+	return _command_lane_top(COMMAND_LANES.size() - 1) + COMMAND_ROW_H
+
+
+func _timeline_height() -> float:
+	return maxf(286.0, _command_bottom() + FOOTER_H + 8.0)
+
+
+func _is_command_lane(lane: int) -> bool:
+	return lane >= LANE_COMMAND_JLINE and lane < LANE_COMMAND_JLINE + COMMAND_CATEGORIES.size()
+
+
 func _lane_at(y: float) -> int:
 	for lane in [LANE_SHAPE, LANE_CAMERA]:
 		if y >= _lane_top(lane) and y <= _lane_top(lane) + _lane_height(lane):
@@ -371,11 +453,14 @@ func _lane_at(y: float) -> int:
 		for lane in [LANE_EVENTS, LANE_BPM]:
 			if y >= _lane_top(lane) and y <= _lane_top(lane) + _lane_height(lane):
 				return lane
+	for lane in COMMAND_LANES:
+		if y >= _lane_top(lane) and y <= _lane_top(lane) + _lane_height(lane):
+			return lane
 	return -1
 
 
 func _lane_name(lane: int) -> String:
-	return ["形状", "镜头", "边界事件", "BPM 速度"][clampi(lane, 0, 3)]
+	return ["形状", "镜头", "边界事件", "BPM 速度", "判定线", "文本", "滤镜"][clampi(lane, 0, 6)]
 
 
 func _lane_colour(lane: int) -> Color:
@@ -388,6 +473,12 @@ func _lane_colour(lane: int) -> Color:
 			return UITheme.CORAL
 		3:
 			return Color(0.62, 0.85, 0.62)
+		4:
+			return UITheme.CYAN
+		5:
+			return UITheme.GOLD
+		6:
+			return UITheme.VIOLET
 	return Color.WHITE
 
 
@@ -399,6 +490,8 @@ func _lane_items(lane: int) -> Array:
 		return chart.sorted_shape_keys()
 	if lane == LANE_CAMERA:
 		return chart.sorted_view_states()
+	if _is_command_lane(lane):
+		return chart.commands_in(COMMAND_CATEGORIES[lane - LANE_COMMAND_JLINE])
 	if _lane_cache_version != chart.version:
 		_lane_cache_version = chart.version
 		_lane_cache.clear()
@@ -471,7 +564,7 @@ func _draw_content(canvas: CanvasItem) -> void:
 	canvas.draw_line(Vector2(GUTTER, 0), Vector2(GUTTER, size.y), Color(1, 1, 1, 0.12), 1.0)
 	canvas.draw_string(UITheme.FONT_REGULAR, Vector2(8, 16), "时间轴", HORIZONTAL_ALIGNMENT_LEFT, -1, 11,
 		Color(1, 1, 1, 0.82))
-	canvas.draw_string(UITheme.mono_font(), Vector2(66, 16), "形状 / 镜头 / 辅助",
+	canvas.draw_string(UITheme.mono_font(), Vector2(66, 16), "形状 / 镜头 / 辅助 / 演出",
 		HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(1, 1, 1, 0.38))
 	if chart == null:
 		return
@@ -488,6 +581,10 @@ func _draw_content(canvas: CanvasItem) -> void:
 		_draw_lane(canvas, LANE_EVENTS, _lane_items(LANE_EVENTS), chart, bpb, workspace.content_end_beat())
 	if aux_open and not hidden_lanes.has(LANE_BPM):
 		_draw_lane(canvas, LANE_BPM, _lane_items(LANE_BPM), chart, bpb, workspace.content_end_beat())
+	for lane in COMMAND_LANES:
+		if hidden_lanes.has(lane):
+			continue
+		_draw_command_lane(canvas, lane, _lane_items(lane), chart)
 	_draw_gutter(canvas, chart)
 	_draw_footer(canvas, chart)
 
@@ -526,7 +623,7 @@ func _draw_ruler(canvas: CanvasItem, start: float, span: float, bpb: float) -> v
 ## 所有轨道共用一套竖线：以前每轨各画一遍，四倍 draw call。
 func _draw_common_grid(canvas: CanvasItem, start: float, span: float, bpb: float) -> void:
 	var beat_px := (size.x - GUTTER) / maxf(0.001, span)
-	var bottom := _aux_header_top() + (AUX_HEAD_H + AUX_ROW_H * 2.0 if aux_open else 0.0)
+	var bottom := _command_bottom()
 	var top := LANE_TOP
 	for lane in [LANE_SHAPE, LANE_CAMERA]:
 		canvas.draw_rect(Rect2(Vector2(GUTTER, _lane_top(lane)), Vector2(size.x - GUTTER, LANE_H)),
@@ -535,6 +632,9 @@ func _draw_common_grid(canvas: CanvasItem, start: float, span: float, bpb: float
 		for lane in [LANE_EVENTS, LANE_BPM]:
 			canvas.draw_rect(Rect2(Vector2(GUTTER, _lane_top(lane)), Vector2(size.x - GUTTER, AUX_ROW_H)),
 				Color(_lane_colour(lane).r, _lane_colour(lane).g, _lane_colour(lane).b, 0.02))
+	for lane in COMMAND_LANES:
+		canvas.draw_rect(Rect2(Vector2(GUTTER, _lane_top(lane)), Vector2(size.x - GUTTER, COMMAND_ROW_H)),
+			Color(_lane_colour(lane).r, _lane_colour(lane).g, _lane_colour(lane).b, 0.02))
 	if not show_grid or beat_px <= 0.0001:
 		return
 	# 小节格：至少 12px 才画，格数随缩放抽稀；「全部」时不会画两万条线。
@@ -693,6 +793,68 @@ func _draw_lane(canvas: CanvasItem, lane: int, items: Array, chart: Chart, bpb: 
 			if lane == LANE_SHAPE:
 				canvas.draw_rect(Rect2(Vector2(x1 - 3.0, center + bar_h * 0.5 - 4.0), Vector2(6, 6)),
 					Color(color.r, color.g, color.b, 0.75), false, 1.0)
+
+
+## 演出指令轨：块横跨 beat → end_beat，块里画 attack/release 两条刻度。
+func _draw_command_lane(canvas: CanvasItem, lane: int, items: Array, _chart: Chart) -> void:
+	var color := _lane_colour(lane)
+	var top := _lane_top(lane)
+	var h := _lane_height(lane)
+	var center := top + h * 0.5
+	if items.is_empty():
+		canvas.draw_string(UITheme.FONT_REGULAR, Vector2(GUTTER + 8, center + 4),
+			"双击空白处添加%s指令" % _lane_name(lane), HORIZONTAL_ALIGNMENT_LEFT, -1, 10,
+			Color(1, 1, 1, 0.28))
+		return
+	for i in items.size():
+		var command := items[i] as AlphaCommand
+		if command == null:
+			continue
+		var start := command.beat
+		var end := command.end_beat()
+		if end <= start:
+			end = start + 0.25
+		var x0 := _x_for(start)
+		var x1 := _x_for(end)
+		if x1 < GUTTER - 4.0 or x0 > size.x + 4.0:
+			continue
+		var key_visible := x0 >= GUTTER - 0.5
+		x0 = clampf(x0, GUTTER + 1.0, size.x - 1.0)
+		x1 = clampf(x1, GUTTER + 1.0, size.x - 1.0)
+		var selected := _selected_command == command
+		var hovered := _hover_lane == lane and _hover_index == i
+		var alpha := 0.26 if selected else (0.18 if hovered else 0.12)
+		if not command.enabled:
+			alpha *= 0.45
+		var rect := Rect2(Vector2(x0, top + 3.0), Vector2(maxf(2.0, x1 - x0), h - 6.0))
+		canvas.draw_rect(rect, Color(color.r, color.g, color.b, alpha))
+		canvas.draw_rect(rect, Color(color.r, color.g, color.b,
+			0.95 if selected else (0.70 if hovered else 0.45)), false, 2.0 if selected else 1.0)
+		var length := maxf(0.0001, end - start)
+		var attack := clampf(float(command.params.get("attack", 0.25)), 0.0, 0.9)
+		var release := clampf(float(command.params.get("release", 0.25)), 0.0, 0.9)
+		if attack > 0.001 and attack < 0.999:
+			var ax := _x_for(start + length * attack)
+			if ax > x0 + 1.0 and ax < x1 - 1.0:
+				canvas.draw_line(Vector2(ax, rect.position.y), Vector2(ax, rect.end.y),
+					Color(1, 1, 1, 0.32), 1.0)
+		if release > 0.001 and release < 0.999:
+			var rx := _x_for(end - length * release)
+			if rx > x0 + 1.0 and rx < x1 - 1.0:
+				canvas.draw_line(Vector2(rx, rect.position.y), Vector2(rx, rect.end.y),
+					Color(1, 1, 1, 0.32), 1.0)
+		if key_visible:
+			canvas.draw_rect(Rect2(Vector2(x0 - 1.0, top + 1.0), Vector2(2.0, h - 2.0)), color)
+		if rect.size.x >= 46.0:
+			var label := command.label()
+			if rect.size.x >= 120.0:
+				label += " · %.2f 拍" % command.duration
+			if not command.enabled:
+				label += "（停用）"
+			canvas.draw_string(UITheme.FONT_REGULAR,
+				Vector2(rect.position.x + 8.0, center + 4.0), label,
+				HORIZONTAL_ALIGNMENT_LEFT, maxf(0.0, rect.size.x - 14.0), 10,
+				Color(1, 1, 1, 0.90 if selected else 0.70))
 
 
 ## 0 拍 → 第一帧的「基础圆」带：目标帧的 morph/easing 决定这段的过渡。
@@ -902,16 +1064,44 @@ func _draw_gutter(canvas: CanvasItem, chart: Chart) -> void:
 		Color(1, 1, 1, 0.62))
 	canvas.draw_string(UITheme.mono_font(), Vector2(70, aux_top + 15), "只读",
 		HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(1, 1, 1, 0.32))
-	if not aux_open:
-		return
-	for lane in [LANE_EVENTS, LANE_BPM]:
+	if aux_open:
+		for lane in [LANE_EVENTS, LANE_BPM]:
+			var top := _lane_top(lane)
+			var color := _lane_colour(lane)
+			var tint := Color(color.r, color.g, color.b, 0.85)
+			canvas.draw_string(UITheme.FONT_REGULAR, Vector2(50, top + 14), _lane_name(lane),
+				HORIZONTAL_ALIGNMENT_LEFT, -1, 10, tint)
+			canvas.draw_string(UITheme.mono_font(), Vector2(150, top + 14),
+				str(_lane_items(lane).size()), HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(1, 1, 1, 0.35))
+	# 演出指令区：始终展开，三条轨分别是判定线 / 文本 / 滤镜。
+	var cmd_top := _command_header_top()
+	canvas.draw_rect(Rect2(Vector2(4, cmd_top + 2), Vector2(size.x - 8, COMMAND_HEAD_H - 4)),
+		Color(1, 1, 1, 0.025))
+	canvas.draw_string(UITheme.FONT_REGULAR, Vector2(12, cmd_top + 14), "演出指令",
+		HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(1, 1, 1, 0.62))
+	canvas.draw_string(UITheme.mono_font(), Vector2(70, cmd_top + 14), "双击空白新增",
+		HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(1, 1, 1, 0.32))
+	for lane in COMMAND_LANES:
 		var top := _lane_top(lane)
 		var color := _lane_colour(lane)
-		var tint := Color(color.r, color.g, color.b, 0.85)
-		canvas.draw_string(UITheme.FONT_REGULAR, Vector2(50, top + 14), _lane_name(lane),
-			HORIZONTAL_ALIGNMENT_LEFT, -1, 10, tint)
-		canvas.draw_string(UITheme.mono_font(), Vector2(150, top + 14),
-			str(_lane_items(lane).size()), HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(1, 1, 1, 0.35))
+		var dim := hidden_lanes.has(lane)
+		var tint := Color(color.r, color.g, color.b, 0.28 if dim else 0.95)
+		canvas.draw_rect(Rect2(Vector2(4, top + 4), Vector2(3, COMMAND_ROW_H - 8)), tint)
+		var eye := Vector2(20, top + 13)
+		canvas.draw_arc(eye, 5.0, 0.0, TAU, 12, Color(1, 1, 1, 0.28 if dim else 0.68), 1.0, true)
+		canvas.draw_circle(eye, 1.6, Color(1, 1, 1, 0.28 if dim else 0.75))
+		if dim:
+			canvas.draw_line(eye + Vector2(-5, 5), eye + Vector2(5, -5), UITheme.CORAL, 1.2)
+		var lock := Vector2(34, top + 13)
+		canvas.draw_rect(Rect2(lock + Vector2(-3, -1), Vector2(6, 5)),
+			UITheme.CORAL if locked_lanes.has(lane) else Color(1, 1, 1, 0.28), false, 1.0)
+		canvas.draw_arc(lock + Vector2(0, -1), 2.4, PI, TAU, 8,
+			UITheme.CORAL if locked_lanes.has(lane) else Color(1, 1, 1, 0.28), 1.0, true)
+		canvas.draw_string(UITheme.FONT_REGULAR, Vector2(50, top + 18), _lane_name(lane),
+			HORIZONTAL_ALIGNMENT_LEFT, -1, 12, tint)
+		canvas.draw_string(UITheme.mono_font(), Vector2(150, top + 18),
+			"%d 条" % _lane_items(lane).size(), HORIZONTAL_ALIGNMENT_LEFT, -1, 9,
+			Color(1, 1, 1, 0.34 if dim else 0.55))
 
 
 func _draw_footer(canvas: CanvasItem, chart: Chart) -> void:
@@ -925,7 +1115,7 @@ func _draw_footer(canvas: CanvasItem, chart: Chart) -> void:
 		text += " · 已选段"
 	canvas.draw_string(UITheme.mono_font(), Vector2(8, top + 17), text,
 		HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(1, 1, 1, 0.62))
-	var hints := "Ctrl 点击加选 · 拖空白框选 · Ctrl+C/V 复制粘贴 · Del 删除 · ←/→ 微移"
+	var hints := "双击指令轨空白新增 · 拖指令块改拍 · Del 删除 · ←/→ 微移 · Ctrl+C/V 复制关键帧"
 	canvas.draw_string(UITheme.FONT_REGULAR, Vector2(GUTTER - 8, top + 17), hints,
 		HORIZONTAL_ALIGNMENT_RIGHT, size.x - GUTTER, 10, Color(1, 1, 1, 0.34))
 
@@ -957,7 +1147,9 @@ func _draw_overlay(canvas: CanvasItem) -> void:
 			var beat := _beat_of(items[_hover_index])
 			var x0 := _x_for(beat)
 			var next := beat + 0.25
-			if _hover_index + 1 < items.size():
+			if _is_command_lane(_hover_lane) and items[_hover_index] is AlphaCommand:
+				next = (items[_hover_index] as AlphaCommand).end_beat()
+			elif _hover_index + 1 < items.size():
 				next = _beat_of(items[_hover_index + 1])
 			var x1 := _x_for(next)
 			var top := _lane_top(_hover_lane)
@@ -987,6 +1179,11 @@ func _hover_hint(lane: int, item, start: float, end: float) -> String:
 		return "事件 %s（只读）" % (item as BoundaryEvent).id
 	if lane == LANE_BPM:
 		return "BPM %.1f（只读）" % float((item as Object).get("bpm"))
+	if _is_command_lane(lane) and item is AlphaCommand:
+		var command := item as AlphaCommand
+		return "%s · %s · %.2f 拍（%.2f → %.2f）%s" % [
+			command.label(), command.category_label(), command.duration,
+			command.beat, command.end_beat(), "" if command.enabled else "（停用）"]
 	return ""
 
 
@@ -1019,7 +1216,7 @@ func _gui_input(event: InputEvent) -> void:
 			workspace.seek(workspace.snap(_beat_at(event.position.x)))
 			invalidate_overlay()
 			accept_event()
-		elif _drag_kind == "keys":
+		elif _drag_kind == "keys" or _drag_kind == "command":
 			_drag_keys(event.position)
 			accept_event()
 		elif _marquee_active:
@@ -1035,25 +1232,24 @@ func _press(pos: Vector2, event: InputEventMouseButton) -> void:
 	var lane := _lane_at(pos.y)
 	# 左侧图层头：眼睛 / 锁 / 辅助折叠。
 	if pos.x <= GUTTER:
-		if aux_open or pos.y < _aux_header_top() + AUX_HEAD_H:
-			if lane >= 0:
-				if pos.x < 30.0:
-					if hidden_lanes.has(lane):
-						hidden_lanes.erase(lane)
-					else:
-						hidden_lanes[lane] = true
-					invalidate()
-					return
-				if pos.x < 44.0:
-					if locked_lanes.has(lane):
-						locked_lanes.erase(lane)
-					else:
-						locked_lanes[lane] = true
-					invalidate()
-					return
+		if lane >= 0:
+			if pos.x < 30.0:
+				if hidden_lanes.has(lane):
+					hidden_lanes.erase(lane)
+				else:
+					hidden_lanes[lane] = true
+				invalidate()
+				return
+			if pos.x < 44.0:
+				if locked_lanes.has(lane):
+					locked_lanes.erase(lane)
+				else:
+					locked_lanes[lane] = true
+				invalidate()
+				return
 		if pos.y >= _aux_header_top() and pos.y <= _aux_header_top() + AUX_HEAD_H:
 			aux_open = not aux_open
-			custom_minimum_size.y = 286.0 + (AUX_HEAD_H + AUX_ROW_H * 2.0 + 4.0 if aux_open else 0.0)
+			custom_minimum_size.y = _timeline_height()
 			invalidate()
 			return
 	# 标尺：擦洗。
@@ -1068,6 +1264,25 @@ func _press(pos: Vector2, event: InputEventMouseButton) -> void:
 		invalidate_overlay()
 		return
 	if hidden_lanes.has(lane):
+		return
+	# 演出指令：点块选中并拖动，双击空白新增。
+	if _is_command_lane(lane):
+		var command_items := _lane_items(lane)
+		var command_hit := _hit_command(lane, command_items, pos)
+		if command_hit >= 0:
+			var command := command_items[command_hit] as AlphaCommand
+			if command != null:
+				workspace.seek(command.beat)
+				_select_command(command)
+				if not locked_lanes.has(lane):
+					_begin_command_drag(command, pos)
+			return
+		if event.double_click:
+			add_command_at(lane, workspace.snap(_beat_at(pos.x)))
+			return
+		clear_selection()
+		workspace.seek(workspace.snap(_beat_at(pos.x)))
+		invalidate_overlay()
 		return
 	# 关键帧命中。
 	var items := _lane_items(lane)
@@ -1113,6 +1328,17 @@ func _release(pos: Vector2) -> void:
 		_drag_kind = ""
 		workspace.finish_scrub()
 		return
+	if _drag_kind == "command":
+		_drag_kind = ""
+		_drag_command = null
+		workspace.end_preview_drag()
+		workspace.end_content_freeze()
+		var chart: Chart = workspace.chart()
+		if chart != null:
+			chart.commands.sort_custom(func(a: AlphaCommand, b: AlphaCommand) -> bool: return a.beat < b.beat)
+		workspace.finish_edit()
+		invalidate()
+		return
 	if _drag_kind == "keys":
 		_drag_kind = ""
 		workspace.end_preview_drag()
@@ -1135,6 +1361,22 @@ func _hit_key(lane: int, items: Array, pos: Vector2) -> int:
 	for i in items.size():
 		var x := _x_for(_beat_of(items[i]))
 		if absf(pos.x - x) <= KEY_HIT:
+			return i
+	return -1
+
+
+func _hit_command(_lane: int, items: Array, pos: Vector2) -> int:
+	if pos.x < GUTTER or items.is_empty():
+		return -1
+	for i in items.size():
+		var command := items[i] as AlphaCommand
+		if command == null:
+			continue
+		var x0 := _x_for(command.beat)
+		var x1 := _x_for(command.end_beat())
+		if x1 < GUTTER or x0 > size.x:
+			continue
+		if pos.x >= minf(x0, x1) - 2.0 and pos.x <= maxf(x0, x1) + 2.0:
 			return i
 	return -1
 
@@ -1178,9 +1420,9 @@ func _update_hover(pos: Vector2) -> void:
 			invalidate_overlay()
 		return
 	var items := _lane_items(lane)
-	var index := _hit_key(lane, items, pos)
+	var index := _hit_command(lane, items, pos) if _is_command_lane(lane) else _hit_key(lane, items, pos)
 	var segment := -1
-	if index < 0:
+	if index < 0 and not _is_command_lane(lane):
 		segment = _hit_segment(lane, items, pos)
 	if index != _hover_index or segment != _hover_segment or lane != _hover_lane:
 		_hover_lane = lane
@@ -1202,11 +1444,30 @@ func _begin_key_drag(pos: Vector2) -> void:
 	workspace.begin_edit()
 
 
+func _begin_command_drag(command: AlphaCommand, pos: Vector2) -> void:
+	if command == null:
+		return
+	_drag_kind = "command"
+	_drag_command = command
+	_drag_start_beat = workspace.snap(_beat_at(pos.x))
+	_drag_command_origin = command.beat
+	workspace.begin_preview_drag()
+	workspace.begin_content_freeze()
+	workspace.begin_edit()
+
+
 func _drag_keys(pos: Vector2) -> void:
 	var chart: Chart = workspace.chart()
 	if chart == null:
 		return
-	var delta: float = workspace.snap(_beat_at(pos.x)) - _drag_start_beat
+	var snapped: float = workspace.snap(_beat_at(pos.x))
+	if _drag_kind == "command":
+		if _drag_command != null:
+			_drag_command.beat = maxf(0.0, _drag_command_origin + snapped - _drag_start_beat)
+			workspace.touch_chart()
+			invalidate()
+		return
+	var delta: float = snapped - _drag_start_beat
 	for base in _drag_bases:
 		var beat := maxf(0.0, float(base["beat"]) + delta)
 		if String(base["kind"]) == "shape":
@@ -1381,9 +1642,10 @@ func paste() -> void:
 
 
 func delete_selection() -> void:
+	var command := _selected_command
 	var shapes := selected_shape_keys()
 	var views := selected_views()
-	if shapes.is_empty() and views.is_empty():
+	if command == null and shapes.is_empty() and views.is_empty():
 		return
 	var shape_ids: Array[int] = []
 	for key in shapes:
@@ -1395,6 +1657,8 @@ func delete_selection() -> void:
 		var chart: Chart = workspace.chart()
 		if chart == null:
 			return
+		if command != null:
+			chart.remove_command(command)
 		for key in chart.shape_keys.duplicate():
 			if shape_ids.has(int(key.get("id", 0))):
 				chart.shape_keys.erase(key)
@@ -1403,7 +1667,56 @@ func delete_selection() -> void:
 				chart.view_states.erase(state)
 	)
 	clear_selection()
-	workspace._set_hint("已删除 %d 帧。" % (shape_ids.size() + view_ids.size()))
+	workspace._set_hint("已删除 %d 项。" % (shape_ids.size() + view_ids.size() + (1 if command != null else 0)))
+
+
+## 双击指令轨空白：默认加这一类里的第一条指令。
+func add_command_at(lane: int, beat: float) -> void:
+	if not _is_command_lane(lane):
+		return
+	var category: String = String(COMMAND_CATEGORIES[lane - LANE_COMMAND_JLINE])
+	var names := AlphaCommand.names(category)
+	if names.is_empty():
+		return
+	add_command_of(names[0], beat)
+
+
+func add_command_of(name: String, beat: float) -> void:
+	if AlphaCommand.spec_of(name).is_empty():
+		return
+	var chart: Chart = workspace.chart()
+	if chart == null:
+		return
+	var created_box: Array = [null]
+	workspace.mutate_chart(func() -> void:
+		created_box[0] = chart.add_command(name, maxf(0.0, beat))
+	)
+	var created := created_box[0] as AlphaCommand
+	if created == null:
+		return
+	_select_command(created)
+	workspace.seek(created.beat)
+	workspace._set_hint("已添加 %s（%.2f 拍）；在右侧改参数。" % [created.label(), created.beat])
+
+
+func delete_command(command: AlphaCommand) -> void:
+	if command == null:
+		return
+	var chart: Chart = workspace.chart()
+	if chart == null or not chart.commands.has(command):
+		return
+	workspace.mutate_chart(func() -> void:
+		chart.remove_command(command)
+	)
+	if _selected_command == command:
+		_selected_command = null
+	invalidate()
+	selection_changed.emit()
+	workspace._set_hint("已删除指令。")
+
+
+func delete_selected_command() -> void:
+	delete_command(_selected_command)
 
 
 func insert_frames(beats: float) -> void:
@@ -1432,12 +1745,14 @@ func insert_frames(beats: float) -> void:
 
 
 func nudge_selection(delta: float) -> void:
-	if _selected.is_empty():
+	if _selected.is_empty() and _selected_command == null:
 		return
 	var chart: Chart = workspace.chart()
 	if chart == null:
 		return
 	workspace.mutate_chart(func() -> void:
+		if _selected_command != null:
+			_selected_command.beat = maxf(0.0, _selected_command.beat + delta)
 		for key in selected_shape_keys():
 			key["beat"] = maxf(0.0, float(key.get("beat", 0.0)) + delta)
 		for state in selected_views():
@@ -1445,4 +1760,5 @@ func nudge_selection(delta: float) -> void:
 		chart.shape_keys.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
 			return float(a.get("beat", 0.0)) < float(b.get("beat", 0.0)))
 		chart.view_states.sort_custom(func(a: ViewState, b: ViewState) -> bool: return a.beat < b.beat)
+		chart.commands.sort_custom(func(a: AlphaCommand, b: AlphaCommand) -> bool: return a.beat < b.beat)
 	)
