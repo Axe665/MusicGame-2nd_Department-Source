@@ -3357,6 +3357,8 @@ func _start_replay(data: Replay) -> void:
 		return
 	if _playtest != null:
 		_end_playtest()
+	# 回放可能是在编辑器正在播放时导入的：不先停掉，编辑器音乐会一直垫在回放下面。
+	_stop_play()
 	var editor_root := get_node("Root") as Control
 	editor_root.hide()
 	editor_root.process_mode = Node.PROCESS_MODE_DISABLED

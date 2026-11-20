@@ -273,6 +273,8 @@ var _pause_tiers: Label
 var _path_judgement_toggle: CheckButton
 var _mouse_keys_toggle: CheckButton
 var _paused: bool = false
+## 「鼠标左右键算 Tap」关掉时，第一次点击提示一次，避免看起来像试玩没响应。
+var _mouse_keys_hint_shown: bool = false
 
 
 func _ready() -> void:
@@ -997,7 +999,9 @@ func _init_states() -> void:
 	_judge_from = 0
 	while _judge_from < _ordered_notes.size() and bool(_states[_ordered_notes[_judge_from].id]["done"]):
 		_judge_from += 1
-	_auto_index = 0
+	# 从播放头开始 + AUTO：0 会让 _auto_step 同一帧把之前所有音符都补按一遍，
+	# 长谱直接卡住。从第一颗还没结束的音符起。
+	_auto_index = _judge_from
 	_auto_cursor = Vector2.ZERO
 	_auto_hold_keys.clear()
 	_path_motion_samples.clear()
@@ -1224,10 +1228,8 @@ func _process(delta: float) -> void:
 
 ## 开始录制本局输入。
 func _start_recording() -> void:
-	if auto_play:
-		# AUTO 不需要输入，回放也就是再跑一遍 AUTO，不必录。
-		_record = null
-		return
+	# AUTO 也录合成输入（_auto_step 会写进同一份 Replay）：
+	# 不录的话结算页的「回放本局 / 导出回放」对 AUTO 局完全没有反应。
 	_record = Replay.new()
 	_record.coords = Replay.COORDS_UNIT
 	_record.chart_path = chart_path
@@ -1637,10 +1639,13 @@ func _auto_step(ms: float, beat: float, _delta: float) -> void:
 
 func _auto_press_note(note: Note, state: Dictionary, beat: float) -> void:
 	if note.type == "seek":
+		var seek_ms := float(state["target_ms"])
 		_seek_presses.append({
-			"time": float(state["target_ms"]),
+			"time": seek_ms,
 			"orien": note.seek_orien,
 		})
+		if _record != null:
+			_record.add_seek(seek_ms, seek_ms, seek_ms, note.seek_orien)
 		return
 	var key := AUTO_KEY_A if _auto_key_phase % 2 == 0 else AUTO_KEY_B
 	_auto_key_phase += 1
@@ -1770,6 +1775,10 @@ func _inside_red(point: Vector2, beat: float) -> bool:
 
 func _toggle_auto() -> void:
 	auto_play = not auto_play
+	# 和设置里的勾选保持一致：现在 F8 关掉后，下一次试玩不会又自动打开。
+	if _app != null:
+		_app.playtest_auto = auto_play
+		_app.save_settings()
 	_reset_path_motion()
 	if _preview != null:
 		_preview.auto_cursor = Vector2.INF if not auto_play else _preview.mouse_screen
@@ -1792,6 +1801,14 @@ func _toggle_auto() -> void:
 		_add_log("MIRROR %s" % _mirror_label())
 	if chart != null:
 		_update_hud_state()
+
+
+## 手动输入优先：AUTO 演示中玩家一按键/点击就关掉 AUTO，别让输入像被吞掉。
+func _take_over_from_auto(source: String) -> void:
+	if not auto_play:
+		return
+	_toggle_auto()
+	_show_toast("%s输入已接管，AUTO 已关闭" % source)
 
 
 func _judge_all(ms: float, beat: float) -> void:
@@ -3062,14 +3079,23 @@ func _input(event: InputEvent) -> void:
 		if click == 0:
 			return
 		# 「禁用鼠标按键」：左右键不算 Tap，但鼠标移动 / 滚轮照常。
+		# 第一次点击时明说，否则看起来就像试玩完全没响应。
 		if _app != null and not bool(_app.mouse_keys):
+			if event.pressed and not _mouse_keys_hint_shown:
+				_mouse_keys_hint_shown = true
+				_show_toast("鼠标左右键未参与判定：试玩设置里可打开「鼠标左右键算 Tap」")
 			return
-		if not _running or _paused or _finished or auto_play or replay_mode:
-			# 暂停/结算/回放/自动演示时，点击交给 UI 或忽略。
+		if not _running or _paused or _finished or replay_mode:
+			# 暂停/结算/回放时，点击交给 UI 或忽略。
 			return
 		if event.pressed and get_viewport().gui_get_hovered_control() is BaseButton:
 			# HUD 上的按钮（试玩设置、HUD 开关）自己处理这次点击。
 			return
+		if auto_play:
+			# AUTO 演示中玩家自己点一下 = 想手动玩：立刻交还控制权。
+			if not event.pressed:
+				return
+			_take_over_from_auto("鼠标")
 		var point: Vector2 = _preview.get_global_transform_with_canvas().affine_inverse() * event.position
 		if event.pressed:
 			_register_press(click, point)
@@ -3150,6 +3176,9 @@ func _input(event: InputEvent) -> void:
 				return
 			if not _running or _paused or _finished:
 				return
+			if auto_play:
+				# AUTO 演示中玩家自己按一下 = 想手动玩：立刻交还控制权。
+				_take_over_from_auto("键盘")
 			var key: int = event.physical_keycode if event.physical_keycode != 0 else event.keycode
 			_register_press(key)
 			get_viewport().set_input_as_handled()
@@ -3231,6 +3260,10 @@ func _finish() -> void:
 		else:
 			can_replay = _record != null and _record.event_count() > 0
 		_replay_button.disabled = not can_replay
+	if _export_replay_button != null:
+		# 没录到输入时也让按钮直接灰掉：以前点了只往下面的日志加一行，
+		# 看起来就是「导出回放没反应」。
+		_export_replay_button.disabled = _current_replay() == null
 	if _apply_bias_button != null:
 		var delta := -average_error
 		var can_apply: bool = not auto_play and not replay_mode and _errors.size() >= 8 and absf(delta) >= 1.0 \

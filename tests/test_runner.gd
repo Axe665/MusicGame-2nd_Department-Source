@@ -189,6 +189,7 @@ func _initialize() -> void:
 		"test_bpm_detect_87",
 		"test_bpm_detect_silence",
 		"test_auto_play",
+		"test_auto_resume_index_and_media_jobs",
 		"test_note_retire_state",
 		"test_path_tail_judge",
 		"test_slide_floor",
@@ -5077,6 +5078,32 @@ func test_note_retire_state() -> bool:
 	preview.clear_note_states()
 	eq(preview.note_state(1), "", "clearing drops every state")
 	preview.queue_free()
+	return true
+
+
+## 从播放头开始的 AUTO 不能从第 0 颗补按；转码任务死了要能被识别出来重跑。
+func test_auto_resume_index_and_media_jobs() -> bool:
+	var chart := DemoChart.make_empty({"title": "resume"})
+	chart.notes = [
+		Note.new("tap", 0.0, 0.0, 60.0),
+		Note.new("tap", 4.0, 90.0, 60.0),
+		Note.new("tap", 8.0, 180.0, 60.0),
+	]
+	for i in chart.notes.size():
+		chart.notes[i].id = i + 1
+	chart.refresh_ids()
+	var run := Playtest.new()
+	run.chart = chart
+	run._timeline_start_ms = chart.timing.beat_to_chart_ms(4.0)
+	run._init_states()
+	eq(run._judge_from, 1, "notes before the start beat are skipped")
+	eq(run._auto_index, run._judge_from, "AUTO resumes at the first live note, not note 0")
+	run.free()
+	MediaIO._jobs["__test__"] = 0
+	ok(MediaIO._job_running("__test__"), "a claimed job counts as running")
+	MediaIO._jobs["__test__"] = 999999999
+	ok(not MediaIO._job_running("__test__"), "a dead pid is not a running job")
+	MediaIO._jobs.erase("__test__")
 	return true
 
 

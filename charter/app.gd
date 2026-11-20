@@ -1860,9 +1860,20 @@ func validate_for_playtest(source: Chart) -> Array[Dictionary]:
 		return _validation_result
 	_validation_pending = true
 	_validation_timer = 0.0
+	# 后台校验可能因为编辑打断、线程失败等原因永远不回来。试玩按钮
+	# 不能因此一直没反应：兜底时限到了就同步算一次（旧行为）。
+	var deadline := Time.get_ticks_msec() + 8000
 	while is_inside_tree() and chart == source and source.version == version:
 		if source == _validated_chart and version == _validated_version:
 			return _validation_result
+		# 任务已经结束但结果没被接受（比如 worker 报错）：重新排一次。
+		if not _validation_pending and _chart_worker == null and not _chart_copying:
+			_validation_pending = true
+			_validation_timer = 0.0
+		if Time.get_ticks_msec() >= deadline:
+			var issues := Validator.validate(source)
+			_accept_chart_validation(source, version, issues)
+			return issues
 		await get_tree().process_frame
 	return []
 

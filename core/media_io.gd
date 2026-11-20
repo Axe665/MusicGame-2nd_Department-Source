@@ -185,13 +185,14 @@ static func prepare_audio_at_rate_async(path: String, rate: float, tree: SceneTr
 		last_error = "变速不变调需要 ffmpeg；当前 PATH 中找不到 ffmpeg。"
 		return ""
 	if _jobs.has(target):
-		while _jobs.has(target) and not FileAccess.file_exists(target):
+		# 原任务已经退出却什么都没产出（调用方中途被释放等），不要一直等下去。
+		while _jobs.has(target) and not FileAccess.file_exists(target) and _job_running(target):
 			await tree.create_timer(0.2).timeout
 		if FileAccess.file_exists(target):
 			return target
-		return ""
+		_jobs.erase(target)
 	DirAccess.make_dir_recursive_absolute("user://media")
-	_jobs[target] = true
+	_jobs[target] = 0
 	var progress_path := target + ".progress"
 	var progress_abs := ProjectSettings.globalize_path(progress_path)
 	if FileAccess.file_exists(progress_path):
@@ -201,6 +202,7 @@ static func prepare_audio_at_rate_async(path: String, rate: float, tree: SceneTr
 		_jobs.erase(target)
 		last_error = "无法启动 ffmpeg。"
 		return ""
+	_jobs[target] = pid
 	while OS.is_process_running(pid):
 		if progress.is_valid():
 			progress.call(-1.0, read_progress_seconds(progress_path))
@@ -293,13 +295,14 @@ static func prepare_video_async(path: String, tree: SceneTree, progress: Callabl
 		return ""
 	if _jobs.has(target):
 		# 编辑器预览和试玩可能同时打开同一段 BGA：等第一份转完，别起第二个 ffmpeg。
-		while _jobs.has(target) and not FileAccess.file_exists(target):
+		# 原任务已经退出却没产出时重跑，而不是永远卡在「加载中」。
+		while _jobs.has(target) and not FileAccess.file_exists(target) and _job_running(target):
 			await tree.create_timer(0.2).timeout
 		if FileAccess.file_exists(target):
 			return target
-		return ""
+		_jobs.erase(target)
 	DirAccess.make_dir_recursive_absolute("user://media")
-	_jobs[target] = true
+	_jobs[target] = 0
 	var progress_path := _cache_path(path, "progress")
 	var progress_abs := ProjectSettings.globalize_path(progress_path)
 	if FileAccess.file_exists(progress_path):
@@ -309,6 +312,7 @@ static func prepare_video_async(path: String, tree: SceneTree, progress: Callabl
 		_jobs.erase(target)
 		last_error = "无法启动 ffmpeg。"
 		return ""
+	_jobs[target] = pid
 	var duration := probe_video_duration(path)
 	while OS.is_process_running(pid):
 		if progress.is_valid():
@@ -343,13 +347,13 @@ static func prepare_audio_async(path: String, tree: SceneTree, progress: Callabl
 		last_error = "该音频格式需要 ffmpeg；当前 PATH 中找不到 ffmpeg。"
 		return ""
 	if _jobs.has(target):
-		while _jobs.has(target) and not FileAccess.file_exists(target):
+		while _jobs.has(target) and not FileAccess.file_exists(target) and _job_running(target):
 			await tree.create_timer(0.2).timeout
 		if FileAccess.file_exists(target):
 			return target
-		return ""
+		_jobs.erase(target)
 	DirAccess.make_dir_recursive_absolute("user://media")
-	_jobs[target] = true
+	_jobs[target] = 0
 	var progress_path := _cache_path(path, "progress")
 	var progress_abs := ProjectSettings.globalize_path(progress_path)
 	if FileAccess.file_exists(progress_path):
@@ -359,6 +363,7 @@ static func prepare_audio_async(path: String, tree: SceneTree, progress: Callabl
 		_jobs.erase(target)
 		last_error = "无法启动 ffmpeg。"
 		return ""
+	_jobs[target] = pid
 	# 不做 ffprobe：OS.execute 会卡主线程 ~80ms；音频这里只报已转秒数。
 	while OS.is_process_running(pid):
 		if progress.is_valid():
@@ -522,6 +527,12 @@ static func _source_path(path: String) -> String:
 	if path.begins_with("res://") or path.begins_with("user://"):
 		return ProjectSettings.globalize_path(path)
 	return path
+
+
+## 同一目标上的转码任务是否还活着；0 = 刚占位、pid 还没写回。
+static func _job_running(target: String) -> bool:
+	var pid := int(_jobs.get(target, 0))
+	return pid <= 0 or OS.is_process_running(pid)
 
 
 static func _cache_path(path: String, extension: String) -> String:
