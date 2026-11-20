@@ -8,7 +8,7 @@ Godot 4.7.2 实现的《Tamaki₃》谱面编辑器纵向切片。设计依据�
 
 首版目标是“能写、能看、能打”：三栏编辑器、u×时间画布、分段边界、Seek、Limit、3D 预览、F5 二值试玩、紧凑代码谱面，以及一套可被文档算例证伪的 `core/` 数学层。
 
-> **合并基线**：本项目是本地 Seek / Limit / 紧凑谱面改动与 GitHub `Axe665/MusicGame-2nd_Department-Source` 的 `7aff95e4` 合并后的版本。
+> **合并基线**：本项目是本地 Seek / Limit / 紧凑谱面改动与 GitHub `Axe665/MusicGame-2nd_Department-Source` 的 `5b10e72` 合并后的版本。
 
 ## 运行
 
@@ -225,7 +225,7 @@ godot --headless --path . --script res://tests/test_runner.gd
 godot --headless --path . --script res://tests/alpha_commands.gd
 ```
 
-当前结果：**2201 passed, 0 failed**。测试覆盖：
+当前结果：**2206 passed, 0 failed**。测试覆盖：
 
 - 120 BPM / 变速 / offset 的时间换算与反解
 - 新建谱面 BPM 三位小数/一位小数取整与 offset 三位小数规范化
