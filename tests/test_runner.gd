@@ -87,6 +87,7 @@ func _initialize() -> void:
 		"test_video_export_cursor",
 		"test_video_export_plan_hits",
 		"test_video_export_sfx_capture",
+		"test_video_export_uses_resolved_ffmpeg",
 		"test_note_fall_time",
 		"test_aim_angle_fallback",
 		"test_inspector_wheel_scrolls_page",
@@ -3202,6 +3203,22 @@ func test_wheel_direction_matches_screen() -> bool:
 
 ## 导出视频里的打击音：离线整局静音，必须把 SFX 事件收集起来混进音轨，
 ## 否则成片只剩音乐（和现在的 bug 一致）。
+## 回归：导出用的 ffmpeg 必须是解析后的可执行路径，而不是「用户设置值」。
+## 以前直接返回 MediaIO.ffmpeg_exe（默认是哨兵字符串 "ffmpeg"），装了内置 ffmpeg
+## 但 PATH 里没有 ffmpeg 的机器会拿到一个执行不起来的字符串，导出直接报「找不到编码器」。
+func test_video_export_uses_resolved_ffmpeg() -> bool:
+	var exporter := VideoExport.new()
+	if not MediaIO.has_ffmpeg():
+		exporter.free()
+		return true
+	var resolved := MediaIO.exe()
+	eq(exporter._ffmpeg(), resolved, "exporter uses the resolved ffmpeg path")
+	if resolved != "ffmpeg":
+		ok(exporter._ffmpeg() != "ffmpeg", "exporter does not fall back to the sentinel value")
+	exporter.free()
+	return true
+
+
 func test_video_export_sfx_capture() -> bool:
 	var run := Playtest.new()
 	run._sfx = HitSfx.new()

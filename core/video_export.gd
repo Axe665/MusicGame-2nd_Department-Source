@@ -84,7 +84,9 @@ static func _candidates() -> Array:
 
 
 func _ffmpeg() -> String:
-	return MediaIO.ffmpeg_exe if MediaIO.has_ffmpeg() else ""
+	# 必须走 exe()：ffmpeg_exe 只是「用户手动指定」的设置值，默认是哨兵 "ffmpeg"。
+	# 直接返回它的话，装了内置 ffmpeg 但 PATH 里没有 ffmpeg 的机器会拿到一个执行不起来的字符串。
+	return MediaIO.exe() if MediaIO.has_ffmpeg() else ""
 
 
 func _list_encoders(ffmpeg: String) -> Dictionary:
