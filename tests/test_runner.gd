@@ -4173,6 +4173,19 @@ func test_playtest_feedback() -> bool:
 	preview.add_hit_pulse(Vector2(30, 30), Color.WHITE, "GREAT", "tap", "", true)
 	ok(bool(preview._pulses[1].get("fx", true)), "other tiers keep their effect")
 	preview.free()
+	# PERFECT 爆点和判定字都关掉时，不占特效预算。
+	var run := Playtest.new()
+	var run_preview := Preview3D.new()
+	run._preview = run_preview
+	run_preview.show_perfect_fx = false
+	run_preview.hud_options = {"judge_filter": "below_perfect"}
+	run._pulse_at(0.0, 0.0, Color.WHITE, "PERFECT", 60.0, "tap", "", Vector2(10, 10))
+	eq(run_preview._pulses.size(), 0, "hidden perfect pulse is not queued")
+	run_preview.hud_options = {"judge_filter": "all"}
+	run._pulse_at(0.0, 0.0, Color.WHITE, "PERFECT", 60.0, "tap", "", Vector2(10, 10))
+	eq(run_preview._pulses.size(), 1, "perfect label still queues when filter allows")
+	run.free()
+	run_preview.free()
 	return true
 
 

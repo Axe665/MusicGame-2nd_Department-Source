@@ -2506,6 +2506,11 @@ func _pulse_at(angle_degrees: float, beat: float, color: Color, label: String, w
 		p = _preview.project_u(fposmod(angle_degrees, 360.0) / 360.0, beat)
 	if p.is_finite() and p.x < 1.0e9:
 		var show_fx := label != "PERFECT" or _preview.show_perfect_fx
+		var show_label := Preview3D.judge_label_visible(label,
+			String(_preview.hud_options.get("judge_filter", "all")))
+		# 爆点和判定字都关掉时不要再塞脉冲：否则 PERFECT 会把 20 条特效预算吃满。
+		if not show_fx and not show_label:
+			return
 		_preview.add_hit_pulse(p, color, label, kind, detail, show_fx)
 		if show_fx:
 			_preview.add_arc_flash(angle_degrees, width, beat, color)
