@@ -45,6 +45,7 @@ func _initialize() -> void:
 		"test_timing_stats",
 		"test_nearest_u",
 		"test_pre_read",
+		"test_group_note_speed",
 		"test_bar_lines",
 		"test_beat_grid_lines",
 		"test_pinned_scroll",
@@ -4113,6 +4114,49 @@ func test_note_groups() -> bool:
 		eq(loaded.groups.size(), 2, "groups survive roundtrip")
 		eq(loaded.notes[0].group_id, gid, "note group survives")
 		ok(not loaded.notes[1].enabled, "note false state survives")
+	return true
+
+
+## 组 BPM 只给非 0 组做差速；组 0 的 BPM 点就是谱面 timing，
+## 换 BPM 时下落时长仍固定，和旧版一致。拍位始终按 timing 换算。
+func test_group_note_speed() -> bool:
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 230.0, 4)]
+	chart.ensure_groups()
+	chart.group_data(0)["bpm"] = 120.0
+	chart.group_bpm_points[0] = [TimingPoint.new(0.0, 230.0, 4), TimingPoint.new(1.0, 230.0, 4)]
+	chart.ensure_groups()
+	near(float(chart.group_data(0)["bpm"]), 230.0, 0.001, "group base follows the first BPM point")
+	var preview := Preview3D.new()
+	preview.flow_scale = 1.0
+	var note := Note.new("tap", 8.0, 90.0, 60.0)
+	note.group_id = 0
+	chart.notes.append(note)
+	var spawn := preview._spawn_beat(chart, note.beat, note.group_id)
+	near(chart.timing.beat_to_chart_ms(note.beat) - chart.timing.beat_to_chart_ms(spawn), 1000.0, 1.0,
+		"group 0 keeps the 1s fall")
+	near(preview._note_progress(chart, note, spawn), 0.0, 0.001, "note starts at the center")
+	near(preview._note_progress(chart, note, note.beat), 1.0, 0.001, "note reaches the ring on its beat")
+	# 组 0 的 BPM 变化是音频/判定时间，不改变视觉速度。
+	chart.group_bpm_points[0] = [TimingPoint.new(0.0, 230.0, 4), TimingPoint.new(4.0, 460.0, 4)]
+	spawn = preview._spawn_beat(chart, note.beat, note.group_id)
+	near(chart.timing.beat_to_chart_ms(note.beat) - chart.timing.beat_to_chart_ms(spawn), 1000.0, 1.0,
+		"group 0 BPM changes do not change the fall time")
+	# 其他组才用组 BPM 差速：230 → 460 是 2 秒。
+	var gid := chart.add_group(230.0)
+	chart.group_bpm_points[gid] = [TimingPoint.new(0.0, 230.0, 4), TimingPoint.new(4.0, 460.0, 4)]
+	note.group_id = gid
+	spawn = preview._spawn_beat(chart, note.beat, note.group_id)
+	near(chart.timing.beat_to_chart_ms(note.beat) - chart.timing.beat_to_chart_ms(spawn), 2000.0, 1.0,
+		"higher current group BPM doubles the fall time")
+	near(preview._note_progress(chart, note, spawn), 0.0, 0.001, "slowed note starts at the center")
+	near(preview._note_progress(chart, note, (spawn + note.beat) * 0.5), 0.5, 0.01,
+		"slowed note moves at half speed")
+	near(preview._note_progress(chart, note, note.beat), 1.0, 0.001, "slowed note lands on its beat")
+	var early := chart.timing.spawn_beat(note.beat, 1500.0)
+	ok(preview._notes_around(chart, early, 0.1, 0.1).has(note),
+		"slow group note enters the draw window before the normal 1s pre-read")
+	preview.free()
 	return true
 
 

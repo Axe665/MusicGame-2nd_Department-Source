@@ -208,6 +208,25 @@ func ensure_groups() -> void:
 		for point in timing.points:
 			migrated.append(TimingPoint.new(point.beat, point.bpm, point.beats_per_bar))
 		group_bpm_points[0] = migrated
+	# 组的基准 BPM 以第 0 拍 BPM 点为准。osu 导入和旧谱的 groups.bpm 可能还是
+	# 创建时的 120，与 BPM 点不一致，会让下落速度被多乘一次。
+	for group in groups:
+		var gid := int(group.get("id", 0))
+		var raw: Variant = group_bpm_points.get(gid, [])
+		if raw is not Array:
+			continue
+		for item in raw:
+			var point_beat := INF
+			var point_bpm := 0.0
+			if item is TimingPoint:
+				point_beat = (item as TimingPoint).beat
+				point_bpm = (item as TimingPoint).bpm
+			elif item is Dictionary:
+				point_beat = float((item as Dictionary).get("beat", INF))
+				point_bpm = float((item as Dictionary).get("bpm", 0.0))
+			if point_beat <= 0.0001 and point_bpm > 0.0:
+				group["bpm"] = point_bpm
+				break
 
 
 func group_index(group_id: int) -> int:

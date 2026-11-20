@@ -2276,8 +2276,8 @@ func _pick_note(screen: Vector2) -> int:
 	for note in chart.notes:
 		match note.type:
 			"path":
-				var head := _flying_position(chart, note.angle, note.beat, t, pre)
-				var tail := _flying_position(chart, note.tail_angle, note.end_beat, t, pre)
+				var head := _flying_position(chart, note.angle, note.beat, t, pre, note.group_id)
+				var tail := _flying_position(chart, note.tail_angle, note.end_beat, t, pre, note.group_id)
 				if head.distance_to(screen) < best_distance:
 					best_distance = head.distance_to(screen)
 					best = note.id
@@ -2286,7 +2286,7 @@ func _pick_note(screen: Vector2) -> int:
 					best = note.id
 			_:
 				var u := note.center_u if note.type == "bell" else fposmod(note.angle, 360.0) / 360.0
-				var target := _flying_position(chart, u * 360.0, note.beat, t, pre)
+				var target := _flying_position(chart, u * 360.0, note.beat, t, pre, note.group_id)
 				var boundary := project_u(u, t)
 				var distance := minf(target.distance_to(screen), boundary.distance_to(screen))
 				if distance < best_distance:
@@ -2351,23 +2351,43 @@ func _group_current_bpm(chart: Chart, group_id: int, beat: float) -> float:
 	return chart.group_bpm_at(group_id, beat) if group_id >= 0 else chart.timing.bpm_at(beat)
 
 
-func _spawn_beat(chart: Chart, target_beat: float, group_id: int = -1) -> float:
-	# Base BPM defines the reference speed; a higher current BPM slows the
-	# visual approach by (current / base), per the chart speed formula.
+## 组 BPM 只给非 0 组做差速：组 0 的 BPM 点就是谱面 timing，
+## 让它参与速度会让换 BPM 的段落突然变速，回到之前“固定 1 秒”的行为。
+func _group_travel_ms(chart: Chart, target_beat: float, group_id: int, base_ms: float) -> float:
+	if group_id <= 0:
+		return base_ms
 	var base := maxf(1.0, _group_base_bpm(chart, group_id, target_beat))
 	var current := maxf(1.0, _group_current_bpm(chart, group_id, target_beat))
-	var travel_ms := _pre_read_ms(chart, target_beat) * current / base
-	return target_beat - travel_ms * current / 60000.0
+	return base_ms * current / base
+
+
+## 所有组里最慢的下落倍率：取窗口时要按它多回溯一段，否则慢组音符会
+## 在预读窗口外生成，直到半路才突然出现。
+func _max_group_speed_ratio(chart: Chart) -> float:
+	var ratio := 1.0
+	for group in chart.groups:
+		var gid := int(group.get("id", 0))
+		if gid <= 0:
+			continue
+		var base := maxf(1.0, _group_base_bpm(chart, gid, 0.0))
+		for point in chart.group_bpm_points_for(gid):
+			ratio = maxf(ratio, maxf(1.0, point.bpm) / base)
+	return clampf(ratio, 1.0, 8.0)
+
+
+func _spawn_beat(chart: Chart, target_beat: float, group_id: int = -1) -> float:
+	# Base BPM defines the reference speed; a higher current BPM slows the
+	# visual approach by (current / base). Beat conversion still follows the
+	# chart timing map, otherwise a 230 BPM chart with a 120 BPM group falls
+	# in half a second instead of one.
+	var travel_ms := _group_travel_ms(chart, target_beat, group_id, _pre_read_ms(chart, target_beat))
+	return chart.timing.spawn_beat(target_beat, travel_ms)
 
 
 ## 0..1 的接近进度（毫秒恒速，不会在变 BPM 时忽然跳到一半）。
 func _approach(chart: Chart, target_beat: float, current_beat: float, group_id: int = -1) -> float:
-	var base := maxf(1.0, _group_base_bpm(chart, group_id, target_beat))
-	var current := maxf(1.0, _group_current_bpm(chart, group_id, target_beat))
-	var travel_ms := _pre_read_ms(chart, target_beat) * current / base
-	var elapsed_beats := maxf(0.0, target_beat - current_beat)
-	var elapsed_ms := elapsed_beats * 60000.0 / current
-	return clampf(1.0 - elapsed_ms / maxf(1.0, travel_ms), 0.0, 1.0)
+	var travel_ms := _group_travel_ms(chart, target_beat, group_id, _pre_read_ms(chart, target_beat))
+	return chart.timing.approach(target_beat, current_beat, travel_ms)
 
 
 ## 星星从圆心落到环上的时长（固定 0.5 秒，换算成拍；不超过预读）。
@@ -2395,10 +2415,9 @@ func _radial_scale(point: Vector2, min_scale: float, max_scale: float, beat: flo
 
 ## 星星开始下落（落到环上 0.5 秒前）的拍号。
 func _fall_beat(chart: Chart, target_beat: float, group_id: int = -1) -> float:
-	var base := maxf(1.0, _group_base_bpm(chart, group_id, target_beat))
-	var current := maxf(1.0, _group_current_bpm(chart, group_id, target_beat))
-	var travel_ms := minf(_pre_read_ms(chart, target_beat), 500.0) * current / base
-	return target_beat - travel_ms * current / 60000.0
+	var travel_ms := _group_travel_ms(chart, target_beat, group_id,
+		minf(_pre_read_ms(chart, target_beat), 500.0))
+	return chart.timing.spawn_beat(target_beat, travel_ms)
 
 
 func _flying_position(chart: Chart, angle: float, target_beat: float, current_beat: float, _pre: float, group_id: int = -1) -> Vector2:
@@ -3398,7 +3417,8 @@ func _visible_paths(chart: Chart, beat: float) -> Array[Note]:
 	# whose root is far behind the current beat.
 	var first: int = _path_prefix_end.bsearch(beat)
 	var timing: TimingMap = chart.timing
-	var latest_head: float = timing.chart_ms_to_beat(timing.beat_to_chart_ms(beat) + _pre_read_ms(chart)) + 0.000001
+	var latest_head: float = timing.chart_ms_to_beat(
+		timing.beat_to_chart_ms(beat) + _pre_read_ms(chart) * _max_group_speed_ratio(chart)) + 0.000001
 	for i in range(first, _path_index.size()):
 		var entry: VisiblePath = _path_index[i]
 		if entry.first_beat > latest_head:
@@ -3406,7 +3426,7 @@ func _visible_paths(chart: Chart, beat: float) -> Array[Note]:
 		if entry.last_beat < beat:
 			continue
 		for part in entry.parts:
-			var spawn_beat: float = chart.timing.spawn_beat(part.beat, _pre_read_ms(chart, part.beat))
+			var spawn_beat := _spawn_beat(chart, part.beat, part.group_id)
 			if beat > part.end_beat + 0.5 or beat < spawn_beat:
 				continue
 			if entry.note == null:
@@ -4375,7 +4395,7 @@ func _draw_bent_hold(canvas: Control, chart: Chart, note: Note, t: float, pre: f
 		canvas.draw_line(boundary - normal * knob, boundary + normal * knob, Color(1, 1, 1, 0.95 * fade), 5.0 * cs, false)
 		canvas.draw_line(boundary - normal * knob, boundary + normal * knob, Color(tint.r, tint.g, tint.b, 0.95 * fade), 2.6 * cs, false)
 	if show_debug and t < note.beat + 0.02:
-		var head := _flying_position(chart, note.angle, note.beat, t, pre)
+		var head := _flying_position(chart, note.angle, note.beat, t, pre, note.group_id)
 		if _valid_point(head):
 			canvas.draw_string(UITheme.bold_font(), head + Vector2(-14, -22), "HOLD", HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(tint.r, tint.g, tint.b, 0.85))
 	if not hide_head and t >= note.beat and t <= note.end_beat:
@@ -4394,7 +4414,8 @@ func _draw_holds(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 	var ns := _note_scale()
 	var visible: Array[Note] = []
 	# 回溯窗口按真实最长音符算：写死 128 拍会白扫上千颗短音符。
-	for note in _notes_in_range(chart, t - pre - chart.max_note_length_beats(), t + pre + 0.3):
+	var back := pre * _max_group_speed_ratio(chart)
+	for note in _notes_in_range(chart, t - back - chart.max_note_length_beats(), t + pre + 0.3):
 		if note.type != "hold":
 			continue
 		var fade_beats := end_fade_beats(chart.timing.bpm_at(note.beat))
@@ -6093,7 +6114,7 @@ func note_head_screen(note: Note, beat: float) -> Vector2:
 	var chart := get_chart()
 	if chart == null:
 		return Vector2(INF, INF)
-	return _flying_position(chart, note.angle, note.beat, beat, _star_fall_beats(chart, beat))
+	return _flying_position(chart, note.angle, note.beat, beat, _star_fall_beats(chart, beat), note.group_id)
 
 
 ## Path 头在环上的落点弧（宽度 = note.width 度）。
@@ -6115,7 +6136,7 @@ func note_graphic_radius(kind: String) -> float:
 ## 变 BPM 时同一个预读在拍号上会变宽/变窄，按拍号取窗口会让音符提前进/提前出；
 ## 这里先把 t±pre_ms 换成拍号，窗口在时间上永远是同一个长度。
 func _notes_around(chart: Chart, t: float, back: float = 0.0, ahead: float = 0.0) -> Array[Note]:
-	var pre_ms := _pre_read_ms(chart, t)
+	var pre_ms := _pre_read_ms(chart, t) * _max_group_speed_ratio(chart)
 	var t_ms := chart.timing.beat_to_chart_ms(t)
 	var from_beat := chart.timing.chart_ms_to_beat(t_ms - pre_ms) - back
 	var to_beat := chart.timing.chart_ms_to_beat(t_ms + pre_ms) + ahead
@@ -6314,7 +6335,7 @@ func _drag_text(pos: Vector2) -> void:
 
 ## 音符下落进度：HS 越大越早冲到判定环，只影响该音符自身。
 func _note_progress(chart: Chart, note: Note, t: float) -> float:
-	var progress := _approach(chart, note.beat, t)
+	var progress := _approach(chart, note.beat, t, note.group_id)
 	var speed := note.speed_scale()
 	if absf(speed - 1.0) > 0.001:
 		progress = clampf(progress * speed, 0.0, 1.0)

@@ -1488,7 +1488,8 @@ func _build_timing_page(page: VBoxContainer) -> void:
 	chart.ensure_groups()
 	var current_group_data: Dictionary = chart.group_data(chart.current_group)
 	_section(page, "当前组 BPM")
-	_label(page, "组 %d 的基准 BPM。切换组时这里和音符速度会一起切换。" % chart.current_group, 11, UITheme.MUTED)
+	_label(page, ("组 0 是默认组，下落速度固定 1 秒；组 BPM 差速只对组 1 起生效。" if chart.current_group == 0
+		else "组 %d 的基准 BPM。切换组时这里和音符速度会一起切换。" % chart.current_group), 11, UITheme.MUTED)
 	_spin(page, "当前组 BPM", float(current_group_data.get("bpm", chart.timing.bpm_at(0.0))), 20.0, 600.0, 0.001,
 		func(value: float) -> void:
 			_app.begin_edit()
