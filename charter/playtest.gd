@@ -106,11 +106,14 @@ var next_playback_rate: float = 1.0
 var _timeline_start_beat: float = 0.0
 var _timeline_start_ms: float = -INF
 var _loaded_audio: AudioStream = null
+var _audio_load_jobs: Array[Thread] = []
 ## 当前音频流的时间伸缩倍率（1 = 原始；>1 = 已经 atempo 过）。
 var _audio_stream_rate: float = 1.0
 ## 时间轴退到音频 0 秒之前时，音频要等这么久再起播（ms）。
 var _audio_delay_ms: float = 0.0
-## 准备阶段的倒计时 = 开头这一小节（拍号拍数），滴答落在拍上，最后一拍就是第一颗音符。
+var _storyboard_ready_deadline_ms: int = 0
+## 准备阶段的倒计时 = 开头这一小节（拍号拍数），最后一拍是 GO；
+## GO 本身算一拍、只响不显示，所以画面上是 3、2、1（4/4），共 N 声。
 var _countdown_sec: float = 2.0
 var _countdown_beats: int = 4
 var _countdown_bpm: float = 120.0
@@ -380,7 +383,9 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 		_start_play()
 		return
 	if DisplayServer.get_name() == "headless" or replay_mode:
-		await _prepare_audio()
+		await _prepare_audio(token)
+		if token != _setup_token or not is_inside_tree():
+			return
 		_open_path_input_log()
 		_start_play()
 		return
@@ -393,12 +398,13 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	await get_tree().process_frame
 	if token != _setup_token or not is_inside_tree():
 		return
-	await _prepare_audio()
+	await _prepare_audio(token)
 	if token != _setup_token or not is_inside_tree():
 		return
 	_ready_phase = "fill"
 	_ready_progress = 0.0
 	_ready_delay = 0.3
+	_storyboard_ready_deadline_ms = Time.get_ticks_msec() + 3000
 	_ready_layer.queue_redraw()
 	_running = false
 	_open_path_input_log()
@@ -441,37 +447,43 @@ func _start_countdown() -> void:
 	# 用开始拍所在小节的拍号与 BPM：4/4 就是 4 拍，滴答和歌曲同一拍速。
 	_countdown_beats = maxi(2, chart.timing.beats_per_bar_at(start_beat))
 	_countdown_bpm = maxf(20.0, chart.timing.bpm_at(start_beat))
-	_countdown_sec = float(_countdown_beats) * 60.0 / _countdown_bpm
+	# 最后一拍就是开始提示音：GO 本身算第 N 拍，所以只数 N-1 个间隔；画面从 N-1 开始。
+	_countdown_sec = float(_countdown_beats - 1) * 60.0 / _countdown_bpm
 	_countdown_left = _countdown_sec
 	_ready_phase = "countdown"
 	_tick_index = 0
-	_play_tick(_countdown_beats)
+	_play_tick(_countdown_beats - 1)
 
 
 func _process_ready(delta: float) -> void:
 	if _ready_layer == null:
 		return
+	var opening_end_ms: float = _timeline_start_ms - chart.offset_ms + 2000.0 * playback_rate
+	var storyboard_ready: bool = _preview == null or _preview.preload_storyboard_textures(opening_end_ms)
 	if _ready_phase == "load":
-		# 准备层已经画出来，音频还在后面同步加载；圆环先保持空。
+		# 音频仍在准备，先保留加载画面。
 		_ready_layer.queue_redraw()
 		return
 	if _ready_phase == "fill":
 		_ready_progress = minf(1.0, _ready_progress + delta / maxf(0.05, _ready_delay))
-		if _ready_progress >= 1.0:
+		if _ready_progress >= 1.0 and (storyboard_ready or Time.get_ticks_msec() >= _storyboard_ready_deadline_ms):
 			_start_countdown()
 		_ready_layer.queue_redraw()
 		return
 	if _ready_phase == "countdown":
 		_countdown_left = maxf(0.0, _countdown_left - delta)
-		# 滴答按拍走：elapsed 跨过第 k 拍就响一次，最后一拍正好是 GO。
+		# 滴答按拍走：elapsed 跨过第 k 拍就响一次；最后一拍是 GO，并立刻开打。
 		var elapsed := _countdown_sec - _countdown_left
 		var beat_index := int(floor(elapsed * _countdown_bpm / 60.0))
-		if beat_index != _tick_index:
-			_tick_index = beat_index
-			_play_tick(maxi(0, _countdown_beats - beat_index))
-		if _countdown_left <= 0.0:
+		if _countdown_left <= 0.0 or beat_index >= _countdown_beats - 1:
+			if _tick_index != _countdown_beats:
+				_tick_index = _countdown_beats
+				_play_tick(0)
 			_start_play()
 			return
+		if beat_index != _tick_index:
+			_tick_index = beat_index
+			_play_tick(maxi(0, _countdown_beats - 1 - beat_index))
 		_ready_layer.queue_redraw()
 
 
@@ -544,11 +556,12 @@ func _draw_ready_layer() -> void:
 		_ready_layer.draw_string(bold, Vector2(0.0, center.y + 14.0), "准备中",
 			HORIZONTAL_ALIGNMENT_CENTER, bounds.x, int(minf(54.0, radius * 0.7)), _ready_tint(UITheme.INK, 0.95))
 	else:
-		var remaining := _countdown_beats - _tick_index
-		var number := str(maxi(0, remaining)) if remaining > 0 else "GO"
+		var remaining := _countdown_beats - 1 - _tick_index
+		var number := str(remaining) if remaining > 0 else ""
 		var size := int(minf(120.0, radius * 1.15))
-		_ready_layer.draw_string(bold, Vector2(0.0, center.y + size * 0.34), number,
-			HORIZONTAL_ALIGNMENT_CENTER, bounds.x, size, _ready_tint(UITheme.INK, 0.98))
+		if not number.is_empty():
+			_ready_layer.draw_string(bold, Vector2(0.0, center.y + size * 0.34), number,
+				HORIZONTAL_ALIGNMENT_CENTER, bounds.x, size, _ready_tint(UITheme.INK, 0.98))
 	if not title.is_empty():
 		_ready_layer.draw_string(mono, Vector2(0.0, center.y + radius + 38.0), title,
 			HORIZONTAL_ALIGNMENT_CENTER, bounds.x, 12, _ready_tint(UITheme.INK, 0.86))
@@ -1035,8 +1048,24 @@ func _judgement_notes() -> Array[Note]:
 	return result
 
 
+func _load_playtest_stream(path: String) -> AudioStream:
+	if path.is_empty():
+		return null
+	var job := Thread.new()
+	if job.start(ChartIO.audio_stream_from_path.bind(path), Thread.PRIORITY_LOW) != OK:
+		return ChartIO.audio_stream_from_path(path)
+	_audio_load_jobs.append(job)
+	while job.is_alive():
+		await get_tree().process_frame
+		if not is_inside_tree():
+			return null
+	var stream: AudioStream = job.wait_to_finish()
+	_audio_load_jobs.erase(job)
+	return stream
+
+
 ## 音频解码放在准备层后面；_start_audio() 到 GO 时才真正起播。
-func _prepare_audio() -> void:
+func _prepare_audio(token: int) -> void:
 	_loaded_audio = null
 	_audio_available = false
 	_audio_stream_rate = 1.0
@@ -1046,10 +1075,14 @@ func _prepare_audio() -> void:
 	var path := chart.audio_path
 	if not path.begins_with("res://") and not path.begins_with("user://") and not path.is_absolute_path() and not chart_path.is_empty():
 		path = ChartIO.resolve_path(chart_path, path)
-	var base_path := MediaIO.prepare_audio(path)
+	var base_path: String = await MediaIO.prepare_audio_async(path, get_tree())
+	if token != _setup_token or not is_inside_tree():
+		return
 	if base_path.is_empty():
 		base_path = path
-	var base := ChartIO.audio_stream_from_path(base_path)
+	var base: AudioStream = await _load_playtest_stream(base_path)
+	if token != _setup_token or not is_inside_tree():
+		return
 	if absf(playback_rate - 1.0) >= 0.001:
 		if not MediaIO.has_ffmpeg():
 			_add_log("变速不变调需要 ffmpeg；回退变调。")
@@ -1065,10 +1098,12 @@ func _prepare_audio() -> void:
 							return
 						_ready_progress = clampf(seconds / total_sec, 0.0, 0.99)
 						_ready_layer.queue_redraw())
-				if not is_inside_tree():
+				if token != _setup_token or not is_inside_tree():
 					return
 			if not stretched.is_empty():
-				var fast := ChartIO.audio_stream_from_path(stretched)
+				var fast: AudioStream = await _load_playtest_stream(stretched)
+				if token != _setup_token or not is_inside_tree():
+					return
 				if fast != null:
 					_loaded_audio = fast
 					_audio_stream_rate = playback_rate
@@ -3484,6 +3519,12 @@ func _exit() -> void:
 	Input.set_use_accumulated_input(true)
 	Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
 	exit_requested.emit()
+
+
+func _exit_tree() -> void:
+	for job in _audio_load_jobs:
+		job.wait_to_finish()
+	_audio_load_jobs.clear()
 
 
 func _notification(what: int) -> void:

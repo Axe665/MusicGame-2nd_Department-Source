@@ -32,13 +32,13 @@ var fit_mode := "content"
 var _bounds_cache := Rect2()
 var _bounds_valid := false
 
-const TEX_MAX := 1024
-
-var _tex: Dictionary = {}
-var _boost: Dictionary = {}
-var _size_cache: Dictionary = {}
 var _index_of: Dictionary = {}
 var _items: Array[Dictionary] = []
+var _normal_items: Dictionary = {}
+var _additive_items: Dictionary = {}
+var _texture_generation: int = -1
+var _fit_pending: Dictionary = {}
+var _fit_ms: float = 0.0
 var _wide_cache := -1
 var _drag_indices: Array[int] = []
 var _drag_bases: Array[Vector2] = []
@@ -126,12 +126,12 @@ func _layout() -> Dictionary:
 
 ## 安全框 + 当前播放头可见对象的包围盒；限制在安全框 3 倍以内，
 ## 免得某个被 M 命令丢到 10000 的 sprite 把整张画布缩成一点。
-func _compute_content_bounds(field_bounds: Rect2) -> Rect2:
+func _compute_content_bounds(field_bounds: Rect2, ms: float) -> Rect2:
 	var bounds := field_bounds
 	if board == null or dir.is_empty():
 		return bounds
 	var limit := Rect2(field_bounds.position - field_bounds.size, field_bounds.size * 3.0)
-	for item in board.sample(playhead_ms):
+	for item in board.sample(ms):
 		if float(item.get("alpha", 0.0)) <= 0.004:
 			continue
 		var sprite = item.get("sprite")
@@ -140,9 +140,11 @@ func _compute_content_bounds(field_bounds: Rect2) -> Rect2:
 		var full := dir + "/" + String(item["path"]).get_file()
 		var tex_size := _texture_size(full)
 		if tex_size == Vector2.ZERO:
+			if not Preview3D._tex_cache.has(full):
+				_fit_pending[full] = true
 			continue
 		# 贴图超过 1024 时被缩小过，设计尺寸要乘回 boost，否则「适配内容」会算小。
-		var boost := float(_boost.get(full, 1.0))
+		var boost := float(Preview3D._tex_boost.get(full, 1.0))
 		var size_design := tex_size * boost
 		var anchor := Preview3D._storyboard_anchor(int(item["origin"]), tex_size) * boost
 		var sprite_scale: Vector2 = item["scale"]
@@ -183,6 +185,7 @@ func _zoom_at(point: Vector2, factor: float) -> void:
 func fit_field() -> void:
 	fit_mode = "field"
 	_bounds_valid = false
+	_fit_pending.clear()
 	zoom = 1.0
 	pan = Vector2.ZERO
 	queue_redraw()
@@ -190,7 +193,9 @@ func fit_field() -> void:
 
 func fit_content() -> void:
 	fit_mode = "content"
-	_bounds_cache = _compute_content_bounds(Rect2(Vector2.ZERO, Vector2(field_width(), 480.0)))
+	_fit_pending.clear()
+	_fit_ms = playhead_ms
+	_bounds_cache = _compute_content_bounds(Rect2(Vector2.ZERO, Vector2(field_width(), 480.0)), _fit_ms)
 	_bounds_valid = true
 	zoom = 1.0
 	pan = Vector2.ZERO
@@ -202,7 +207,8 @@ func set_board(value: Storyboard, path: String) -> void:
 	dir = path
 	_index_of.clear()
 	_wide_cache = -1
-	_items.clear()
+	_items = []
+	_fit_pending.clear()
 	_bounds_valid = false
 	if board != null:
 		for i in board.sprites.size():
@@ -211,8 +217,10 @@ func set_board(value: Storyboard, path: String) -> void:
 
 
 func set_playhead(ms: float) -> void:
+	if playhead_ms == ms:
+		return
 	playhead_ms = ms
-	_items.clear()
+	_items = []
 	queue_redraw()
 
 
@@ -249,44 +257,33 @@ func set_layer_locked(layer: String, locked: bool) -> void:
 
 
 func _texture(full: String) -> Texture2D:
-	if _tex.has(full):
-		return _tex[full]
-	# 主预览已经解过同一张图（静态缓存），编辑器直接复用，避免再同步解码一遍。
-	var shared: Texture2D = Preview3D._tex_cache.get(full)
-	if shared != null:
-		_tex[full] = shared
-		_boost[full] = float(Preview3D._tex_boost.get(full, 1.0))
-		_size_cache[full] = shared.get_size()
-		return shared
-	var image: Image = null
-	if FileAccess.file_exists(full):
-		image = Image.load_from_file(ProjectSettings.globalize_path(full))
-		if image != null and not image.is_empty():
-			var longest := maxi(image.get_width(), image.get_height())
-			if longest > TEX_MAX:
-				_boost[full] = float(longest) / float(TEX_MAX)
-				var ratio := float(TEX_MAX) / float(longest)
-				image.resize(maxi(1, roundi(float(image.get_width()) * ratio)),
-					maxi(1, roundi(float(image.get_height()) * ratio)), Image.INTERPOLATE_BILINEAR)
-		else:
-			image = null
-	var texture: Texture2D = null
-	if image != null and not image.is_empty():
-		texture = ImageTexture.create_from_image(image)
-		_size_cache[full] = Vector2(image.get_width(), image.get_height())
-	_tex[full] = texture
-	return texture
+	if not Preview3D._tex_cache.has(full):
+		Preview3D.request_storyboard_texture(full)
+	return Preview3D._tex_cache.get(full)
 
 
 func _texture_size(full: String) -> Vector2:
-	if _size_cache.has(full):
-		return _size_cache[full]
-	if _tex.has(full) and _tex[full] != null:
-		var t: Texture2D = _tex[full]
-		_size_cache[full] = Vector2(t.get_width(), t.get_height())
-		return _size_cache[full]
-	var texture := _texture(full)
-	return _size_cache.get(full, texture.get_size() if texture != null else Vector2.ZERO)
+	var texture: Texture2D = _texture(full)
+	return texture.get_size() if texture != null else Vector2.ZERO
+
+
+func _process(_delta: float) -> void:
+	if not is_visible_in_tree() or board == null or dir.is_empty():
+		return
+	Preview3D.pump_storyboard_textures()
+	if _texture_generation != Preview3D._tex_generation:
+		_texture_generation = Preview3D._tex_generation
+		queue_redraw()
+	if _fit_pending.is_empty():
+		return
+	for full: String in _fit_pending.keys():
+		if Preview3D._tex_cache.has(full):
+			_fit_pending.erase(full)
+		else:
+			Preview3D.request_storyboard_texture(full)
+			return
+	_bounds_cache = _compute_content_bounds(Rect2(Vector2.ZERO, Vector2(field_width(), 480.0)), _fit_ms)
+	queue_redraw()
 
 
 ## 一个 item 的绘制参数（画、命中、框选共用一套）。
@@ -303,7 +300,7 @@ func _item_geometry(item: Dictionary, layout: Dictionary) -> Dictionary:
 		"size": sprite_size,
 		"anchor": Preview3D._storyboard_anchor(int(item["origin"]), sprite_size),
 		"pos": offset + (item["pos"] as Vector2) * scale,
-		"scale": item["scale"] * scale * float(_boost.get(full, 1.0)),
+		"scale": item["scale"] * scale * float(Preview3D._tex_boost.get(full, 1.0)),
 		"rotation": deg_to_rad(float(item["rotation"])),
 		"colour": item["colour"],
 		"alpha": float(item["alpha"]),
@@ -312,6 +309,8 @@ func _item_geometry(item: Dictionary, layout: Dictionary) -> Dictionary:
 
 func _draw() -> void:
 	draw_rect(Rect2(Vector2.ZERO, size), Color(0.03, 0.04, 0.06))
+	_normal_items.clear()
+	_additive_items.clear()
 	if board == null or dir.is_empty():
 		return
 	var layout := _layout()
@@ -331,9 +330,13 @@ func _draw() -> void:
 			while y <= offset.y + 480.0 * scale + 0.5:
 				draw_line(Vector2(offset.x, y), Vector2(offset.x + field * scale, y), grid_colour, 1.0)
 				y += step
-	# 不排序、不复制：sample() 的缓存数组归 Storyboard 所有，
-	# 绘制按图层顺序分组遍历（比每帧 sort_custom 285 项便宜，也不会改到别人的数组）。
 	_items = board.sample(playhead_ms)
+	for item in _items:
+		var layer: String = item["layer"]
+		var layers: Dictionary = _additive_items if bool(item.get("additive", false)) else _normal_items
+		if not layers.has(layer):
+			layers[layer] = []
+		(layers[layer] as Array).append(item)
 	_draw_items(self, false)
 	if _add_layer != null:
 		(_add_layer as AdditiveLayer).queue_redraw()
@@ -347,15 +350,12 @@ func _draw() -> void:
 func _draw_items(ci: Control, additive_only: bool) -> void:
 	var layout := _layout()
 	var view := ci.size
+	var groups: Dictionary = _additive_items if additive_only else _normal_items
 	# 先画的在下：Video → Background → Fail → Pass → Foreground → Overlay。
 	for layer in Storyboard.LAYERS:
 		if hidden_layers.has(layer):
 			continue
-		for item in _items:
-			if String(item["layer"]) != layer:
-				continue
-			if bool(item.get("additive", false)) != additive_only:
-				continue
+		for item: Dictionary in groups.get(layer, []):
 			var geo := _item_geometry(item, layout)
 			if geo.is_empty():
 				continue
@@ -364,9 +364,7 @@ func _draw_items(ci: Control, additive_only: bool) -> void:
 			var sprite_scale: Vector2 = geo["scale"]
 			var rot: float = geo["rotation"]
 			var anchor: Vector2 = geo["anchor"]
-			var radius := (sprite_size * 0.5 - anchor).length() * maxf(sprite_scale.x, sprite_scale.y) + 4.0
-			if pos.x + radius < 0.0 or pos.y + radius < 0.0 \
-					or pos.x - radius > view.x or pos.y - radius > view.y:
+			if not Preview3D.storyboard_sprite_intersects(view, pos, sprite_size, anchor, sprite_scale, rot):
 				continue
 			var colour := Preview3D.storyboard_item_colour(item, sprite_size, sprite_scale, view)
 			ci.draw_set_transform(pos, rot, sprite_scale)

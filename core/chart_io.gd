@@ -636,6 +636,14 @@ static func save_set(path: String, entries: Array, title: String = "", source: S
 
 
 static func atomic_write(path: String, text: String) -> Error:
+	var result: Dictionary = write_chart_text(path, text)
+	if result["code"] != OK:
+		last_error = result["message"]
+	return result["code"]
+
+
+## 返回独立的错误信息，后台自动保存可与前台读写不同文件。
+static func write_chart_text(path: String, text: String) -> Dictionary:
 	var dir := path.get_base_dir()
 	if not dir.is_empty():
 		DirAccess.make_dir_recursive_absolute(dir)
@@ -644,8 +652,7 @@ static func atomic_write(path: String, text: String) -> Error:
 	var tmp := path + ".tmp"
 	var file := FileAccess.open(tmp, FileAccess.WRITE)
 	if file == null:
-		last_error = "无法写入临时文件：%s" % tmp
-		return FileAccess.get_open_error()
+		return {"code": FileAccess.get_open_error(), "message": "无法写入临时文件：%s" % tmp}
 	file.store_string(text)
 	file.flush()
 	file.close()
@@ -654,9 +661,7 @@ static func atomic_write(path: String, text: String) -> Error:
 		if FileAccess.file_exists(path):
 			DirAccess.remove_absolute(path)
 		err = DirAccess.rename_absolute(tmp, path)
-	if err != OK:
-		last_error = "无法替换目标文件：%s" % path
-	return err
+	return {"code": err, "message": "无法替换目标文件：%s" % path if err != OK else ""}
 
 
 static func _backup(path: String) -> void:

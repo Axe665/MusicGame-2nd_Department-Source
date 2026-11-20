@@ -42,6 +42,8 @@ const COMMANDS := [
 var _app: Node = null
 var _board: Storyboard = null
 var _chart: Chart = null
+var _opening_chart: Chart
+var _open_jobs: Array[Thread] = []
 var _dir := ""
 var _selected := -1
 
@@ -750,14 +752,33 @@ func _spin(low: float, high: float, step: float, value: float) -> SpinBox:
 	spin.custom_minimum_size = Vector2i(96, 0)
 	return spin
 
-func open_for(chart: Chart) -> void:
+func open_for(chart: Chart, can_open: Callable = Callable()) -> void:
+	if _opening_chart == chart:
+		return
+	var directory: String = String(chart.metadata.get("storyboard", ""))
+	var board: Storyboard = null
+	_opening_chart = chart
+	if not directory.is_empty():
+		var path: String = directory.path_join("storyboard.osb")
+		var job := Thread.new()
+		if is_inside_tree() and job.start(Storyboard.load_file.bind(path), Thread.PRIORITY_LOW) == OK:
+			_open_jobs.append(job)
+			while job.is_alive():
+				await get_tree().process_frame
+				if not is_inside_tree():
+					return
+			board = job.wait_to_finish()
+			_open_jobs.erase(job)
+		else:
+			board = Storyboard.load_file(path)
+	if _opening_chart != chart:
+		return
+	_opening_chart = null
+	if can_open.is_valid() and not bool(can_open.call()):
+		return
 	_chart = chart
-	_dir = String(chart.metadata.get("storyboard", ""))
-	_board = null
-	if not _dir.is_empty():
-		var text := FileAccess.get_file_as_string(_dir + "/storyboard.osb")
-		if not text.is_empty():
-			_board = Storyboard.parse(text, "storyboard.osb")
+	_dir = directory
+	_board = board
 	if _board == null:
 		_board = Storyboard.create_blank()
 	_selected = -1
@@ -793,6 +814,12 @@ func open_for(chart: Chart) -> void:
 		_time_label.text = "%s / %s" % [_fmt_time_ms(osb_ms), _fmt_time_ms(_timeline.span_ms)]
 	call_deferred("_refresh_library")
 	opened.emit()
+
+
+func _exit_tree() -> void:
+	for job in _open_jobs:
+		job.wait_to_finish()
+	_open_jobs.clear()
 
 
 ## 对话框尺寸：不超出窗口，也不超出屏幕可用区域（含标题栏/面板余量）。

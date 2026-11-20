@@ -117,7 +117,6 @@ var _last_background_path: String = ""
 var _storyboard: Storyboard = null
 var _storyboard_dir := ""
 var _storyboard_chart: Chart = null
-var _storyboard_textures: Dictionary = {}   # 兼容旧代码的实例级视图；真实数据在 _tex_cache
 ## 每次试玩都会新建一套 Preview3D，解析结果和贴图放类级缓存里共享：
 ## 3936 sprite 的 .osb 实测 parse 232ms，135 张图解码更久，重建一次就是一次卡顿。
 static var _board_cache: Dictionary = {}
@@ -130,9 +129,12 @@ static var _tex_boost: Dictionary = {}
 ## .osb 解析也放后台：3936 sprite 的谱实测 parse 232ms，放在首帧 draw 里就是一次卡死。
 static var _parse_pending: Dictionary = {}
 static var _parse_done: Dictionary = {}
+static var _parse_revisions: Dictionary = {}
 static var _parse_mutex := Mutex.new()
 static var _tex_decoded: Dictionary = {}
 static var _tex_mutex := Mutex.new()
+static var _tex_upload_frame: int = -1
+static var _tex_generation: int = 0
 ## 预览最大也就屏幕那么高，超长边超过这个数只会白吃显存和解码时间。
 const STORYBOARD_TEX_MAX := 1024
 var show_storyboard := true
@@ -153,9 +155,14 @@ var _sb_render_items: Array[Dictionary] = []
 ## 采样后按图层分桶：每层只遍历自己的对象，不用 7 个层各扫一遍全部 items。
 var _sb_layer_items: Dictionary = {}
 var _sb_additive_layer_items: Dictionary = {}
-## 贴图预取队列：storyboard 一次几百张图，全在用到的那一帧读会卡一下，
-## 改成每帧后台预取几张。
-var _sb_prefetch: Array[String] = []
+## 引用文件的全路径只拼一次（以前每帧每张图都要 get_file() + 拼接）。
+var _sb_priority: PackedStringArray = PackedStringArray()
+var _sb_priority_index: int = 0
+var _sb_priority_ms: float = INF
+var _sb_priority_until: float = -INF
+var _sb_texture_generation: int = -1
+var _sb_paths: Dictionary = {}
+var _sb_all_textures_cached: bool = false
 ## storyboard 的 Background 层里有谱面背景图时，静态背景层要关掉（对照 lazer ReplacesBackground）。
 var _storyboard_replaces_background := false
 ## 背景层（Background/Video）单独一层，垫在 3D 判定环下面。
@@ -223,12 +230,36 @@ var _video_job_token: int = 0
 var _last_cursor_emit: Vector2 = Vector2(-999, -999)
 var _cursor_cache_key: String = ""
 var _sorted_notes_cache: Array[Note] = []
-var _path_runs_cache: Dictionary = {}
-## Path 链合成结果 / 两两重叠：纯几何，按谱面版本缓存（拖动时版本变才重算）。
-var _chain_cache: Dictionary = {}
-var _chain_cache_version: int = -1
-var _overlap_version: int = -1
-var _overlap_key: String = ""
+class VisiblePath:
+	var parts: Array[Note] = []
+	var first_beat: float = INF
+	var last_beat: float = -INF
+	var note: Note
+
+
+class PathStroke:
+	var count: int = 0
+	var projection_key: String = ""
+	var points := PackedVector2Array()
+	var cut_version: int = -1
+	var erased: Array[bool] = []
+	var runs: Array[PackedVector2Array] = []
+
+
+class PathChevron:
+	var fraction: float
+	var point: Vector2
+	var direction: Vector2
+
+
+var _indexed_path_chart: Chart
+var _indexed_path_version: int = -1
+var _indexed_path_roots: Array[Note] = []
+var _path_index: Array[VisiblePath] = []
+var _path_prefix_end := PackedFloat64Array()
+var _path_strokes: Dictionary[Note, PathStroke] = {}
+var _path_overlap_samples: Dictionary[Note, PackedVector2Array] = {}
+var _overlap_paths: Array[Note] = []
 var _overlap_any: bool = false
 var _sorted_notes_chart: Chart = null
 var _last_view_key: String = ""
@@ -264,6 +295,7 @@ var _render_mode: int = -1
 var _tilt: Vector2 = Vector2.ZERO
 var _tilt_target: Vector2 = Vector2.ZERO
 var _force_3d_frame: bool = false
+var _playhead_redraw_pending: bool = false
 var _boundary_frame_cache: BoundaryFrame = null
 var _max_design_radius: float = -1.0
 var _path_local_cache: Dictionary = {}
@@ -807,7 +839,7 @@ func _process(_delta: float) -> void:
 		_mesh_dirty = false
 	_update_background(chart)
 	_update_video(chart, t)
-	_prefetch_storyboard_textures()
+	_update_storyboard_textures(chart, t)
 	var beat_phase := fposmod(t, 1.0)
 	_glow_material.albedo_color = Color(0.37, 0.92, 0.86, 0.10 + 0.09 * exp(-beat_phase * 7.0))
 	if playtest_mode:
@@ -846,24 +878,17 @@ func _process(_delta: float) -> void:
 			_update_cursor()
 	_update_cursor_trail(_delta)
 	# 场景层只在时间/几何/特效变化时重绘；鼠标移动只触发光标层。
-	var needs_overlay := time_changed or view_changed or flat_dirty or not _pulses.is_empty() or not _arc_flashes.is_empty() or not _note_pops.is_empty()
+	var needs_overlay := _playhead_redraw_pending or time_changed or view_changed or flat_dirty or not _pulses.is_empty() or not _arc_flashes.is_empty() or not _note_pops.is_empty()
+	_playhead_redraw_pending = false
 	if needs_overlay:
 		_overlay.queue_redraw()
-		# 采样间隔跟帧率上限/导出 fps；只有采样时刻变化（或几何/尺寸变了）才重绘。
+	if show_storyboard and _storyboard != null and (time_changed or _sb_queued_ms < -1.0e8):
+		# 故事板有自己的 2D 坐标，环的形变/镜头变化不会影响它。
 		var sb_ms := chart.timing.beat_to_chart_ms(t) - chart.offset_ms
 		_sb_sample_interval = _storyboard_sample_interval()
-		if view_changed or flat_dirty or absf(sb_ms - _sb_queued_ms) >= maxf(0.0001, _sb_sample_interval):
+		if absf(sb_ms - _sb_queued_ms) >= maxf(0.0001, _sb_sample_interval):
 			_sb_queued_ms = sb_ms
-			if _storyboard_bg != null:
-				_storyboard_bg.queue_redraw()
-			if _storyboard_add_bg != null:
-				_storyboard_add_bg.queue_redraw()
-			if _storyboard_fg != null:
-				_storyboard_fg.queue_redraw()
-			if _storyboard_top != null:
-				_storyboard_top.queue_redraw()
-			if _storyboard_add_fg != null:
-				_storyboard_add_fg.queue_redraw()
+			_queue_storyboard_redraw()
 	if mouse_moved or time_changed or view_changed or not _cursor_trail.is_empty():
 		_cursor_layer.queue_redraw()
 	if _viewport_container != null:
@@ -1355,7 +1380,7 @@ func reset_path_cuts() -> void:
 	path_sector_cuts.clear()
 	path_cut_versions.clear()
 	_path_head_state.clear()
-	_path_runs_cache.clear()
+	_path_strokes.clear()
 	clear_note_states()
 	# 上一局的判定文字、命中火花和连击断连动画也会跟着重试活过来：一起清掉。
 	_pulses.clear()
@@ -1412,7 +1437,7 @@ func _on_chart_changed() -> void:
 	note_states.clear()
 	note_state_beats.clear()
 	path_cut_versions.clear()
-	_path_runs_cache.clear()
+	_invalidate_path_index()
 	_boundary_frame_cache = null
 	_path_local_cache.clear()
 	_max_design_radius = -1.0
@@ -1434,7 +1459,7 @@ func _on_chart_live_changed() -> void:
 	_path_sector_cache.clear()
 	_path_head_state.clear()
 	path_cut_versions.clear()
-	_path_runs_cache.clear()
+	_invalidate_path_index()
 	_boundary_frame_cache = null
 	_path_local_cache.clear()
 	# Note/region drags only change the overlay. Boundary dragging marks the
@@ -2522,6 +2547,10 @@ func refresh_storyboard_layers() -> void:
 		var view := current_view()
 		_update_camera_fit(chart, float(view.get("zoom", 1.0)), float(view.get("ellipse", 1.0)),
 			float(view.get("dolly", 1.0)))
+	_queue_storyboard_redraw()
+
+
+func _queue_storyboard_redraw() -> void:
 	for layer in [_storyboard_bg, _storyboard_add_bg, _storyboard_fg, _storyboard_top, _storyboard_add_fg]:
 		if layer != null:
 			layer.queue_redraw()
@@ -2534,9 +2563,12 @@ func invalidate_storyboard() -> void:
 	_storyboard = null
 	_storyboard_dir = ""
 	_sb_waiting_dir = ""
-	_storyboard_textures.clear()
 	_storyboard_replaces_background = false
 	_sb_sample_ms = -1.0e9
+	_sb_queued_ms = -1.0e9
+	_sb_priority_ms = INF
+	_sb_all_textures_cached = false
+	_sb_paths.clear()
 	_sb_render_items = []
 	_refresh_background_layering()
 	_update_storyboard_clip_rects()
@@ -2559,11 +2591,15 @@ func _ensure_storyboard(chart: Chart) -> void:
 	_storyboard = null
 	_storyboard_dir = ""
 	_sb_waiting_dir = ""
-	_storyboard_textures.clear()
 	_storyboard_replaces_background = false
 	_sb_sample_ms = -1.0e9
 	_sb_render_items = []
-	_sb_prefetch.clear()
+	_sb_queued_ms = -1.0e9
+	_sb_priority_ms = INF
+	_sb_priority.clear()
+	_sb_priority_index = 0
+	_sb_all_textures_cached = false
+	_sb_paths.clear()
 	if chart == null:
 		_refresh_background_layering()
 		return
@@ -2572,10 +2608,12 @@ func _ensure_storyboard(chart: Chart) -> void:
 		_refresh_background_layering()
 		return
 	var board: Storyboard = _board_cache.get(dir)
-	if board == null:
-		# 后台解析：解析完在 _prefetch_storyboard_textures 里换上来。
+	if not _board_cache.has(dir):
 		_start_parse(dir)
 		_sb_waiting_dir = dir
+		_refresh_background_layering()
+		return
+	if board == null:
 		_refresh_background_layering()
 		return
 	_storyboard = board
@@ -2583,92 +2621,122 @@ func _ensure_storyboard(chart: Chart) -> void:
 	_sb_wide_detected = _detect_wide(board)
 	_update_storyboard_clip_rects()
 	_storyboard_replaces_background = _storyboard.replaces_background(String(chart.metadata.get("background", "")))
-	if _sb_prefetch.is_empty():
-		for ref in _storyboard.referenced_files:
-			if not _tex_cache.has(dir + "/" + String(ref).get_file()):
-				_sb_prefetch.append(ref)
 	_refresh_background_layering()
 
-func _prefetch_storyboard_textures() -> void:
+## READY 等待开场素材。后续素材跟着时间轴提前请求。
+func preload_storyboard_textures(opening_end_ms: float) -> bool:
+	var chart: Chart = get_chart()
+	if chart == null:
+		return true
+	return _update_storyboard_textures(chart, get_time_beat(), opening_end_ms)
+
+
+func _update_storyboard_textures(chart: Chart, beat: float, opening_end_ms: float = -INF) -> bool:
+	if not show_storyboard:
+		return true
+	_finish_storyboard_parses()
+	_ensure_storyboard(chart)
+	_take_parsed_board()
 	if _storyboard == null:
-		_take_parsed_board()
-		if _storyboard == null:
-			return
-	# 先把后台解码完的图上传成贴图：一张 1024² 就是 4MB 显存，每帧最多 2 张。
-	var budget := 2
-	var uploaded := 0
-	_tex_mutex.lock()
-	var ready_keys: Array = _tex_decoded.keys()
-	_tex_mutex.unlock()
-	for key in ready_keys:
-		if budget <= 0:
-			break
-		_tex_mutex.lock()
-		var entry: Array = _tex_decoded.get(key, [])
-		_tex_decoded.erase(key)
-		_tex_mutex.unlock()
-		var image: Image = entry[0] if entry.size() > 0 else null
-		if image == null:
-			_tex_cache[key] = null
+		return _sb_waiting_dir.is_empty()
+	pump_storyboard_textures()
+	if _sb_texture_generation != _tex_generation:
+		_sb_texture_generation = _tex_generation
+		_queue_storyboard_redraw()
+	if _sb_all_textures_cached:
+		return true
+	var ms: float = chart.timing.beat_to_chart_ms(beat) - chart.offset_ms
+	if absf(ms - _sb_priority_ms) >= Storyboard.BUCKET_MS or opening_end_ms > _sb_priority_until:
+		_sb_priority_ms = ms
+		_sb_priority.clear()
+		_sb_priority_index = 0
+		var end_ms: float = maxf(ms + 1000.0, opening_end_ms)
+		_sb_priority_until = end_ms
+		var seen: Dictionary = {}
+		var has_missing_texture: bool = false
+		for sprite: Storyboard.Sprite in _storyboard.sprites:
+			if sprite.commands.is_empty():
+				continue
+			var full: String = _storyboard_asset_path(sprite.path)
+			if _tex_cache.has(full):
+				continue
+			has_missing_texture = true
+			if not show_storyboard_background and sprite.layer in ["Background", "Video"]:
+				continue
+			if sprite.start_time > end_ms or sprite.end_time < ms:
+				continue
+			if not seen.has(full):
+				seen[full] = true
+				_sb_priority.append(full)
+		_sb_all_textures_cached = not has_missing_texture
+	while _sb_priority_index < _sb_priority.size():
+		var full: String = _sb_priority[_sb_priority_index]
+		if _tex_cache.has(full):
+			_sb_priority_index += 1
 			continue
-		_tex_cache[key] = ImageTexture.create_from_image(image)
-		_tex_boost[key] = float(entry[1]) if entry.size() > 1 else 1.0
-		uploaded += 1
-		budget -= 1
-	# 刚上传的贴图要重画一次：暂停/编辑器里没有 time_changed，否则会一直空着。
-	if uploaded > 0:
-		refresh_storyboard_layers()
-	# 还没排队的引用文件，趁早丢给后台线程。
-	for ref in _storyboard.referenced_files:
-		var full := _storyboard_dir + "/" + String(ref).get_file()
-		if _storyboard == null:
-			break
-		_request_texture(full)
+		for i in range(_sb_priority_index, mini(_sb_priority_index + 2, _sb_priority.size())):
+			request_storyboard_texture(_sb_priority[i])
+		return false
+	return true
+
+
+func _storyboard_asset_path(reference: String) -> String:
+	if not _sb_paths.has(reference):
+		_sb_paths[reference] = _storyboard_dir.path_join(reference.get_file())
+	return _sb_paths[reference]
+
+
+static func invalidate_storyboard_source(dir: String) -> void:
+	_board_cache.erase(dir)
+	_parse_revisions[dir] = int(_parse_revisions.get(dir, 0)) + 1
 
 
 ## 后台解析：同一目录只排一次。
 func _start_parse(dir: String) -> void:
 	if _board_cache.has(dir) or _parse_pending.has(dir):
 		return
-	_parse_pending[dir] = true
-	WorkerThreadPool.add_task(_parse_board.bind(dir), false, "storyboard parse")
+	_parse_pending[dir] = {
+		"task": WorkerThreadPool.add_task(_parse_board.bind(dir), false, "storyboard parse"),
+		"revision": int(_parse_revisions.get(dir, 0)),
+	}
 
 
 static func _parse_board(dir: String) -> void:
-	var board: Storyboard = null
-	var text := FileAccess.get_file_as_string(dir + "/storyboard.osb")
-	if not text.is_empty():
-		board = Storyboard.parse(text, "storyboard.osb")
-		if board.sprites.is_empty():
-			board = null
+	var board: Storyboard = Storyboard.load_file(dir.path_join("storyboard.osb"))
+	if board != null and board.sprites.is_empty():
+		board = null
 	_parse_mutex.lock()
 	_parse_done[dir] = board
-	_parse_pending.erase(dir)
 	_parse_mutex.unlock()
+
+
+static func _finish_storyboard_parses() -> void:
+	for dir: String in _parse_pending.keys():
+		var job: Dictionary = _parse_pending[dir]
+		var task: int = job["task"]
+		if not WorkerThreadPool.is_task_completed(task):
+			continue
+		WorkerThreadPool.wait_for_task_completion(task)
+		_parse_pending.erase(dir)
+		_parse_mutex.lock()
+		if int(job["revision"]) == int(_parse_revisions.get(dir, 0)):
+			_board_cache[dir] = _parse_done.get(dir)
+		_parse_done.erase(dir)
+		_parse_mutex.unlock()
 
 
 ## 主线程把解析结果换上来（只在同一个谱面/目录还在等的时候）。
 func _take_parsed_board() -> void:
-	if _sb_waiting_dir.is_empty():
+	var dir: String = _sb_waiting_dir
+	if dir.is_empty():
 		return
-	# 解析结果在静态表里只留一份：另一个预览（主界面/试玩）先拿走时，
-	# 这边 _parse_done 永远是空的，只看它就会一直等不到故事板。
-	var board: Storyboard = _board_cache.get(_sb_waiting_dir)
-	var has := board != null
-	if not has:
-		_parse_mutex.lock()
-		has = _parse_done.has(_sb_waiting_dir)
-		board = _parse_done.get(_sb_waiting_dir) if has else null
-		if has:
-			_parse_done.erase(_sb_waiting_dir)
-		_parse_mutex.unlock()
-	if not has:
+	if not _board_cache.has(dir):
+		_start_parse(dir)
 		return
-	var dir := _sb_waiting_dir
 	_sb_waiting_dir = ""
+	var board: Storyboard = _board_cache.get(dir)
 	if board == null:
 		return
-	_board_cache[dir] = board
 	_storyboard = board
 	_storyboard_dir = dir
 	_sb_wide_detected = _detect_wide(board)
@@ -2676,21 +2744,42 @@ func _take_parsed_board() -> void:
 	if chart != null:
 		_storyboard_replaces_background = _storyboard.replaces_background(String(chart.metadata.get("background", "")))
 	_refresh_background_layering()
-	if _storyboard_bg != null:
-		_storyboard_bg.queue_redraw()
-	if _storyboard_add_bg != null:
-		_storyboard_add_bg.queue_redraw()
+	_update_storyboard_clip_rects()
+	_queue_storyboard_redraw()
 
 
 ## 把一张图排进后台解码队列（同一张只排一次）。
-func _request_texture(full: String) -> void:
+static func request_storyboard_texture(full: String) -> void:
 	if _tex_cache.has(full) or _tex_pending.has(full):
 		return
-	# 同时在飞的解码任务限到 8 个：135 张一起丢进线程池会把主线程也挤饿。
 	if _tex_pending.size() >= 2:
 		return
-	_tex_pending[full] = true
-	WorkerThreadPool.add_task(_decode_texture.bind(full), false, "storyboard texture")
+	_tex_pending[full] = WorkerThreadPool.add_task(_decode_texture.bind(full), false, "storyboard texture")
+
+
+## 限制所有消费者合计每帧只上传一张大图，解码完成的任务也占队列位置。
+static func pump_storyboard_textures() -> void:
+	var frame: int = Engine.get_process_frames()
+	if _tex_upload_frame == frame:
+		return
+	for full: String in _tex_pending.keys():
+		var task: int = _tex_pending[full]
+		if not WorkerThreadPool.is_task_completed(task):
+			continue
+		WorkerThreadPool.wait_for_task_completion(task)
+		_tex_pending.erase(full)
+		_tex_mutex.lock()
+		var entry: Array = _tex_decoded.get(full, [])
+		_tex_decoded.erase(full)
+		_tex_mutex.unlock()
+		var image: Image = entry[0] if not entry.is_empty() else null
+		_tex_cache[full] = null
+		_tex_generation += 1
+		if image != null:
+			_tex_cache[full] = ImageTexture.create_from_image(image)
+			_tex_boost[full] = float(entry[1])
+			_tex_upload_frame = frame
+			return
 
 
 static func _decode_texture(full: String) -> void:
@@ -2708,18 +2797,8 @@ static func _decode_texture(full: String) -> void:
 		else:
 			image = null
 	_tex_mutex.lock()
-	# [图, 放大倍率]：贴图被缩小了 ratio 倍，绘制时乘回去才是 osu 的原始尺寸。
 	_tex_decoded[full] = [image, boost]
-	_tex_pending.erase(full)
 	_tex_mutex.unlock()
-
-
-func _storyboard_texture(path: String) -> Texture2D:
-	var full := _storyboard_dir + "/" + path.get_file()
-	var texture: Texture2D = _tex_cache.get(full)
-	if texture == null:
-		_request_texture(full)
-	return texture
 
 
 ## 把 storyboard 的 640x480 坐标场映射到预览区域：
@@ -2848,11 +2927,10 @@ func _draw_storyboard_layers(canvas: Control, chart: Chart, t: float, layers: Ar
 		if skip_background and (layer_name == "Background" or layer_name == "Video"):
 			continue
 		for item in group:
-			var tex_path := String(item["path"])
-			var full := _storyboard_dir + "/" + tex_path.get_file()
+			var full: String = _storyboard_asset_path(String(item["path"]))
 			var texture: Texture2D = _tex_cache.get(full)
 			if texture == null:
-				_request_texture(full)
+				request_storyboard_texture(full)
 				continue
 			var sprite_size := Vector2(texture.get_width(), texture.get_height())
 			var anchor := _storyboard_anchor(int(item["origin"]), sprite_size)
@@ -2861,16 +2939,18 @@ func _draw_storyboard_layers(canvas: Control, chart: Chart, t: float, layers: Ar
 			var rotation := deg_to_rad(float(item["rotation"]))
 			# 屏幕外的 sprite 直接丢掉：storyboard 里数百张图会一直“可见”，
 			# 大部分已经被 M 命令挪出画面，不剔除的话每帧白画几百次。
-			var local_center := sprite_size * 0.5 - anchor
-			var world_center := pos + local_center.rotated(rotation) * sprite_scale
-			var radius := local_center.length() * maxf(sprite_scale.x, sprite_scale.y) + 4.0
-			if world_center.x + radius < 0.0 or world_center.y + radius < 0.0 \
-					or world_center.x - radius > view_size.x or world_center.y - radius > view_size.y:
+			if not storyboard_sprite_intersects(view_size, pos, sprite_size, anchor, sprite_scale, rotation):
 				continue
 			var colour := storyboard_item_colour(item, sprite_size, sprite_scale, view_size)
 			canvas.draw_set_transform(pos, rotation, sprite_scale)
 			canvas.draw_texture(texture, -anchor, colour)
-			canvas.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+	canvas.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+
+
+static func storyboard_sprite_intersects(view: Vector2, pos: Vector2, sprite_size: Vector2, anchor: Vector2, scale: Vector2, rotation: float) -> bool:
+	var center: Vector2 = pos + ((sprite_size * 0.5 - anchor) * scale).rotated(rotation)
+	var radius: float = (sprite_size * scale).length() * 0.5 + 4.0
+	return Rect2(Vector2.ZERO, view).grow(radius).has_point(center)
 
 ## 故事板对象的最终颜色（画布和预览必须共用这一份，否则两边观感对不上）。
 ## osu 里 P,A 是真正的加色；这里统一压到 35%，否则几百张全屏图叠加会把画面刷白。
@@ -3103,84 +3183,102 @@ func _note_tint(note: Note, fallback: Color) -> Color:
 	return note.resolved_color(get_chart(), fallback)
 
 
-func _draw_paths(canvas: Control, chart: Chart, t: float, pre: float) -> void:
-	# A part chain is drawn as one synthetic Path: one head star at part0, one
-	# progress ball travelling the whole chain, and one final tail ring.
+func _invalidate_path_index() -> void:
+	_indexed_path_chart = null
+	_indexed_path_roots = []
+	_path_index.clear()
+	_path_prefix_end.clear()
+	_path_strokes.clear()
+	_path_overlap_samples.clear()
+	_overlap_paths.clear()
+	_overlap_any = false
+
+
+func _update_path_index(chart: Chart) -> void:
+	var roots: Array[Note] = chart.path_roots()
+	if chart == _indexed_path_chart and chart.version == _indexed_path_version and is_same(roots, _indexed_path_roots):
+		return
+	_invalidate_path_index()
+	_path_local_cache.clear()
+	_indexed_path_chart = chart
+	_indexed_path_version = chart.version
+	_indexed_path_roots = roots
 	var by_id := chart.notes_by_id()
-	var visible: Array = []
-	# 根已按拍排好：先按「最长链」缩窗口，避免对 2000 个根逐个走链+算起飞拍。
-	var window_from := t - pre - chart.max_note_length_beats() - 0.5
-	var window_to := t + pre + 0.5
-	for root in chart.path_roots():
-		if root.beat < window_from:
-			continue
-		if root.beat > window_to:
+	for root in roots:
+		var entry := VisiblePath.new()
+		var part: Note = root
+		while part != null and entry.parts.size() < 65:
+			entry.parts.append(part)
+			entry.first_beat = minf(entry.first_beat, part.beat)
+			entry.last_beat = maxf(entry.last_beat, part.end_beat + 0.5)
+			part = by_id.get(part.path_next_id) if part.path_next_id >= 0 else null
+		if entry.parts.size() == 1:
+			entry.note = root
+		_path_index.append(entry)
+	_path_index.sort_custom(func(a: VisiblePath, b: VisiblePath) -> bool: return a.first_beat < b.first_beat)
+	var latest_end: float = -INF
+	for entry in _path_index:
+		latest_end = maxf(latest_end, entry.last_beat)
+		_path_prefix_end.append(latest_end)
+
+
+func _visible_paths(chart: Chart, beat: float) -> Array[Note]:
+	_update_path_index(chart)
+	var visible: Array[Note] = []
+	# Find the first interval that can still be on screen, including chains
+	# whose root is far behind the current beat.
+	var first: int = _path_prefix_end.bsearch(beat)
+	var timing: TimingMap = chart.timing
+	var latest_head: float = timing.chart_ms_to_beat(timing.beat_to_chart_ms(beat) + _pre_read_ms(chart)) + 0.000001
+	for i in range(first, _path_index.size()):
+		var entry: VisiblePath = _path_index[i]
+		if entry.first_beat > latest_head:
 			break
-		var chain: Array[Note] = [root]
-		var cursor: Note = root
-		var guard := 0
-		while cursor.path_next_id >= 0 and by_id.has(cursor.path_next_id) and guard < 64:
-			cursor = by_id[cursor.path_next_id]
-			chain.append(cursor)
-			guard += 1
-		var on_screen := false
-		for part in chain:
-			if t >= _spawn_beat(chart, part.beat) and t <= part.end_beat + 0.5:
-				on_screen = true
-				break
-		if not on_screen:
+		if entry.last_beat < beat:
 			continue
-		visible.append(_chain_note_for(chart, root, chain))
-	# 旧 Path 先画、新的最后画：多星星重叠时，新星和它的擦除缺口始终在最上层。
+		for part in entry.parts:
+			if beat > part.end_beat + 0.5 or beat < _spawn_beat(chart, part.beat):
+				continue
+			if entry.note == null:
+				entry.note = build_path_chain_note(entry.parts[0], entry.parts)
+			visible.append(entry.note)
+			break
 	visible.sort_custom(func(a: Note, b: Note) -> bool: return a.beat < b.beat)
-	# 舞萌式同色系：所有星共用一个主色，重叠时只压明明度，不换色相。
-	# 谱师自定义过的单星颜色优先。
-	# 重叠是纯几何：按谱面版本缓存，别每帧两两重算（8 条路径 = 28 对 × 169 采样）。
-	var overlap_key := "|".join(visible.map(func(n: Note) -> String: return str(n.id)))
-	if chart.version != _overlap_version or overlap_key != _overlap_key:
-		_overlap_version = chart.version
-		_overlap_key = overlap_key
-		_overlap_any = false
-		for i in visible.size():
-			for j in range(i + 1, visible.size()):
-				if _paths_overlap(chart, visible[i], visible[j]):
-					_overlap_any = true
-					break
-			if _overlap_any:
-				break
-	var any_overlap := _overlap_any
-	var base := Note.DEFAULT_PATH_COLOR
-	var colors := {}
-	var shade := 0
-	for note in visible:
-		var tint := _note_tint(note, base)
-		if not any_overlap:
-			colors[note] = tint
-		else:
-			colors[note] = tint.darkened(0.18 * float(shade % 4))
-			shade += 1
+	return visible
+
+
+func _draw_paths(canvas: Control, chart: Chart, t: float, _pre: float) -> void:
+	var visible: Array[Note] = _visible_paths(chart, t)
+	if visible != _overlap_paths:
+		_overlap_paths = visible
+		_overlap_any = _has_path_overlap(visible)
+		for note: Note in _path_strokes.keys():
+			if not visible.has(note):
+				_path_strokes.erase(note)
+	if visible.is_empty():
+		return
 	# 接力高亮：还没划完的星里，只有尾判定最早的那条（或几条同时到点）保持全亮。
-	# 未来星只要还在预读期就已经整条可见，所以也要参与压暗，否则屏幕上会有
-	# 2–3 条同样亮的轨迹，看不出该先划哪条。
 	var active_end := INF
 	for note in visible:
-		if t > note.end_beat:
-			continue
-		active_end = minf(active_end, note.end_beat)
-	var active_list: Array = []
-	for note in visible:
-		if t > note.end_beat:
-			continue
-		if note.end_beat <= active_end + 0.05:
-			active_list.append(note)
-	# 当前该划的最后画，保证它在最上层。
-	var order: Array = visible.duplicate()
-	for note in active_list:
-		order.erase(note)
-		order.append(note)
-	for note in order:
-		var dim := 1.0 if active_list.has(note) else PATH_RELAY_DIM
-		_draw_one_path(canvas, chart, note, t, pre, true, visible.size(), colors[note], dim, active_list.has(note))
+		if t <= note.end_beat:
+			active_end = minf(active_end, note.end_beat)
+	var selected_note: Note = null
+	if _app != null and not _app.selected_notes.is_empty():
+		selected_note = _app.get_selected_note()
+	var projection_key: String = "%s|%s|%s" % [_mesh_key(chart, t), _last_view_key, size]
+	# Draw the active paths last while retaining their relative order and colors.
+	for active_pass: bool in [false, true]:
+		for i in visible.size():
+			var note: Note = visible[i]
+			var active: bool = t <= note.end_beat and note.end_beat <= active_end + 0.05
+			if active != active_pass:
+				continue
+			var tint: Color = _note_tint(note, Note.DEFAULT_PATH_COLOR)
+			if _overlap_any:
+				tint = tint.darkened(0.18 * float(i % 4))
+			var dim: float = 1.0 if active else PATH_RELAY_DIM
+			var selected: bool = selected_note != null and selected_note.id == note.id
+			_draw_one_path(canvas, chart, note, t, projection_key, visible.size(), tint, dim, active, selected)
 
 
 ## One synthetic Path for a part chain: one head, one guide ball, one tail.
@@ -3213,34 +3311,32 @@ static func build_path_chain_note(root: Note, chain: Array[Note]) -> Note:
 	return result
 
 
-## 两条星在时间上重叠、且轨迹在盘面内靠得足够近，就算“有重叠”。
-## 一条 part 链合成一颗合成 Path（含整链 trace_pts）：几何不变时别每帧重造。
-func _chain_note_for(chart: Chart, root: Note, chain: Array[Note]) -> Note:
-	if chain.size() <= 1:
-		return root
-	if chart.version != _chain_cache_version:
-		_chain_cache_version = chart.version
-		_chain_cache.clear()
-	var cached: Note = _chain_cache.get(root.id, null)
-	if cached != null:
-		return cached
-	var built := build_path_chain_note(root, chain)
-	_chain_cache[root.id] = built
-	return built
+func _overlap_samples(note: Note) -> PackedVector2Array:
+	if _path_overlap_samples.has(note):
+		return _path_overlap_samples[note]
+	var duration: float = maxf(0.01, note.duration())
+	var samples := PackedVector2Array()
+	for i in 13:
+		samples.append(note.path_local_at(duration * float(i) / 12.0))
+	_path_overlap_samples[note] = samples
+	return samples
 
 
-func _paths_overlap(chart: Chart, a: Note, b: Note) -> bool:
-	if a.end_beat < b.beat - 0.25 or b.end_beat < a.beat - 0.25:
-		return false
-	var a_duration := maxf(0.01, a.duration())
-	var b_duration := maxf(0.01, b.duration())
-	var steps := 12
-	for i in steps + 1:
-		var pa := a.path_local_at(a_duration * float(i) / float(steps))
-		for j in steps + 1:
-			var pb := b.path_local_at(b_duration * float(j) / float(steps))
-			if pa.distance_to(pb) < 0.22:
-				return true
+func _has_path_overlap(visible: Array[Note]) -> bool:
+	for i in visible.size():
+		var first: Note = visible[i]
+		for j in range(i + 1, visible.size()):
+			var second: Note = visible[j]
+			if first.end_beat < second.beat - 0.25:
+				break
+			if second.end_beat < first.beat - 0.25:
+				continue
+			var first_samples: PackedVector2Array = _overlap_samples(first)
+			var second_samples: PackedVector2Array = _overlap_samples(second)
+			for a in first_samples:
+				for b in second_samples:
+					if a.distance_squared_to(b) < 0.22 * 0.22:
+						return true
 	return false
 
 
@@ -3262,15 +3358,41 @@ static func split_path_runs(points: PackedVector2Array, erased: Array) -> Array[
 	return result
 
 
-func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: float, top: bool, visible_count: int = 1, accent: Color = Color(0.22, 0.36, 0.88), dim: float = 1.0, active: bool = false) -> void:
+func _path_stroke_runs(chart: Chart, note: Note, beat: float, projection_key: String, count: int) -> Array[PackedVector2Array]:
+	var stroke: PathStroke = _path_strokes.get(note)
+	if stroke == null:
+		stroke = PathStroke.new()
+		_path_strokes[note] = stroke
+	var count_changed: bool = count != stroke.count
+	var reproject: bool = count_changed or projection_key != stroke.projection_key
+	var cut_version: int = int(path_cut_versions.get(note.id, 0))
+	var recut: bool = count_changed or cut_version != stroke.cut_version
+	var total: float = note.duration()
+	if reproject:
+		stroke.points.resize(count + 1)
+		for i in count + 1:
+			var rel: float = total * float(i) / float(count)
+			stroke.points[i] = _path_screen_point(chart, note, rel, beat)
+		stroke.projection_key = projection_key
+	if recut:
+		stroke.erased.resize(count + 1)
+		for i in count + 1:
+			var rel: float = total * float(i) / float(count)
+			stroke.erased[i] = path_erased(note, rel)
+		stroke.cut_version = cut_version
+	if reproject or recut:
+		stroke.runs = split_path_runs(stroke.points, stroke.erased)
+		stroke.count = count
+	return stroke.runs
+
+
+func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, projection_key: String, visible_count: int, accent: Color, dim: float, active: bool, selected: bool) -> void:
 	var total := note.duration()
 	if total <= 0.001:
 		return
 	# 尾判后 0.1s 内整条轨迹（轨迹 / 进度球 / 尾环）一起淡出，不再等到 end+0.5 拍硬消失。
 	var end_span := end_fade_beats(chart.timing.bpm_at(note.beat))
 	var end_fade := clampf(1.0 - (t - note.end_beat) / end_span, 0.0, 1.0)
-	# 每条 Path 都按"顶层"完整画（箭头链 / 星头 / 尾环 / 进度球）。
-	top = true
 	# 先铺轨迹，再落星星：轨迹从生成开始淡入，星星落下的那一刻正好铺满。
 	var spawn_beat := _spawn_beat(chart, note.beat)
 	var fall_beat := _fall_beat(chart, note.beat)
@@ -3279,30 +3401,13 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 	var wait := clampf(note.wait_beat, 0.0, maxf(0.0, total - 0.001))
 	var q := clampf((t - note.beat - wait) / maxf(0.001, total - wait), 0.0, 1.0)
 	var progress := 1.0 - pow(1.0 - q, maxf(0.05, note.path_speed))
-	var runs: Array[PackedVector2Array] = []
-	var mesh := "%s|%s|%.0f|%.0f" % [_mesh_key(chart, t), _last_view_key, size.x, size.y]
-	var cache_key := "%d|%d|%s" % [note.id, int(path_cut_versions.get(note.id, 0)), mesh]
-	if _path_runs_cache.has(cache_key):
-		runs = _path_runs_cache[cache_key]
-	else:
-		var count := clampi(int(total * 18.0), 40, 96)
-		if visible_count >= 4:
-			count = clampi(int(total * 12.0), 28, 64)
-		var points := PackedVector2Array()
-		var erased_flags: Array[bool] = []
-		for i in count + 1:
-			var rel := total * float(i) / float(count)
-			erased_flags.append(path_erased(note, rel))
-			points.append(_path_screen_point(chart, note, rel, t, true, 1.0))
-		runs = split_path_runs(points, erased_flags)
-		if _path_runs_cache.size() > 64:
-			_path_runs_cache.clear()
-		_path_runs_cache[cache_key] = runs
 	# 颜色由 _draw_paths 统一分配（自定义优先，重叠时同色系压明度）。
 	var trail_dim := dim * trail_fade * end_fade
 	var future := Color(accent.r, accent.g, accent.b, 0.98 * trail_dim)
 	var passed := Color(accent.r, accent.g, accent.b, 0.14 * trail_dim)
-	if trail_fade > 0.001:
+	if trail_fade > 0.001 and end_fade > 0.0:
+		var count: int = clampi(int(total * 12.0), 28, 64) if visible_count >= 4 else clampi(int(total * 18.0), 40, 96)
+		var runs: Array[PackedVector2Array] = _path_stroke_runs(chart, note, t, projection_key, count)
 		for piece in runs:
 			if piece.size() < 2:
 				continue
@@ -3327,13 +3432,10 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 			var chevron_spacing := maxf(36.0, chevron_size * 2.3)
 			if path_style == "tread":
 				chevron_spacing *= 2.2
-			for fraction in chevron_fractions(piece, chevron_spacing, chevron_size * 1.9):
-				var sample: Dictionary = _polyline_sample(piece, fraction)
+			for sample in _chevron_samples(piece, chevron_spacing, chevron_size * 1.9):
 				# 试玩时轨迹已经被擦到光标处，剩下的每一段都在前方，不该再按“piece 内比例”压暗。
-				var chevron_color := future if playtest_mode else (passed if fraction < progress else future)
-				_draw_chevron(canvas, sample["point"], sample["direction"], chevron_color, chevron_size)
-	var selected_note: Note = _app.get_selected_note() if _app != null else null
-	var selected := selected_note != null and selected_note.id == note.id
+				var chevron_color := future if playtest_mode else (passed if sample.fraction < progress else future)
+				_draw_chevron(canvas, sample.point, sample.direction, chevron_color, chevron_size)
 	if selected:
 		# 中间判定点只在选中时绘制，避免多星星铺满采样点拖慢编辑器。
 		for sample_beat in note.path_sample_beats():
@@ -3434,7 +3536,7 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, pre: fl
 		# 下落星星全程都要能看清：从圆心出发时也不再缩到 0.2。
 		var star_grow := _radial_scale(star_head, 0.8, 1.0, t)
 		_draw_path_star(canvas, star_head, ns * PATH_SIZE_SCALE * PATH_HEAD_SCALE * star_grow, accent, head_alpha * dim * star_in)
-	_draw_path_tail(canvas, tail, top, ns * PATH_SIZE_SCALE, accent, dim * trail_fade * end_fade)
+	_draw_path_tail(canvas, tail, true, ns * PATH_SIZE_SCALE, accent, dim * trail_fade * end_fade)
 	# 大号发光球 + 短拖尾：当前进度点始终比星头更亮，方向一目了然。
 	if t >= note.beat and t <= note.end_beat + end_span:
 		var ball_dim := dim * end_fade
@@ -4488,7 +4590,9 @@ func request_redraw() -> void:
 ## 拖动时同一拍会收到多次事件，强建等于每帧重传 3 个网格。
 ## 网格本身由 _process 的 mesh_key 决定，真的跨了拍自然会重建。
 func request_playhead_redraw() -> void:
-	if _overlay != null:
+	if is_processing():
+		_playhead_redraw_pending = true
+	elif _overlay != null:
 		_overlay.queue_redraw()
 	_force_3d_frame = true
 
@@ -5422,21 +5526,6 @@ func _draw_debug(canvas: Control, chart: Chart, t: float) -> void:
 			canvas.draw_string(mono, p + Vector2(4, -4), "%d°" % (i * 30), HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(1, 1, 1, 0.42))
 
 
-func _polyline_sample(points: PackedVector2Array, fraction: float) -> Dictionary:
-	var total := 0.0
-	for i in points.size() - 1:
-		total += points[i].distance_to(points[i + 1])
-	var target := clampf(fraction, 0.0, 1.0) * total
-	var cursor := 0.0
-	for i in points.size() - 1:
-		var segment := points[i].distance_to(points[i + 1])
-		if cursor + segment >= target and segment > 0.01:
-			var p := (target - cursor) / segment
-			return {"point": points[i].lerp(points[i + 1], p), "direction": points[i + 1] - points[i]}
-		cursor += segment
-	return {"point": points[-1], "direction": points[-1] - points[-2] if points.size() > 1 else Vector2.ZERO}
-
-
 func _draw_arrowhead(canvas: Control, point: Vector2, direction: Vector2, color: Color) -> void:
 	var dir := direction.normalized()
 	if dir.length_squared() < 0.1:
@@ -5453,35 +5542,41 @@ func _draw_arrowhead(canvas: Control, point: Vector2, direction: Vector2, color:
 ## 方向箭头按「固定弧长间隔」排布：所有 Path 共用同一个间距；
 ## 折得很厉害的轨迹（锯齿 / 来回折返）弧长很长但占的面积很小，
 ## 再按屏幕距离去一次重，避免同一片区域堆一堆箭头。
-## 返回 0..1 的相对长度比例，调用方按比例取点画箭头。
 static func chevron_fractions(points: PackedVector2Array, spacing: float, min_gap: float) -> Array[float]:
 	var fractions: Array[float] = []
+	for sample in _chevron_samples(points, spacing, min_gap):
+		fractions.append(sample.fraction)
+	return fractions
+
+
+static func _chevron_samples(points: PackedVector2Array, spacing: float, min_gap: float) -> Array[PathChevron]:
+	var samples: Array[PathChevron] = []
 	if points.size() < 2 or spacing <= 0.1:
-		return fractions
-	var lengths: Array[float] = []
+		return samples
+	var lengths := PackedFloat64Array()
 	var total := 0.0
 	for i in points.size() - 1:
 		var span := points[i].distance_to(points[i + 1])
 		lengths.append(span)
 		total += span
 	if total < spacing * 0.9:
-		return fractions
+		return samples
 	# 性能上限：箭头上限是 48 只；超出时整体把间距拉开，
 	# 而不是只铺满前面一段（否则长轨迹会在中途突然没有箭头）。
 	var wanted := maxi(1, int(total / spacing))
 	var count := mini(wanted, 48)
 	var step := total / float(count)
-	var placed: Array[Vector2] = []
+	var placed := PackedVector2Array()
+	var edge: int = 0
+	var cursor: float = 0.0
 	for k in count:
 		var target := (float(k) + 0.5) * step
-		var cursor := 0.0
-		var spot := points[0]
-		for i in lengths.size():
-			if cursor + lengths[i] >= target:
-				var q := 0.0 if lengths[i] <= 0.0001 else (target - cursor) / lengths[i]
-				spot = points[i].lerp(points[i + 1], q)
-				break
-			cursor += lengths[i]
+		# Targets advance in arc-length order, so each edge is visited once.
+		while edge < lengths.size() - 1 and cursor + lengths[edge] < target:
+			cursor += lengths[edge]
+			edge += 1
+		var q: float = 0.0 if lengths[edge] <= 0.0001 else (target - cursor) / lengths[edge]
+		var spot: Vector2 = points[edge].lerp(points[edge + 1], q)
 		var crowded := false
 		for previous in placed:
 			if previous.distance_to(spot) < min_gap:
@@ -5490,8 +5585,23 @@ static func chevron_fractions(points: PackedVector2Array, spacing: float, min_ga
 		if crowded:
 			continue
 		placed.append(spot)
-		fractions.append(clampf(target / total, 0.0, 1.0))
-	return fractions
+		var sample := PathChevron.new()
+		sample.fraction = clampf(target / total, 0.0, 1.0)
+		# Ignore tiny edges when choosing a direction, including duplicate points.
+		var tangent_edge: int = edge
+		var tangent_start: float = cursor
+		while tangent_edge < lengths.size() and lengths[tangent_edge] <= 0.01:
+			tangent_start += lengths[tangent_edge]
+			tangent_edge += 1
+		if tangent_edge < lengths.size():
+			var weight: float = (target - tangent_start) / lengths[tangent_edge]
+			sample.point = points[tangent_edge].lerp(points[tangent_edge + 1], weight)
+			sample.direction = points[tangent_edge + 1] - points[tangent_edge]
+		else:
+			sample.point = points[-1]
+			sample.direction = points[-1] - points[-2]
+		samples.append(sample)
+	return samples
 
 
 ## 履带纹：沿轨迹按固定弧长盖一串暗色 V 纹，读方向、也把实心带区分成“一节一节”。
@@ -5500,9 +5610,8 @@ func _draw_tread_marks(canvas: Control, piece: PackedVector2Array, width: float,
 		return
 	var spacing := maxf(10.0, width * 0.75)
 	var size := width * 0.42
-	for fraction in chevron_fractions(piece, spacing, spacing * 0.8):
-		var sample: Dictionary = _polyline_sample(piece, fraction)
-		_draw_chevron(canvas, sample["point"], sample["direction"], color, size)
+	for sample in _chevron_samples(piece, spacing, spacing * 0.8):
+		_draw_chevron(canvas, sample.point, sample.direction, color, size)
 
 
 func _draw_chevron(canvas: Control, point: Vector2, direction: Vector2, color: Color, size: float) -> void:

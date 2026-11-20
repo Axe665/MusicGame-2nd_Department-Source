@@ -15,6 +15,7 @@ func _initialize() -> void:
 		"test_boundary_batch",
 		"test_boundary_frame",
 		"test_live_edit_notifications",
+		"test_background_chart_snapshot",
 		"test_self_intersection",
 		"test_plane_path",
 		"test_path_axis_centrifuge",
@@ -32,6 +33,8 @@ func _initialize() -> void:
 		"test_path_chain_code",
 		"test_path_paste_chain",
 		"test_path_chain_judgement",
+		"test_path_preview_visibility",
+		"test_path_stroke_cache",
 		"test_path_erase_overlap",
 		"test_path_erase_merge",
 		"test_path_run_split",
@@ -221,6 +224,7 @@ func _initialize() -> void:
 		"test_storyboard_serialize",
 		"test_storyboard_editor_model",
 		"test_storyboard_layers",
+		"test_storyboard_sample_ownership",
 		"test_osu_pill_rows",
 		"test_path_chevron_spacing",
 		"test_audio_clock",
@@ -581,7 +585,9 @@ func test_live_edit_notifications() -> bool:
 	app.finish_edit()
 	eq(counts.live, 2, "release flushes the final mouse position")
 	app._process(0.2)
-	eq(counts.validation, 1, "release validates the committed chart once the debounce fires")
+	eq(counts.validation, 0, "debounced validation does not emit from the worker")
+	app._finish_chart_work()
+	eq(counts.validation, 1, "the main thread publishes validation for the committed chart")
 	app.undo_chart()
 	near(app.chart.notes[0].angle, 0.0, 0.001, "drag remains one undo step")
 	app.redo_chart()
@@ -592,6 +598,25 @@ func test_live_edit_notifications() -> bool:
 	preview._on_chart_live_changed()
 	ok(not preview._mesh_dirty, "note drag keeps the ring mesh valid")
 	preview.free()
+	return true
+
+
+func test_background_chart_snapshot() -> bool:
+	var app = load("res://charter/app.gd").new()
+	var chart: Chart = DemoChart.make_demo()
+	app.set_chart(chart)
+	var note := Note.new("path", 8.0, 12.0)
+	note.end_beat = 7.5 # Invalid drafts must reach the validator without normalization.
+	note.trace_pts = [{"x": 0.5, "y": 0.2, "db": 0.0}]
+	chart.notes.append(note)
+	var copy: Chart = app._copy_chart_for_worker(chart, chart.version)
+	eq(Validator.validate(copy), Validator.validate(chart), "background validation sees the exact draft")
+	eq(ChartIO.to_json(copy), ChartIO.to_json(chart), "background autosave uses the same chart data")
+	note.trace_pts[0]["x"] = 0.7
+	chart.timing.points[0].bpm = 180.0
+	eq(copy.notes[-1].trace_pts[0]["x"], 0.5, "live geometry does not mutate the worker snapshot")
+	ok(copy.timing.points[0].bpm != 180.0, "timing points are detached from the worker snapshot")
+	app.free()
 	return true
 
 
@@ -1096,6 +1121,74 @@ func test_path_chain_judgement() -> bool:
 		near(paths[0].end_beat, 3.0, 0.001, "the chain keeps the final tail time")
 		ok(paths[0].trace_pts.size() > 4, "the chain carries the combined trace")
 	run.free()
+	return true
+
+
+func test_path_preview_visibility() -> bool:
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4), TimingPoint.new(20.0, 480.0, 4)]
+	var root_note := Note.new("path", 1.0, 0.0)
+	root_note.id = 1
+	root_note.end_beat = 2.0
+	root_note.path_next_id = 2
+	var tail := Note.new("path", 30.0, 90.0)
+	tail.id = 2
+	tail.end_beat = 31.0
+	tail.path_prev_id = 1
+	var incoming := Note.new("path", 23.0, 90.0)
+	incoming.id = 3
+	incoming.end_beat = 24.0
+	chart.notes = [root_note, tail, incoming]
+	var preview := Preview3D.new()
+	var visible: Array[Note] = preview._visible_paths(chart, 30.5)
+	eq(visible.size(), 1, "a chain remains visible near the final part")
+	if visible.size() == 1:
+		eq(visible[0].id, root_note.id, "the visible chain is drawn as one path")
+		eq(visible[0].end_beat, tail.end_beat, "the visible chain keeps its final tail")
+	eq(preview._visible_paths(chart, 10.0).size(), 0, "seeking backwards into a gap hides the chain")
+	eq(preview._visible_paths(chart, 19.9), [incoming], "pre-read time crosses into a faster BPM segment")
+	preview.flow_scale = 4.0
+	eq(preview._visible_paths(chart, 19.9).size(), 0, "changing note speed updates visibility without editing the chart")
+	tail.beat = 32.0
+	tail.end_beat = 33.0
+	chart.mark_dirty()
+	visible = preview._visible_paths(chart, 32.0)
+	eq(visible.size(), 1, "the edited chain is visible at its new time")
+	if visible.size() == 1:
+		eq(visible[0].end_beat, 33.0, "editing a chain rebuilds its preview")
+	eq(preview._visible_paths(Chart.new(), 32.0).size(), 0, "switching to another chart drops the old index")
+	preview.free()
+	return true
+
+
+class PathStrokeProbe:
+	extends Preview3D
+
+	var projections: int = 0
+
+	func _path_screen_point(_chart: Chart, _note: Note, relative_beat: float, _beat: float, _cache_sample: bool = true, _scale: float = 1.0) -> Vector2:
+		projections += 1
+		return Vector2(relative_beat, 0.0)
+
+
+func test_path_stroke_cache() -> bool:
+	var preview := PathStrokeProbe.new()
+	var chart := Chart.new()
+	var note := Note.new("path", 0.0, 0.0)
+	note.end_beat = 1.0
+	var initial: Array[PackedVector2Array] = preview._path_stroke_runs(chart, note, 0.0, "static", 8)
+	eq(initial[0].size(), 9, "the stroke includes both endpoints at its requested sampling density")
+	preview.set_path_erased_to(note, 0.5)
+	var cut: Array[PackedVector2Array] = preview._path_stroke_runs(chart, note, 0.1, "static", 8)
+	eq(cut[0][0], Vector2(0.625, 0.0), "erasing splits the existing projected points")
+	eq(preview.projections, 9, "changing only the cut reuses the projection")
+	var moved: Array[PackedVector2Array] = preview._path_stroke_runs(chart, note, 0.2, "moved", 8)
+	eq(moved, cut, "changing the projection keeps the cut")
+	eq(preview.projections, 18, "changing geometry reprojects the points")
+	preview.reset_path_cuts()
+	var reset: Array[PackedVector2Array] = preview._path_stroke_runs(chart, note, 0.2, "moved", 4)
+	eq(reset[0].size(), 5, "retry clears the cut and reapplies the current sampling density")
+	preview.free()
 	return true
 
 
@@ -3624,12 +3717,37 @@ func test_note_span_defaults() -> bool:
 	return true
 
 
+class CountdownProbe:
+	extends Playtest
+
+	var ticks: Array[int] = []
+
+	func _play_tick(number: int) -> void:
+		ticks.append(number)
+
+
 func test_playtest_countdown() -> bool:
 	eq(Playtest.countdown_number(2.0, 2.0), 3, "countdown starts at 3")
 	eq(Playtest.countdown_number(1.34, 2.0), 3, "the first third still shows 3")
 	eq(Playtest.countdown_number(1.33, 2.0), 2, "the second third shows 2")
 	eq(Playtest.countdown_number(0.5, 2.0), 1, "the last third shows 1")
 	eq(Playtest.countdown_number(0.0, 2.0), 0, "zero means GO")
+	var game := CountdownProbe.new()
+	game.chart = Chart.new()
+	game.offline_mode = true
+	game._ready_layer = Control.new()
+	game.add_child(game._ready_layer)
+	game._start_countdown()
+	eq(game.ticks, [3], "4/4 begins with the 3 cue")
+	game._process_ready(0.501)
+	game._process_ready(0.5)
+	eq(game.ticks, [3, 2, 1], "one cue per beat before GO")
+	ok(not game._running, "play waits for the fourth beat")
+	game._process_ready(0.5)
+	game._process_ready(0.5)
+	eq(game.ticks, [3, 2, 1, 0], "4/4 has four cues including GO")
+	ok(game._running and not game._ready_layer.visible, "the GO cue starts play and hides the countdown")
+	game.free()
 	var chart := Chart.new()
 	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
 	near(Playtest.timeline_start_beat(chart, 8.0, 1000.0), 5.0, 0.26,
@@ -6250,6 +6368,26 @@ Sprite,Background,Centre,"a.png",0,0
 
 
 ## 图层 / 原点 / 动画帧。
+func test_storyboard_sample_ownership() -> bool:
+	var board: Storyboard = Storyboard.parse(
+		'[Events]\nSprite,Foreground,Centre,"one.png",320,240\n F,0,100,200,1,1\n')
+	var sprite: Storyboard.Sprite = board.sprites[0]
+	var lifetime: WeakRef = weakref(sprite)
+	var canvas := StoryboardCanvas.new()
+	canvas.set_board(board, "user://")
+	canvas._items = board.sample(100.0)
+	eq(canvas._items.size(), 1, "first visible frame keeps a reference for editing")
+	canvas.set_playhead(150.0)
+	eq(board.sample(100.0).size(), 1, "seeking does not clear the storyboard sample")
+	eq(board.sample(200.0).size(), 1, "last visible frame stays in the time index")
+	eq(board.sample(201.0).size(), 0, "the storyboard stops sampling outside visibility")
+	canvas.free()
+	board = null
+	sprite = null
+	ok(lifetime.get_ref() == null, "cached endpoint states do not keep their sprite alive")
+	return true
+
+
 func test_storyboard_layers() -> bool:
 	var text := """[Events]
 Sprite,Background,Centre,"bg.png",320,240

@@ -29,6 +29,7 @@ var _audio_popup: PopupPanel = null
 ## 避免窗口以 120fps 重画同一张静止画面（GPU 空转的主量级）。
 var _last_activity_ms: int = 0
 var _idle_capped: bool = false
+var _playtest_validation_pending: bool = false
 var _settings_dialog: AcceptDialog = null
 var _quality_widgets: Dictionary = {}
 var _hud_widgets: Dictionary = {}
@@ -221,8 +222,7 @@ func _ready() -> void:
 				_sfx.play("don")
 		)
 		_app.validation_changed.connect(_update_validation)
-		# App 在 main 之后才连上信号，启动时那次校验已经错过，这里补一次。
-		_update_validation(_app.validation_issues())
+		_app._emit_validation()
 		_app.snap_changed.connect(_on_snap_changed)
 		_app.stretch_changed.connect(_on_stretch_value_changed)
 		_app.audio_import_requested.connect(_on_audio_import_requested)
@@ -278,7 +278,7 @@ func _run_bench() -> void:
 			return
 		_app.set_chart(imported["chart"], "", false)
 	_app.playhead_beat = start_beat
-	_start_playtest(false)
+	await _start_playtest(false)
 	if _playtest == null:
 		print("[bench] playtest failed to start")
 		get_tree().quit()
@@ -2082,12 +2082,11 @@ func _fire_editor_sfx(beat: float) -> void:
 	_sfx_last_beat = beat
 
 
-## 静止降帧：暂停/无输入 1.5 秒后把帧率压到 10，任何活动立刻恢复用户设定。
-## 只降「空转的重画」，不改画质、不改逻辑；播放/试玩/拖动都不受影响。
+## 只给后台静止窗口限帧。前台输入继续按用户选择的帧率响应。
 func _update_idle_cap() -> void:
-	if _app == null:
+	if _app == null or DisplayServer.get_name() == "headless":
 		return
-	var busy := _playing or _playtest != null \
+	var busy := get_window().has_focus() or _playing or _playtest != null \
 		or Time.get_ticks_msec() - _last_activity_ms < 1500
 	if busy:
 		if _idle_capped:
@@ -2096,10 +2095,7 @@ func _update_idle_cap() -> void:
 		return
 	if not _idle_capped:
 		_idle_capped = true
-		# 静止时每秒只提交 10 帧：整窗 1000+ 条 2D draw call 不再按 120fps 重发。
-		# 任何输入/播放都会在下一帧恢复用户设定（Godot 只在帧边界收输入，
-		# 所以这一档同时决定了「静止后第一次点击」的最大延迟 ≈100ms）。
-		Engine.max_fps = 10
+		Engine.max_fps = 30
 
 
 func _process(_delta: float) -> void:
@@ -2330,7 +2326,9 @@ func _open_storyboard_editor() -> void:
 		_sb_editor.opened.connect(_on_storyboard_opened)
 		_sb_editor.closed.connect(_on_storyboard_closed)
 		add_child(_sb_editor)
-	_sb_editor.open_for(_app.chart)
+	var source: Chart = _app.chart
+	await _sb_editor.open_for(source, func() -> bool:
+		return _app.chart == source and _playtest == null and not _app.ring_editor_open)
 
 
 ## 全屏工作区：把主编辑区藏起来，并停掉 3D 预览的逐帧重绘/采样。
@@ -2345,6 +2343,10 @@ func _on_storyboard_opened() -> void:
 func _on_storyboard_closed() -> void:
 	_stop_play()
 	if _preview != null:
+		var board: Storyboard = _preview._storyboard
+		if board != null:
+			_preview._sb_wide_detected = Preview3D._detect_wide(board)
+		_preview.refresh_storyboard_layers()
 		_preview.set_suspended(false)
 	if _main_row != null:
 		_main_row.visible = true
@@ -2386,12 +2388,8 @@ func _on_storyboard_seek(ms: float) -> void:
 	# 播放中拖播放头要把音频时钟一起挪，否则声音和画面对不上。
 	if _playing:
 		_rebase_playback(beat)
-	_app.set_playhead(beat)
-	_sync_from_app()
-	_preview._sb_sample_ms = -1.0e9
-	_preview._sb_queued_ms = -1.0e9
-	_preview.refresh_storyboard_layers()
-	_preview._overlay.queue_redraw()
+	else:
+		_app.set_playhead(beat)
 
 
 ## 编辑器里改了东西（还没存盘）：把编辑中的 board 直接塞给预览，边拖边看。
@@ -2407,15 +2405,13 @@ func _on_storyboard_edited() -> void:
 	_preview._storyboard = board
 	_preview._storyboard_chart = _app.chart
 	_preview._storyboard_dir = dir
-	_preview._sb_wide_detected = Preview3D._detect_wide(board)
-	_preview._storyboard_textures.clear()
-	board.invalidate()
+	_preview._sb_waiting_dir = ""
+	_preview._sb_paths.clear()
+	_preview._sb_all_textures_cached = false
+	_preview._sb_priority_ms = INF
 	_preview._sb_sample_ms = -1.0e9
 	_preview._sb_queued_ms = -1.0e9
 	_preview._sb_render_items = []
-	_preview._refresh_background_layering()
-	_preview._update_storyboard_clip_rects()
-	_preview.refresh_storyboard_layers()
 
 
 func _on_storyboard_saved(path: String) -> void:
@@ -2425,7 +2421,7 @@ func _on_storyboard_saved(path: String) -> void:
 	_app.chart.metadata["storyboard"] = path.get_base_dir()
 	_app.finish_edit()
 	# 第二次保存到同一目录时，缓存里还是上一版解析结果，预览会停在旧画面。
-	_preview._board_cache.erase(path.get_base_dir())
+	Preview3D.invalidate_storyboard_source(path.get_base_dir())
 	_preview._storyboard = null
 	_preview._storyboard_chart = null
 	_preview._ensure_storyboard(_app.chart)
@@ -2463,6 +2459,7 @@ func _attach_storyboard(osb_path: String) -> void:
 			if _copy_file(sub_path + "/" + file_name, target + "/" + file_name):
 				copied += 1
 	_copy_file(osb_path, target + "/storyboard.osb")
+	Preview3D.invalidate_storyboard_source(target)
 	_app.begin_edit()
 	_app.chart.metadata["storyboard"] = target
 	_app.finish_edit()
@@ -3313,9 +3310,20 @@ func _open_replay_from_set(data: Replay, set_path: String) -> void:
 
 
 func _start_playtest(from_start: bool) -> void:
-	if _app == null or _app.chart == null or _playtest != null:
+	if _app == null or _app.chart == null or _playtest != null or _playtest_validation_pending:
 		return
-	var errors := Validator.errors(Validator.validate(_app.chart))
+	var source: Chart = _app.chart
+	var version: int = source.version
+	var requested_beat: float = 0.0 if from_start else _app.playhead_beat
+	_playtest_validation_pending = true
+	var issues: Array[Dictionary] = await _app.validate_for_playtest(source)
+	_playtest_validation_pending = false
+	if not is_inside_tree() or _playtest != null:
+		return
+	if _app.chart != source or source.version != version:
+		_show_toast("谱面已变更，请重新启动试玩。", "warning")
+		return
+	var errors: Array[Dictionary] = Validator.errors(issues)
 	if not errors.is_empty():
 		_show_toast("先修复 %d 个校验错误再试玩：%s" % [errors.size(), errors[0].get("message", "")], "error")
 		return
@@ -3336,7 +3344,7 @@ func _start_playtest(from_start: bool) -> void:
 	_playtest._preview.show_storyboard_background = _app.show_storyboard_background
 	_playtest._preview.set_background_brightness(float(_app.background_brightness) / 100.0)
 	_playtest.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	_playtest.setup(_app.chart, 0.0 if from_start else _app.playhead_beat, _app.chart_path)
+	_playtest.setup(source, requested_beat, _app.chart_path)
 	_playtest.exit_requested.connect(_end_playtest)
 	_playtest.settings_requested.connect(_open_settings)
 	_playtest.playtest_settings_requested.connect(func() -> void: _open_playtest_setup(false))

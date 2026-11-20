@@ -158,10 +158,15 @@ var _ring_live_pending: bool = false
 ## 环工作区打开时，被盖住的检查器不用跟着重建。
 var ring_editor_open: bool = false
 var _validation_pending: bool = false
-## 编辑中只跑快速校验；闲下来 2 秒再补一次全量（事件两两重叠 + 可玩性采样）。
-var _validation_full_pending: bool = false
-var _validation_full_timer: float = 0.0
 var _validation_timer: float = 0.0
+var _validated_chart: Chart
+var _validated_version: int = -1
+var _validation_result: Array[Dictionary] = []
+var _autosave_pending: bool = false
+var _chart_worker: Thread
+var _chart_copying: bool = false
+var _job_chart: Chart
+var _job_version: int = -1
 var _commands_since_autosave: int = 0
 var _autosave_timer: Timer
 
@@ -1047,21 +1052,146 @@ func _flush_live_change() -> void:
 
 func _process(delta: float) -> void:
 	_flush_live_change()
-	# 校验会扫全谱（自交/可玩性），编辑时没必要每改一格就跑一次。
-	if _validation_pending:
-		_validation_timer -= delta
-		if _validation_timer <= 0.0:
-			_validation_pending = false
-			if chart != null:
-				validation_changed.emit(Validator.validate(chart, false))
-				_validation_full_pending = true
-				_validation_full_timer = 2.0
-	if _validation_full_pending:
-		_validation_full_timer -= delta
-		if _validation_full_timer <= 0.0:
-			_validation_full_pending = false
-			if chart != null:
-				validation_changed.emit(Validator.validate(chart, true))
+	_validation_timer -= delta
+	_autosave_pending = _autosave_pending and dirty
+	if _chart_worker != null and not _chart_worker.is_alive():
+		_finish_chart_work()
+	if _chart_worker != null or _chart_copying or _editing or chart == null:
+		return
+	var validate: bool = _validation_pending and _validation_timer <= 0.0
+	var save: bool = _autosave_pending and dirty
+	if validate or save:
+		_begin_chart_work(validate, save)
+
+
+func _begin_chart_work(validate: bool, save: bool) -> void:
+	var source: Chart = chart
+	var version: int = source.version
+	_chart_copying = true
+	var detached: Chart = await _copy_chart_for_worker(source, version)
+	_chart_copying = false
+	if detached == null:
+		return
+	var target: String = ""
+	if save and dirty:
+		target = "user://autosave_import.json" if child_window else "user://autosave.json"
+		_autosave_pending = false
+	if validate:
+		_validation_pending = false
+	_job_chart = source
+	_job_version = version
+	_chart_worker = Thread.new()
+	# Transfer the snapshot out of the bound arguments so its resources can
+	# also be released on the worker when the job ends.
+	var input: Array[Chart] = [detached]
+	var error: Error = _chart_worker.start(_run_chart_work.bind(input, validate, target), Thread.PRIORITY_LOW)
+	if error != OK:
+		_chart_worker = null
+		_job_chart = null
+		if save:
+			notice.emit("无法启动自动保存，下次将重试。", "warning")
+		if validate:
+			# Thread creation can fail under system pressure. Keep validation
+			# available for the explicit playtest request.
+			_accept_chart_validation(source, version, Validator.validate(detached))
+
+
+func _copy_chart_for_worker(source: Chart, version: int) -> Chart:
+	# Copy raw fields so validation sees the exact draft, including invalid values
+	# and legacy data that would be normalized by a file round-trip.
+	var fields: Dictionary = inst_to_dict(source)
+	for key: Variant in fields.keys():
+		if String(key).begins_with("_"):
+			fields.erase(key)
+	var copy: Chart = dict_to_inst(fields)
+	copy.metadata = source.metadata.duplicate(true)
+	copy.editor = source.editor.duplicate(true)
+	copy.palette = source.palette.duplicate(true)
+	copy.shape_keys = source.shape_keys.duplicate(true)
+	copy.load_warnings = source.load_warnings.duplicate()
+	copy.timing = TimingMap.new()
+	copy.timing.offset_ms = source.timing.offset_ms
+	copy.timing.points.clear()
+	copy.shapes = {}
+	copy.notes = []
+	copy.events = []
+	copy.view_states = []
+	copy.regions = []
+	for point in source.timing.points:
+		copy.timing.points.append(TimingPoint.new(point.beat, point.bpm, point.beats_per_bar))
+	for key: Variant in source.shapes:
+		var shape: BoundaryShape = source.shapes[key] as BoundaryShape
+		if shape == null:
+			copy.shapes[key] = null
+			continue
+		var new_shape := BoundaryShape.new()
+		new_shape.id = shape.id
+		new_shape.closed = shape.closed
+		for segment in shape.segments:
+			new_shape.segments.append(BoundarySegment.new(segment.u0, segment.u1, segment.p0, segment.p1, segment.ix, segment.iy, segment.gap))
+		copy.shapes[key] = new_shape
+	for event in source.events:
+		copy.events.append(dict_to_inst(inst_to_dict(event)))
+	for state in source.view_states:
+		copy.view_states.append(dict_to_inst(inst_to_dict(state)))
+	for region in source.regions:
+		copy.regions.append(dict_to_inst(inst_to_dict(region)))
+	var slice_start: int = Time.get_ticks_usec()
+	for note in source.notes:
+		var data: Dictionary = inst_to_dict(note)
+		data[&"path_gaps"] = note.path_gaps.duplicate(true)
+		data[&"trace_pts"] = note.trace_pts.duplicate(true)
+		data[&"visual_pts"] = note.visual_pts.duplicate(true)
+		copy.notes.append(dict_to_inst(data))
+		if is_inside_tree() and Time.get_ticks_usec() - slice_start >= 1800:
+			await get_tree().process_frame
+			if chart != source or source.version != version:
+				return null
+			slice_start = Time.get_ticks_usec()
+	return copy
+
+
+static func _run_chart_work(input: Array[Chart], validate: bool, target: String) -> Dictionary:
+	var detached: Chart = input.pop_back()
+	var result: Dictionary = {}
+	if not target.is_empty():
+		result["save"] = ChartIO.write_chart_text(target, ChartIO.to_json(detached))
+	if validate:
+		result["validation"] = Validator.validate(detached)
+	return result
+
+
+func _finish_chart_work() -> void:
+	var result: Dictionary = _chart_worker.wait_to_finish()
+	_chart_worker = null
+	var source: Chart = _job_chart
+	var version: int = _job_version
+	_job_chart = null
+	if result.has("save"):
+		var saved: Dictionary = result["save"]
+		if saved["code"] != OK:
+			notice.emit("自动保存失败：%s" % saved["message"], "warning")
+		elif source == chart and version == chart.version:
+			_commands_since_autosave = 0
+			status_changed.emit()
+	if result.has("validation"):
+		_accept_chart_validation(source, version, result["validation"])
+
+
+func _accept_chart_validation(source: Chart, version: int, issues: Array[Dictionary]) -> void:
+	if chart != source or source.version != version:
+		return
+	_validated_chart = source
+	_validated_version = version
+	_validation_result = issues
+	_validation_pending = false
+	validation_changed.emit(issues)
+
+
+func _exit_tree() -> void:
+	if _chart_worker != null:
+		_chart_worker.wait_to_finish()
+		_chart_worker = null
 
 
 func undo_chart() -> void:
@@ -1089,7 +1219,7 @@ func save_chart() -> bool:
 	if chart_path.is_empty():
 		notice.emit("请先另存为（Ctrl+Shift+S）", "warning")
 		return false
-	var errors := Validator.errors(Validator.validate(chart))
+	var errors := Validator.errors(validation_issues())
 	if not errors.is_empty():
 		notice.emit("有 %d 个校验错误，已阻止保存：%s" % [errors.size(), errors[0].get("message", "")], "error")
 		return false
@@ -1328,15 +1458,8 @@ func autosave() -> void:
 	# 自动保存会把用户正在编辑的 autosave.json 覆盖成测试谱面。
 	if DisplayServer.get_name() == "headless" or "--bench" in OS.get_cmdline_user_args():
 		return
-	if chart == null or not dirty:
-		return
-	var data := ChartIO.to_json(chart)
-	# 转谱窗口不覆盖主窗口的 autosave.json。
-	var target := "user://autosave_import.json" if child_window else "user://autosave.json"
-	var err := ChartIO.atomic_write(target, data)
-	if err == OK:
-		_commands_since_autosave = 0
-		status_changed.emit()
+	if chart != null and dirty:
+		_autosave_pending = true
 
 
 func load_autosave() -> bool:
@@ -1726,7 +1849,22 @@ func _emit_validation() -> void:
 func validation_issues() -> Array[Dictionary]:
 	if chart == null:
 		return []
+	if chart == _validated_chart and chart.version == _validated_version:
+		return _validation_result
 	return Validator.validate(chart)
+
+
+func validate_for_playtest(source: Chart) -> Array[Dictionary]:
+	var version: int = source.version
+	if source == _validated_chart and version == _validated_version:
+		return _validation_result
+	_validation_pending = true
+	_validation_timer = 0.0
+	while is_inside_tree() and chart == source and source.version == version:
+		if source == _validated_chart and version == _validated_version:
+			return _validation_result
+		await get_tree().process_frame
+	return []
 
 
 ## 保存时的颜色提示：统计自定义色或配色组色与舞台背景对比度过低的音符。

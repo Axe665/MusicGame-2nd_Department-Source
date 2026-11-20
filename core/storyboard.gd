@@ -503,15 +503,13 @@ func build_index() -> void:
 	for sprite in sprites:
 		var s := sprite as Sprite
 		if s.commands.is_empty():
+			continue
+		var span := s.end_time - s.start_time
+		if span > BUCKET_MAX_SPAN_MS:
 			_persistent.append(s)
 			continue
-		var span := s.last_ms - s.first_ms
-		if span > BUCKET_MAX_SPAN_MS or s.last_alpha > 0.004:
-			# 命令结束后仍然可见 → 常驻（visible_at 会用首尾 alpha 快速判断）
-			_persistent.append(s)
-			continue
-		var from_bucket := int(floor(s.first_ms / BUCKET_MS))
-		var to_bucket := int(floor(s.last_ms / BUCKET_MS))
+		var from_bucket := int(floor(s.start_time / BUCKET_MS))
+		var to_bucket := int(floor(s.end_time / BUCKET_MS))
 		for b in range(from_bucket, to_bucket + 1):
 			if not _buckets.has(b):
 				_buckets[b] = []
@@ -553,6 +551,11 @@ func replaces_background(background_file: String) -> bool:
 ## 从文本解析（.osb 或 .osu 的 [Events] 段都可）。
 ## 无损原则：Sprite/Animation 类型、L/T 块、P,* 参数、背景/视频事件行、[Variables]
 ## 都要能原样写回；渲染用的 commands 是展开后的副本（in_block = true）。
+static func load_file(path: String) -> Storyboard:
+	var text: String = FileAccess.get_file_as_string(path)
+	return parse(text, path.get_file()) if not text.is_empty() else null
+
+
 static func parse(text: String, source_name_in: String = "") -> Storyboard:
 	var sb := Storyboard.new()
 	sb.source_name = source_name_in
@@ -986,21 +989,18 @@ func sample(ms: float) -> Array[Dictionary]:
 	_cache_ms = ms
 	var bucket: Array = _buckets.get(int(floor(ms / BUCKET_MS)), [])
 	# 两个列表各自按文件顺序排好，这里归并一次，保证同图层里的遮挡关系不变。
-	var merged: Array[Sprite] = []
+	var result: Array[Dictionary] = []
 	var i := 0
 	var j := 0
 	while i < _persistent.size() or j < bucket.size():
 		var a: Sprite = _persistent[i] if i < _persistent.size() else null
 		var b: Sprite = bucket[j] if j < bucket.size() else null
 		if b == null or (a != null and a.order <= b.order):
-			merged.append(a)
+			_collect(a, ms, result)
 			i += 1
 		else:
-			merged.append(b)
+			_collect(b, ms, result)
 			j += 1
-	var result: Array[Dictionary] = []
-	for sprite in merged:
-		_collect(sprite, ms, result)
 	_cache_result = result
 	return result
 
@@ -1023,6 +1023,9 @@ func _collect(s: Sprite, ms: float, out: Array[Dictionary]) -> void:
 		return
 	var state := s.state_at(ms, alpha)
 	# 可视化编辑器靠这个引用把画面上的对象映射回数据（order == sprites 下标）。
+	# 首尾状态由 sprite 持有，复制后再写引用，避免 sprite 引用自己。
+	if ms <= s.first_ms or ms >= s.last_ms:
+		state = state.duplicate()
 	state["sprite"] = s
 	out.append(state)
 
