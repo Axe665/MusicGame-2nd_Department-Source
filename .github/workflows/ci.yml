@@ -41,8 +41,14 @@ jobs:
       - name: path_judgement
         run: godot --headless --path . --script res://tests/path_judgement.gd
 
+      - name: alpha_commands
+        run: godot --headless --path . --script res://tests/alpha_commands.gd
+
       - name: sfx_playback
         run: godot --headless --path . --script res://tests/sfx_playback.gd
+
+      - name: replay_integration
+        run: godot --headless --path . res://tests/replay_integration.tscn
 
   # 性能回退门禁：只锁稳定指标（拖动 CPU 中位数、覆盖层单次绘制、节点/内存）。
   # 无 GPU 的 runner 上毫秒有 ±50% 抖动，所以基线容差 2×；先不阻塞合并，

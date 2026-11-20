@@ -339,6 +339,7 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	_preview.playback_rate = playback_rate
 	_preview.note_skin = String(_app.note_skin if _app != null else "candy")
 	_preview.hit_fx_style = String(_app.hit_fx_style if _app != null else "burst")
+	_preview.show_perfect_fx = bool(_app.show_perfect_fx if _app != null else false)
 	_preview.cursor_scale = float(_app.cursor_scale if _app != null else 1.0)
 	_preview.hud_title = String(chart.metadata.get("title", "")) if chart != null else ""
 	_preview.hud_difficulty = String(chart.difficulty) if chart != null else ""
@@ -434,6 +435,11 @@ static func countdown_number(left: float, total: float) -> int:
 	return clampi(int(ceil(left / (total / 3.0))), 1, 3)
 
 
+## 回放时保留系统鼠标：玩家要拖进度条/点暂停，录制的光标只是画面。
+static func run_mouse_mode(is_replay: bool) -> int:
+	return Input.MOUSE_MODE_VISIBLE if is_replay else Input.MOUSE_MODE_HIDDEN
+
+
 func _start_play() -> void:
 	_ready_phase = "done"
 	_ready_layer.visible = false
@@ -442,7 +448,7 @@ func _start_play() -> void:
 		_sim_silent = true
 		return
 	_start_audio()
-	Input.set_mouse_mode(Input.MOUSE_MODE_HIDDEN)
+	Input.set_mouse_mode(run_mouse_mode(replay_mode))
 
 
 func _start_countdown() -> void:
@@ -805,7 +811,7 @@ func _set_paused(value: bool) -> void:
 		Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
 	else:
 		_clock.resume(Time.get_ticks_usec())
-		Input.set_mouse_mode(Input.MOUSE_MODE_HIDDEN)
+		Input.set_mouse_mode(run_mouse_mode(replay_mode))
 
 
 func _build_ui() -> void:
@@ -1035,6 +1041,8 @@ func _judgement_notes() -> Array[Note]:
 		by_id[note.id] = note
 	var result: Array[Note] = []
 	for note in chart.sorted_notes():
+		if not chart.note_enabled(note):
+			continue
 		if note.type == "path" and note.path_part > 0:
 			continue
 		if note.type != "path":
@@ -1244,6 +1252,7 @@ func _start_recording() -> void:
 		"cursor_scale": _preview.cursor_scale,
 		"note_skin": _preview.note_skin,
 		"hit_fx": _preview.hit_fx_style,
+		"perfect_fx": _preview.show_perfect_fx,
 		# 上游新加的「打击音色」：回放时沿用录制时的，声音才对得上。
 		"hit_sfx": String(_app.hit_sfx_style) if _app != null else "default",
 		"rate": 1.0,
@@ -1259,6 +1268,7 @@ func _enter_replay(data: Replay) -> void:
 	replay_mode = true
 	_recording = false
 	_record = null
+	_preview.custom_cursor_visible = true
 	# 关键：清掉上一局残留的输入状态。「回放本局」复用的是同一个 Playtest，
 	# 上一局按住的键还在 _keys_held 里，Hold 尾判会直接按「一直按住」结算，
 	# 结果就和本局 / 导入回放对不上（实测 HOLD 尾判误差 +146ms vs +0ms）。
@@ -1290,6 +1300,8 @@ func _enter_replay(data: Replay) -> void:
 		_preview.note_skin = String(data.settings["note_skin"])
 	if data.settings.has("hit_fx"):
 		_preview.hit_fx_style = String(data.settings["hit_fx"])
+	if data.settings.has("perfect_fx"):
+		_preview.show_perfect_fx = bool(data.settings["perfect_fx"])
 	if data.settings.has("hit_sfx") and _sfx != null:
 		_sfx.set_style(String(data.settings["hit_sfx"]))
 	for event in _replay_events:
@@ -2493,8 +2505,15 @@ func _pulse_at(angle_degrees: float, beat: float, color: Color, label: String, w
 	if not (p.is_finite() and p.x < 1.0e9):
 		p = _preview.project_u(fposmod(angle_degrees, 360.0) / 360.0, beat)
 	if p.is_finite() and p.x < 1.0e9:
-		_preview.add_hit_pulse(p, color, label, kind, detail)
-		_preview.add_arc_flash(angle_degrees, width, beat, color)
+		var show_fx := label != "PERFECT" or _preview.show_perfect_fx
+		var show_label := Preview3D.judge_label_visible(label,
+			String(_preview.hud_options.get("judge_filter", "all")))
+		# 爆点和判定字都关掉时不要再塞脉冲：否则 PERFECT 会把 20 条特效预算吃满。
+		if not show_fx and not show_label:
+			return
+		_preview.add_hit_pulse(p, color, label, kind, detail, show_fx)
+		if show_fx:
+			_preview.add_arc_flash(angle_degrees, width, beat, color)
 
 
 ## One press belongs to the note whose timing/position fits it best. This runs

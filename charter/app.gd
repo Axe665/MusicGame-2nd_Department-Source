@@ -73,6 +73,8 @@ var hud_combo_mode: String = "center"
 var hud_progress_style: String = "ring"
 ## note / ring_in / ring_out / center / off
 var hud_judge_position: String = "ring_out"
+## 判定字档位筛选：all / below_perfect / below_great / below_good / miss_only
+var hud_judge_filter: String = "all"
 ## 100 / 85 / 70
 var hud_opacity: int = 100
 var hud_show_title: bool = true
@@ -94,6 +96,8 @@ var preview_width: float = 340.0
 var inspector_width: float = 310.0
 var preview_collapsed: bool = false
 var hit_fx_style: String = "burst"
+## 试玩时是否绘制 PERFECT 命中爆点/弧光；判定字仍保留。默认关。
+var show_perfect_fx: bool = false
 var hit_sfx_style: String = "default"
 ## 试玩光标大小倍率（1.0 = 默认）。
 var cursor_scale: float = 1.0
@@ -227,12 +231,21 @@ func _ready() -> void:
 		set_chart(Chart.new(), "", false)
 		call_deferred("_boot_import_window", import_arg)
 		return
-	var demo_path := "user://charts/demo.json"
+	var demo_path := "user://charts/夜に駆ける（示例）"
 	var start_chart: Chart = null
-	if FileAccess.file_exists(demo_path):
-		start_chart = ChartIO.load_chart(demo_path)
-	if start_chart == null and FileAccess.file_exists("res://charts/demo.json"):
-		start_chart = ChartIO.load_chart("res://charts/demo.json")
+	for candidate in [
+		"user://charts/夜に駆ける（示例）",
+		"res://charts/夜に駆ける（示例）",
+		"user://charts/夜に駆ける（示例）/main.tmc",
+		"res://charts/夜に駆ける（示例）/main.tmc",
+	]:
+		var chart := ChartIO.load_three_file(candidate) if DirAccess.dir_exists_absolute(candidate) else null
+		if chart == null and FileAccess.file_exists(candidate):
+			chart = ChartIO.load_chart(candidate)
+		if chart != null:
+			start_chart = chart
+			demo_path = candidate
+			break
 	if start_chart == null:
 		start_chart = DemoChart.make_demo()
 	# 启动时载入的示例谱不算“改过”：否则自动保存会把用户上一次的
@@ -285,7 +298,7 @@ func _boot_import_window(source: String) -> void:
 		ensure_tab()
 		return
 	notice.emit("转谱窗口：读不出 %s 的难度列表" % source.get_file(), "error")
-	set_chart(DemoChart.make_demo(), "user://charts/demo.json", false)
+	set_chart(DemoChart.make_demo(), "user://charts/夜に駆ける（示例）/main.tmc", false)
 	ensure_tab()
 
 
@@ -295,7 +308,7 @@ func _boot_set_window(path: String) -> void:
 		ensure_tab()
 		return
 	notice.emit("转谱窗口：打不开 %s" % path.get_file(), "error")
-	set_chart(DemoChart.make_demo(), "user://charts/demo.json", false)
+	set_chart(DemoChart.make_demo(), "user://charts/夜に駆ける（示例）/main.tmc", false)
 	ensure_tab()
 
 
@@ -382,6 +395,22 @@ func import_set_target(source: String) -> String:
 	return dir.path_join(slug + ".set.json")
 
 
+## 打开一个谱面工程文件夹（包含 main.json / chartN.json）。
+func open_project(path: String) -> bool:
+	var loaded := ChartIO.load_project(path)
+	if not bool(loaded.get("ok", false)):
+		notice.emit("打开谱面工程失败：%s" % String(loaded.get("error", "")), "error")
+		return false
+	difficulties.clear()
+	for entry in loaded.get("entries", []):
+		difficulties.append(entry)
+	difficulty_index = 0
+	set_path = String(loaded.get("main_path", ChartIO.project_main_path(path)))
+	import_source = String(loaded.get("source", ""))
+	import_set_changed.emit()
+	return switch_difficulty(0)
+
+
 ## 打开一个难度套组文件（.set.json）。
 func open_set_file(path: String) -> bool:
 	var loaded := ChartIO.load_set(path)
@@ -409,11 +438,20 @@ func save_set_file(path: String = "") -> bool:
 	var first: Chart = difficulties[0].get("chart", null)
 	if first != null:
 		title = String(first.metadata.get("title", ""))
-	if ChartIO.save_set(target, difficulties, title, import_source) != OK:
-		notice.emit("保存难度套组失败：%s" % ChartIO.last_error, "error")
+	var is_project := ChartIO.is_project_path(target) or target.get_file().to_lower() in ["main.json", "main.tmc"] or target.get_extension().is_empty()
+	var project_target := target
+	if not is_project:
+		var stem := target.get_file().get_basename().trim_suffix(".set")
+		var folder := _safe_file_name(title if not title.is_empty() else stem)
+		project_target = target.get_base_dir().path_join(folder if not folder.is_empty() else stem)
+	var err := ChartIO.save_project(difficulties, project_target, title, import_source)
+	if err != OK:
+		notice.emit("保存谱面工程失败：%s" % ChartIO.last_error, "error")
 		return false
-	set_path = target
-	chart_path = target
+	if not is_project and FileAccess.file_exists(target):
+		DirAccess.remove_absolute(target)
+	set_path = ChartIO.project_main_path(project_target)
+	chart_path = set_path
 	dirty = false
 	save_state_changed.emit()
 	status_changed.emit()
@@ -487,7 +525,25 @@ func add_difficulty_copy(label: String) -> int:
 	return difficulty_index
 
 
-## 把难度组里每一份都存成单独文件，返回写成功的个数。
+func remove_difficulty(index: int) -> bool:
+	if difficulties.size() <= 1 or index < 0 or index >= difficulties.size():
+		return false
+	difficulties.remove_at(index)
+	difficulty_index = clampi(difficulty_index, 0, difficulties.size() - 1)
+	switch_difficulty(difficulty_index)
+	return true
+
+
+func clear_difficulties() -> void:
+	if difficulties.is_empty():
+		return
+	difficulties.clear()
+	difficulty_index = 0
+	difficulties_changed.emit()
+	import_set_changed.emit()
+
+
+## 把难度组里每一份都存成独立谱面工程，返回写成功的个数。
 func save_all_difficulties(dir: String) -> int:
 	if difficulties.is_empty():
 		return 0
@@ -500,8 +556,8 @@ func save_all_difficulties(dir: String) -> int:
 		if c == null:
 			continue
 		var name := _safe_file_name("%s [%s]" % [String(c.metadata.get("title", "chart")), String(entry.get("name", i))])
-		var path := target_dir.path_join(name + ".json")
-		if ChartIO.atomic_write(path, ChartIO.to_json(c)) == OK:
+		var path := target_dir.path_join(name).path_join("main.tmc")
+		if ChartIO.save_project([entry], path, String(c.metadata.get("title", ""))) == OK:
 			written += 1
 	return written
 
@@ -592,6 +648,8 @@ func _load_settings() -> void:
 			hud_progress_style = progress_style if progress_style in ["ring", "off"] else "ring"
 			var judge_pos := String(data.get("hud_judge_position", hud_judge_position))
 			hud_judge_position = judge_pos if judge_pos in ["note", "ring_in", "ring_out", "center", "off"] else "ring_out"
+			var judge_filter := String(data.get("hud_judge_filter", hud_judge_filter))
+			hud_judge_filter = judge_filter if judge_filter in ["all", "below_perfect", "below_great", "below_good", "miss_only"] else "all"
 			hud_opacity = int(data.get("hud_opacity", hud_opacity))
 			hud_opacity = hud_opacity if hud_opacity in [100, 85, 70] else 100
 			hud_show_title = bool(data.get("hud_show_title", hud_show_title))
@@ -606,6 +664,7 @@ func _load_settings() -> void:
 			inspector_width = clampf(float(data.get("inspector_width", inspector_width)), 260.0, 720.0)
 			preview_collapsed = bool(data.get("preview_collapsed", preview_collapsed))
 			hit_fx_style = String(data.get("hit_fx_style", hit_fx_style))
+			show_perfect_fx = bool(data.get("show_perfect_fx", show_perfect_fx))
 			hit_sfx_style = String(data.get("hit_sfx_style", hit_sfx_style))
 			ffmpeg_path = String(data.get("ffmpeg", ffmpeg_path))
 			frame_cap = String(data.get("frame_cap", frame_cap))
@@ -654,6 +713,7 @@ func hud_options() -> Dictionary:
 		"combo_mode": hud_combo_mode,
 		"progress_style": hud_progress_style,
 		"judge_position": hud_judge_position,
+		"judge_filter": hud_judge_filter,
 		"opacity": hud_opacity,
 		"show_title": hud_show_title,
 		"show_difficulty": hud_show_difficulty,
@@ -782,9 +842,9 @@ func effective_latency_sec() -> float:
 
 
 func save_settings() -> void:
-	var data := {"settings_version": 1, "path_wait_indicator": path_wait_indicator, "note_skin": note_skin, "hit_fx_style": hit_fx_style, "hit_sfx_style": hit_sfx_style, "ffmpeg": ffmpeg_path, "frame_cap": frame_cap, "video_encoder": video_encoder, "audio_buffer_ms": audio_buffer_ms, "playtest_offset_ms": playtest_offset_ms, "audio_latency_ms": audio_latency_ms, "music_volume": music_volume, "sfx_volume": sfx_volume, "dynamic_offset": dynamic_offset, "playtest_auto": playtest_auto, "playtest_mirror": playtest_mirror, "playback_scroll": playback_scroll, "background_brightness": background_brightness, "mouse_tilt": mouse_tilt, "startup_tabs": startup_tabs, "osu_favorites": osu_favorites, "last_bias_ms": last_bias_ms, "cursor_scale": cursor_scale, "flow_scale": flow_scale, "aa_2d_level": aa_2d_level, "msaa_3d_level": msaa_3d_level, "ring_pad_rect": ring_pad_rect, "angle_divisions": angle_divisions, "note_detail_fine": note_detail_fine, "note_glow": note_glow, "path_style": path_style, "bpm_lock_ms": bpm_lock_ms, "cursor_trail": cursor_trail, "fx_budget": fx_budget, "ring_3d_scale": ring_3d_scale, "bar_lines": bar_lines, "quality_preset": quality_preset,
+	var data := {"settings_version": 1, "path_wait_indicator": path_wait_indicator, "note_skin": note_skin, "hit_fx_style": hit_fx_style, "show_perfect_fx": show_perfect_fx, "hit_sfx_style": hit_sfx_style, "ffmpeg": ffmpeg_path, "frame_cap": frame_cap, "video_encoder": video_encoder, "audio_buffer_ms": audio_buffer_ms, "playtest_offset_ms": playtest_offset_ms, "audio_latency_ms": audio_latency_ms, "music_volume": music_volume, "sfx_volume": sfx_volume, "dynamic_offset": dynamic_offset, "playtest_auto": playtest_auto, "playtest_mirror": playtest_mirror, "playback_scroll": playback_scroll, "background_brightness": background_brightness, "mouse_tilt": mouse_tilt, "startup_tabs": startup_tabs, "osu_favorites": osu_favorites, "last_bias_ms": last_bias_ms, "cursor_scale": cursor_scale, "flow_scale": flow_scale, "aa_2d_level": aa_2d_level, "msaa_3d_level": msaa_3d_level, "ring_pad_rect": ring_pad_rect, "angle_divisions": angle_divisions, "note_detail_fine": note_detail_fine, "note_glow": note_glow, "path_style": path_style, "bpm_lock_ms": bpm_lock_ms, "cursor_trail": cursor_trail, "fx_budget": fx_budget, "ring_3d_scale": ring_3d_scale, "bar_lines": bar_lines, "quality_preset": quality_preset,
 		"hud_scale": hud_scale, "hud_combo_mode": hud_combo_mode, "hud_progress_style": hud_progress_style,
-		"hud_judge_position": hud_judge_position, "hud_opacity": hud_opacity,
+		"hud_judge_position": hud_judge_position, "hud_judge_filter": hud_judge_filter, "hud_opacity": hud_opacity,
 		"hud_show_title": hud_show_title, "hud_show_difficulty": hud_show_difficulty,
 		"hud_show_percent": hud_show_percent, "hud_show_time": hud_show_time,
 		"hud_show_watermark": hud_show_watermark,
@@ -1221,29 +1281,49 @@ func save_chart() -> bool:
 		return false
 	var errors := Validator.errors(validation_issues())
 	if not errors.is_empty():
-		notice.emit("有 %d 个校验错误，已阻止保存：%s" % [errors.size(), errors[0].get("message", "")], "error")
-		return false
+		notice.emit("有 %d 个校验错误，仍保存当前内容；建议修复：%s" % [errors.size(), errors[0].get("message", "")], "warning")
 	var faint := low_contrast_note_count()
 	chart.offset_ms = chart.timing.offset_ms
-	var err := ChartIO.save_chart(chart, chart_path)
+	var three_file := DirAccess.dir_exists_absolute(chart_path)
+	var single_file := chart_path.to_lower().ends_with(".json")
+	var err: Error = ChartIO.save_three_file(chart, chart_path) if three_file else (
+		ChartIO.save_chart_file(chart, chart_path) if single_file else ChartIO.save_chart(chart, chart_path))
 	if err != OK:
 		notice.emit("保存失败：%s" % ChartIO.last_error, "error")
 		return false
+	if single_file:
+		chart.project_dir = ""
+		chart.project_main_path = ""
+	elif three_file:
+		chart.project_dir = chart_path
+		chart.project_main_path = ""
+	elif not chart.project_main_path.is_empty():
+		chart_path = chart.project_main_path
 	dirty = false
 	_commands_since_autosave = 0
 	save_state_changed.emit()
 	status_changed.emit()
 	if faint > 0:
-		notice.emit("已保存 %s；其中 %d 个音符的配色与背景对比度偏低，可能看不清（不影响保存）" % [chart_path.get_file(), faint], "warning")
+		notice.emit("已保存 %s；其中 %d 个音符的配色与背景对比度偏低，可能看不清（不影响保存）" % [_display_name_for_path(chart_path), faint], "warning")
 	else:
-		notice.emit("已保存 %s" % chart_path.get_file(), "info")
+		notice.emit("已保存 %s" % _display_name_for_path(chart_path), "info")
 	return true
 
 
 func save_chart_as(path: String) -> bool:
-	# 另存为单张谱面时，把当前难度从套组里摘出来，避免之后误写回套组。
+	# Three-file folder (chart + audio + jacket). A direct .json path is still
+	# accepted for legacy single-file charts.
 	if not set_path.is_empty():
 		set_path = ""
+	if DirAccess.dir_exists_absolute(path):
+		chart_path = path
+		return save_chart()
+	if path.get_extension().is_empty():
+		DirAccess.make_dir_recursive_absolute(path)
+		chart_path = path
+		return save_chart()
+	if not path.to_lower().ends_with(".json"):
+		path += ".json"
 	chart_path = path
 	return save_chart()
 
@@ -1252,6 +1332,16 @@ func load_chart(path: String) -> bool:
 	# .set.json 是难度套组：走套组流程，顶部会出现难度下拉。
 	if _is_set_file(path):
 		return open_set_file(path)
+	if DirAccess.dir_exists_absolute(path) and ChartIO.is_three_file_path(path):
+		var three_chart := ChartIO.load_three_file(path)
+		if three_chart == null:
+			notice.emit("打开失败：%s" % ChartIO.last_error, "error")
+			return false
+		set_chart(three_chart, path)
+		notice.emit("已打开谱面文件夹 %s" % path.get_file(), "info")
+		return true
+	if ChartIO.is_project_path(path):
+		return open_project(path)
 	# .lbp 包：单个 zip（谱面 JSON + 音频/曲绘/视频/故事板）。
 	if path.to_lower().ends_with(".lbp") and LBPIO.is_package(path):
 		var packed := LBPIO.import_package(path)
@@ -1375,11 +1465,19 @@ func tab_label(index: int) -> String:
 	return ("● " if tab.dirty else "") + tab.title
 
 
+func _display_name_for_path(path: String) -> String:
+	if DirAccess.dir_exists_absolute(path):
+		return path.get_file()
+	if path.get_file().to_lower() in ["main.json", "main.tmc"]:
+		return path.get_base_dir().get_file()
+	return path.get_file().get_basename()
+
+
 func _tab_title_for_current() -> String:
 	if not set_path.is_empty():
-		return set_path.get_file().get_basename()
+		return _display_name_for_path(set_path)
 	if not chart_path.is_empty():
-		return chart_path.get_file().get_basename()
+		return _display_name_for_path(chart_path)
 	var title := String(chart.metadata.get("title", "")) if chart != null else ""
 	return title if not title.is_empty() else "未命名"
 
@@ -1753,11 +1851,12 @@ func get_selected_notes() -> Array[Note]:
 
 
 ## 选中 Anchor 时把同拍、同 pairId 的伙伴一并带上：删除/复制/镜像按整对处理。
-func with_anchor_partners(notes: Array[Note]) -> Array[Note]:
+func with_anchor_partners(notes: Array) -> Array[Note]:
 	var result: Array[Note] = []
 	var seen := {}
-	for note in notes:
-		if seen.has(note.id):
+	for raw in notes:
+		var note := raw as Note
+		if note == null or seen.has(note.id):
 			continue
 		seen[note.id] = true
 		result.append(note)

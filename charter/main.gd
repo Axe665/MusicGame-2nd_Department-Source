@@ -60,6 +60,7 @@ const HUD_OPTIONS := [
 	{"key": "hud_combo_mode", "label": "连击", "choices": [["屏幕中心", 123], ["右侧", 124], ["关", 125]]},
 	{"key": "hud_progress_style", "label": "进度仪表", "choices": [["环外弧", 126], ["关", 127]]},
 	{"key": "hud_judge_position", "label": "判定字位置", "choices": [["跟音符", 128], ["环内", 129], ["环外", 130], ["屏幕中心", 146], ["关", 147]]},
+	{"key": "hud_judge_filter", "label": "判定字显示", "choices": [["全部", 210], ["PERFECT 以下", 211], ["GREAT 以下", 212], ["GOOD 以下", 213], ["仅 MISS", 214]]},
 	{"key": "hud_opacity", "label": "HUD 透明度", "choices": [["100%", 133], ["85%", 134], ["70%", 135]]},
 	{"key": "hud_show_title", "label": "左上：曲名", "choices": [["显示", 136], ["隐藏", 137]]},
 	{"key": "hud_show_difficulty", "label": "左上：难度", "choices": [["显示", 138], ["隐藏", 139]]},
@@ -86,6 +87,8 @@ var _status_shape: Label
 var _status_error: Label
 var _toast_label: Label
 var _toast_timer: Timer
+var _group_hint_popup: PopupPanel = null
+var _group_hint_label: Label = null
 var _last_transport_msec: int = 0
 
 var _tool_buttons: Dictionary = {}
@@ -172,6 +175,7 @@ var _playtest_mirror: OptionButton = null
 var _playtest_dynamic: CheckBox = null
 var _playtest_auto: CheckBox = null
 var _playtest_mouse: CheckBox = null
+var _playtest_perfect_fx: CheckBox = null
 var _playtest_bias: Label = null
 ## 试玩设置底部的「从头开始玩」按钮（试玩中隐藏）。
 var _playtest_start_button: Button = null
@@ -184,6 +188,13 @@ var _editor_flow_spin: SpinBox = null
 ## 制谱界面保留的「星显」输入框，和试玩设置共用同一个值。
 var _cursor_u: float = 0.0
 var _issues: Array = []
+var _validation_target: String = ""
+var _validation_popup_layer: Control = null
+var _validation_popups: Array[Dictionary] = []
+var _validation_popup_key: String = ""
+const VALIDATION_POPUP_WIDTH := 360.0
+const VALIDATION_POPUP_GAP := 8.0
+const VALIDATION_POPUP_LIFETIME := 5.0
 ## 所有音量滑条（编辑器音频弹窗 + 设置 + 试玩设置），打开面板时统一同步。
 var _volume_sliders: Array = []
 
@@ -744,6 +755,7 @@ func _build_ui() -> void:
 	_canvas.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_canvas.hover_changed.connect(_on_hover_changed)
 	_canvas.notice.connect(_show_toast)
+	_canvas.group_note_hint.connect(_show_group_hint)
 	center.add_child(_canvas)
 	_event_track.canvas = _canvas
 
@@ -784,6 +796,14 @@ func _build_ui() -> void:
 	_validation_label.add_theme_font_size_override("font_size", 11)
 	_validation_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_validation_label.custom_minimum_size = Vector2(0, 30)
+	_validation_label.mouse_filter = Control.MOUSE_FILTER_STOP
+	_validation_label.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	_validation_label.tooltip_text = "点击跳到对应音符"
+	_validation_label.gui_input.connect(func(event: InputEvent) -> void:
+		if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+			_jump_to_validation_target()
+	)
+	_validation_label.visible = false
 	inspector_wrap.add_child(_validation_label)
 	_inspector = Inspector.new()
 	_inspector.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -861,8 +881,8 @@ func _build_ui() -> void:
 	flow_spin.suffix = "×"
 	flow_spin.custom_minimum_size = Vector2(92, 0)
 	flow_spin.tooltip_text = "音符从出现到判定环的时间 = 1 秒 ÷ 这个倍率（0.05–3.0）。不随 BPM 变；试玩在「试玩设置」里单独设"
-	flow_spin.focus_mode = Control.FOCUS_NONE
-	flow_spin.get_line_edit().focus_mode = Control.FOCUS_NONE
+	flow_spin.focus_mode = Control.FOCUS_ALL
+	flow_spin.get_line_edit().focus_mode = Control.FOCUS_ALL
 	flow_spin.value_changed.connect(func(value: float) -> void:
 		_app.flow_scale = clampf(value, 0.05, 3.0)
 		_preview.flow_scale = _app.flow_scale
@@ -904,8 +924,15 @@ func _build_ui() -> void:
 	_status_sel = _status_label("选中 0")
 	_status_shape = _status_label("边界 S0")
 	_status_error = _status_label("校验 —")
+	_status_error.mouse_filter = Control.MOUSE_FILTER_STOP
+	_status_error.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	_status_error.gui_input.connect(func(event: InputEvent) -> void:
+		if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+			_jump_to_validation_target()
+	)
 	for label in [_status_u, _status_beat, _status_snap, _status_sel, _status_shape, _status_error]:
 		status_row.add_child(label)
+	_status_error.visible = false
 	var status_spacer := Control.new()
 	status_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	status_row.add_child(status_spacer)
@@ -1163,6 +1190,8 @@ func _hud_index(key: String) -> int:
 			return ["ring", "off"].find(_app.hud_progress_style)
 		"hud_judge_position":
 			return ["note", "ring_in", "ring_out", "center", "off"].find(_app.hud_judge_position)
+		"hud_judge_filter":
+			return ["all", "below_perfect", "below_great", "below_good", "miss_only"].find(_app.hud_judge_filter)
 		"hud_opacity":
 			return [100, 85, 70].find(_app.hud_opacity)
 		"hud_show_title":
@@ -1188,6 +1217,8 @@ func _set_hud_index(key: String, index: int) -> void:
 			_app.hud_progress_style = ["ring", "off"][clampi(index, 0, 1)]
 		"hud_judge_position":
 			_app.hud_judge_position = ["note", "ring_in", "ring_out", "center", "off"][clampi(index, 0, 4)]
+		"hud_judge_filter":
+			_app.hud_judge_filter = ["all", "below_perfect", "below_great", "below_good", "miss_only"][clampi(index, 0, 4)]
 		"hud_opacity":
 			_app.hud_opacity = [100, 85, 70][clampi(index, 0, 2)]
 		"hud_show_title":
@@ -1409,6 +1440,8 @@ func _build_hud_rows(parent: Control) -> void:
 		grid.add_child(label)
 		var pick := OptionButton.new()
 		pick.add_theme_font_size_override("font_size", 11)
+		if key == "hud_judge_filter":
+			pick.tooltip_text = "PERFECT 以下 = 隐藏 PERFECT，只显示 GREAT 及更低档；GREAT 以下同理。"
 		for choice in option["choices"]:
 			pick.add_item(String(choice[0]))
 		pick.item_selected.connect(func(index: int) -> void:
@@ -1582,11 +1615,11 @@ func _build_audio() -> void:
 
 func _build_dialogs() -> void:
 	_open_dialog = FileDialog.new()
-	_open_dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
+	_open_dialog.file_mode = FileDialog.FILE_MODE_OPEN_ANY
 	_open_dialog.access = FileDialog.ACCESS_FILESYSTEM
 	_open_dialog.filters = PackedStringArray(["*.json,*.lbp ; Tamaki 谱面 / 谱面包"])
-	_open_dialog.title = "打开谱面"
-	_open_dialog.file_selected.connect(func(path: String) -> void:
+	_open_dialog.title = "打开谱面文件夹 / 单文件 / 谱面包"
+	var open_selected := func(path: String) -> void:
 		_app.ensure_tab()
 		if _app.load_chart(path):
 			_app.add_tab_from_current()
@@ -1594,17 +1627,14 @@ func _build_dialogs() -> void:
 			_refresh_tabs()
 		else:
 			_app.restore_active_tab()
-	)
+	_open_dialog.dir_selected.connect(open_selected)
+	_open_dialog.file_selected.connect(open_selected)
 	add_child(_open_dialog)
 	_save_dialog = FileDialog.new()
-	_save_dialog.file_mode = FileDialog.FILE_MODE_SAVE_FILE
+	_save_dialog.file_mode = FileDialog.FILE_MODE_OPEN_DIR
 	_save_dialog.access = FileDialog.ACCESS_FILESYSTEM
-	_save_dialog.filters = PackedStringArray(["*.json ; Tamaki 谱面"])
-	_save_dialog.title = "另存为"
-	_save_dialog.current_file = "chart.json"
-	_save_dialog.file_selected.connect(func(path: String) -> void:
-		if not path.to_lower().ends_with(".json"):
-			path += ".json"
+	_save_dialog.title = "另存为谱面文件夹（谱面 + 音频 + 曲绘）"
+	_save_dialog.dir_selected.connect(func(path: String) -> void:
 		_app.save_chart_as(path)
 		_sync_from_app()
 	)
@@ -1697,6 +1727,12 @@ func _build_dialogs() -> void:
 	add_child(_new_dialog)
 	var charts_dir := ProjectSettings.globalize_path("user://charts")
 	DirAccess.make_dir_recursive_absolute(charts_dir)
+	_validation_popup_layer = Control.new()
+	_validation_popup_layer.name = "ValidationPopups"
+	_validation_popup_layer.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_validation_popup_layer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_validation_popup_layer.z_index = 80
+	add_child(_validation_popup_layer)
 
 
 func _sync_appearance() -> void:
@@ -1706,6 +1742,7 @@ func _sync_appearance() -> void:
 	_apply_visual_options()
 	_refresh_view_menu()
 	_preview.hit_fx_style = _app.hit_fx_style
+	_preview.show_perfect_fx = _app.show_perfect_fx
 	_preview.cursor_scale = _app.cursor_scale
 	_preview.refresh_style()
 	if _sfx != null:
@@ -1725,6 +1762,7 @@ func _sync_from_app() -> void:
 	_preview.flow_scale = _app.flow_scale
 	_preview.note_skin = _app.note_skin
 	_preview.hit_fx_style = _app.hit_fx_style
+	_preview.show_perfect_fx = _app.show_perfect_fx
 	_preview.cursor_scale = _app.cursor_scale
 	_sfx.set_style(_app.hit_sfx_style)
 	_canvas.px_per_beat = _app.zoom_px_per_beat
@@ -2197,13 +2235,150 @@ func _update_validation(issues: Array) -> void:
 		return
 	var errors: Array = issues.filter(func(item: Dictionary) -> bool: return item.get("level", "") == "error")
 	var warnings: Array = issues.filter(func(item: Dictionary) -> bool: return item.get("level", "") == "warning")
+	_validation_target = ""
+	var shown: Dictionary = {}
 	if not errors.is_empty():
-		_tint_label(_validation_label, UITheme.RED, "● %s" % errors[0].get("message", ""))
+		shown = errors[0]
+		for issue in errors:
+			if String(issue.get("target", "")).begins_with("note:"):
+				shown = issue
+				break
 	elif not warnings.is_empty():
-		_tint_label(_validation_label, UITheme.GOLD, "● %s" % warnings[0].get("message", ""))
+		shown = warnings[0]
+	_validation_target = String(shown.get("target", ""))
+	if not errors.is_empty():
+		_tint_label(_validation_label, UITheme.RED, "● %s" % shown.get("message", ""))
+	elif not warnings.is_empty():
+		_tint_label(_validation_label, UITheme.GOLD, "● %s" % shown.get("message", ""))
 	else:
 		_tint_label(_validation_label, UITheme.GREEN, "● 校验通过")
+	if not errors.is_empty():
+		_show_validation_popup(String(shown.get("message", "")), "error", _validation_target)
+	elif not warnings.is_empty():
+		_show_validation_popup(String(shown.get("message", "")), "warning", _validation_target)
+	else:
+		_validation_popup_key = ""
 	_update_status()
+
+
+func _show_validation_popup(message: String, level: String, target: String) -> void:
+	if _validation_popup_layer == null or _canvas == null or message.is_empty():
+		return
+	var key := "%s|%s|%s" % [level, target, message]
+	if key == _validation_popup_key:
+		return
+	_validation_popup_key = key
+	var color := UITheme.RED if level == "error" else (UITheme.GOLD if level == "warning" else UITheme.CYAN)
+	var rect: Rect2 = _canvas.get_global_rect()
+	var base: Vector2 = _validation_popup_layer.to_local(rect.position)
+	base.x += maxf(12.0, rect.size.x - VALIDATION_POPUP_WIDTH - 16.0)
+	base.y += 16.0
+	var y: float = base.y
+	for item in _validation_popups:
+		var old_panel: PanelContainer = item.get("panel", null)
+		if is_instance_valid(old_panel):
+			y += old_panel.size.y + VALIDATION_POPUP_GAP
+	var panel := PanelContainer.new()
+	panel.name = "ValidationMessage"
+	panel.custom_minimum_size = Vector2(minf(VALIDATION_POPUP_WIDTH, maxf(220.0, rect.size.x - 40.0)), 0)
+	panel.mouse_filter = Control.MOUSE_FILTER_STOP
+	panel.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	panel.z_index = 100
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.035, 0.045, 0.06, 0.97)
+	style.border_color = color
+	style.set_border_width_all(1)
+	style.set_corner_radius_all(6)
+	style.content_margin_left = 10.0
+	style.content_margin_right = 10.0
+	style.content_margin_top = 7.0
+	style.content_margin_bottom = 7.0
+	panel.add_theme_stylebox_override("panel", style)
+	var label := Label.new()
+	label.text = message
+	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	label.add_theme_font_size_override("font_size", 11)
+	label.add_theme_color_override("font_color", color)
+	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	panel.add_child(label)
+	panel.gui_input.connect(func(event: InputEvent) -> void:
+		if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+			_jump_to_validation_target(target)
+	)
+	_validation_popup_layer.add_child(panel)
+	panel.reset_size()
+	var h := maxf(46.0, panel.get_combined_minimum_size().y)
+	panel.size = Vector2(panel.custom_minimum_size.x, h)
+	var entry_pos := Vector2(base.x + 46.0, y)
+	var target_pos := Vector2(base.x, y)
+	panel.position = entry_pos
+	panel.modulate.a = 0.0
+	var entry := {"panel": panel, "exit": entry_pos, "target": target, "home": target_pos}
+	_validation_popups.append(entry)
+	var tween := create_tween()
+	tween.tween_property(panel, "position", target_pos, 0.22).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	tween.parallel().tween_property(panel, "modulate:a", 1.0, 0.18)
+	tween.tween_interval(maxf(0.0, VALIDATION_POPUP_LIFETIME - 0.22))
+	tween.tween_property(panel, "position", entry_pos, 0.24).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
+	tween.parallel().tween_property(panel, "modulate:a", 0.0, 0.24)
+	tween.tween_callback(func() -> void: _remove_validation_popup(entry))
+
+
+func _remove_validation_popup(entry: Dictionary) -> void:
+	_validation_popups.erase(entry)
+	var panel: PanelContainer = entry.get("panel", null)
+	if is_instance_valid(panel):
+		panel.queue_free()
+	_reflow_validation_popups()
+
+
+func _reflow_validation_popups() -> void:
+	if _validation_popup_layer == null or _canvas == null:
+		return
+	var rect: Rect2 = _canvas.get_global_rect()
+	var base: Vector2 = _validation_popup_layer.to_local(rect.position)
+	base.x += maxf(12.0, rect.size.x - VALIDATION_POPUP_WIDTH - 16.0)
+	base.y += 16.0
+	var y: float = base.y
+	for item in _validation_popups:
+		var panel: PanelContainer = item.get("panel", null)
+		if not is_instance_valid(panel):
+			continue
+		var target := Vector2(base.x, y)
+		item["home"] = target
+		var tween := create_tween()
+		tween.tween_property(panel, "position", target, 0.18).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+		y += panel.size.y + VALIDATION_POPUP_GAP
+
+
+func _jump_to_validation_target(target_override: String = "") -> void:
+	var target := target_override if not target_override.is_empty() else _validation_target
+	if _app == null or _app.chart == null or target.is_empty():
+		return
+	if target.begins_with("note:"):
+		var note_id := int(target.substr(5))
+		for note in _app.chart.notes:
+			if note.id == note_id:
+				_app.select_note(note.id)
+				_app.seek(note.beat)
+				_canvas.grab_focus()
+				return
+	elif target.begins_with("event:"):
+		var event_id := target.substr(6)
+		for event in _app.chart.events:
+			if event.id == event_id:
+				_app.select_event(event.id)
+				_app.seek(event.start_beat)
+				return
+	elif target.begins_with("region:"):
+		var region_id := int(target.substr(7))
+		for region in _app.chart.regions:
+			if region.id == region_id:
+				_app.select_region(region.id)
+				_app.seek(region.start_beat)
+				return
+	elif target.begins_with("beat:"):
+		_app.seek(float(target.substr(5)))
 
 
 func _on_snap_changed(division: int) -> void:
@@ -2708,6 +2883,21 @@ func _show_toast(message: String, level: String = "info") -> void:
 		_toast_timer.start()
 
 
+func _show_group_hint(group_id: int, screen_pos: Vector2) -> void:
+	if _group_hint_popup == null:
+		_group_hint_popup = PopupPanel.new()
+		_group_hint_popup.transient = true
+		_group_hint_label = Label.new()
+		_group_hint_label.custom_minimum_size = Vector2(180, 44)
+		_group_hint_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		_group_hint_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		UITheme.style_mono(_group_hint_label, 12, UITheme.INK)
+		_group_hint_popup.add_child(_group_hint_label)
+		add_child(_group_hint_popup)
+	_group_hint_label.text = "该音符属于组 %d" % group_id
+	_group_hint_popup.popup(Rect2i(Vector2i(screen_pos) + Vector2i(14, 14), Vector2i(190, 48)))
+
+
 func _format_ms(ms: float) -> String:
 	var value := maxi(0, int(ms))
 	var minutes := value / 60000
@@ -2868,6 +3058,8 @@ func _open_playtest_setup(from_start: bool) -> void:
 		_playtest_auto.button_pressed = bool(_app.playtest_auto)
 	if _playtest_mouse != null:
 		_playtest_mouse.button_pressed = bool(_app.mouse_keys)
+	if _playtest_perfect_fx != null:
+		_playtest_perfect_fx.button_pressed = bool(_app.show_perfect_fx)
 	if _playtest_latency != null:
 		_playtest_latency.value = float(_app.audio_latency_ms)
 	if _playtest_sfx != null:
@@ -2877,7 +3069,7 @@ func _open_playtest_setup(from_start: bool) -> void:
 	if _playtest_bias != null:
 		_playtest_bias.text = "上次平均偏差 %+.1fms" % float(_app.last_bias_ms)
 	_sync_volume_sliders()
-	_playtest_dialog.popup_centered(Vector2i(470, 520))
+	_playtest_dialog.popup_centered(Vector2i(520, 640))
 
 
 ## 统一设置窗口：画质 / 界面 / 音频 / 校准。视图菜单只留显示开关。
@@ -3049,16 +3241,18 @@ func _build_playtest_dialog() -> void:
 	_playtest_dialog = AcceptDialog.new()
 	_playtest_dialog.title = "试玩设置"
 	_playtest_dialog.ok_button_text = "开始"
-	_playtest_dialog.min_size = Vector2i(360, 220)
+	_playtest_dialog.min_size = Vector2i(420, 260)
 	# 选项越加越多，内容放进滚动区，小窗口也不会把按钮挤出屏幕。
 	var scroll := ScrollContainer.new()
-	scroll.custom_minimum_size = Vector2(400, 350)
+	scroll.custom_minimum_size = Vector2(440, 520)
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	_playtest_dialog.add_child(scroll)
 	var box := VBoxContainer.new()
 	box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	box.add_theme_constant_override("separation", 10)
+	box.add_theme_constant_override("separation", 8)
 	scroll.add_child(box)
+
+	_playtest_section(box, "游玩")
 	_playtest_rate = _playtest_spin_row(box, "倍速", 0.5, 2.0, 0.05, 1.0, "×")
 	_playtest_rate.tooltip_text = "试玩和编辑器试听都按这个速度走；声音不变调（每个新倍速首次生成缓存）；局中修改在重开本局后生效；只对本次运行有效"
 	_playtest_flow = _playtest_spin_row(box, "音符速度", 0.05, 3.0, 0.01, 1.0, "×")
@@ -3078,19 +3272,6 @@ func _build_playtest_dialog() -> void:
 	_playtest_mirror.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	mirror_row.add_child(_playtest_mirror)
 	box.add_child(mirror_row)
-	_playtest_offset = _playtest_spin_row(box, "判定偏移", -200.0, 200.0, 1.0, 0.0, "ms")
-	_playtest_latency = _playtest_spin_row(box, "输出延迟", 0.0, 250.0, 1.0, 0.0, "ms")
-	_playtest_latency.tooltip_text = "0 = 用驱动报告值；>0 = 强制覆盖（可升可降）。驱动明显不准时才手动填"
-	var calib_hint := Label.new()
-	calib_hint.text = "判定偏移校准在「设置 → 校准」里（8 次点击后自动写回）"
-	calib_hint.add_theme_font_size_override("font_size", 11)
-	calib_hint.add_theme_color_override("font_color", UITheme.MUTED)
-	calib_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	box.add_child(calib_hint)
-	_playtest_dynamic = CheckBox.new()
-	_playtest_dynamic.text = "动态 offset（局内自动校准，≤±50ms）"
-	_playtest_dynamic.tooltip_text = "至少 8 次命中后，每次命中按偏差的 5% 自动微调判定偏移"
-	box.add_child(_playtest_dynamic)
 	_playtest_auto = CheckBox.new()
 	_playtest_auto.text = "AUTO 自动演示（游戏内 F8 切换）"
 	_playtest_auto.tooltip_text = "自动完美演奏所有音符，用来快速看谱面；结算会标注 AUTO"
@@ -3099,16 +3280,34 @@ func _build_playtest_dialog() -> void:
 	_playtest_mouse.text = "鼠标左右键算 Tap"
 	_playtest_mouse.tooltip_text = "关掉后左右键不参与判定；鼠标移动、滚轮 Seek 照常（暂停菜单也能改）"
 	box.add_child(_playtest_mouse)
+	_playtest_perfect_fx = CheckBox.new()
+	_playtest_perfect_fx.text = "显示 PERFECT 特效"
+	_playtest_perfect_fx.tooltip_text = "关闭后 PERFECT 不再画命中爆点和弧光，只保留判定字；默认关闭"
+	box.add_child(_playtest_perfect_fx)
+
+	box.add_child(HSeparator.new())
+	_playtest_section(box, "判定与校准")
+	_playtest_offset = _playtest_spin_row(box, "判定偏移", -200.0, 200.0, 1.0, 0.0, "ms")
+	_playtest_latency = _playtest_spin_row(box, "输出延迟", 0.0, 250.0, 1.0, 0.0, "ms")
+	_playtest_latency.tooltip_text = "0 = 用驱动报告值；>0 = 强制覆盖（可升可降）。驱动明显不准时才手动填"
+	_playtest_dynamic = CheckBox.new()
+	_playtest_dynamic.text = "动态 offset（局内自动校准，≤±50ms）"
+	_playtest_dynamic.tooltip_text = "至少 8 次命中后，每次命中按偏差的 5% 自动微调判定偏移"
+	box.add_child(_playtest_dynamic)
 	_playtest_bias = Label.new()
 	_playtest_bias.text = "上次平均偏差 +0.0ms"
 	_playtest_bias.add_theme_font_size_override("font_size", 11)
 	_playtest_bias.add_theme_color_override("font_color", UITheme.MUTED)
 	box.add_child(_playtest_bias)
-	# 音频：和编辑器「音频」弹窗、设置窗口共用 Music / SFX 总线与持久化字段。
-	var audio_title := Label.new()
-	audio_title.text = "音频"
-	audio_title.add_theme_font_size_override("font_size", 12)
-	box.add_child(audio_title)
+	var calib_hint := Label.new()
+	calib_hint.text = "判定偏移校准在「设置 → 校准」里（8 次点击后自动写回）"
+	calib_hint.add_theme_font_size_override("font_size", 11)
+	calib_hint.add_theme_color_override("font_color", UITheme.MUTED)
+	calib_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	box.add_child(calib_hint)
+
+	box.add_child(HSeparator.new())
+	_playtest_section(box, "音频")
 	box.add_child(_volume_slider("音乐", "Music"))
 	box.add_child(_volume_slider("音效", "SFX"))
 	var sfx_row := HBoxContainer.new()
@@ -3131,7 +3330,9 @@ func _build_playtest_dialog() -> void:
 	)
 	sfx_row.add_child(_playtest_sfx)
 	box.add_child(sfx_row)
+
 	box.add_child(HSeparator.new())
+	_playtest_section(box, "更多")
 	var open_settings := Button.new()
 	open_settings.text = "画质 / 界面 / 音频 / 校准设置…"
 	open_settings.tooltip_text = "统一设置窗口：画质、界面、音频与校准"
@@ -3150,6 +3351,14 @@ func _build_playtest_dialog() -> void:
 	)
 	# × 或 Esc 关闭时同样保留设置（只保存，不开始试玩）。
 	_playtest_dialog.canceled.connect(_commit_playtest_settings)
+
+
+func _playtest_section(parent: VBoxContainer, title: String) -> void:
+	var label := Label.new()
+	label.text = title
+	label.add_theme_font_size_override("font_size", 12)
+	label.add_theme_font_override("font", UITheme.bold_font())
+	parent.add_child(label)
 
 
 func _playtest_spin_row(parent: VBoxContainer, label_text: String, lo: float, hi: float, step: float, value: float, suffix: String) -> SpinBox:
@@ -3198,12 +3407,15 @@ func _commit_playtest_settings() -> void:
 		_app.playtest_auto = _playtest_auto.button_pressed
 	if _playtest_mouse != null:
 		_app.mouse_keys = _playtest_mouse.button_pressed
+	if _playtest_perfect_fx != null:
+		_app.show_perfect_fx = _playtest_perfect_fx.button_pressed
 	if _playtest_mirror != null:
 		_app.playtest_mirror = ["off", "lr", "rot180"][clampi(_playtest_mirror.selected, 0, 2)]
 	_app.save_settings()
 	_preview.flow_scale = _app.flow_scale
 	_preview.playback_rate = _rate
 	_preview.cursor_scale = _app.cursor_scale
+	_preview.show_perfect_fx = _app.show_perfect_fx
 	_preview.request_redraw()
 	# 试玩中从暂停菜单改设置：直接应用到正在跑的预览。
 	if _playtest != null:
@@ -3211,6 +3423,7 @@ func _commit_playtest_settings() -> void:
 		_playtest.next_playback_rate = _rate
 		_playtest._preview.flow_scale = _app.flow_scale
 		_playtest._preview.cursor_scale = _app.cursor_scale
+		_playtest._preview.show_perfect_fx = _app.show_perfect_fx
 		_playtest._preview.request_redraw()
 	if _editor_flow_spin != null:
 		_editor_flow_spin.value = _app.flow_scale
@@ -3240,12 +3453,15 @@ func _open_replay_file(path: String) -> void:
 		_show_toast("读不出回放文件：%s" % path.get_file(), "error")
 		return
 	var chart_path := data.chart_path
-	if chart_path.is_empty() or not FileAccess.file_exists(chart_path):
+	if not ChartIO.chart_path_exists(chart_path):
 		_show_toast("回放对应的谱面不存在：%s\n（没有谱面就没法回放，请先打开/导入那张谱）" % chart_path, "error")
 		return
-	# 套组：按内容 hash 匹配到具体难度，而不是「用当前页面那张谱」。
+	# 套组 / TMC 工程：按内容 hash 匹配到具体难度，而不是「用当前页面那张谱」。
 	if chart_path.to_lower().ends_with(".set.json"):
 		_open_replay_from_set(data, chart_path)
+		return
+	if ChartIO.is_project_path(chart_path):
+		_open_replay_from_project(data, chart_path)
 		return
 	var chart: Chart = ChartIO.load_chart(chart_path)
 	if chart == null:
@@ -3272,32 +3488,9 @@ func _open_replay_from_set(data: Replay, set_path: String) -> void:
 		_show_toast("回放对应的难度套组打不开：%s" % String(loaded.get("error", "")), "error")
 		return
 	var entries: Array = loaded.get("entries", [])
-	var matched := -1
-	var names: Array[String] = []
-	for i in entries.size():
-		var chart: Chart = (entries[i] as Dictionary).get("chart", null)
-		if chart == null:
-			continue
-		names.append(String(chart.metadata.get("version", "?")))
-		if matched < 0 and data.chart_hash == Replay.hash_chart(chart):
-			matched = i
-	# 旧镜像回放的 hash 是按镜像副本算的：按原谱找不到时反推镜像再匹配一次。
+	var matched := Replay.match_chart_entry(entries, data)
 	if matched < 0:
-		for i in entries.size():
-			var chart: Chart = (entries[i] as Dictionary).get("chart", null)
-			if chart == null:
-				continue
-			var inferred := Replay.infer_mirror(data, chart)
-			if not inferred.is_empty():
-				matched = i
-				data.settings["mirror"] = inferred
-				break
-	if matched < 0:
-		var want_title := String(data.settings.get("title", ""))
-		var want_diff := String(data.settings.get("version", ""))
-		var want := want_title if want_diff.is_empty() else ("%s [%s]" % [want_title, want_diff])
-		_show_toast("回放对应的难度在套组里找不到%s\n套组里的难度：%s" % [
-			("" if want.is_empty() else "（录制时是 %s）" % want), ", ".join(names)], "error")
+		_show_replay_match_error(data, entries, "难度套组")
 		return
 	if not _app.open_set_file(set_path):
 		_show_toast("回放对应的难度套组打不开：%s" % set_path.get_file(), "error")
@@ -3307,6 +3500,40 @@ func _open_replay_from_set(data: Replay, set_path: String) -> void:
 		return
 	_sync_from_app()
 	_start_replay(data)
+
+
+## TMC 谱面工程可能包含多个难度：先按 hash 找到录制时的那个，再切过去。
+func _open_replay_from_project(data: Replay, project_path: String) -> void:
+	var loaded := ChartIO.load_project(project_path)
+	if not bool(loaded.get("ok", false)):
+		_show_toast("回放对应的谱面工程打不开：%s" % String(loaded.get("error", "")), "error")
+		return
+	var entries: Array = loaded.get("entries", [])
+	var matched := Replay.match_chart_entry(entries, data)
+	if matched < 0:
+		_show_replay_match_error(data, entries, "谱面工程")
+		return
+	if not _app.open_project(project_path):
+		_show_toast("回放对应的谱面工程打不开：%s" % project_path.get_file(), "error")
+		return
+	if not _app.switch_difficulty(matched):
+		_show_toast("切换到难度 %d 失败" % matched, "error")
+		return
+	_sync_from_app()
+	_start_replay(data)
+
+
+func _show_replay_match_error(data: Replay, entries: Array, container: String) -> void:
+	var names: Array[String] = []
+	for entry in entries:
+		var chart: Chart = (entry as Dictionary).get("chart", null)
+		if chart != null:
+			names.append(String(chart.metadata.get("version", "?")))
+	var want_title := String(data.settings.get("title", ""))
+	var want_diff := String(data.settings.get("version", ""))
+	var want := want_title if want_diff.is_empty() else ("%s [%s]" % [want_title, want_diff])
+	_show_toast("回放对应的难度在%s里找不到%s\n%s里的难度：%s" % [
+		container, ("" if want.is_empty() else "（录制时是 %s）" % want), container, ", ".join(names)], "error")
 
 
 func _start_playtest(from_start: bool) -> void:
@@ -3411,6 +3638,11 @@ func _input(event: InputEvent) -> void:
 			typing = true
 		if typing and event.keycode != KEY_F5 and event.keycode != KEY_F6:
 			return
+		var spin_focus := focus is SpinBox or (focus is LineEdit and focus.get_parent() is SpinBox)
+		# A focused numeric field owns the keyboard entirely; shortcuts must not
+		# mutate the chart or other fields while the user is typing a value.
+		if spin_focus and event.keycode not in [KEY_F5, KEY_F6]:
+			return
 		# 环编辑器打开时，主画布是隐藏的：Delete/Backspace 不能再删下面那层
 		# 仍然存在的选中音符；K 也不能把环编辑器重新打开一遍。
 		if _app != null and _app.ring_editor_open and event.keycode in [KEY_DELETE, KEY_BACKSPACE, KEY_K]:
@@ -3418,12 +3650,6 @@ func _input(event: InputEvent) -> void:
 		if _canvas != null and _canvas.has_pending_seek() and event.keycode in [KEY_W, KEY_S]:
 			_canvas.set_pending_seek_orientation(1 if event.keycode == KEY_W else 0)
 			accept_event()
-			return
-		# While a numeric editor (SpinBox or its inner LineEdit) has focus, let
-		# 1–7 reach the field instead of switching the note tool. Returning
-		# without accept_event is important: GUI input still receives the digit.
-		var spin_focus := focus is SpinBox or (focus is LineEdit and focus.get_parent() is SpinBox)
-		if spin_focus and event.keycode in [KEY_1, KEY_2, KEY_3, KEY_4, KEY_5, KEY_6, KEY_7]:
 			return
 		match event.keycode:
 			KEY_SPACE:

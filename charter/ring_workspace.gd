@@ -539,6 +539,8 @@ func _ready() -> void:
 				_timeline.on_chart_changed()
 				_rebuild_thumbs()
 				_sync_time_tool()
+				if _inspector != null:
+					_inspector.call_deferred("refresh", true)
 		)
 		_app.playhead_changed.connect(func(_beat: float) -> void:
 			var window_moved := _follow_playhead()
@@ -699,6 +701,7 @@ func _build() -> void:
 		_timeline.selection_changed.connect(func() -> void: _inspector.call_deferred("refresh", true))
 	# 选中变化时立即更新标题（镜头帧/形状帧），不等下一次跨拍。
 	_timeline.selection_changed.connect(func() -> void: _sync_time_tool(true))
+	_timeline.selection_changed.connect(_sync_preview_selection)
 
 
 ## 复用主预览：把同一个 Preview3D 挪进来，省掉第二个 3D 视口。
@@ -716,6 +719,9 @@ func open_workspace(preview: Preview3D = null, restore: Callable = Callable()) -
 		_preview = preview
 		_restore_preview = restore
 	if _preview != null:
+		if not _preview.command_selected.is_connected(_on_preview_command_selected):
+			_preview.command_selected.connect(_on_preview_command_selected)
+		_sync_preview_selection()
 		_preview.ring_edit_mode = true
 		_preview.show_hud = false
 		_preview.use_3d_ring = _app.use_3d_ring
@@ -760,6 +766,21 @@ func close_workspace() -> void:
 
 func chart() -> Chart:
 	return _app.chart if _app != null else null
+
+
+## 时间轴选中的指令同步给预览：文本拖动和滤镜区域描边都靠它。
+func _sync_preview_selection() -> void:
+	if _preview == null:
+		return
+	_preview.selected_command = _timeline.selected_command() if _timeline != null else null
+	_preview.queue_redraw()
+	if _preview._overlay != null:
+		_preview._overlay.queue_redraw()
+
+
+func _on_preview_command_selected(command: AlphaCommand) -> void:
+	if _timeline != null:
+		_timeline.select_command(command, false)
 
 
 ## 拖动期间使用冻结值；松手后重新扫描一次。
@@ -1008,8 +1029,11 @@ func _sync_time_tool(force: bool = false) -> void:
 	var key := current_key()
 	if _title != null:
 		var view: ViewState = _timeline.primary_view() if _timeline != null else null
+		var command: AlphaCommand = _timeline.selected_command() if _timeline != null else null
 		var suffix := "无关键帧"
-		if view != null:
+		if command != null:
+			suffix = "指令 " + command.label()
+		elif view != null:
 			suffix = "镜头帧 %d" % view.id
 		elif not key.is_empty():
 			suffix = "形状帧 " + String(key.get("shape_id", ""))

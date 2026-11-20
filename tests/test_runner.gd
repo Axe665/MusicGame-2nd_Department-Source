@@ -45,6 +45,9 @@ func _initialize() -> void:
 		"test_timing_stats",
 		"test_nearest_u",
 		"test_pre_read",
+		"test_group_note_speed",
+		"test_playtest_feedback",
+		"test_judge_label_filter",
 		"test_bar_lines",
 		"test_beat_grid_lines",
 		"test_pinned_scroll",
@@ -54,6 +57,8 @@ func _initialize() -> void:
 		"test_ring_scrub_state",
 		"test_ring_lane_items_real_chart",
 		"test_ring_timeline_selection_ops",
+		"test_ring_timeline_command_lanes",
+		"test_ring_timeline_filter_menu",
 		"test_ring_playhead_only_redraws_overlay",
 		"test_ring_marquee_and_drag",
 		"test_shape_key_cache_invalidation",
@@ -101,6 +106,7 @@ func _initialize() -> void:
 		"test_region_release_snap",
 		"test_editor_snap_settings_persist",
 		"test_anchor_pair_drag",
+		"test_anchor_partners_untyped_array",
 		"test_path_axis_drag",
 		"test_path_head_beat",
 		"test_path_smoothing",
@@ -158,6 +164,8 @@ func _initialize() -> void:
 		"test_osu_bpm_change",
 		"test_osu_multi_difficulty",
 		"test_json_roundtrip",
+		"test_chart_project_format",
+		"test_note_groups",
 		"test_validation_demo",
 		"test_angle_math",
 		"test_note_mirror",
@@ -236,11 +244,21 @@ func _initialize() -> void:
 		"test_audio_buffer_override",
 		"test_bell_center_merges",
 		"test_replay_round_trip",
+		"test_replay_match_project_entry",
 		"test_replay_dispatch",
 		"test_replay_scrub",
 		"test_replay_file_name",
 		"test_playtest_ui_builds",
 		"test_retry_clears_playtest_visuals",
+		"test_alpha_command_catalog",
+		"test_alpha_command_envelope",
+		"test_jline_ring_state",
+		"test_filter_region_state",
+		"test_text_command_center",
+		"test_note_mods_io",
+		"test_note_touch_zones",
+		"test_chart_commands_roundtrip",
+		"test_alpha_command_save_load_chain",
 	]
 	for test_name in tests:
 		if call(test_name) != true:
@@ -720,7 +738,7 @@ func test_path_axis_centrifuge() -> bool:
 
 
 func test_demo_path_migration() -> bool:
-	var chart := ChartIO.load_chart("res://charts/demo.json")
+	var chart := ChartIO.load_chart("res://charts/夜に駆ける（示例）/main.tmc")
 	ok(chart != null, "migrated demo loads")
 	if chart == null:
 		return true
@@ -864,16 +882,16 @@ func test_note_width_code() -> bool:
 	var loaded := ChartIO.from_json(ChartIO.to_json(chart))
 	ok(loaded != null, "compact chart with widths loads")
 	if loaded != null:
-		var by_id := {}
+		var by_type := {}
 		for note in loaded.notes:
-			by_id[note.id] = note
-		if by_id.has(1):
-			near(by_id[1].arc_width(), 60.0, 0.001, "json keeps sized tap arc width")
-		if by_id.has(2):
-			near(by_id[2].width, 48.0, 0.001, "json keeps hold width")
-		if by_id.has(3):
-			near(by_id[3].bell_width(), 27.0, 0.001, "json keeps bell width")
-			near(by_id[3].radius, 44.0, 0.001, "json keeps bell radius")
+			by_type[note.type] = note
+		if by_type.has("tap"):
+			near(by_type["tap"].arc_width(), 60.0, 0.001, "json keeps sized tap arc width")
+		if by_type.has("hold"):
+			near(by_type["hold"].width, 48.0, 0.001, "json keeps hold width")
+		if by_type.has("bell"):
+			near(by_type["bell"].bell_width(), 27.0, 0.001, "json keeps bell width")
+			near(by_type["bell"].radius, 44.0, 0.001, "json keeps bell radius")
 	return true
 
 
@@ -979,10 +997,10 @@ func test_note_flags_code() -> bool:
 	var extras_back := ChartIO.from_json(ChartIO.to_json(extras))
 	if extras_back != null:
 		for note in extras_back.notes:
-			if note.id == 1:
+			if note.type == "hold":
 				eq(note.hold_style, "curved", "hold style survives the roundtrip")
 				eq(note.visual_pts.size(), 1, "hold body survives the roundtrip")
-			elif note.id == 2:
+			elif note.type == "path":
 				near(note.tolerance, 0.31, 0.001, "path tolerance survives the roundtrip")
 				near(note.samples_per_beat, 6.0, 0.001, "path samples survive the roundtrip")
 				near(note.path_speed, 1.3, 0.001, "path speed survives the roundtrip")
@@ -1006,7 +1024,7 @@ func test_plane_tap_dropped() -> bool:
 	if chart != null:
 		eq(chart.notes.size(), 1, "legacy plane tap is dropped")
 		if not chart.notes.is_empty():
-			eq(chart.notes[0].id, 2, "ring tap survives")
+			eq(chart.notes[0].id, 0, "ring tap survives with reindexed id")
 	return true
 
 
@@ -2141,6 +2159,73 @@ func test_ring_timeline_selection_ops() -> bool:
 	timeline._toggle_select("view", 4)
 	timeline.nudge_selection(1.0)
 	near(chart.view_states[1].beat, 3.0, 0.001, "跨轨选中一起微移")
+	timeline.free()
+	workspace.free()
+	app.free()
+	return true
+
+
+## 演出指令轨：新增、选择、微移、命中、分组和删除都要和图表一致。
+func test_ring_timeline_command_lanes() -> bool:
+	var app: App = load("res://charter/app.gd").new()
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	app.chart = chart
+	app.playhead_beat = 0.0
+	var workspace := RingWorkspace.new()
+	workspace._app = app
+	workspace._view_beats = 16.0
+	var timeline := RingTimeline.new(workspace)
+	workspace._timeline = timeline
+	timeline.size = Vector2(1600, 420)
+	ok(timeline._lane_top(RingTimeline.LANE_COMMAND_JLINE) > timeline._lane_top(RingTimeline.LANE_BPM),
+		"指令轨排在 BPM 轨下面")
+	eq(timeline._lane_height(RingTimeline.LANE_COMMAND_FILTER), RingTimeline.COMMAND_ROW_H,
+		"指令轨使用自己的行高")
+	timeline.add_command_at(RingTimeline.LANE_COMMAND_FILTER, 4.0)
+	eq(chart.commands.size(), 1, "双击滤镜轨空白新增一条")
+	var command := chart.commands[0]
+	eq(command.category(), AlphaCommand.CATEGORY_FILTER, "新增的是滤镜指令")
+	near(command.beat, 4.0, 0.001, "按落点拍新增")
+	ok(timeline.selected_command() == command, "新增后自动选中")
+	timeline.nudge_selection(0.5)
+	near(command.beat, 4.5, 0.001, "方向键微移指令")
+	var items := timeline._lane_items(RingTimeline.LANE_COMMAND_FILTER)
+	eq(items.size(), 1, "滤镜轨按类别取到指令")
+	eq(timeline._hit_command(RingTimeline.LANE_COMMAND_FILTER, items,
+		Vector2(timeline._x_for(command.beat), 1.0)), 0, "点指令块能命中")
+	timeline.delete_selected_command()
+	eq(chart.commands.size(), 0, "删除选中指令")
+	timeline.add_command_of("TEXT", 2.0)
+	timeline.add_command_of("JLINE", 3.0)
+	eq(chart.commands.size(), 2, "按名字添加指令")
+	eq(timeline._lane_items(RingTimeline.LANE_COMMAND_TEXT).size(), 1, "文本轨只显示文本指令")
+	eq(timeline._lane_items(RingTimeline.LANE_COMMAND_JLINE).size(), 1, "判定线轨只显示判定线指令")
+	timeline.select_command(chart.commands[0])
+	eq(timeline.selection_count(), 1, "指令单选")
+	eq(timeline.selected_command(), chart.commands[0], "selected_command 返回当前指令")
+	timeline.free()
+	workspace.free()
+	app.free()
+	return true
+
+
+func test_ring_timeline_filter_menu() -> bool:
+	var app: App = load("res://charter/app.gd").new()
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	app.chart = chart
+	var workspace := RingWorkspace.new()
+	workspace._app = app
+	var timeline := RingTimeline.new(workspace)
+	workspace._timeline = timeline
+	eq(timeline._filter_menu_names.size(), AlphaCommand.names("filter").size(), "滤镜菜单列出全部滤镜")
+	timeline._filter_menu_beat = 5.0
+	timeline._filter_menu.id_pressed.emit(1)
+	eq(chart.commands.size(), 1, "从菜单添加一条滤镜")
+	if chart.commands.size() == 1:
+		eq(chart.commands[0].name, AlphaCommand.names("filter")[1], "菜单项对应选中的滤镜种类")
+		near(chart.commands[0].beat, 5.0, 0.001, "滤镜落在双击的拍位")
 	timeline.free()
 	workspace.free()
 	app.free()
@@ -3933,13 +4018,190 @@ func test_json_roundtrip() -> bool:
 		return true
 	var text_b := ChartIO.to_json(loaded)
 	eq(text_b, text_a, "json save/load/save is byte-stable")
-	var path := "user://test_roundtrip.json"
-	eq(ChartIO.save_chart(chart, path), OK, "json file save")
-	var from_file := ChartIO.load_chart(path)
-	ok(from_file != null, "json file load")
+	var dir := "user://test_project"
+	var entries: Array = [{"name": "Insane", "chart": chart}]
+	eq(ChartIO.save_project(entries, dir, "test"), OK, "project save")
+	ok(ChartIO.is_project_path(dir), "project folder detected")
+	ok(FileAccess.file_exists(dir.path_join("main.tmc")), "project main exists")
+	ok(FileAccess.file_exists(dir.path_join("chart0.tmc")), "project chart0 exists")
+	ok(FileAccess.file_exists(dir.path_join("shaped.tmc")), "project shaped exists")
+	ok(FileAccess.file_exists(dir.path_join("color.tmc")), "project color exists")
+	ok(not FileAccess.file_exists(dir.path_join("bpmlist.tmc")), "constant bpm omits bpmlist")
+	var from_file := ChartIO.load_chart(dir.path_join("main.tmc"))
+	ok(from_file != null, "project chart load")
 	if from_file != null:
-		eq(ChartIO.to_json(from_file), text_a, "json file roundtrip stable")
-	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+		eq(from_file.notes.size(), chart.notes.size(), "project notes survive")
+		eq(String(from_file.metadata.get("title", "")), String(chart.metadata.get("title", "")), "project title survives")
+	for name in ["main.tmc", "chart0.tmc", "shaped.tmc", "color.tmc", "storyboard.tmc", "music.wav", "music.ogg", "music.mp3"]:
+		var p := ProjectSettings.globalize_path(dir.path_join(name))
+		if FileAccess.file_exists(p):
+			DirAccess.remove_absolute(p)
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(dir))
+	return true
+
+
+func test_chart_project_format() -> bool:
+	var chart := DemoChart.make_demo()
+	chart.notes[0].color = 2
+	var group_id := chart.add_group(140.0)
+	chart.notes[0].group_id = group_id
+	var group_points := chart.group_bpm_points_for(group_id)
+	group_points.append(TimingPoint.new(8.0, 180.0, 3))
+	chart.group_bpm_points[group_id] = group_points
+	chart.timing.points.append(TimingPoint.new(8.0, 140.0, 3))
+	var copy := ChartIO.chart_from_dict(ChartIO.chart_to_dict(chart))
+	var dir := "user://project_format_test"
+	var entries: Array = [{"name": "Beginner", "chart": chart}, {"name": "Master", "chart": copy}]
+	eq(ChartIO.save_project(entries, dir, "project test"), OK, "multi difficulty project save")
+	ok(FileAccess.file_exists(dir.path_join("main.tmc")), "main.tmc")
+	ok(FileAccess.file_exists(dir.path_join("chart0.tmc")), "chart0.tmc")
+	ok(FileAccess.file_exists(dir.path_join("chart1.tmc")), "chart1.tmc")
+	ok(FileAccess.file_exists(dir.path_join("shaped.tmc")), "shaped.tmc")
+	ok(FileAccess.file_exists(dir.path_join("color.tmc")), "color.tmc")
+	ok(FileAccess.file_exists(dir.path_join("bpmlist.tmc")), "bpmlist.tmc with bpm change")
+	ok(FileAccess.file_exists(dir.path_join("storyboard.tmc")), "storyboard.tmc with events")
+	var chart_raw: Dictionary = ChartIO._read_project_struct(dir.path_join("chart0.tmc"), "chart")
+	eq((chart_raw.get("groups", []) as Array).size(), 2, "new group block saved in chartN")
+	var bpm_raw: Dictionary = ChartIO._read_project_struct(dir.path_join("bpmlist.tmc"), "bpm")
+	var has_group_bpm := false
+	for row in bpm_raw.get("groups", []):
+		if int(row.get("id", -1)) == group_id:
+			has_group_bpm = true
+	ok(has_group_bpm, "new group id saved in bpmlist")
+	var loaded := ChartIO.load_project(dir)
+	ok(bool(loaded.get("ok", false)), "multi difficulty project load")
+	if bool(loaded.get("ok", false)):
+		eq(loaded.entries.size(), 2, "two difficulties")
+		var first: Chart = loaded.entries[0].chart
+		var grouped_note: Note = null
+		for note in first.notes:
+			if note.group_id == group_id:
+				grouped_note = note
+				break
+		ok(grouped_note != null, "grouped note survives project")
+		if grouped_note != null:
+			eq(grouped_note.color, 2, "note color survives")
+			eq(grouped_note.group_id, group_id, "note group survives project")
+		eq(first.groups.size(), 2, "groups survive project")
+		near(first.group_bpm_at(group_id, 9.0), 180.0, 0.001, "group bpm change survives project")
+		eq(first.timing.points.size(), 2, "bpm change survives")
+	for name in ["main.tmc", "chart0.tmc", "chart1.tmc", "shaped.tmc", "color.tmc", "bpmlist.tmc", "storyboard.tmc", "music.wav", "music.ogg", "music.mp3"]:
+		var p := ProjectSettings.globalize_path(dir.path_join(name))
+		if FileAccess.file_exists(p):
+			DirAccess.remove_absolute(p)
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(dir))
+	return true
+
+
+func test_note_groups() -> bool:
+	var chart := DemoChart.make_demo()
+	chart.ensure_groups()
+	eq(chart.groups.size(), 1, "default group exists")
+	var gid := chart.add_group(140.0)
+	eq(chart.groups.size(), 2, "new group added")
+	chart.notes[0].group_id = gid
+	chart.notes[1].enabled = false
+	eq(chart.group_note_count(gid), 1, "group note count")
+	ok(chart.note_enabled(chart.notes[0]), "group note enabled by default")
+	var points := chart.group_bpm_points_for(gid)
+	points.append(TimingPoint.new(8.0, 180.0, 4))
+	chart.group_bpm_points[gid] = points
+	near(chart.group_bpm_at(gid, 9.0), 180.0, 0.001, "group bpm points apply per group")
+	chart.groups[chart.group_index(gid)]["enabled"] = false
+	ok(not chart.note_enabled(chart.notes[0]), "false group disables notes")
+	ok(chart.note_enabled(chart.notes[1]) == false, "per-note false is preserved")
+	var loaded := ChartIO.from_json(ChartIO.to_json(chart))
+	ok(loaded != null, "group chart roundtrip loads")
+	if loaded != null:
+		eq(loaded.groups.size(), 2, "groups survive roundtrip")
+		eq(loaded.notes[0].group_id, gid, "note group survives")
+		ok(not loaded.notes[1].enabled, "note false state survives")
+	return true
+
+
+## 组 BPM 只给非 0 组做差速；组 0 的 BPM 点就是谱面 timing，
+## 换 BPM 时下落时长仍固定，和旧版一致。拍位始终按 timing 换算。
+func test_group_note_speed() -> bool:
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 230.0, 4)]
+	chart.ensure_groups()
+	chart.group_data(0)["bpm"] = 120.0
+	chart.group_bpm_points[0] = [TimingPoint.new(0.0, 230.0, 4), TimingPoint.new(1.0, 230.0, 4)]
+	chart.ensure_groups()
+	near(float(chart.group_data(0)["bpm"]), 230.0, 0.001, "group base follows the first BPM point")
+	var preview := Preview3D.new()
+	preview.flow_scale = 1.0
+	var note := Note.new("tap", 8.0, 90.0, 60.0)
+	note.group_id = 0
+	chart.notes.append(note)
+	var spawn := preview._spawn_beat(chart, note.beat, note.group_id)
+	near(chart.timing.beat_to_chart_ms(note.beat) - chart.timing.beat_to_chart_ms(spawn), 1000.0, 1.0,
+		"group 0 keeps the 1s fall")
+	near(preview._note_progress(chart, note, spawn), 0.0, 0.001, "note starts at the center")
+	near(preview._note_progress(chart, note, note.beat), 1.0, 0.001, "note reaches the ring on its beat")
+	# 组 0 的 BPM 变化是音频/判定时间，不改变视觉速度。
+	chart.group_bpm_points[0] = [TimingPoint.new(0.0, 230.0, 4), TimingPoint.new(4.0, 460.0, 4)]
+	spawn = preview._spawn_beat(chart, note.beat, note.group_id)
+	near(chart.timing.beat_to_chart_ms(note.beat) - chart.timing.beat_to_chart_ms(spawn), 1000.0, 1.0,
+		"group 0 BPM changes do not change the fall time")
+	# 其他组才用组 BPM 差速：230 → 460 是 2 秒。
+	var gid := chart.add_group(230.0)
+	chart.group_bpm_points[gid] = [TimingPoint.new(0.0, 230.0, 4), TimingPoint.new(4.0, 460.0, 4)]
+	note.group_id = gid
+	spawn = preview._spawn_beat(chart, note.beat, note.group_id)
+	near(chart.timing.beat_to_chart_ms(note.beat) - chart.timing.beat_to_chart_ms(spawn), 2000.0, 1.0,
+		"higher current group BPM doubles the fall time")
+	near(preview._note_progress(chart, note, spawn), 0.0, 0.001, "slowed note starts at the center")
+	near(preview._note_progress(chart, note, (spawn + note.beat) * 0.5), 0.5, 0.01,
+		"slowed note moves at half speed")
+	near(preview._note_progress(chart, note, note.beat), 1.0, 0.001, "slowed note lands on its beat")
+	var early := chart.timing.spawn_beat(note.beat, 1500.0)
+	ok(preview._notes_around(chart, early, 0.1, 0.1).has(note),
+		"slow group note enters the draw window before the normal 1s pre-read")
+	preview.free()
+	return true
+
+
+## 回放要保留系统鼠标（进度条/暂停可点）；PERFECT 特效关闭只跳过爆点，判定字仍在。
+func test_playtest_feedback() -> bool:
+	eq(Playtest.run_mouse_mode(true), Input.MOUSE_MODE_VISIBLE, "replay keeps the system cursor")
+	eq(Playtest.run_mouse_mode(false), Input.MOUSE_MODE_HIDDEN, "normal play keeps the custom cursor")
+	var preview := Preview3D.new()
+	preview.add_hit_pulse(Vector2(10, 10), Color.WHITE, "PERFECT", "tap", "", false)
+	eq(preview._pulses.size(), 1, "perfect pulse is still created for its label")
+	ok(not bool(preview._pulses[0].get("fx", true)), "perfect pulse can skip the burst")
+	preview.add_hit_pulse(Vector2(30, 30), Color.WHITE, "GREAT", "tap", "", true)
+	ok(bool(preview._pulses[1].get("fx", true)), "other tiers keep their effect")
+	preview.free()
+	# PERFECT 爆点和判定字都关掉时，不占特效预算。
+	var run := Playtest.new()
+	var run_preview := Preview3D.new()
+	run._preview = run_preview
+	run_preview.show_perfect_fx = false
+	run_preview.hud_options = {"judge_filter": "below_perfect"}
+	run._pulse_at(0.0, 0.0, Color.WHITE, "PERFECT", 60.0, "tap", "", Vector2(10, 10))
+	eq(run_preview._pulses.size(), 0, "hidden perfect pulse is not queued")
+	run_preview.hud_options = {"judge_filter": "all"}
+	run._pulse_at(0.0, 0.0, Color.WHITE, "PERFECT", 60.0, "tap", "", Vector2(10, 10))
+	eq(run_preview._pulses.size(), 1, "perfect label still queues when filter allows")
+	run.free()
+	run_preview.free()
+	return true
+
+
+## 判定字档位筛选：PERFECT 以下 = 隐藏 PERFECT，GREAT 以下继续往下收。
+func test_judge_label_filter() -> bool:
+	ok(Preview3D.judge_label_visible("PERFECT", "all"), "all shows PERFECT")
+	ok(not Preview3D.judge_label_visible("PERFECT", "below_perfect"), "below_perfect hides PERFECT")
+	ok(Preview3D.judge_label_visible("GREAT", "below_perfect"), "below_perfect keeps GREAT")
+	ok(not Preview3D.judge_label_visible("GREAT", "below_great"), "below_great hides GREAT")
+	ok(Preview3D.judge_label_visible("GOOD", "below_great"), "below_great keeps GOOD")
+	ok(not Preview3D.judge_label_visible("GOOD", "below_good"), "below_good hides GOOD")
+	ok(Preview3D.judge_label_visible("BAD", "below_good"), "below_good keeps BAD")
+	ok(Preview3D.judge_label_visible("MISS", "miss_only"), "miss_only keeps MISS")
+	ok(not Preview3D.judge_label_visible("BAD", "miss_only"), "miss_only hides BAD")
+	ok(not Preview3D.judge_label_visible("FULL", "below_perfect"), "FULL follows PERFECT")
+	ok(Preview3D.judge_label_visible("FULL", "all"), "all keeps path status")
 	return true
 
 
@@ -5414,6 +5676,21 @@ func test_anchor_pair_drag() -> bool:
 
 
 ## Path 头手柄：起始拍只能在 0 与“尾巴前 0.25 拍”之间。
+## 属性页“复制/删除”传入的是未类型化数组；共享函数必须能接住并返回整对 Anchor。
+func test_anchor_partners_untyped_array() -> bool:
+	var app: App = load("res://charter/app.gd").new()
+	var chart := Chart.new()
+	var pair := chart.make_anchor_pair(4.0, 90.0)
+	for item in pair:
+		chart.notes.append(item)
+	app.chart = chart
+	var picked: Array[Note] = app.with_anchor_partners([pair[0]])
+	eq(picked.size(), 2, "untyped array still carries the anchor partner")
+	ok(picked.has(pair[0]) and picked.has(pair[1]), "both anchors are returned")
+	app.free()
+	return true
+
+
 func test_path_head_beat() -> bool:
 	near(ChartCanvas.path_head_beat(4.0, 8.0), 4.0, 0.0001, "a normal head move keeps the beat")
 	near(ChartCanvas.path_head_beat(-3.0, 8.0), 0.0, 0.0001, "the head never goes before beat 0")
@@ -5595,30 +5872,36 @@ func test_import_window_set() -> bool:
 	eq(app.difficulties.size(), before_add + 1, "group grows by one")
 	eq(app.difficulty_names()[added], "我的难度", "new difficulty keeps its name")
 	ok(app.chart != null and app.chart.notes.size() > 0, "new difficulty starts as a copy of the chart")
-	ok(app.save_set_file(), "saving the set writes every difficulty")
+	ok(app.save_set_file(), "saving the group writes a project")
 	var out_dir := "user://test_set_out"
 	var written: int = app.save_all_difficulties(out_dir)
 	eq(written, app.difficulties.size(), "every difficulty is written to disk")
-	# 难度套组：一个文件装下所有难度，重新打开还在。
-	ok(not app.set_path.is_empty(), "import writes a .set.json next to the import")
+	# 旧套组保存时转成工程；重新打开工程仍在。
+	ok(not app.set_path.is_empty(), "import writes a project main.tmc")
+	ok(FileAccess.file_exists(app.set_path), "project main exists")
 	var reopened: App = load("res://charter/app.gd").new()
-	ok(reopened.open_set_file(app.set_path), "set file reopens")
-	eq(reopened.difficulties.size(), app.difficulties.size(), "reopened set has every difficulty")
+	ok(reopened.open_project(app.set_path), "project reopens")
+	eq(reopened.difficulties.size(), app.difficulties.size(), "reopened project has every difficulty")
 	eq(reopened.difficulty_names()[0], app.difficulty_names()[0], "difficulty names survive the round trip")
-	ok(reopened.chart != null and reopened.chart.notes.size() > 0, "reopened set loads its first difficulty")
-	ok(reopened.switch_difficulty(1), "reopened set can switch difficulty")
+	ok(reopened.chart != null and reopened.chart.notes.size() > 0, "reopened project loads its first difficulty")
+	ok(reopened.switch_difficulty(1), "reopened project can switch difficulty")
 	ok(reopened.chart.notes.size() > 0, "switched difficulty has notes")
 	# 静态小工具：命令行参数解析与标签拼装。
 	eq(app.import_label("Lv.9", "Song", "me", "std"), "Lv.9  [std]  Song  (me)", "import label format")
 	eq(app.import_label("", "", "", ""), "未命名难度", "empty label falls back")
 	reopened.free()
 	app.free()
-	if FileAccess.file_exists(ProjectSettings.globalize_path("user://sets")):
-		for file_name in DirAccess.get_files_at(ProjectSettings.globalize_path("user://sets")):
-			DirAccess.remove_absolute(ProjectSettings.globalize_path("user://sets").path_join(file_name))
-	for file_name in DirAccess.get_files_at(ProjectSettings.globalize_path(out_dir)):
-		DirAccess.remove_absolute(ProjectSettings.globalize_path(out_dir).path_join(file_name))
-	DirAccess.remove_absolute(ProjectSettings.globalize_path(out_dir))
+	for cleanup_dir in ["user://sets", out_dir]:
+		var abs_dir := ProjectSettings.globalize_path(cleanup_dir)
+		if not DirAccess.dir_exists_absolute(abs_dir):
+			continue
+		for file_name in DirAccess.get_files_at(abs_dir):
+			DirAccess.remove_absolute(abs_dir.path_join(file_name))
+		for sub_name in DirAccess.get_directories_at(abs_dir):
+			for file_name in DirAccess.get_files_at(abs_dir.path_join(sub_name)):
+				DirAccess.remove_absolute(abs_dir.path_join(sub_name).path_join(file_name))
+			DirAccess.remove_absolute(abs_dir.path_join(sub_name))
+		DirAccess.remove_absolute(abs_dir)
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
 	return true
 
@@ -6005,6 +6288,26 @@ func test_replay_round_trip() -> bool:
 	return true
 
 
+## TMC 工程 / 难度套组回放：按 hash 找到录制时的难度，旧镜像回放再反推。
+func test_replay_match_project_entry() -> bool:
+	var first := Chart.new()
+	first.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	first.notes.append(Note.new("tap", 1.0, 90.0, 60.0))
+	var second := Chart.new()
+	second.timing.points = [TimingPoint.new(0.0, 150.0, 4)]
+	second.notes.append(Note.new("tap", 2.0, 180.0, 60.0))
+	var entries := [{"chart": first}, {"chart": second}]
+	var replay := Replay.new()
+	replay.chart_hash = Replay.hash_chart(second)
+	eq(Replay.match_chart_entry(entries, replay), 1, "project replay matches the recorded difficulty")
+	replay.chart_hash = "not-a-chart"
+	eq(Replay.match_chart_entry(entries, replay), -1, "unknown hash does not guess a difficulty")
+	replay.chart_hash = Replay.hash_chart(second.mirrored_copy("lr"))
+	eq(Replay.match_chart_entry(entries, replay), 1, "old mirrored replay still matches")
+	eq(String(replay.settings.get("mirror", "")), "lr", "matched mirror is written back")
+	return true
+
+
 ## 回放分派：事件按时间喂回判定队列，按键带着录制时的光标和区间。
 func test_replay_dispatch() -> bool:
 	var run := Playtest.new()
@@ -6259,6 +6562,383 @@ func test_osu_pill_rows() -> bool:
 	ok(OsuBrowser.pill_rows(19, 700) > OsuBrowser.pill_rows(19, 1300), "narrower card needs more rows")
 	eq(OsuBrowser.pill_rows(0, 900), 1, "no difficulties still one row (the toggle chip)")
 	return true
+
+
+func test_alpha_command_catalog() -> bool:
+	eq(AlphaCommand.CATALOG.size(), 27, "catalog has 27 commands")
+	eq(AlphaCommand.names("filter").size(), 24, "24 filter commands")
+	eq(AlphaCommand.names("jline").size(), 1, "one judge line command")
+	eq(AlphaCommand.names("text").size(), 2, "two text commands")
+	var seen := {}
+	for entry in AlphaCommand.CATALOG:
+		var command_name := String(entry.get("name", ""))
+		ok(not seen.has(command_name), "unique command name %s" % command_name)
+		seen[command_name] = true
+		ok(not String(entry.get("label", "")).is_empty(), "label for %s" % command_name)
+		ok(float(entry.get("duration", -1.0)) >= 0.0, "duration for %s" % command_name)
+	ok(AlphaCommand.spec_of("NOPE").is_empty(), "unknown command has no spec")
+	eq(AlphaCommand.default_duration("NOPE"), 1.0, "unknown command falls back to one beat")
+	return true
+
+
+func test_alpha_command_envelope() -> bool:
+	var flash := AlphaCommand.new("FLASH", 4.0)
+	eq(flash.envelope_at(3.0), 0.0, "not started yet")
+	eq(flash.envelope_at(4.5), 1.0, "hold segment is full strength")
+	eq(flash.envelope_at(5.5), 0.0, "released after the end")
+	flash.enabled = false
+	eq(flash.envelope_at(4.5), 0.0, "disabled command is silent")
+	var kaleido := AlphaCommand.new("KALEIDOSCOPE", 2.0)
+	eq(kaleido.envelope_at(3.0), 1.0, "stateful command holds inside its window")
+	eq(kaleido.envelope_at(9.0), 0.0, "stateful command stops at its end beat")
+	var shake := AlphaCommand.new("SHAKE", 1.0)
+	ok(shake.envelope_at(1.2) > 0.0 and shake.envelope_at(1.2) < 1.0, "shake ramps in")
+	eq(shake.envelope_at(1.6), 1.0, "shake reaches full strength")
+	eq(shake.envelope_at(4.0), 0.0, "shake released")
+	return true
+
+
+func test_jline_ring_state() -> bool:
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	var first := chart.add_command("JLINE", 1.0)
+	first.duration = 4.0
+	first.params["color"] = "#ff0000"
+	first.params["width"] = 10.0
+	first.params["alpha"] = 0.8
+	first.params["expand"] = 0.5
+	var state := Preview3D.jline_state(chart, 2.0)
+	ok(bool(state.get("active", false)), "JLINE active inside its window")
+	near(float(state.get("width", 0.0)), 10.0, 0.001, "JLINE width reaches the ring")
+	near(float(state.get("alpha", 0.0)), 0.8, 0.001, "JLINE alpha reaches the ring")
+	var color: Color = state.get("color", Color.BLACK)
+	near(color.r, 1.0, 0.001, "JLINE red reaches the ring")
+	var second := chart.add_command("JLINE", 2.5)
+	second.duration = 4.0
+	second.params["color"] = "#0000ff"
+	second.params["width"] = 4.0
+	state = Preview3D.jline_state(chart, 3.0)
+	near(float(state.get("width", 0.0)), 4.0, 0.001, "last started JLINE takes over by default")
+	color = state.get("color", Color.BLACK)
+	near(color.b, 1.0, 0.001, "last started JLINE color wins")
+	second.params["blend"] = "交叉淡入"
+	state = Preview3D.jline_state(chart, 3.0)
+	var mixed: Color = state.get("color", Color.BLACK)
+	ok(mixed.r > 0.01 and mixed.b > 0.01, "crossfade mixes both JLINE colors")
+	var width := float(state.get("width", 0.0))
+	ok(width > 4.0 and width < 10.0, "crossfade mixes both JLINE widths")
+	eq(AlphaCommand.defaults("JLINE").get("blend", ""), "后开始接管", "JLINE defaults to last-started blend")
+	return true
+
+
+func test_filter_region_state() -> bool:
+	var defaults := AlphaCommand.defaults("FLASH")
+	eq(defaults.get("region_on", true), false, "old filters stay full-screen by default")
+	eq(float(defaults.get("region_span", 0.0)), 360.0, "region defaults to a full ring")
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	var flash := chart.add_command("FLASH", 1.0)
+	flash.duration = 4.0
+	flash.params["region_on"] = true
+	flash.params["region_angle"] = 30.0
+	flash.params["region_span"] = 90.0
+	flash.params["region_inner"] = 0.4
+	flash.params["region_outer"] = 0.9
+	flash.params["region_feather"] = 0.05
+	var zoom := chart.add_command("ZOOM", 2.0)
+	zoom.duration = 4.0
+	zoom.params["region_on"] = true
+	zoom.params["region_angle"] = 180.0
+	zoom.params["region_span"] = 60.0
+	var preview := Preview3D.new()
+	var state := preview._filter_state(chart, 3.0)
+	ok(bool(state.get("active", false)), "filters are active")
+	var region: Dictionary = state.get("region", {})
+	eq(bool(region.get("on", false)), true, "region is read from the active filter")
+	near(float(region.get("angle", 0.0)), 180.0, 0.001, "last started filter owns the region")
+	near(float(region.get("span", 0.0)), 60.0, 0.001, "region span is kept")
+	var uniforms: Dictionary = state.get("uniforms", {})
+	ok(float(uniforms.get("zoom", 1.0)) > 1.0, "filter effects still merge")
+	preview.free()
+	return true
+
+
+func test_text_command_center() -> bool:
+	var preview := Preview3D.new()
+	preview.size = Vector2(800, 600)
+	var text := AlphaCommand.new("TEXT", 1.0)
+	text.params["content"] = "HELLO"
+	text.params["x"] = 0.5
+	text.params["y"] = -0.5
+	var center := preview._text_center(text)
+	near(center.x, 600.0, 0.001, "text X is normalized to the preview width")
+	near(center.y, 150.0, 0.001, "text Y is normalized to the preview height")
+	preview.free()
+	return true
+
+
+func test_note_mods_io() -> bool:
+	var note := Note.new("tap", 1.0, 90.0, 60.0)
+	ok(note.mods_to_dict().is_empty(), "default note has no mods")
+	note.hs = 1.5
+	note.sv = 0.75
+	note.spawn = 0.3
+	note.bounce = 0.5
+	note.bounce_dir = 1
+	note.touch_start = "A1"
+	note.touch_end = "E8"
+	var mods := note.mods_to_dict()
+	ok(mods.has("hs") and mods.has("touch_start"), "mods written")
+	var restored := Note.from_dict(note.to_dict())
+	ok(is_equal_approx(restored.hs, 1.5), "hs round trips")
+	ok(is_equal_approx(restored.sv, 0.75), "sv round trips")
+	ok(is_equal_approx(restored.spawn, 0.3), "spawn round trips")
+	ok(is_equal_approx(restored.bounce, 0.5), "bounce round trips")
+	eq(restored.bounce_dir, 1, "bounce direction round trips")
+	eq(restored.touch_start, "A1", "touch start round trips")
+	eq(restored.touch_end, "E8", "touch end round trips")
+	return true
+
+
+func test_note_touch_zones() -> bool:
+	eq(Note.touch_sensor("A1"), 0, "A1 is sensor 0")
+	eq(Note.touch_sensor("A8"), 7, "A8 is sensor 7")
+	eq(Note.touch_sensor("B1"), 8, "B1 is sensor 8")
+	eq(Note.touch_sensor("C"), 16, "C is sensor 16")
+	eq(Note.touch_sensor("D1"), 17, "D1 is sensor 17")
+	eq(Note.touch_sensor("E8"), 32, "E8 is sensor 32")
+	eq(Note.touch_sensor("F1"), -1, "F zone does not exist")
+	eq(Note.touch_sensor("A9"), -1, "sensor index out of range")
+	ok(Note.is_touch_position("b7"), "lowercase touch zone accepted")
+	ok(not Note.is_touch_position("Q1"), "unknown zone rejected")
+	eq(Note.mirror_touch("A1"), "B1", "mirror A to B")
+	eq(Note.mirror_touch("D4"), "E4", "mirror D to E")
+	eq(Note.mirror_touch("C"), "C", "center zone stays")
+	var slide := Note.new("path", 2.0, 90.0, 60.0)
+	slide.touch_start = "A1"
+	ok(slide.is_touch_slide(), "touch zone makes a touch slide")
+	slide.mirror_lr()
+	eq(slide.touch_start, "B1", "mirroring swaps the touch zone")
+	return true
+
+
+func test_chart_commands_roundtrip() -> bool:
+	var chart := Chart.new()
+	chart.timing.points.clear()
+	chart.timing.points.append(TimingPoint.new(0.0, 120.0, 4))
+	var note := Note.new("tap", 1.0, 90.0, 60.0)
+	note.id = 1
+	note.hs = 0.75
+	chart.notes.append(note)
+	var text := chart.add_command("TEXT", 2.0)
+	text.params["content"] = "HELLO"
+	chart.add_command("JLINE", 3.0)
+	eq(chart.commands.size(), 2, "two commands added")
+	eq(text.id, "C1", "first command id")
+	ok(is_equal_approx(chart.duration_beats(), 4.0), "command duration counted")
+
+	var json := ChartIO.to_json(chart)
+	var loaded := ChartIO.from_json(json)
+	ok(loaded != null, "chart with commands loads back")
+	if loaded == null:
+		return false
+	eq(loaded.commands.size(), 2, "commands survive the round trip")
+	eq(String(loaded.commands_in("text")[0].params.get("content", "")), "HELLO", "text content survives")
+	ok(is_equal_approx(loaded.notes[0].hs, 0.75), "note mods survive")
+	ok(is_equal_approx(loaded.duration_beats(), 4.0), "loaded duration matches")
+
+	var dir := "user://pr97_tmc"
+	eq(ChartIO.save_project([{"name": "Alpha", "chart": chart}], dir, "Alpha"), OK, "TMC project with commands saves")
+	var project := ChartIO.load_project(dir)
+	ok(bool(project.get("ok", false)), "TMC project with commands loads")
+	if bool(project.get("ok", false)):
+		var tmc_chart: Chart = project.entries[0].chart
+		eq(tmc_chart.commands.size(), 2, "commands survive TMC")
+		eq(String(tmc_chart.commands_in("text")[0].params.get("content", "")), "HELLO", "TMC text content survives")
+		ok(is_equal_approx(tmc_chart.notes[0].hs, 0.75), "TMC note mods survive")
+	var project_dir := ProjectSettings.globalize_path(dir)
+	for name in ["main.tmc", "chart0.tmc", "color.tmc", "shaped.tmc", "storyboard.tmc", "music.wav"]:
+		var path := project_dir.path_join(name)
+		if FileAccess.file_exists(path):
+			DirAccess.remove_absolute(path)
+	if DirAccess.dir_exists_absolute(project_dir):
+		DirAccess.remove_absolute(project_dir)
+
+	var legacy := ChartIO.chart_from_dict({
+		"format": "tamaki3-chart",
+		"version": 1,
+		"timing": {"points": [{"beat": 0.0, "bpm": 120.0, "beats_per_bar": 4}]},
+		"notes": [],
+	})
+	ok(legacy != null and legacy.commands.is_empty(), "charts without commands still load")
+	return true
+
+
+## 演出指令 + 音符修饰在 dict / JSON / 单文件 / 三文件 / TMC 工程里都要原样往返。
+func test_alpha_command_save_load_chain() -> bool:
+	var root := "user://alpha_chain_test"
+	_remove_alpha_chain_dir(root)
+	var chart := _make_alpha_chain_chart()
+	var data := ChartIO.chart_to_dict(chart)
+	ok(data.has("commands"), "chart_to_dict 写出 commands")
+	ok(_check_alpha_chain("dict", ChartIO.chart_from_dict(data)), "dict 往返")
+	var json := ChartIO.to_json(chart)
+	ok(json.contains("\"commands\""), "JSON 写出 commands")
+	ok(_check_alpha_chain("json", ChartIO.from_json(json)), "JSON 往返")
+	var single := root.path_join("single.json")
+	eq(ChartIO.save_chart_file(chart, single), OK, "单文件保存")
+	ok(_check_alpha_chain("single", ChartIO.load_chart(single)), "单文件读取")
+	var three := root.path_join("three")
+	eq(ChartIO.save_three_file(chart, three), OK, "三文件保存")
+	ok(_check_alpha_chain("three", ChartIO.load_three_file(three)), "三文件读取")
+	ok(ChartIO.chart_path_exists(three), "回放路径接受三文件文件夹")
+	ok(ChartIO.chart_path_exists(single), "回放路径接受单文件")
+	var three_json := FileAccess.get_file_as_string(three.path_join("chart.json"))
+	ok(three_json.contains("\"commands\""), "三文件 chart.json 带 commands")
+	var app: App = load("res://charter/app.gd").new()
+	app.chart = chart
+	var app_dir := root.path_join("app_three")
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(app_dir))
+	app.chart_path = app_dir
+	ok(app.save_chart(), "App 三文件保存")
+	ok(app.load_chart(app_dir), "App 三文件读取")
+	ok(_check_alpha_chain("app-three", app.chart), "App 三文件往返")
+	app.free()
+	var project := root.path_join("project")
+	var second := ChartIO.chart_from_dict(ChartIO.chart_to_dict(chart))
+	second.metadata["version"] = "2"
+	second.commands_in("text")[0].params["content"] = "WORLD"
+	eq(ChartIO.save_project([{"name": "test", "chart": chart}, {"name": "second", "chart": second}],
+		project.path_join("main.tmc")), OK, "TMC 工程保存")
+	var loaded_project := ChartIO.load_project(project.path_join("main.tmc"))
+	ok(bool(loaded_project.get("ok", false)), "TMC 工程读取")
+	ok(ChartIO.chart_path_exists(project.path_join("main.tmc")), "回放路径接受工程主文件")
+	ok(ChartIO.chart_path_exists(project), "回放路径接受工程文件夹")
+	ok(not ChartIO.chart_path_exists(root.path_join("missing.tmc")), "回放路径拒绝不存在的文件")
+	var entries: Array = loaded_project.get("entries", [])
+	eq(entries.size(), 2, "TMC 工程难度数量")
+	if entries.size() == 2:
+		var first_chart: Chart = entries[0].get("chart", null) as Chart
+		var second_chart: Chart = entries[1].get("chart", null) as Chart
+		ok(_check_alpha_chain("tmc-1", first_chart), "TMC 第一难度往返")
+		ok(_check_alpha_chain("tmc-2", second_chart, "WORLD"), "TMC 第二难度往返")
+		eq(second_chart.commands_in("text")[0].text_value("content"), "WORLD", "第二难度保留自己的文本")
+	var chart_tmc := FileAccess.get_file_as_string(project.path_join("chart0.tmc"))
+	ok(chart_tmc.contains("command="), "TMC chart0 写出 command=")
+	ok(chart_tmc.contains("HELLO"), "TMC chart0 写出文本内容")
+	var second_tmc := FileAccess.get_file_as_string(project.path_join("chart1.tmc"))
+	ok(second_tmc.contains("WORLD"), "TMC chart1 写出自己的文本")
+	var app_project: App = load("res://charter/app.gd").new()
+	ok(app_project.load_chart(project.path_join("main.tmc")), "App 打开 TMC 工程")
+	eq(app_project.difficulties.size(), 2, "App TMC 工程保留两个难度")
+	if app_project.chart != null:
+		ok(_check_alpha_chain("app-tmc", app_project.chart), "App TMC 工程往返")
+	app_project.free()
+	_remove_alpha_chain_dir(root)
+	return true
+
+
+func _make_alpha_chain_chart() -> Chart:
+	var chart := Chart.new()
+	chart.timing.points.clear()
+	chart.timing.points.append(TimingPoint.new(0.0, 120.0, 4))
+	chart.metadata["title"] = "chain"
+	chart.metadata["artist"] = "test"
+	chart.metadata["creator"] = "test"
+	chart.metadata["version"] = "1"
+	var note := Note.new("tap", 1.0, 90.0, 60.0)
+	note.id = 1
+	note.hs = 1.5
+	note.sv = 2.0
+	note.head_speed = 1.2
+	note.spawn = 0.3
+	note.bounce = 0.4
+	note.bounce_dir = 1
+	note.touch_start = "A1"
+	note.touch_end = "B8"
+	chart.notes.append(note)
+	var jline := chart.add_command("JLINE", 2.0)
+	jline.params["color"] = "#123456"
+	jline.params["width"] = 8.0
+	var text := chart.add_command("TEXT", 4.0)
+	text.params["content"] = "HELLO"
+	text.params["size"] = 64.0
+	text.duration = 2.5
+	text.easing = "ease_in_out"
+	var flash := chart.add_command("FLASH", 6.0)
+	flash.params["strength"] = 0.6
+	flash.params["region_on"] = true
+	flash.params["region_angle"] = 45.0
+	flash.params["region_span"] = 90.0
+	flash.params["region_inner"] = 0.3
+	flash.params["region_outer"] = 0.8
+	flash.params["region_feather"] = 0.05
+	flash.enabled = false
+	chart.refresh_ids()
+	return chart
+
+
+func _check_alpha_chain(label: String, loaded: Chart, expected_text: String = "HELLO") -> bool:
+	if loaded == null:
+		ok(false, "%s 读取失败" % label)
+		return false
+	eq(loaded.commands.size(), 3, "%s 指令数量" % label)
+	var by_name := {}
+	for command in loaded.commands:
+		by_name[command.name] = command
+	var jline: AlphaCommand = by_name.get("JLINE") as AlphaCommand
+	ok(jline != null, "%s JLINE 存在" % label)
+	if jline != null:
+		near(jline.beat, 2.0, 0.001, "%s JLINE 拍" % label)
+		eq(String(jline.params.get("color", "")), "#123456", "%s JLINE 颜色" % label)
+		near(float(jline.params.get("width", 0.0)), 8.0, 0.001, "%s JLINE 粗细" % label)
+	var text: AlphaCommand = by_name.get("TEXT") as AlphaCommand
+	ok(text != null, "%s TEXT 存在" % label)
+	if text != null:
+		eq(text.text_value("content"), expected_text, "%s TEXT 内容" % label)
+		near(text.duration, 2.5, 0.001, "%s TEXT 时长" % label)
+		eq(text.easing, "ease_in_out", "%s TEXT 缓动" % label)
+	var flash: AlphaCommand = by_name.get("FLASH") as AlphaCommand
+	ok(flash != null, "%s FLASH 存在" % label)
+	if flash != null:
+		ok(not flash.enabled, "%s FLASH 停用" % label)
+		near(float(flash.params.get("strength", 0.0)), 0.6, 0.001, "%s FLASH 强度" % label)
+		ok(bool(flash.params.get("region_on", false)), "%s FLASH 区域开启" % label)
+		near(float(flash.params.get("region_angle", 0.0)), 45.0, 0.001, "%s FLASH 区域角度" % label)
+		near(float(flash.params.get("region_span", 0.0)), 90.0, 0.001, "%s FLASH 区域跨度" % label)
+		near(float(flash.params.get("region_inner", 0.0)), 0.3, 0.001, "%s FLASH 内半径" % label)
+		near(float(flash.params.get("region_outer", 0.0)), 0.8, 0.001, "%s FLASH 外半径" % label)
+	eq(loaded.notes.size(), 1, "%s 音符数量" % label)
+	if loaded.notes.size() == 1:
+		var note := loaded.notes[0]
+		near(note.hs, 1.5, 0.001, "%s hs" % label)
+		near(note.sv, 2.0, 0.001, "%s sv" % label)
+		near(note.head_speed, 1.2, 0.001, "%s head_speed" % label)
+		near(note.spawn, 0.3, 0.001, "%s spawn" % label)
+		near(note.bounce, 0.4, 0.001, "%s bounce" % label)
+		eq(note.bounce_dir, 1, "%s bounce_dir" % label)
+		eq(note.touch_start, "A1", "%s touch_start" % label)
+		eq(note.touch_end, "B8", "%s touch_end" % label)
+	eq(loaded.next_command_id(), "C4", "%s 下一条指令 id" % label)
+	return true
+
+
+func _remove_alpha_chain_dir(path: String) -> void:
+	var absolute := ProjectSettings.globalize_path(path)
+	var dir := DirAccess.open(absolute)
+	if dir == null:
+		return
+	dir.list_dir_begin()
+	var name := dir.get_next()
+	while not name.is_empty():
+		if name != "." and name != "..":
+			if dir.current_is_dir():
+				_remove_alpha_chain_dir(path.path_join(name))
+			else:
+				DirAccess.remove_absolute(absolute.path_join(name))
+		name = dir.get_next()
+	dir.list_dir_end()
+	DirAccess.remove_absolute(absolute)
 
 
 ## Path 方向箭头：固定弧长间距；锯齿状轨迹再按屏幕距离去重。

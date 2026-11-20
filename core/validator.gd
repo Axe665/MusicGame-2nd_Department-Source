@@ -213,6 +213,8 @@ static func _check_playability(chart: Chart, issues: Array[Dictionary]) -> void:
 	# 按拍预分组，避免每个拍点都扫描全部音符（10k 音符时会退化成 O(n²)）。
 	var groups: Dictionary = {}
 	for note in chart.notes:
+		if not chart.note_enabled(note):
+			continue
 		if note.type in ["tap", "hold", "path"]:
 			var key := snappedf(note.beat, 0.001)
 			if not groups.has(key):
