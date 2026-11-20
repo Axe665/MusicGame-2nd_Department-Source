@@ -423,6 +423,28 @@ static func shapes_to_code(shapes: Array) -> String:
 	return "shape{%s}" % ";".join(chunks)
 
 
+## Human-readable TMC form: real newlines and tab indentation. Segments use
+## commas, shapes use semicolons; the parser accepts either compact or pretty.
+static func shapes_to_tmc(shapes: Array) -> String:
+	var lines: Array[String] = ["shape{"]
+	for si in shapes.size():
+		var shape := shapes[si] as BoundaryShape
+		lines.append("\t\t[%s,%d,segments{" % [shape.id, 1 if shape.closed else 0])
+		var segments := shape.sorted_segments()
+		for i in segments.size():
+			var seg := segments[i]
+			var suffix := "," if i < segments.size() - 1 else ""
+			lines.append("\t\t\t[%d,(%s,%s),(%s,%s),(%s,%s),(%s,%s)]%s" % [
+				1 if seg.gap else 0, seg.ix, seg.iy,
+				str(seg.u0), str(seg.u1), str(seg.p0.x), str(seg.p1.x),
+				str(seg.p0.y), str(seg.p1.y), suffix,
+			])
+		var shape_suffix := ";" if si < shapes.size() - 1 else ""
+		lines.append("\t\t}]%s" % shape_suffix)
+	lines.append("}")
+	return "\n".join(lines)
+
+
 static func shapes_from_code(code: String) -> Array[BoundaryShape]:
 	var result: Array[BoundaryShape] = []
 	var text := code.strip_edges()

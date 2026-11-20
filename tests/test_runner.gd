@@ -158,6 +158,8 @@ func _initialize() -> void:
 		"test_osu_bpm_change",
 		"test_osu_multi_difficulty",
 		"test_json_roundtrip",
+		"test_chart_project_format",
+		"test_note_groups",
 		"test_validation_demo",
 		"test_angle_math",
 		"test_note_mirror",
@@ -241,6 +243,11 @@ func _initialize() -> void:
 		"test_replay_file_name",
 		"test_playtest_ui_builds",
 		"test_retry_clears_playtest_visuals",
+		"test_alpha_command_catalog",
+		"test_alpha_command_envelope",
+		"test_note_mods_io",
+		"test_note_touch_zones",
+		"test_chart_commands_roundtrip",
 	]
 	for test_name in tests:
 		if call(test_name) != true:
@@ -720,7 +727,7 @@ func test_path_axis_centrifuge() -> bool:
 
 
 func test_demo_path_migration() -> bool:
-	var chart := ChartIO.load_chart("res://charts/demo.json")
+	var chart := ChartIO.load_chart("res://charts/夜に駆ける（示例）/main.tmc")
 	ok(chart != null, "migrated demo loads")
 	if chart == null:
 		return true
@@ -864,16 +871,16 @@ func test_note_width_code() -> bool:
 	var loaded := ChartIO.from_json(ChartIO.to_json(chart))
 	ok(loaded != null, "compact chart with widths loads")
 	if loaded != null:
-		var by_id := {}
+		var by_type := {}
 		for note in loaded.notes:
-			by_id[note.id] = note
-		if by_id.has(1):
-			near(by_id[1].arc_width(), 60.0, 0.001, "json keeps sized tap arc width")
-		if by_id.has(2):
-			near(by_id[2].width, 48.0, 0.001, "json keeps hold width")
-		if by_id.has(3):
-			near(by_id[3].bell_width(), 27.0, 0.001, "json keeps bell width")
-			near(by_id[3].radius, 44.0, 0.001, "json keeps bell radius")
+			by_type[note.type] = note
+		if by_type.has("tap"):
+			near(by_type["tap"].arc_width(), 60.0, 0.001, "json keeps sized tap arc width")
+		if by_type.has("hold"):
+			near(by_type["hold"].width, 48.0, 0.001, "json keeps hold width")
+		if by_type.has("bell"):
+			near(by_type["bell"].bell_width(), 27.0, 0.001, "json keeps bell width")
+			near(by_type["bell"].radius, 44.0, 0.001, "json keeps bell radius")
 	return true
 
 
@@ -979,10 +986,10 @@ func test_note_flags_code() -> bool:
 	var extras_back := ChartIO.from_json(ChartIO.to_json(extras))
 	if extras_back != null:
 		for note in extras_back.notes:
-			if note.id == 1:
+			if note.type == "hold":
 				eq(note.hold_style, "curved", "hold style survives the roundtrip")
 				eq(note.visual_pts.size(), 1, "hold body survives the roundtrip")
-			elif note.id == 2:
+			elif note.type == "path":
 				near(note.tolerance, 0.31, 0.001, "path tolerance survives the roundtrip")
 				near(note.samples_per_beat, 6.0, 0.001, "path samples survive the roundtrip")
 				near(note.path_speed, 1.3, 0.001, "path speed survives the roundtrip")
@@ -1006,7 +1013,7 @@ func test_plane_tap_dropped() -> bool:
 	if chart != null:
 		eq(chart.notes.size(), 1, "legacy plane tap is dropped")
 		if not chart.notes.is_empty():
-			eq(chart.notes[0].id, 2, "ring tap survives")
+			eq(chart.notes[0].id, 0, "ring tap survives with reindexed id")
 	return true
 
 
@@ -3933,13 +3940,104 @@ func test_json_roundtrip() -> bool:
 		return true
 	var text_b := ChartIO.to_json(loaded)
 	eq(text_b, text_a, "json save/load/save is byte-stable")
-	var path := "user://test_roundtrip.json"
-	eq(ChartIO.save_chart(chart, path), OK, "json file save")
-	var from_file := ChartIO.load_chart(path)
-	ok(from_file != null, "json file load")
+	var dir := "user://test_project"
+	var entries: Array = [{"name": "Insane", "chart": chart}]
+	eq(ChartIO.save_project(entries, dir, "test"), OK, "project save")
+	ok(ChartIO.is_project_path(dir), "project folder detected")
+	ok(FileAccess.file_exists(dir.path_join("main.tmc")), "project main exists")
+	ok(FileAccess.file_exists(dir.path_join("chart0.tmc")), "project chart0 exists")
+	ok(FileAccess.file_exists(dir.path_join("shaped.tmc")), "project shaped exists")
+	ok(FileAccess.file_exists(dir.path_join("color.tmc")), "project color exists")
+	ok(not FileAccess.file_exists(dir.path_join("bpmlist.tmc")), "constant bpm omits bpmlist")
+	var from_file := ChartIO.load_chart(dir.path_join("main.tmc"))
+	ok(from_file != null, "project chart load")
 	if from_file != null:
-		eq(ChartIO.to_json(from_file), text_a, "json file roundtrip stable")
-	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+		eq(from_file.notes.size(), chart.notes.size(), "project notes survive")
+		eq(String(from_file.metadata.get("title", "")), String(chart.metadata.get("title", "")), "project title survives")
+	for name in ["main.tmc", "chart0.tmc", "shaped.tmc", "color.tmc", "storyboard.tmc", "music.wav", "music.ogg", "music.mp3"]:
+		var p := ProjectSettings.globalize_path(dir.path_join(name))
+		if FileAccess.file_exists(p):
+			DirAccess.remove_absolute(p)
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(dir))
+	return true
+
+
+func test_chart_project_format() -> bool:
+	var chart := DemoChart.make_demo()
+	chart.notes[0].color = 2
+	var group_id := chart.add_group(140.0)
+	chart.notes[0].group_id = group_id
+	var group_points := chart.group_bpm_points_for(group_id)
+	group_points.append(TimingPoint.new(8.0, 180.0, 3))
+	chart.group_bpm_points[group_id] = group_points
+	chart.timing.points.append(TimingPoint.new(8.0, 140.0, 3))
+	var copy := ChartIO.chart_from_dict(ChartIO.chart_to_dict(chart))
+	var dir := "user://project_format_test"
+	var entries: Array = [{"name": "Beginner", "chart": chart}, {"name": "Master", "chart": copy}]
+	eq(ChartIO.save_project(entries, dir, "project test"), OK, "multi difficulty project save")
+	ok(FileAccess.file_exists(dir.path_join("main.tmc")), "main.tmc")
+	ok(FileAccess.file_exists(dir.path_join("chart0.tmc")), "chart0.tmc")
+	ok(FileAccess.file_exists(dir.path_join("chart1.tmc")), "chart1.tmc")
+	ok(FileAccess.file_exists(dir.path_join("shaped.tmc")), "shaped.tmc")
+	ok(FileAccess.file_exists(dir.path_join("color.tmc")), "color.tmc")
+	ok(FileAccess.file_exists(dir.path_join("bpmlist.tmc")), "bpmlist.tmc with bpm change")
+	ok(FileAccess.file_exists(dir.path_join("storyboard.tmc")), "storyboard.tmc with events")
+	var chart_raw: Dictionary = ChartIO._read_project_struct(dir.path_join("chart0.tmc"), "chart")
+	eq((chart_raw.get("groups", []) as Array).size(), 2, "new group block saved in chartN")
+	var bpm_raw: Dictionary = ChartIO._read_project_struct(dir.path_join("bpmlist.tmc"), "bpm")
+	var has_group_bpm := false
+	for row in bpm_raw.get("groups", []):
+		if int(row.get("id", -1)) == group_id:
+			has_group_bpm = true
+	ok(has_group_bpm, "new group id saved in bpmlist")
+	var loaded := ChartIO.load_project(dir)
+	ok(bool(loaded.get("ok", false)), "multi difficulty project load")
+	if bool(loaded.get("ok", false)):
+		eq(loaded.entries.size(), 2, "two difficulties")
+		var first: Chart = loaded.entries[0].chart
+		var grouped_note: Note = null
+		for note in first.notes:
+			if note.group_id == group_id:
+				grouped_note = note
+				break
+		ok(grouped_note != null, "grouped note survives project")
+		if grouped_note != null:
+			eq(grouped_note.color, 2, "note color survives")
+			eq(grouped_note.group_id, group_id, "note group survives project")
+		eq(first.groups.size(), 2, "groups survive project")
+		near(first.group_bpm_at(group_id, 9.0), 180.0, 0.001, "group bpm change survives project")
+		eq(first.timing.points.size(), 2, "bpm change survives")
+	for name in ["main.tmc", "chart0.tmc", "chart1.tmc", "shaped.tmc", "color.tmc", "bpmlist.tmc", "storyboard.tmc", "music.wav", "music.ogg", "music.mp3"]:
+		var p := ProjectSettings.globalize_path(dir.path_join(name))
+		if FileAccess.file_exists(p):
+			DirAccess.remove_absolute(p)
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(dir))
+	return true
+
+
+func test_note_groups() -> bool:
+	var chart := DemoChart.make_demo()
+	chart.ensure_groups()
+	eq(chart.groups.size(), 1, "default group exists")
+	var gid := chart.add_group(140.0)
+	eq(chart.groups.size(), 2, "new group added")
+	chart.notes[0].group_id = gid
+	chart.notes[1].enabled = false
+	eq(chart.group_note_count(gid), 1, "group note count")
+	ok(chart.note_enabled(chart.notes[0]), "group note enabled by default")
+	var points := chart.group_bpm_points_for(gid)
+	points.append(TimingPoint.new(8.0, 180.0, 4))
+	chart.group_bpm_points[gid] = points
+	near(chart.group_bpm_at(gid, 9.0), 180.0, 0.001, "group bpm points apply per group")
+	chart.groups[chart.group_index(gid)]["enabled"] = false
+	ok(not chart.note_enabled(chart.notes[0]), "false group disables notes")
+	ok(chart.note_enabled(chart.notes[1]) == false, "per-note false is preserved")
+	var loaded := ChartIO.from_json(ChartIO.to_json(chart))
+	ok(loaded != null, "group chart roundtrip loads")
+	if loaded != null:
+		eq(loaded.groups.size(), 2, "groups survive roundtrip")
+		eq(loaded.notes[0].group_id, gid, "note group survives")
+		ok(not loaded.notes[1].enabled, "note false state survives")
 	return true
 
 
@@ -5595,30 +5693,36 @@ func test_import_window_set() -> bool:
 	eq(app.difficulties.size(), before_add + 1, "group grows by one")
 	eq(app.difficulty_names()[added], "我的难度", "new difficulty keeps its name")
 	ok(app.chart != null and app.chart.notes.size() > 0, "new difficulty starts as a copy of the chart")
-	ok(app.save_set_file(), "saving the set writes every difficulty")
+	ok(app.save_set_file(), "saving the group writes a project")
 	var out_dir := "user://test_set_out"
 	var written: int = app.save_all_difficulties(out_dir)
 	eq(written, app.difficulties.size(), "every difficulty is written to disk")
-	# 难度套组：一个文件装下所有难度，重新打开还在。
-	ok(not app.set_path.is_empty(), "import writes a .set.json next to the import")
+	# 旧套组保存时转成工程；重新打开工程仍在。
+	ok(not app.set_path.is_empty(), "import writes a project main.tmc")
+	ok(FileAccess.file_exists(app.set_path), "project main exists")
 	var reopened: App = load("res://charter/app.gd").new()
-	ok(reopened.open_set_file(app.set_path), "set file reopens")
-	eq(reopened.difficulties.size(), app.difficulties.size(), "reopened set has every difficulty")
+	ok(reopened.open_project(app.set_path), "project reopens")
+	eq(reopened.difficulties.size(), app.difficulties.size(), "reopened project has every difficulty")
 	eq(reopened.difficulty_names()[0], app.difficulty_names()[0], "difficulty names survive the round trip")
-	ok(reopened.chart != null and reopened.chart.notes.size() > 0, "reopened set loads its first difficulty")
-	ok(reopened.switch_difficulty(1), "reopened set can switch difficulty")
+	ok(reopened.chart != null and reopened.chart.notes.size() > 0, "reopened project loads its first difficulty")
+	ok(reopened.switch_difficulty(1), "reopened project can switch difficulty")
 	ok(reopened.chart.notes.size() > 0, "switched difficulty has notes")
 	# 静态小工具：命令行参数解析与标签拼装。
 	eq(app.import_label("Lv.9", "Song", "me", "std"), "Lv.9  [std]  Song  (me)", "import label format")
 	eq(app.import_label("", "", "", ""), "未命名难度", "empty label falls back")
 	reopened.free()
 	app.free()
-	if FileAccess.file_exists(ProjectSettings.globalize_path("user://sets")):
-		for file_name in DirAccess.get_files_at(ProjectSettings.globalize_path("user://sets")):
-			DirAccess.remove_absolute(ProjectSettings.globalize_path("user://sets").path_join(file_name))
-	for file_name in DirAccess.get_files_at(ProjectSettings.globalize_path(out_dir)):
-		DirAccess.remove_absolute(ProjectSettings.globalize_path(out_dir).path_join(file_name))
-	DirAccess.remove_absolute(ProjectSettings.globalize_path(out_dir))
+	for cleanup_dir in ["user://sets", out_dir]:
+		var abs_dir := ProjectSettings.globalize_path(cleanup_dir)
+		if not DirAccess.dir_exists_absolute(abs_dir):
+			continue
+		for file_name in DirAccess.get_files_at(abs_dir):
+			DirAccess.remove_absolute(abs_dir.path_join(file_name))
+		for sub_name in DirAccess.get_directories_at(abs_dir):
+			for file_name in DirAccess.get_files_at(abs_dir.path_join(sub_name)):
+				DirAccess.remove_absolute(abs_dir.path_join(sub_name).path_join(file_name))
+			DirAccess.remove_absolute(abs_dir.path_join(sub_name))
+		DirAccess.remove_absolute(abs_dir)
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
 	return true
 
@@ -6258,6 +6362,137 @@ func test_osu_pill_rows() -> bool:
 	eq(OsuBrowser.pill_rows(19, 1300), 2, "wide card fits 19 on two rows")
 	ok(OsuBrowser.pill_rows(19, 700) > OsuBrowser.pill_rows(19, 1300), "narrower card needs more rows")
 	eq(OsuBrowser.pill_rows(0, 900), 1, "no difficulties still one row (the toggle chip)")
+	return true
+
+
+func test_alpha_command_catalog() -> bool:
+	eq(AlphaCommand.CATALOG.size(), 27, "catalog has 27 commands")
+	eq(AlphaCommand.names("filter").size(), 24, "24 filter commands")
+	eq(AlphaCommand.names("jline").size(), 1, "one judge line command")
+	eq(AlphaCommand.names("text").size(), 2, "two text commands")
+	var seen := {}
+	for entry in AlphaCommand.CATALOG:
+		var command_name := String(entry.get("name", ""))
+		ok(not seen.has(command_name), "unique command name %s" % command_name)
+		seen[command_name] = true
+		ok(not String(entry.get("label", "")).is_empty(), "label for %s" % command_name)
+		ok(float(entry.get("duration", -1.0)) >= 0.0, "duration for %s" % command_name)
+	ok(AlphaCommand.spec_of("NOPE").is_empty(), "unknown command has no spec")
+	eq(AlphaCommand.default_duration("NOPE"), 1.0, "unknown command falls back to one beat")
+	return true
+
+
+func test_alpha_command_envelope() -> bool:
+	var flash := AlphaCommand.new("FLASH", 4.0)
+	eq(flash.envelope_at(3.0), 0.0, "not started yet")
+	eq(flash.envelope_at(4.5), 1.0, "hold segment is full strength")
+	eq(flash.envelope_at(5.5), 0.0, "released after the end")
+	flash.enabled = false
+	eq(flash.envelope_at(4.5), 0.0, "disabled command is silent")
+	var kaleido := AlphaCommand.new("KALEIDOSCOPE", 2.0)
+	eq(kaleido.envelope_at(3.0), 1.0, "stateful command holds inside its window")
+	eq(kaleido.envelope_at(9.0), 0.0, "stateful command stops at its end beat")
+	var shake := AlphaCommand.new("SHAKE", 1.0)
+	ok(shake.envelope_at(1.2) > 0.0 and shake.envelope_at(1.2) < 1.0, "shake ramps in")
+	eq(shake.envelope_at(1.6), 1.0, "shake reaches full strength")
+	eq(shake.envelope_at(4.0), 0.0, "shake released")
+	return true
+
+
+func test_note_mods_io() -> bool:
+	var note := Note.new("tap", 1.0, 90.0, 60.0)
+	ok(note.mods_to_dict().is_empty(), "default note has no mods")
+	note.hs = 1.5
+	note.sv = 0.75
+	note.spawn = 0.3
+	note.bounce = 0.5
+	note.bounce_dir = 1
+	note.touch_start = "A1"
+	note.touch_end = "E8"
+	var mods := note.mods_to_dict()
+	ok(mods.has("hs") and mods.has("touch_start"), "mods written")
+	var restored := Note.from_dict(note.to_dict())
+	ok(is_equal_approx(restored.hs, 1.5), "hs round trips")
+	ok(is_equal_approx(restored.sv, 0.75), "sv round trips")
+	ok(is_equal_approx(restored.spawn, 0.3), "spawn round trips")
+	ok(is_equal_approx(restored.bounce, 0.5), "bounce round trips")
+	eq(restored.bounce_dir, 1, "bounce direction round trips")
+	eq(restored.touch_start, "A1", "touch start round trips")
+	eq(restored.touch_end, "E8", "touch end round trips")
+	return true
+
+
+func test_note_touch_zones() -> bool:
+	eq(Note.touch_sensor("A1"), 0, "A1 is sensor 0")
+	eq(Note.touch_sensor("A8"), 7, "A8 is sensor 7")
+	eq(Note.touch_sensor("B1"), 8, "B1 is sensor 8")
+	eq(Note.touch_sensor("C"), 16, "C is sensor 16")
+	eq(Note.touch_sensor("D1"), 17, "D1 is sensor 17")
+	eq(Note.touch_sensor("E8"), 32, "E8 is sensor 32")
+	eq(Note.touch_sensor("F1"), -1, "F zone does not exist")
+	eq(Note.touch_sensor("A9"), -1, "sensor index out of range")
+	ok(Note.is_touch_position("b7"), "lowercase touch zone accepted")
+	ok(not Note.is_touch_position("Q1"), "unknown zone rejected")
+	eq(Note.mirror_touch("A1"), "B1", "mirror A to B")
+	eq(Note.mirror_touch("D4"), "E4", "mirror D to E")
+	eq(Note.mirror_touch("C"), "C", "center zone stays")
+	var slide := Note.new("path", 2.0, 90.0, 60.0)
+	slide.touch_start = "A1"
+	ok(slide.is_touch_slide(), "touch zone makes a touch slide")
+	slide.mirror_lr()
+	eq(slide.touch_start, "B1", "mirroring swaps the touch zone")
+	return true
+
+
+func test_chart_commands_roundtrip() -> bool:
+	var chart := Chart.new()
+	chart.timing.points.clear()
+	chart.timing.points.append(TimingPoint.new(0.0, 120.0, 4))
+	var note := Note.new("tap", 1.0, 90.0, 60.0)
+	note.id = 1
+	note.hs = 0.75
+	chart.notes.append(note)
+	var text := chart.add_command("TEXT", 2.0)
+	text.params["content"] = "HELLO"
+	chart.add_command("JLINE", 3.0)
+	eq(chart.commands.size(), 2, "two commands added")
+	eq(text.id, "C1", "first command id")
+	ok(is_equal_approx(chart.duration_beats(), 4.0), "command duration counted")
+
+	var json := ChartIO.to_json(chart)
+	var loaded := ChartIO.from_json(json)
+	ok(loaded != null, "chart with commands loads back")
+	if loaded == null:
+		return false
+	eq(loaded.commands.size(), 2, "commands survive the round trip")
+	eq(String(loaded.commands_in("text")[0].params.get("content", "")), "HELLO", "text content survives")
+	ok(is_equal_approx(loaded.notes[0].hs, 0.75), "note mods survive")
+	ok(is_equal_approx(loaded.duration_beats(), 4.0), "loaded duration matches")
+
+	var dir := "user://pr97_tmc"
+	eq(ChartIO.save_project([{"name": "Alpha", "chart": chart}], dir, "Alpha"), OK, "TMC project with commands saves")
+	var project := ChartIO.load_project(dir)
+	ok(bool(project.get("ok", false)), "TMC project with commands loads")
+	if bool(project.get("ok", false)):
+		var tmc_chart: Chart = project.entries[0].chart
+		eq(tmc_chart.commands.size(), 2, "commands survive TMC")
+		eq(String(tmc_chart.commands_in("text")[0].params.get("content", "")), "HELLO", "TMC text content survives")
+		ok(is_equal_approx(tmc_chart.notes[0].hs, 0.75), "TMC note mods survive")
+	var project_dir := ProjectSettings.globalize_path(dir)
+	for name in ["main.tmc", "chart0.tmc", "color.tmc", "shaped.tmc", "storyboard.tmc", "music.wav"]:
+		var path := project_dir.path_join(name)
+		if FileAccess.file_exists(path):
+			DirAccess.remove_absolute(path)
+	if DirAccess.dir_exists_absolute(project_dir):
+		DirAccess.remove_absolute(project_dir)
+
+	var legacy := ChartIO.chart_from_dict({
+		"format": "tamaki3-chart",
+		"version": 1,
+		"timing": {"points": [{"beat": 0.0, "bpm": 120.0, "beats_per_bar": 4}]},
+		"notes": [],
+	})
+	ok(legacy != null and legacy.commands.is_empty(), "charts without commands still load")
 	return true
 
 

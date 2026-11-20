@@ -3,6 +3,7 @@ extends Control
 
 signal hover_changed(u: float, beat: float)
 signal notice(message: String, level: String)
+signal group_note_hint(group_id: int, screen_pos: Vector2)
 
 const LEFT_MARGIN := 58.0
 const TOP_MARGIN := 24.0
@@ -85,7 +86,9 @@ var _sorted_max_duration: float = 0.0
 var _ghost_layer = null
 var _clipboard_notes: Array[Note] = []
 var _clipboard_reference_beat: float = 0.0
+var _clipboard_reference_u: float = 0.0
 var _clipboard_mouse_beat: float = 0.0
+var _clipboard_mouse_u: float = 0.0
 var _clipboard_active: bool = false
 var _clipboard_cut: bool = false
 var _ghost_last_scroll: float = -INF
@@ -263,7 +266,10 @@ func copy_selection(cut: bool = false) -> void:
 	copies.sort_custom(func(a: Note, b: Note) -> bool: return a.beat < b.beat)
 	_clipboard_notes = copies
 	_clipboard_reference_beat = first_beat
+	var reference := copies[0] if not copies.is_empty() else null
+	_clipboard_reference_u = _note_u(reference) if reference != null else 0.0
 	_clipboard_mouse_beat = _current_mouse_beat()
+	_clipboard_mouse_u = _x_to_u(_mouse_pos.x) if _plot_rect().has_point(_mouse_pos) else _clipboard_reference_u
 	_clipboard_active = true
 	_clipboard_cut = cut
 	if cut:
@@ -289,14 +295,32 @@ func paste_clipboard(mirror: bool = false) -> bool:
 	if _app == null or _app.chart == null or not has_clipboard():
 		notice.emit("剪贴板为空：先 Ctrl+C 复制或 Ctrl+X 剪切。", "warning")
 		return false
-	return _paste_at(_clipboard_mouse_beat, mirror)
+	return _paste_at(_clipboard_mouse_beat, mirror, _clipboard_mouse_u)
 
 
 ## 把剪贴板整段落在 beat（最早那颗的拍）上。Path 链的 id 在这里整体重映射——
 ## 照抄旧 id 会让新 part 指向原链，于是预览/试玩/存盘都把它当子部件跳过。
-func _paste_at(beat: float, mirror: bool = false) -> bool:
+func _paste_at(beat: float, mirror: bool = false, drop_u: float = NAN) -> bool:
 	var chart: Chart = _app.chart
 	var delta := beat - _clipboard_reference_beat
+	var target_u := drop_u if is_finite(drop_u) else _clipboard_mouse_u
+	var reference_u := (1.0 - _clipboard_reference_u) if mirror else _clipboard_reference_u
+	# Avoid dropping a copy on top of an existing note: walk to the next rail.
+	var divisions := maxi(2, int(_app.angle_divisions))
+	for _attempt in 24:
+		var angle := fposmod(target_u * 360.0, 360.0)
+		var clear := true
+		for other in chart.notes:
+			if absf(other.beat - maxf(0.0, beat)) > 0.01:
+				continue
+			var other_u := _note_u(other)
+			if absf(JudgeMath.angle_delta(angle, other_u * 360.0)) <= 2.0:
+				clear = false
+				break
+		if clear:
+			break
+		target_u = fposmod(target_u + 1.0 / float(divisions), 1.0)
+	var delta_u := target_u - reference_u
 	var id_map := {}
 	var copies: Array[Note] = []
 	_app.begin_edit()
@@ -308,6 +332,7 @@ func _paste_at(beat: float, mirror: bool = false) -> bool:
 			copy.end_beat = maxf(copy.beat + 0.25, note.end_beat + delta)
 		if mirror:
 			copy.mirror_u()
+		copy.rotate_u(delta_u * 360.0)
 		id_map[note.id] = copy
 		copies.append(copy)
 	for copy in copies:
@@ -323,6 +348,8 @@ func _paste_at(beat: float, mirror: bool = false) -> bool:
 	var new_ids: Array[int] = []
 	for copy in copies:
 		chart.notes.append(copy)
+	chart.reassign_note_ids()
+	for copy in copies:
 		new_ids.append(copy.id)
 	_app.finish_edit()
 	_app.select_notes(new_ids)
@@ -365,6 +392,14 @@ func cancel_clipboard(show_notice: bool = true) -> void:
 		_ghost_layer.queue_redraw()
 	if show_notice and had_clipboard:
 		notice.emit("已取消复制/剪切预览；已剪切的音符可用 Ctrl+Z 恢复。", "info")
+
+
+func _note_u(note: Note) -> float:
+	if note == null:
+		return 0.0
+	if note.type == "bell":
+		return fposmod(note.center_u, 1.0)
+	return fposmod(note.angle, 360.0) / 360.0
 
 
 func _current_mouse_beat() -> float:
@@ -751,7 +786,7 @@ func _draw_grid(plot: Rect2) -> void:
 		draw_line(Vector2(plot.position.x, limit_y), Vector2(plot.end.x, limit_y), Color(1, 1, 1, 0.22), 1.5)
 	_draw_beat_subdivisions(plot, emphasize)
 	_draw_vertical_lines(plot)
-	for point in chart.timing.points:
+	for point in chart.group_bpm_points_for(chart.current_group):
 		if point.beat < top_beat or point.beat > bottom_beat:
 			continue
 		var y := _beat_to_y(point.beat)
@@ -876,7 +911,10 @@ func _draw_notes(plot: Rect2) -> void:
 		for note in chart.notes:
 			var note_end := note.end_beat if note.type in ["hold", "path"] else note.beat
 			if note.beat <= last_beat and note_end >= first_beat:
-				_draw_note(note, plot)
+				if note.group_id != chart.current_group:
+					_draw_other_group_note(note)
+				else:
+					_draw_note(note, plot)
 	else:
 		if _sorted_dirty or _sorted_chart != chart or _sorted_count != chart.notes.size():
 			_sorted_chart = chart
@@ -904,7 +942,10 @@ func _draw_notes(plot: Rect2) -> void:
 			var note_end := note.end_beat if note.type in ["hold", "path"] else note.beat
 			if note_end < first_beat:
 				continue
-			_draw_note(note, plot)
+			if note.group_id != chart.current_group:
+				_draw_other_group_note(note)
+			else:
+				_draw_note(note, plot)
 	if _pending_path != null:
 		var head := Vector2(_u_to_x(_pending_path.angle / 360.0), _beat_to_y(_pending_path.beat))
 		var tail := Vector2(_u_to_x(_hover_u), _beat_to_y(_hover_beat))
@@ -925,6 +966,29 @@ func _draw_note(note: Note, plot: Rect2) -> void:
 			_draw_anchor(note)
 		"bell":
 			_draw_bell(note)
+
+
+## Other groups stay visible in the editor, but only as 25% markers.
+func _draw_other_group_note(note: Note) -> void:
+	var tint := Color(UITheme.MUTED.r, UITheme.MUTED.g, UITheme.MUTED.b, 0.25)
+	var y := _beat_to_y(note.beat)
+	match note.type:
+		"tap":
+			for interval in _u_intervals(note.angle, note.arc_width()):
+				draw_line(Vector2(_u_to_x(interval.x), y), Vector2(_u_to_x(interval.y), y), tint, 3.0, true)
+		"hold", "path":
+			var y2 := _beat_to_y(note.end_beat)
+			var head := Vector2(_u_to_x(fposmod(note.angle, 360.0) / 360.0), y)
+			var tail_angle := note.tail_angle if note.type == "path" else note.angle
+			var tail := Vector2(_u_to_x(fposmod(tail_angle, 360.0) / 360.0), y2)
+			draw_line(head, tail, tint, 2.0, true)
+			draw_circle(head, 4.0, tint)
+		"seek":
+			draw_line(Vector2(_u_to_x(0.0), y), Vector2(_u_to_x(1.0), y), tint, 2.0, true)
+		"anchor":
+			draw_circle(Vector2(_u_to_x(fposmod(note.angle, 360.0) / 360.0), y), 4.0, tint)
+		"bell":
+			draw_circle(Vector2(_u_to_x(fposmod(note.angle, 360.0) / 360.0), y), 4.0, tint)
 
 
 func _draw_tap(note: Note) -> void:
@@ -1336,6 +1400,7 @@ func _gui_input(event: InputEvent) -> void:
 		hover_changed.emit(_hover_u, _hover_beat)
 		if _clipboard_active:
 			_clipboard_mouse_beat = _hover_beat
+			_clipboard_mouse_u = _x_to_u(event.position.x)
 			_rebuild_ghost()
 		if _pending_hold != null:
 			var end_beat := _snap_beat_to_subdivision(_y_to_beat(event.position.y), _snap_bypass(event))
@@ -1377,6 +1442,7 @@ func _gui_input(event: InputEvent) -> void:
 		_hover_beat = _y_to_beat(event.position.y)
 		if _clipboard_active:
 			_clipboard_mouse_beat = _hover_beat
+			_clipboard_mouse_u = _x_to_u(event.position.x)
 			_rebuild_ghost()
 		if event.button_index == MOUSE_BUTTON_WHEEL_UP or event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
 			if event.pressed:
@@ -1434,6 +1500,11 @@ func _gui_input(event: InputEvent) -> void:
 					accept_event()
 					return
 				grab_focus()
+				var other_group := _other_group_note_at(event.position)
+				if other_group >= 0:
+					group_note_hint.emit(other_group, get_global_mouse_position())
+					accept_event()
+					return
 				_on_left_press(event)
 			else:
 				_on_left_release(event)
@@ -1657,7 +1728,7 @@ func _on_left_press(event: InputEventMouseButton) -> void:
 	# 复制后谱面上有半透明幽灵：点一下就把整段（含 Path 链）落在点到的拍上。
 	if has_clipboard():
 		var drop := _snap_note_placement(event.position, _snap_bypass(event))
-		_paste_at(drop.x)
+		_paste_at(drop.x, false, drop.y)
 		return
 	# Ctrl is a selection modifier across all tools: toggle the clicked note
 	# and suppress every placement action while it is held. A pending Path is
@@ -1780,6 +1851,21 @@ func _select_press(event: InputEventMouseButton) -> void:
 			_app.select_event(String(hit["id"]))
 
 
+func _other_group_note_at(pos: Vector2) -> int:
+	if _app == null or _app.chart == null:
+		return -1
+	var chart: Chart = _app.chart
+	for note in chart.notes:
+		if note.group_id == chart.current_group:
+			continue
+		for item in _note_positions(note):
+			if (item["point"] as Vector2).distance_to(pos) <= 14.0:
+				return note.group_id
+		if note.type == "seek" and absf(pos.y - _beat_to_y(note.beat)) <= 8.0:
+			return note.group_id
+	return -1
+
+
 ## 命中检测：音符优先，取「离指针最近的部件」；红区/事件只在没点到音符时响应。
 ## 先按指针所在行做纵向剔除——1500 音符的谱面逐个算投影会让按下延迟 20–50ms。
 func _hit_test(pos: Vector2) -> Dictionary:
@@ -1789,6 +1875,8 @@ func _hit_test(pos: Vector2) -> Dictionary:
 	var best := {}
 	var best_distance := 12.0
 	for note in chart.notes:
+		if note.group_id != chart.current_group:
+			continue
 		if _note_off_row(note, pos):
 			continue
 		var hit := _note_hit(note, pos)
@@ -2168,7 +2256,9 @@ func _create_simple(type: String, beat: float, u: float) -> void:
 		added = [note]
 	_app.begin_edit()
 	for item in added:
+		item.group_id = chart.current_group
 		chart.notes.append(item)
+	chart.reassign_note_ids()
 	_app.finish_edit()
 	_app.select_note(added[0].id)
 
@@ -2179,9 +2269,11 @@ func _create_hold(beat: float, u: float) -> void:
 		return
 	var note := Note.new("hold", beat, u * 360.0, 60.0)
 	note.id = chart.next_note_id()
+	note.group_id = chart.current_group
 	note.end_beat = beat + 1.0
 	_app.begin_edit()
 	chart.notes.append(note)
+	chart.reassign_note_ids()
 	_app.select_note(note.id)
 	_pending_hold = note
 	notice.emit("Hold：移动鼠标到结束拍并再次左键单击；Esc 取消。", "info")
@@ -2218,6 +2310,7 @@ func _begin_path_part(parent: Note) -> void:
 	var angle := rad_to_deg(atan2(head.y, head.x))
 	var note := Note.new("path", beat, angle, parent.width)
 	note.id = chart.next_note_id()
+	note.group_id = parent.group_id
 	note.end_beat = beat + 1.0
 	note.tail_angle = angle
 	note.tail_width = parent.tail_width
@@ -2231,6 +2324,7 @@ func _begin_path_part(parent: Note) -> void:
 	note.generate_path_shape()
 	_app.begin_edit()
 	chart.notes.append(note)
+	chart.reassign_note_ids()
 	_app.select_note(note.id)
 	_pending_path = note
 	_pending_path_parent = parent
@@ -2244,6 +2338,7 @@ func _place_path(beat: float, u: float) -> void:
 	if _pending_path == null:
 		var note := Note.new("path", beat, u * 360.0, 60.0)
 		note.id = chart.next_note_id()
+		note.group_id = chart.current_group
 		note.end_beat = beat + 1.0
 		note.tail_angle = u * 360.0
 		note.tail_width = 45.0
@@ -2254,6 +2349,7 @@ func _place_path(beat: float, u: float) -> void:
 		note.generate_path_shape()
 		_app.begin_edit()
 		chart.notes.append(note)
+		chart.reassign_note_ids()
 		_app.finish_edit()
 		_app.select_note(note.id)
 		_pending_path = note
@@ -2284,11 +2380,13 @@ func _create_seek_at(beat: float) -> void:
 			item.seek_pending = false
 	var note := Note.new("seek", beat, 0.0, 360.0)
 	note.id = chart.next_note_id()
+	note.group_id = chart.current_group
 	note.end_beat = beat
 	note.seek_orien = 0
 	note.seek_pending = true
 	_app.begin_edit()
 	chart.notes.append(note)
+	chart.reassign_note_ids()
 	_app.finish_edit()
 	_app.select_note(note.id)
 	notice.emit("Seek：按 W 朝里 / S 朝外；放置期间 W/S 快捷键被屏蔽。", "info")
@@ -2450,6 +2548,8 @@ func _finish_marquee() -> void:
 	var ids: Array[int] = []
 	var chart: Chart = _app.chart
 	for note in chart.notes:
+		if note.group_id != chart.current_group:
+			continue
 		if _note_in_marquee(note):
 			ids.append(note.id)
 	_app.select_notes(ids)
@@ -2561,6 +2661,8 @@ func _select_visible() -> void:
 	var top := scroll_beat
 	var bottom := scroll_beat + _visible_beats()
 	for note in chart.notes:
+		if note.group_id != chart.current_group:
+			continue
 		if note.beat >= top and note.beat <= bottom:
 			ids.append(note.id)
 	_app.select_notes(ids)
