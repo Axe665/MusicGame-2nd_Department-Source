@@ -241,6 +241,7 @@ func _initialize() -> void:
 		"test_audio_buffer_override",
 		"test_bell_center_merges",
 		"test_replay_round_trip",
+		"test_replay_match_project_entry",
 		"test_replay_dispatch",
 		"test_replay_scrub",
 		"test_replay_file_name",
@@ -6198,6 +6199,26 @@ func test_replay_round_trip() -> bool:
 	return true
 
 
+## TMC 工程 / 难度套组回放：按 hash 找到录制时的难度，旧镜像回放再反推。
+func test_replay_match_project_entry() -> bool:
+	var first := Chart.new()
+	first.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	first.notes.append(Note.new("tap", 1.0, 90.0, 60.0))
+	var second := Chart.new()
+	second.timing.points = [TimingPoint.new(0.0, 150.0, 4)]
+	second.notes.append(Note.new("tap", 2.0, 180.0, 60.0))
+	var entries := [{"chart": first}, {"chart": second}]
+	var replay := Replay.new()
+	replay.chart_hash = Replay.hash_chart(second)
+	eq(Replay.match_chart_entry(entries, replay), 1, "project replay matches the recorded difficulty")
+	replay.chart_hash = "not-a-chart"
+	eq(Replay.match_chart_entry(entries, replay), -1, "unknown hash does not guess a difficulty")
+	replay.chart_hash = Replay.hash_chart(second.mirrored_copy("lr"))
+	eq(Replay.match_chart_entry(entries, replay), 1, "old mirrored replay still matches")
+	eq(String(replay.settings.get("mirror", "")), "lr", "matched mirror is written back")
+	return true
+
+
 ## 回放分派：事件按时间喂回判定队列，按键带着录制时的光标和区间。
 func test_replay_dispatch() -> bool:
 	var run := Playtest.new()
@@ -6681,6 +6702,8 @@ func test_alpha_command_save_load_chain() -> bool:
 	var three := root.path_join("three")
 	eq(ChartIO.save_three_file(chart, three), OK, "三文件保存")
 	ok(_check_alpha_chain("three", ChartIO.load_three_file(three)), "三文件读取")
+	ok(ChartIO.chart_path_exists(three), "回放路径接受三文件文件夹")
+	ok(ChartIO.chart_path_exists(single), "回放路径接受单文件")
 	var three_json := FileAccess.get_file_as_string(three.path_join("chart.json"))
 	ok(three_json.contains("\"commands\""), "三文件 chart.json 带 commands")
 	var app: App = load("res://charter/app.gd").new()
@@ -6700,6 +6723,9 @@ func test_alpha_command_save_load_chain() -> bool:
 		project.path_join("main.tmc")), OK, "TMC 工程保存")
 	var loaded_project := ChartIO.load_project(project.path_join("main.tmc"))
 	ok(bool(loaded_project.get("ok", false)), "TMC 工程读取")
+	ok(ChartIO.chart_path_exists(project.path_join("main.tmc")), "回放路径接受工程主文件")
+	ok(ChartIO.chart_path_exists(project), "回放路径接受工程文件夹")
+	ok(not ChartIO.chart_path_exists(root.path_join("missing.tmc")), "回放路径拒绝不存在的文件")
 	var entries: Array = loaded_project.get("entries", [])
 	eq(entries.size(), 2, "TMC 工程难度数量")
 	if entries.size() == 2:

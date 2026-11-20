@@ -752,6 +752,13 @@ static func is_project_path(path: String) -> bool:
 	return FileAccess.file_exists(dir.path_join("main.tmc")) or FileAccess.file_exists(dir.path_join("main.json"))
 
 
+## 回放记录的是“谱面路径”：可能是单文件、三文件文件夹或 TMC 工程主文件。
+static func chart_path_exists(path: String) -> bool:
+	if path.is_empty():
+		return false
+	return FileAccess.file_exists(path) or DirAccess.dir_exists_absolute(path) or is_project_path(path)
+
+
 static func _project_file(dir: String, stem: String) -> String:
 	var tmc := dir.path_join(stem + ".tmc")
 	if FileAccess.file_exists(tmc):

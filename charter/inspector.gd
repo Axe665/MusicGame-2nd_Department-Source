@@ -890,24 +890,6 @@ func _build_note_page_for(page: VBoxContainer, note: Note) -> void:
 	)
 	_note_widgets["mod_bounce_dir"] = bounce_dir
 	_remember_row("mod_bounce_dir", bounce_dir)
-	var touch_start := _text(mods_body, "触摸起点", note.touch_start, func(value: String) -> void:
-		if _active_note == null:
-			return
-		var text := value.strip_edges().to_upper()
-		_active_note.touch_start = text if Note.is_touch_position(text) else ""
-	)
-	touch_start.placeholder_text = "例如 A1 / B8（留空＝环上键位）"
-	_note_widgets["mod_touch_start"] = touch_start
-	_remember_row("mod_touch_start", touch_start)
-	var touch_end := _text(mods_body, "触摸终点", note.touch_end, func(value: String) -> void:
-		if _active_note == null:
-			return
-		var text := value.strip_edges().to_upper()
-		_active_note.touch_end = text if Note.is_touch_position(text) else ""
-	)
-	touch_end.placeholder_text = "例如 C / E8（留空＝普通滑条）"
-	_note_widgets["mod_touch_end"] = touch_end
-	_remember_row("mod_touch_end", touch_end)
 	_buttons(mods_body, [{"text": "复位修饰", "callback": func() -> void:
 		if _active_note == null:
 			return
@@ -919,12 +901,13 @@ func _build_note_page_for(page: VBoxContainer, note: Note) -> void:
 			n.spawn = 0.0
 			n.bounce = 0.0
 			n.bounce_dir = 0
+			# 旧谱可能还带触摸区字段；虽然不再显示，复位时一并清掉。
 			n.touch_start = ""
 			n.touch_end = ""
 		)
 		_refresh_note_page()
 	}])
-	_label(mods_body, "HS/SV/spawn/bounce 是单音符修饰；触摸区写成字母编号（A1–A8、B1–B8、C、D1–D8、E1–E8）即自动变成 touch slide。判定线、文本与滤镜在「环编辑」工作区的时间轴编辑。", 11, UITheme.MUTED)
+	_label(mods_body, "HS/SV/spawn/bounce 是单音符修饰；判定线、文本与滤镜在「环编辑」工作区的时间轴编辑。", 11, UITheme.MUTED)
 
 	var misc := _note_group(page, "misc", "通用")
 	var color_group := _option(misc, "配色组", ["默认"], 0, func(index: int) -> void:
@@ -1059,11 +1042,7 @@ func _refresh_note_page() -> void:
 	_note_widgets["mod_bounce"].value = note.bounce
 	_note_widgets["mod_bounce_slider"].value = note.bounce
 	_note_widgets["mod_bounce_dir"].selected = 1 if note.bounce_dir == 1 else 0
-	_note_widgets["mod_touch_start"].text = note.touch_start
-	_note_widgets["mod_touch_end"].text = note.touch_end
 	_note_rows["mod_head"].visible = note.type in ["hold", "path"]
-	_note_rows["mod_touch_start"].visible = note.type == "path"
-	_note_rows["mod_touch_end"].visible = note.type == "path"
 	_note_widgets["mod_bounce_dir"].get_parent().visible = note.bounce > 0.0001
 	_note_widgets["bell_u"].value = note.center_u
 	_note_widgets["bell_w"].value = note.bell_width()

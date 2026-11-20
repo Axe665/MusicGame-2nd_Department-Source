@@ -100,8 +100,7 @@ var bounce: float = 0.0
 var bounce_beats: float = 0.0
 ## 弹跳方向：0 = 向环内凹，1 = 向环外凸。
 var bounce_dir: int = 0
-## Touch Slide：起点 / 终点的触摸区写法（如 "A1"、"C"、"E8"）。
-## 任一非空就表示整条 Path 是触摸区滑条（不再按普通键位判定）。
+## 旧版触摸区字段：只为读取旧谱往返保留，当前版本不参与判定/预览，也不在编辑器里暴露。
 var touch_start: String = ""
 var touch_end: String = ""
 

@@ -141,6 +141,25 @@ static func hash_chart(chart: Chart) -> String:
 	return JSON.stringify(gameplay).sha256_text()
 
 
+## 在难度套组 / TMC 工程里找录制时的那张谱；匹配不到再反推旧镜像。
+static func match_chart_entry(entries: Array, data: Replay) -> int:
+	if data == null or data.chart_hash.is_empty():
+		return -1
+	for i in entries.size():
+		var chart: Chart = (entries[i] as Dictionary).get("chart", null)
+		if chart != null and data.chart_hash == hash_chart(chart):
+			return i
+	for i in entries.size():
+		var chart: Chart = (entries[i] as Dictionary).get("chart", null)
+		if chart == null:
+			continue
+		var inferred := infer_mirror(data, chart)
+		if not inferred.is_empty():
+			data.settings["mirror"] = inferred
+			return i
+	return -1
+
+
 ## 旧回放没有 settings.mirror：用录制时的谱面 hash 反推镜像模式。
 ## 录制 hash 以前是按镜像副本算的，所以 lr/rot180 的旧文件能靠这个救回来。
 static func infer_mirror(data: Replay, chart: Chart) -> String:

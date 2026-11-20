@@ -3420,12 +3420,15 @@ func _open_replay_file(path: String) -> void:
 		_show_toast("读不出回放文件：%s" % path.get_file(), "error")
 		return
 	var chart_path := data.chart_path
-	if chart_path.is_empty() or not FileAccess.file_exists(chart_path):
+	if not ChartIO.chart_path_exists(chart_path):
 		_show_toast("回放对应的谱面不存在：%s\n（没有谱面就没法回放，请先打开/导入那张谱）" % chart_path, "error")
 		return
-	# 套组：按内容 hash 匹配到具体难度，而不是「用当前页面那张谱」。
+	# 套组 / TMC 工程：按内容 hash 匹配到具体难度，而不是「用当前页面那张谱」。
 	if chart_path.to_lower().ends_with(".set.json"):
 		_open_replay_from_set(data, chart_path)
+		return
+	if ChartIO.is_project_path(chart_path):
+		_open_replay_from_project(data, chart_path)
 		return
 	var chart: Chart = ChartIO.load_chart(chart_path)
 	if chart == null:
@@ -3452,32 +3455,9 @@ func _open_replay_from_set(data: Replay, set_path: String) -> void:
 		_show_toast("回放对应的难度套组打不开：%s" % String(loaded.get("error", "")), "error")
 		return
 	var entries: Array = loaded.get("entries", [])
-	var matched := -1
-	var names: Array[String] = []
-	for i in entries.size():
-		var chart: Chart = (entries[i] as Dictionary).get("chart", null)
-		if chart == null:
-			continue
-		names.append(String(chart.metadata.get("version", "?")))
-		if matched < 0 and data.chart_hash == Replay.hash_chart(chart):
-			matched = i
-	# 旧镜像回放的 hash 是按镜像副本算的：按原谱找不到时反推镜像再匹配一次。
+	var matched := Replay.match_chart_entry(entries, data)
 	if matched < 0:
-		for i in entries.size():
-			var chart: Chart = (entries[i] as Dictionary).get("chart", null)
-			if chart == null:
-				continue
-			var inferred := Replay.infer_mirror(data, chart)
-			if not inferred.is_empty():
-				matched = i
-				data.settings["mirror"] = inferred
-				break
-	if matched < 0:
-		var want_title := String(data.settings.get("title", ""))
-		var want_diff := String(data.settings.get("version", ""))
-		var want := want_title if want_diff.is_empty() else ("%s [%s]" % [want_title, want_diff])
-		_show_toast("回放对应的难度在套组里找不到%s\n套组里的难度：%s" % [
-			("" if want.is_empty() else "（录制时是 %s）" % want), ", ".join(names)], "error")
+		_show_replay_match_error(data, entries, "难度套组")
 		return
 	if not _app.open_set_file(set_path):
 		_show_toast("回放对应的难度套组打不开：%s" % set_path.get_file(), "error")
@@ -3487,6 +3467,40 @@ func _open_replay_from_set(data: Replay, set_path: String) -> void:
 		return
 	_sync_from_app()
 	_start_replay(data)
+
+
+## TMC 谱面工程可能包含多个难度：先按 hash 找到录制时的那个，再切过去。
+func _open_replay_from_project(data: Replay, project_path: String) -> void:
+	var loaded := ChartIO.load_project(project_path)
+	if not bool(loaded.get("ok", false)):
+		_show_toast("回放对应的谱面工程打不开：%s" % String(loaded.get("error", "")), "error")
+		return
+	var entries: Array = loaded.get("entries", [])
+	var matched := Replay.match_chart_entry(entries, data)
+	if matched < 0:
+		_show_replay_match_error(data, entries, "谱面工程")
+		return
+	if not _app.open_project(project_path):
+		_show_toast("回放对应的谱面工程打不开：%s" % project_path.get_file(), "error")
+		return
+	if not _app.switch_difficulty(matched):
+		_show_toast("切换到难度 %d 失败" % matched, "error")
+		return
+	_sync_from_app()
+	_start_replay(data)
+
+
+func _show_replay_match_error(data: Replay, entries: Array, container: String) -> void:
+	var names: Array[String] = []
+	for entry in entries:
+		var chart: Chart = (entry as Dictionary).get("chart", null)
+		if chart != null:
+			names.append(String(chart.metadata.get("version", "?")))
+	var want_title := String(data.settings.get("title", ""))
+	var want_diff := String(data.settings.get("version", ""))
+	var want := want_title if want_diff.is_empty() else ("%s [%s]" % [want_title, want_diff])
+	_show_toast("回放对应的难度在%s里找不到%s\n%s里的难度：%s" % [
+		container, ("" if want.is_empty() else "（录制时是 %s）" % want), container, ", ".join(names)], "error")
 
 
 func _start_playtest(from_start: bool) -> void:
