@@ -5242,9 +5242,11 @@ func _draw_play_hud(canvas: Control, chart: Chart, t: float) -> void:
 	var right_x := center.x + ring_r + gap
 	_draw_hud_track_column(canvas, left_x + col_w, col_w, center.y, s, op, progress, bold, mono)
 	_draw_hud_score_column(canvas, right_x, col_w, center.y, s, op, accuracy, bold, mono)
-	var combo_mode := String(hud_options.get("combo_mode", "center"))
-	if combo_mode == "center" and hud_auto:
-		_draw_hud_text(canvas, "p_auto", mono, Vector2(center.x, center.y + 74.0 * s), "AUTO", _hud_small(s), _hud_tint(UITheme.AMBER, op), 2)
+	# AUTO 必须一直看得见：连击位置改成「角落」时，之前完全没有 AUTO 标记，
+	# 玩家手动输入被自动演示吞掉还以为试玩坏了。
+	if hud_auto:
+		_draw_hud_text(canvas, "p_auto", mono, Vector2(center.x, margin + 12.0 * s), "AUTO",
+			_hud_small(s), _hud_tint(UITheme.AMBER, op), 2)
 	if bool(hud_options.get("show_watermark", false)):
 		_draw_hud_text(canvas, "p_watermark", mono, Vector2(margin, bounds.y - margin), "试玩预览 / 非正式", _hud_small(s), _hud_tint(UITheme.MUTED, op))
 
