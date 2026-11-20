@@ -6592,6 +6592,12 @@ func test_alpha_command_save_load_chain() -> bool:
 	ok(chart_tmc.contains("HELLO"), "TMC chart0 写出文本内容")
 	var second_tmc := FileAccess.get_file_as_string(project.path_join("chart1.tmc"))
 	ok(second_tmc.contains("WORLD"), "TMC chart1 写出自己的文本")
+	var app_project: App = load("res://charter/app.gd").new()
+	ok(app_project.load_chart(project.path_join("main.tmc")), "App 打开 TMC 工程")
+	eq(app_project.difficulties.size(), 2, "App TMC 工程保留两个难度")
+	if app_project.chart != null:
+		ok(_check_alpha_chain("app-tmc", app_project.chart), "App TMC 工程往返")
+	app_project.free()
 	_remove_alpha_chain_dir(root)
 	return true
 
