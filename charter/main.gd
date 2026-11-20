@@ -174,6 +174,7 @@ var _playtest_mirror: OptionButton = null
 var _playtest_dynamic: CheckBox = null
 var _playtest_auto: CheckBox = null
 var _playtest_mouse: CheckBox = null
+var _playtest_perfect_fx: CheckBox = null
 var _playtest_bias: Label = null
 ## 试玩设置底部的「从头开始玩」按钮（试玩中隐藏）。
 var _playtest_start_button: Button = null
@@ -1734,6 +1735,7 @@ func _sync_appearance() -> void:
 	_apply_visual_options()
 	_refresh_view_menu()
 	_preview.hit_fx_style = _app.hit_fx_style
+	_preview.show_perfect_fx = _app.show_perfect_fx
 	_preview.cursor_scale = _app.cursor_scale
 	_preview.refresh_style()
 	if _sfx != null:
@@ -1753,6 +1755,7 @@ func _sync_from_app() -> void:
 	_preview.flow_scale = _app.flow_scale
 	_preview.note_skin = _app.note_skin
 	_preview.hit_fx_style = _app.hit_fx_style
+	_preview.show_perfect_fx = _app.show_perfect_fx
 	_preview.cursor_scale = _app.cursor_scale
 	_sfx.set_style(_app.hit_sfx_style)
 	_canvas.px_per_beat = _app.zoom_px_per_beat
@@ -3048,6 +3051,8 @@ func _open_playtest_setup(from_start: bool) -> void:
 		_playtest_auto.button_pressed = bool(_app.playtest_auto)
 	if _playtest_mouse != null:
 		_playtest_mouse.button_pressed = bool(_app.mouse_keys)
+	if _playtest_perfect_fx != null:
+		_playtest_perfect_fx.button_pressed = bool(_app.show_perfect_fx)
 	if _playtest_latency != null:
 		_playtest_latency.value = float(_app.audio_latency_ms)
 	if _playtest_sfx != null:
@@ -3057,7 +3062,7 @@ func _open_playtest_setup(from_start: bool) -> void:
 	if _playtest_bias != null:
 		_playtest_bias.text = "上次平均偏差 %+.1fms" % float(_app.last_bias_ms)
 	_sync_volume_sliders()
-	_playtest_dialog.popup_centered(Vector2i(470, 520))
+	_playtest_dialog.popup_centered(Vector2i(520, 640))
 
 
 ## 统一设置窗口：画质 / 界面 / 音频 / 校准。视图菜单只留显示开关。
@@ -3229,16 +3234,18 @@ func _build_playtest_dialog() -> void:
 	_playtest_dialog = AcceptDialog.new()
 	_playtest_dialog.title = "试玩设置"
 	_playtest_dialog.ok_button_text = "开始"
-	_playtest_dialog.min_size = Vector2i(360, 220)
+	_playtest_dialog.min_size = Vector2i(420, 260)
 	# 选项越加越多，内容放进滚动区，小窗口也不会把按钮挤出屏幕。
 	var scroll := ScrollContainer.new()
-	scroll.custom_minimum_size = Vector2(400, 350)
+	scroll.custom_minimum_size = Vector2(440, 520)
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	_playtest_dialog.add_child(scroll)
 	var box := VBoxContainer.new()
 	box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	box.add_theme_constant_override("separation", 10)
+	box.add_theme_constant_override("separation", 8)
 	scroll.add_child(box)
+
+	_playtest_section(box, "游玩")
 	_playtest_rate = _playtest_spin_row(box, "倍速", 0.5, 2.0, 0.05, 1.0, "×")
 	_playtest_rate.tooltip_text = "试玩和编辑器试听都按这个速度走；声音不变调（每个新倍速首次生成缓存）；局中修改在重开本局后生效；只对本次运行有效"
 	_playtest_flow = _playtest_spin_row(box, "音符速度", 0.05, 3.0, 0.01, 1.0, "×")
@@ -3258,19 +3265,6 @@ func _build_playtest_dialog() -> void:
 	_playtest_mirror.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	mirror_row.add_child(_playtest_mirror)
 	box.add_child(mirror_row)
-	_playtest_offset = _playtest_spin_row(box, "判定偏移", -200.0, 200.0, 1.0, 0.0, "ms")
-	_playtest_latency = _playtest_spin_row(box, "输出延迟", 0.0, 250.0, 1.0, 0.0, "ms")
-	_playtest_latency.tooltip_text = "0 = 用驱动报告值；>0 = 强制覆盖（可升可降）。驱动明显不准时才手动填"
-	var calib_hint := Label.new()
-	calib_hint.text = "判定偏移校准在「设置 → 校准」里（8 次点击后自动写回）"
-	calib_hint.add_theme_font_size_override("font_size", 11)
-	calib_hint.add_theme_color_override("font_color", UITheme.MUTED)
-	calib_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	box.add_child(calib_hint)
-	_playtest_dynamic = CheckBox.new()
-	_playtest_dynamic.text = "动态 offset（局内自动校准，≤±50ms）"
-	_playtest_dynamic.tooltip_text = "至少 8 次命中后，每次命中按偏差的 5% 自动微调判定偏移"
-	box.add_child(_playtest_dynamic)
 	_playtest_auto = CheckBox.new()
 	_playtest_auto.text = "AUTO 自动演示（游戏内 F8 切换）"
 	_playtest_auto.tooltip_text = "自动完美演奏所有音符，用来快速看谱面；结算会标注 AUTO"
@@ -3279,16 +3273,34 @@ func _build_playtest_dialog() -> void:
 	_playtest_mouse.text = "鼠标左右键算 Tap"
 	_playtest_mouse.tooltip_text = "关掉后左右键不参与判定；鼠标移动、滚轮 Seek 照常（暂停菜单也能改）"
 	box.add_child(_playtest_mouse)
+	_playtest_perfect_fx = CheckBox.new()
+	_playtest_perfect_fx.text = "显示 PERFECT 特效"
+	_playtest_perfect_fx.tooltip_text = "关闭后 PERFECT 不再画命中爆点和弧光，只保留判定字；默认关闭"
+	box.add_child(_playtest_perfect_fx)
+
+	box.add_child(HSeparator.new())
+	_playtest_section(box, "判定与校准")
+	_playtest_offset = _playtest_spin_row(box, "判定偏移", -200.0, 200.0, 1.0, 0.0, "ms")
+	_playtest_latency = _playtest_spin_row(box, "输出延迟", 0.0, 250.0, 1.0, 0.0, "ms")
+	_playtest_latency.tooltip_text = "0 = 用驱动报告值；>0 = 强制覆盖（可升可降）。驱动明显不准时才手动填"
+	_playtest_dynamic = CheckBox.new()
+	_playtest_dynamic.text = "动态 offset（局内自动校准，≤±50ms）"
+	_playtest_dynamic.tooltip_text = "至少 8 次命中后，每次命中按偏差的 5% 自动微调判定偏移"
+	box.add_child(_playtest_dynamic)
 	_playtest_bias = Label.new()
 	_playtest_bias.text = "上次平均偏差 +0.0ms"
 	_playtest_bias.add_theme_font_size_override("font_size", 11)
 	_playtest_bias.add_theme_color_override("font_color", UITheme.MUTED)
 	box.add_child(_playtest_bias)
-	# 音频：和编辑器「音频」弹窗、设置窗口共用 Music / SFX 总线与持久化字段。
-	var audio_title := Label.new()
-	audio_title.text = "音频"
-	audio_title.add_theme_font_size_override("font_size", 12)
-	box.add_child(audio_title)
+	var calib_hint := Label.new()
+	calib_hint.text = "判定偏移校准在「设置 → 校准」里（8 次点击后自动写回）"
+	calib_hint.add_theme_font_size_override("font_size", 11)
+	calib_hint.add_theme_color_override("font_color", UITheme.MUTED)
+	calib_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	box.add_child(calib_hint)
+
+	box.add_child(HSeparator.new())
+	_playtest_section(box, "音频")
 	box.add_child(_volume_slider("音乐", "Music"))
 	box.add_child(_volume_slider("音效", "SFX"))
 	var sfx_row := HBoxContainer.new()
@@ -3311,7 +3323,9 @@ func _build_playtest_dialog() -> void:
 	)
 	sfx_row.add_child(_playtest_sfx)
 	box.add_child(sfx_row)
+
 	box.add_child(HSeparator.new())
+	_playtest_section(box, "更多")
 	var open_settings := Button.new()
 	open_settings.text = "画质 / 界面 / 音频 / 校准设置…"
 	open_settings.tooltip_text = "统一设置窗口：画质、界面、音频与校准"
@@ -3330,6 +3344,14 @@ func _build_playtest_dialog() -> void:
 	)
 	# × 或 Esc 关闭时同样保留设置（只保存，不开始试玩）。
 	_playtest_dialog.canceled.connect(_commit_playtest_settings)
+
+
+func _playtest_section(parent: VBoxContainer, title: String) -> void:
+	var label := Label.new()
+	label.text = title
+	label.add_theme_font_size_override("font_size", 12)
+	label.add_theme_font_override("font", UITheme.bold_font())
+	parent.add_child(label)
 
 
 func _playtest_spin_row(parent: VBoxContainer, label_text: String, lo: float, hi: float, step: float, value: float, suffix: String) -> SpinBox:
@@ -3378,12 +3400,15 @@ func _commit_playtest_settings() -> void:
 		_app.playtest_auto = _playtest_auto.button_pressed
 	if _playtest_mouse != null:
 		_app.mouse_keys = _playtest_mouse.button_pressed
+	if _playtest_perfect_fx != null:
+		_app.show_perfect_fx = _playtest_perfect_fx.button_pressed
 	if _playtest_mirror != null:
 		_app.playtest_mirror = ["off", "lr", "rot180"][clampi(_playtest_mirror.selected, 0, 2)]
 	_app.save_settings()
 	_preview.flow_scale = _app.flow_scale
 	_preview.playback_rate = _rate
 	_preview.cursor_scale = _app.cursor_scale
+	_preview.show_perfect_fx = _app.show_perfect_fx
 	_preview.request_redraw()
 	# 试玩中从暂停菜单改设置：直接应用到正在跑的预览。
 	if _playtest != null:
@@ -3391,6 +3416,7 @@ func _commit_playtest_settings() -> void:
 		_playtest.next_playback_rate = _rate
 		_playtest._preview.flow_scale = _app.flow_scale
 		_playtest._preview.cursor_scale = _app.cursor_scale
+		_playtest._preview.show_perfect_fx = _app.show_perfect_fx
 		_playtest._preview.request_redraw()
 	if _editor_flow_spin != null:
 		_editor_flow_spin.value = _app.flow_scale

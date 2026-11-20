@@ -326,6 +326,8 @@ var _note_pops: Array[Dictionary] = []
 # 音符外观与打击特效方案（网页 Note & Hit Lab 里可对比选择）。
 var note_skin: String = "candy"
 var hit_fx_style: String = "burst"
+## 试玩里是否绘制 PERFECT 的爆点/弧光；判定字不受影响。默认开，试玩按设置覆盖。
+var show_perfect_fx: bool = true
 var _skin_cache: Dictionary = {}
 var _skin_cache_key: String = ""
 var path_cuts: Dictionary = {}
@@ -4807,7 +4809,7 @@ func request_playhead_redraw() -> void:
 	_force_3d_frame = true
 
 
-func add_hit_pulse(point: Vector2, color: Color, label: String = "HIT", kind: String = "tap", detail: String = "") -> void:
+func add_hit_pulse(point: Vector2, color: Color, label: String = "HIT", kind: String = "tap", detail: String = "", fx: bool = true) -> void:
 	if not _valid_point(point):
 		return
 	var sparks: Array[float] = []
@@ -4821,7 +4823,7 @@ func add_hit_pulse(point: Vector2, color: Color, label: String = "HIT", kind: St
 			stack += 1
 	_pulses.append({
 		"pos": point, "age": 0.0, "color": color, "label": label, "kind": kind,
-		"sparks": sparks, "detail": detail,
+		"sparks": sparks, "detail": detail, "fx": fx,
 		"scale": tier_fx_scale(label),
 		"label_y": float(stack % 3) * 22.0,
 	})
@@ -5031,39 +5033,41 @@ func _draw_pulses(canvas: Control) -> void:
 		var alpha := clampf(1.0 - age / 0.42, 0.0, 1.0)
 		var point: Vector2 = pulse["pos"]
 		var color: Color = pulse["color"]
-		var sparks: Array = pulse.get("sparks", []) if fx_budget == "full" else []
 		var kind := String(pulse.get("kind", "tap"))
-		# 星头单独一套 osu!std 式发散：密度再高也不降级，否则根本看不见。
-		if fx_budget == "off" and kind != "path":
-			pass
-		elif kind != "path" and crowded and index < _pulses.size() - 6:
-			canvas.draw_arc(point, 16.0 + age * 30.0, 0.0, TAU, 16, Color(color.r, color.g, color.b, 0.5 * alpha), 2.0, false)
-			continue
-		# 档位越差，爆点越小；位置按脉冲缩放，文字不缩。
-		var fx_scale := float(pulse.get("scale", 1.0))
-		var scaled := absf(fx_scale - 1.0) > 0.001
-		if scaled:
-			canvas.draw_set_transform(point, 0.0, Vector2(fx_scale, fx_scale))
-		var fx_point := Vector2.ZERO if scaled else point
-		if kind == "path":
-			_draw_fx_path_head(canvas, fx_point, color, age)
-		elif kind == "lock":
-			_draw_fx_lock(canvas, fx_point, age)
-		else:
-			match hit_fx_style:
-				"ring":
-					_draw_fx_ring(canvas, fx_point, color, age, sparks)
-				"prism":
-					_draw_fx_prism(canvas, fx_point, color, age, sparks)
-				"ink":
-					_draw_fx_ink(canvas, fx_point, color, age, sparks)
-				_:
-					_draw_fx_burst(canvas, fx_point, color, age, sparks)
-		if scaled:
-			canvas.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
-		match kind:
-			"hold":
-				canvas.draw_line(point + Vector2(0, -92.0 * (1.0 - alpha)), point - Vector2(0, 20), Color(color.r, color.g, color.b, 0.35 * alpha), 12.0, false)
+		# PERFECT 特效关闭时只跳过爆点/弧光，判定字仍然保留。
+		if bool(pulse.get("fx", true)):
+			var sparks: Array = pulse.get("sparks", []) if fx_budget == "full" else []
+			# 星头单独一套 osu!std 式发散：密度再高也不降级，否则根本看不见。
+			if fx_budget == "off" and kind != "path":
+				pass
+			elif kind != "path" and crowded and index < _pulses.size() - 6:
+				canvas.draw_arc(point, 16.0 + age * 30.0, 0.0, TAU, 16, Color(color.r, color.g, color.b, 0.5 * alpha), 2.0, false)
+				continue
+			# 档位越差，爆点越小；位置按脉冲缩放，文字不缩。
+			var fx_scale := float(pulse.get("scale", 1.0))
+			var scaled := absf(fx_scale - 1.0) > 0.001
+			if scaled:
+				canvas.draw_set_transform(point, 0.0, Vector2(fx_scale, fx_scale))
+			var fx_point := Vector2.ZERO if scaled else point
+			if kind == "path":
+				_draw_fx_path_head(canvas, fx_point, color, age)
+			elif kind == "lock":
+				_draw_fx_lock(canvas, fx_point, age)
+			else:
+				match hit_fx_style:
+					"ring":
+						_draw_fx_ring(canvas, fx_point, color, age, sparks)
+					"prism":
+						_draw_fx_prism(canvas, fx_point, color, age, sparks)
+					"ink":
+						_draw_fx_ink(canvas, fx_point, color, age, sparks)
+					_:
+						_draw_fx_burst(canvas, fx_point, color, age, sparks)
+			if scaled:
+				canvas.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+			match kind:
+				"hold":
+					canvas.draw_line(point + Vector2(0, -92.0 * (1.0 - alpha)), point - Vector2(0, 20), Color(color.r, color.g, color.b, 0.35 * alpha), 12.0, false)
 		var label := String(pulse.get("label", ""))
 		# 试玩 HUD 只留档位；偏差明细在结算页和暂停页看。
 		var detail := "" if playtest_mode else String(pulse.get("detail", ""))

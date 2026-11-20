@@ -46,6 +46,7 @@ func _initialize() -> void:
 		"test_nearest_u",
 		"test_pre_read",
 		"test_group_note_speed",
+		"test_playtest_feedback",
 		"test_bar_lines",
 		"test_beat_grid_lines",
 		"test_pinned_scroll",
@@ -4156,6 +4157,20 @@ func test_group_note_speed() -> bool:
 	var early := chart.timing.spawn_beat(note.beat, 1500.0)
 	ok(preview._notes_around(chart, early, 0.1, 0.1).has(note),
 		"slow group note enters the draw window before the normal 1s pre-read")
+	preview.free()
+	return true
+
+
+## 回放要保留系统鼠标（进度条/暂停可点）；PERFECT 特效关闭只跳过爆点，判定字仍在。
+func test_playtest_feedback() -> bool:
+	eq(Playtest.run_mouse_mode(true), Input.MOUSE_MODE_VISIBLE, "replay keeps the system cursor")
+	eq(Playtest.run_mouse_mode(false), Input.MOUSE_MODE_HIDDEN, "normal play keeps the custom cursor")
+	var preview := Preview3D.new()
+	preview.add_hit_pulse(Vector2(10, 10), Color.WHITE, "PERFECT", "tap", "", false)
+	eq(preview._pulses.size(), 1, "perfect pulse is still created for its label")
+	ok(not bool(preview._pulses[0].get("fx", true)), "perfect pulse can skip the burst")
+	preview.add_hit_pulse(Vector2(30, 30), Color.WHITE, "GREAT", "tap", "", true)
+	ok(bool(preview._pulses[1].get("fx", true)), "other tiers keep their effect")
 	preview.free()
 	return true
 

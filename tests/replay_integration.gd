@@ -34,6 +34,8 @@ func _ready() -> void:
 	await get_tree().process_frame
 	_check(run.replay_mode, "setup enters replay mode")
 	_check(run._running, "replay starts without countdown")
+	_check(run._preview.custom_cursor_visible, "replay keeps the custom cursor visible")
+	_check(run._preview.auto_cursor.is_finite(), "replay uses the recorded cursor")
 	run._seek_replay(1.0)
 	await get_tree().process_frame
 	_check(run._finished, "replay reaches the results screen")
