@@ -5010,18 +5010,45 @@ func _draw_note_pops(canvas: Control) -> void:
 			canvas.draw_polyline(scaled, Color(1, 1, 1, 0.50 * flash), maxf(2.0, width * 0.30), true)
 
 
+## 判定字档位：PERFECT/FULL 最高，MISS/LOST 最低。未知标签保持显示。
+static func judge_tier_rank(label: String) -> int:
+	match label:
+		"PERFECT", "FULL": return 0
+		"GREAT": return 1
+		"GOOD", "FRAY": return 2
+		"BAD": return 3
+		"MISS", "LOST": return 4
+	return -1
+
+
+static func judge_label_visible(label: String, filter: String) -> bool:
+	if label.is_empty():
+		return false
+	var rank := judge_tier_rank(label)
+	if rank < 0:
+		return true
+	match filter:
+		"below_perfect": return rank >= 1
+		"below_great": return rank >= 2
+		"below_good": return rank >= 3
+		"miss_only": return rank >= 4
+		_: return true
+
+
 func _draw_pulses(canvas: Control) -> void:
 	# 判定字位置（试玩可切）：跟音符 / 屏幕中心 / 关。
 	var judge_mode := "note"
+	var judge_filter := "all"
 	var judge_anchor := Vector2.ZERO
 	var center_label_index := -1
 	if playtest_mode:
 		judge_mode = String(hud_options.get("judge_position", "ring_out"))
+		judge_filter = String(hud_options.get("judge_filter", "all"))
 		if judge_mode == "center":
 			judge_anchor = _screen_affine()[0] + Vector2(0, -90.0 * clampf(size.y / 900.0, 0.8, 1.8))
 			# 居中固定位只画最新一条判定，否则 0.42s 内的脉冲会叠成一团。
 			for i in range(_pulses.size() - 1, -1, -1):
-				if not String(_pulses[i].get("label", "")).is_empty():
+				if judge_label_visible(String(_pulses[i].get("label", "")), judge_filter):
 					center_label_index = i
 					break
 	# 脉冲多时只给最新的 6 个画完整特效，其余降级成一个细环。
@@ -5069,6 +5096,8 @@ func _draw_pulses(canvas: Control) -> void:
 				"hold":
 					canvas.draw_line(point + Vector2(0, -92.0 * (1.0 - alpha)), point - Vector2(0, 20), Color(color.r, color.g, color.b, 0.35 * alpha), 12.0, false)
 		var label := String(pulse.get("label", ""))
+		if not judge_label_visible(label, judge_filter):
+			continue
 		# 试玩 HUD 只留档位；偏差明细在结算页和暂停页看。
 		var detail := "" if playtest_mode else String(pulse.get("detail", ""))
 		var label_y := float(pulse.get("label_y", 0.0))

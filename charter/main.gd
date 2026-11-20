@@ -60,6 +60,7 @@ const HUD_OPTIONS := [
 	{"key": "hud_combo_mode", "label": "连击", "choices": [["屏幕中心", 123], ["右侧", 124], ["关", 125]]},
 	{"key": "hud_progress_style", "label": "进度仪表", "choices": [["环外弧", 126], ["关", 127]]},
 	{"key": "hud_judge_position", "label": "判定字位置", "choices": [["跟音符", 128], ["环内", 129], ["环外", 130], ["屏幕中心", 146], ["关", 147]]},
+	{"key": "hud_judge_filter", "label": "判定字显示", "choices": [["全部", 210], ["PERFECT 以下", 211], ["GREAT 以下", 212], ["GOOD 以下", 213], ["仅 MISS", 214]]},
 	{"key": "hud_opacity", "label": "HUD 透明度", "choices": [["100%", 133], ["85%", 134], ["70%", 135]]},
 	{"key": "hud_show_title", "label": "左上：曲名", "choices": [["显示", 136], ["隐藏", 137]]},
 	{"key": "hud_show_difficulty", "label": "左上：难度", "choices": [["显示", 138], ["隐藏", 139]]},
@@ -1189,6 +1190,8 @@ func _hud_index(key: String) -> int:
 			return ["ring", "off"].find(_app.hud_progress_style)
 		"hud_judge_position":
 			return ["note", "ring_in", "ring_out", "center", "off"].find(_app.hud_judge_position)
+		"hud_judge_filter":
+			return ["all", "below_perfect", "below_great", "below_good", "miss_only"].find(_app.hud_judge_filter)
 		"hud_opacity":
 			return [100, 85, 70].find(_app.hud_opacity)
 		"hud_show_title":
@@ -1214,6 +1217,8 @@ func _set_hud_index(key: String, index: int) -> void:
 			_app.hud_progress_style = ["ring", "off"][clampi(index, 0, 1)]
 		"hud_judge_position":
 			_app.hud_judge_position = ["note", "ring_in", "ring_out", "center", "off"][clampi(index, 0, 4)]
+		"hud_judge_filter":
+			_app.hud_judge_filter = ["all", "below_perfect", "below_great", "below_good", "miss_only"][clampi(index, 0, 4)]
 		"hud_opacity":
 			_app.hud_opacity = [100, 85, 70][clampi(index, 0, 2)]
 		"hud_show_title":
@@ -1435,6 +1440,8 @@ func _build_hud_rows(parent: Control) -> void:
 		grid.add_child(label)
 		var pick := OptionButton.new()
 		pick.add_theme_font_size_override("font_size", 11)
+		if key == "hud_judge_filter":
+			pick.tooltip_text = "PERFECT 以下 = 隐藏 PERFECT，只显示 GREAT 及更低档；GREAT 以下同理。"
 		for choice in option["choices"]:
 			pick.add_item(String(choice[0]))
 		pick.item_selected.connect(func(index: int) -> void:

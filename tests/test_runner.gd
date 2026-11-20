@@ -47,6 +47,7 @@ func _initialize() -> void:
 		"test_pre_read",
 		"test_group_note_speed",
 		"test_playtest_feedback",
+		"test_judge_label_filter",
 		"test_bar_lines",
 		"test_beat_grid_lines",
 		"test_pinned_scroll",
@@ -4172,6 +4173,22 @@ func test_playtest_feedback() -> bool:
 	preview.add_hit_pulse(Vector2(30, 30), Color.WHITE, "GREAT", "tap", "", true)
 	ok(bool(preview._pulses[1].get("fx", true)), "other tiers keep their effect")
 	preview.free()
+	return true
+
+
+## 判定字档位筛选：PERFECT 以下 = 隐藏 PERFECT，GREAT 以下继续往下收。
+func test_judge_label_filter() -> bool:
+	ok(Preview3D.judge_label_visible("PERFECT", "all"), "all shows PERFECT")
+	ok(not Preview3D.judge_label_visible("PERFECT", "below_perfect"), "below_perfect hides PERFECT")
+	ok(Preview3D.judge_label_visible("GREAT", "below_perfect"), "below_perfect keeps GREAT")
+	ok(not Preview3D.judge_label_visible("GREAT", "below_great"), "below_great hides GREAT")
+	ok(Preview3D.judge_label_visible("GOOD", "below_great"), "below_great keeps GOOD")
+	ok(not Preview3D.judge_label_visible("GOOD", "below_good"), "below_good hides GOOD")
+	ok(Preview3D.judge_label_visible("BAD", "below_good"), "below_good keeps BAD")
+	ok(Preview3D.judge_label_visible("MISS", "miss_only"), "miss_only keeps MISS")
+	ok(not Preview3D.judge_label_visible("BAD", "miss_only"), "miss_only hides BAD")
+	ok(not Preview3D.judge_label_visible("FULL", "below_perfect"), "FULL follows PERFECT")
+	ok(Preview3D.judge_label_visible("FULL", "all"), "all keeps path status")
 	return true
 
 

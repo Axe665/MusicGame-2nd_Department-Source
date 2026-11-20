@@ -73,6 +73,8 @@ var hud_combo_mode: String = "center"
 var hud_progress_style: String = "ring"
 ## note / ring_in / ring_out / center / off
 var hud_judge_position: String = "ring_out"
+## 判定字档位筛选：all / below_perfect / below_great / below_good / miss_only
+var hud_judge_filter: String = "all"
 ## 100 / 85 / 70
 var hud_opacity: int = 100
 var hud_show_title: bool = true
@@ -646,6 +648,8 @@ func _load_settings() -> void:
 			hud_progress_style = progress_style if progress_style in ["ring", "off"] else "ring"
 			var judge_pos := String(data.get("hud_judge_position", hud_judge_position))
 			hud_judge_position = judge_pos if judge_pos in ["note", "ring_in", "ring_out", "center", "off"] else "ring_out"
+			var judge_filter := String(data.get("hud_judge_filter", hud_judge_filter))
+			hud_judge_filter = judge_filter if judge_filter in ["all", "below_perfect", "below_great", "below_good", "miss_only"] else "all"
 			hud_opacity = int(data.get("hud_opacity", hud_opacity))
 			hud_opacity = hud_opacity if hud_opacity in [100, 85, 70] else 100
 			hud_show_title = bool(data.get("hud_show_title", hud_show_title))
@@ -709,6 +713,7 @@ func hud_options() -> Dictionary:
 		"combo_mode": hud_combo_mode,
 		"progress_style": hud_progress_style,
 		"judge_position": hud_judge_position,
+		"judge_filter": hud_judge_filter,
 		"opacity": hud_opacity,
 		"show_title": hud_show_title,
 		"show_difficulty": hud_show_difficulty,
@@ -839,7 +844,7 @@ func effective_latency_sec() -> float:
 func save_settings() -> void:
 	var data := {"settings_version": 1, "path_wait_indicator": path_wait_indicator, "note_skin": note_skin, "hit_fx_style": hit_fx_style, "show_perfect_fx": show_perfect_fx, "hit_sfx_style": hit_sfx_style, "ffmpeg": ffmpeg_path, "frame_cap": frame_cap, "video_encoder": video_encoder, "audio_buffer_ms": audio_buffer_ms, "playtest_offset_ms": playtest_offset_ms, "audio_latency_ms": audio_latency_ms, "music_volume": music_volume, "sfx_volume": sfx_volume, "dynamic_offset": dynamic_offset, "playtest_auto": playtest_auto, "playtest_mirror": playtest_mirror, "playback_scroll": playback_scroll, "background_brightness": background_brightness, "mouse_tilt": mouse_tilt, "startup_tabs": startup_tabs, "osu_favorites": osu_favorites, "last_bias_ms": last_bias_ms, "cursor_scale": cursor_scale, "flow_scale": flow_scale, "aa_2d_level": aa_2d_level, "msaa_3d_level": msaa_3d_level, "ring_pad_rect": ring_pad_rect, "angle_divisions": angle_divisions, "note_detail_fine": note_detail_fine, "note_glow": note_glow, "path_style": path_style, "bpm_lock_ms": bpm_lock_ms, "cursor_trail": cursor_trail, "fx_budget": fx_budget, "ring_3d_scale": ring_3d_scale, "bar_lines": bar_lines, "quality_preset": quality_preset,
 		"hud_scale": hud_scale, "hud_combo_mode": hud_combo_mode, "hud_progress_style": hud_progress_style,
-		"hud_judge_position": hud_judge_position, "hud_opacity": hud_opacity,
+		"hud_judge_position": hud_judge_position, "hud_judge_filter": hud_judge_filter, "hud_opacity": hud_opacity,
 		"hud_show_title": hud_show_title, "hud_show_difficulty": hud_show_difficulty,
 		"hud_show_percent": hud_show_percent, "hud_show_time": hud_show_time,
 		"hud_show_watermark": hud_show_watermark,
