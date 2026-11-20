@@ -6362,4 +6362,3 @@ func _apply_filters(chart: Chart, t: float) -> void:
 	var uniforms: Dictionary = state["uniforms"]
 	for key in uniforms:
 		material.set_shader_parameter(String(key), uniforms[key])
-
