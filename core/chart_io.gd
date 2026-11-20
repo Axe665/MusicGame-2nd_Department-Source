@@ -365,17 +365,17 @@ static func chart_from_dict(data: Dictionary) -> Chart:
 	var chart := Chart.new()
 	chart.format_version = file_version
 	var general: Dictionary = data.get("general", {})
-	chart.audio_path = String(general.get("audio", ""))
-	chart.video_path = String(general.get("video", ""))
+	chart.audio_path = str(general.get("audio", ""))
+	chart.video_path = str(general.get("video", ""))
 	chart.video_offset_ms = float(general.get("video_offset_ms", 0.0))
 	chart.video_fps = float(general.get("video_fps", 60.0))
 	chart.video_opacity = float(general.get("video_opacity", 0.35))
 	# 旧文件里的 general.pre_read_ms 读进来直接忽略：飞行时长固定 1 秒（Chart.NOTE_FALL_MS）。
 	chart.offset_ms = float(general.get("offset_ms", 0.0))
-	chart.difficulty = String(general.get("difficulty", "Normal"))
+	chart.difficulty = str(general.get("difficulty", "Normal"))
 	var meta: Dictionary = data.get("metadata", {})
 	for key in ["title", "artist", "creator", "version", "tags", "license", "background", "storyboard", "audio_source"]:
-		chart.metadata[key] = String(meta.get(key, ""))
+		chart.metadata[key] = str(meta.get(key, ""))
 	# 兼容旧存档：没有这个键就交给故事板内容启发式判断。
 	if meta.has("widescreen"):
 		chart.metadata["widescreen"] = int(meta.get("widescreen", 0)) != 0
