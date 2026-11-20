@@ -6,6 +6,8 @@ signal notice(message: String, level: String)
 ## 环编辑工作区：滚轮缩放、拖空白旋转，由工作区写进镜头关键帧。
 signal ring_zoom(delta: float)
 signal ring_rotate(degrees: float)
+## 环编辑：在预览里点中文本指令时通知工作区同步选择。
+signal command_selected(command: AlphaCommand)
 
 const RING_WIDTH := 4.0
 const GLOW_WIDTH := 18.0
@@ -341,6 +343,16 @@ var note_states: Dictionary = {}
 var note_state_beats: Dictionary = {}
 ## 环编辑工作区模式：左键拖空白旋转、滚轮缩放。
 var ring_edit_mode: bool = false
+## 工作区当前选中的演出指令：文本拖动和滤镜区域描边都靠它。
+var selected_command: AlphaCommand = null
+var _text_drag: AlphaCommand = null
+var _text_drag_offset := Vector2.ZERO
+var _ring_line_width := RING_WIDTH
+var _ring_glow_width := GLOW_WIDTH
+var _jline_active := false
+var _jline_color := Color(0.62, 0.64, 0.68)
+var _jline_alpha := 1.0
+var _last_jline_key := ""
 var _ring_rotating: bool = false
 var _ring_rot_last: float = 0.0
 var _drawing_path: bool = false
@@ -827,6 +839,12 @@ func _process(_delta: float) -> void:
 			_note_pops.remove_at(i)
 	var t := get_time_beat()
 	var time_changed := absf(t - _last_process_time) > 0.0005
+	var jline := jline_state(chart, t)
+	var jline_key := _jline_key(jline)
+	if jline_key != _last_jline_key:
+		_last_jline_key = jline_key
+		_mesh_dirty = true
+	_apply_jline(jline)
 	var mesh_key := _mesh_key(chart, t)
 	var view_changed := _update_transform(t)
 	var flat_dirty := _mesh_dirty and not use_3d_ring
@@ -844,7 +862,11 @@ func _process(_delta: float) -> void:
 	_update_video(chart, t)
 	_update_storyboard_textures(chart, t)
 	var beat_phase := fposmod(t, 1.0)
-	_glow_material.albedo_color = Color(0.37, 0.92, 0.86, 0.10 + 0.09 * exp(-beat_phase * 7.0))
+	var glow_pulse := 0.10 + 0.09 * exp(-beat_phase * 7.0)
+	if _jline_active:
+		_glow_material.albedo_color = Color(_jline_color.r, _jline_color.g, _jline_color.b, glow_pulse * _jline_alpha)
+	else:
+		_glow_material.albedo_color = Color(0.37, 0.92, 0.86, glow_pulse)
 	if playtest_mode:
 		mouse_screen = auto_cursor if auto_cursor.is_finite() else get_local_mouse_position()
 		mouse_inside = true
@@ -1036,11 +1058,91 @@ func _update_camera_fit(chart: Chart, zoom: float, ellipse: float, dolly: float 
 
 func _update_ring_mesh(chart: Chart, beat: float) -> void:
 	var points := _frame_for(chart, beat).sample_points(96)
-	_ring_mesh.mesh = _build_ribbon(points, RING_WIDTH, _ring_material)
-	_glow_mesh.mesh = _build_ribbon(points, GLOW_WIDTH, _glow_material)
+	_ring_mesh.mesh = _build_ribbon(points, _ring_line_width, _ring_material)
+	_glow_mesh.mesh = _build_ribbon(points, _ring_glow_width, _glow_material)
 	_shadow_mesh.mesh = _build_ribbon(points, 30.0, _shadow_material)
 	_last_mesh_beat = beat
 	_mesh_dirty = false
+
+
+## 当前拍生效的 JLINE：颜色/环宽/透明度/外圈扩张。默认后开始的接管；
+## 交叉淡入时按包络权重混合，重叠段的颜色和宽度不会突然跳变。
+static func jline_state(chart: Chart, t: float) -> Dictionary:
+	if chart == null:
+		return {"active": false}
+	var active: Array[AlphaCommand] = []
+	for command in chart.sorted_commands():
+		if not command.enabled or command.category() != AlphaCommand.CATEGORY_JLINE:
+			continue
+		if t < command.beat - 0.0001 or t > command.end_beat() + 0.0001:
+			continue
+		if command.envelope_at(t) <= 0.001:
+			continue
+		active.append(command)
+	if active.is_empty():
+		return {"active": false}
+	var last := active[active.size() - 1]
+	var crossfade := last.text_value("blend", "后开始接管") == "交叉淡入" and active.size() > 1
+	if not crossfade:
+		return _jline_values(last)
+	var total := 0.0
+	var color := Color(0, 0, 0, 0)
+	var width := 0.0
+	var alpha := 0.0
+	var expand := 0.0
+	for command in active:
+		var weight := command.envelope_at(t)
+		if weight <= 0.0:
+			continue
+		var value := _jline_values(command)
+		var item: Color = value.get("color", Color.WHITE)
+		color = Color(color.r + item.r * weight, color.g + item.g * weight,
+			color.b + item.b * weight, color.a + item.a * weight)
+		width += float(value.get("width", RING_WIDTH)) * weight
+		alpha += float(value.get("alpha", 1.0)) * weight
+		expand += float(value.get("expand", 0.0)) * weight
+		total += weight
+	if total <= 0.0001:
+		return _jline_values(last)
+	return {
+		"active": true,
+		"color": Color(color.r / total, color.g / total, color.b / total),
+		"width": width / total,
+		"alpha": alpha / total,
+		"expand": expand / total,
+	}
+
+
+static func _jline_values(command: AlphaCommand) -> Dictionary:
+	return {
+		"active": true,
+		"color": command.color_value("color", Color.WHITE),
+		"width": clampf(command.number("width", 6.0), 0.5, 24.0),
+		"alpha": clampf(command.number("alpha", 1.0), 0.0, 1.0),
+		"expand": clampf(command.number("expand", 0.0), 0.0, 1.0),
+	}
+
+
+static func _jline_key(state: Dictionary) -> String:
+	if not bool(state.get("active", false)):
+		return "off"
+	var color: Color = state.get("color", Color.WHITE)
+	return "%s|%.3f|%.3f|%.3f" % [color.to_html(), float(state.get("width", RING_WIDTH)),
+		float(state.get("alpha", 1.0)), float(state.get("expand", 0.0))]
+
+
+func _apply_jline(state: Dictionary) -> void:
+	_jline_active = bool(state.get("active", false))
+	if _jline_active:
+		_jline_color = state.get("color", Color.WHITE)
+		_jline_alpha = clampf(float(state.get("alpha", 1.0)), 0.0, 1.0)
+		_ring_line_width = clampf(float(state.get("width", RING_WIDTH)), 0.5, 24.0)
+		_ring_glow_width = maxf(GLOW_WIDTH, _ring_line_width * 3.0 + float(state.get("expand", 0.0)) * 24.0)
+		_ring_material.albedo_color = Color(_jline_color.r, _jline_color.g, _jline_color.b, _jline_alpha)
+		return
+	_ring_line_width = RING_WIDTH
+	_ring_glow_width = GLOW_WIDTH
+	_ring_material.albedo_color = Color(0.62, 0.64, 0.68, 0.95)
 
 
 func _build_beams() -> void:
@@ -1549,6 +1651,10 @@ func _gui_input(event: InputEvent) -> void:
 			return
 	if event is InputEventMouseMotion:
 		mouse_screen = event.position
+		if _text_drag != null:
+			_drag_text(event.position)
+			accept_event()
+			return
 		if _ring_rotating:
 			ring_rotate.emit((event.position.x - _ring_rot_last) * 0.4)
 			_ring_rot_last = event.position.x
@@ -1594,6 +1700,15 @@ func _on_left_press(event: InputEventMouseButton) -> void:
 	if _app == null:
 		return
 	if ring_edit_mode:
+		var text_hit := _text_command_at(event.position)
+		if text_hit != null:
+			selected_command = text_hit
+			command_selected.emit(text_hit)
+			_text_drag = text_hit
+			_text_drag_offset = event.position - _text_center(text_hit)
+			_app.begin_edit()
+			accept_event()
+			return
 		var vertex_pick := _pick_vertex(event.position)
 		if vertex_pick >= 0:
 			_drag_vertex = vertex_pick
@@ -1692,6 +1807,10 @@ func _on_left_press(event: InputEventMouseButton) -> void:
 
 
 func _on_left_release(_event: InputEventMouseButton) -> void:
+	if _text_drag != null:
+		_text_drag = null
+		if _app != null:
+			_app.finish_edit()
 	if _ring_rotating:
 		_ring_rotating = false
 		if _app != null:
@@ -2461,6 +2580,8 @@ func draw_overlay(canvas: Control) -> void:
 	if draw_note_layers:
 		_draw_notes(canvas, chart, t, pre)
 	_draw_alpha_commands(canvas, chart, t)
+	if ring_edit_mode:
+		_draw_selected_command_guides(canvas, chart, t)
 	if show_path_judgement and draw_note_layers:
 		_draw_path_judgement(canvas, chart, t, pre)
 	if draw_note_layers:
@@ -3043,22 +3164,36 @@ func _draw_flat_stage(canvas: Control, chart: Chart, t: float) -> void:
 
 func _draw_flat_ring(canvas: Control, chart: Chart, t: float) -> void:
 	var points := _frame_for(chart, t).sample_points(192)
+	var jline := jline_state(chart, t)
+	var main_color := Color(0.55, 0.60, 0.70, 0.95)
+	var glow_color := Color(0.37, 0.85, 0.81, 0.10)
+	var highlight := Color(1, 1, 1, 0.18)
+	var main_width := RING_WIDTH
+	var glow_width := GLOW_WIDTH
+	if bool(jline.get("active", false)):
+		var color: Color = jline.get("color", Color.WHITE)
+		var alpha := clampf(float(jline.get("alpha", 1.0)), 0.0, 1.0)
+		main_color = Color(color.r, color.g, color.b, 0.95 * alpha)
+		glow_color = Color(color.r, color.g, color.b, 0.16 * alpha)
+		highlight = Color(1, 1, 1, 0.18 * alpha)
+		main_width = clampf(float(jline.get("width", RING_WIDTH)), 0.5, 24.0)
+		glow_width = maxf(GLOW_WIDTH, main_width * 3.0 + float(jline.get("expand", 0.0)) * 24.0)
 	var run := PackedVector2Array()
 	for item in points:
 		if bool(item.get("gap", false)):
 			if run.size() > 1:
-				canvas.draw_polyline(run, Color(0.37, 0.85, 0.81, 0.10), 18.0, true)
-				canvas.draw_polyline(run, Color(0.55, 0.60, 0.70, 0.95), 4.0, true)
-				canvas.draw_polyline(run, Color(1, 1, 1, 0.18), 1.0, true)
+				canvas.draw_polyline(run, glow_color, glow_width, true)
+				canvas.draw_polyline(run, main_color, main_width, true)
+				canvas.draw_polyline(run, highlight, 1.0, true)
 			run = PackedVector2Array()
 			continue
 		var p := project_design(item.point)
 		if _valid_point(p):
 			run.append(p)
 	if run.size() > 1:
-		canvas.draw_polyline(run, Color(0.37, 0.85, 0.81, 0.10), 18.0, true)
-		canvas.draw_polyline(run, Color(0.55, 0.60, 0.70, 0.95), 4.0, true)
-		canvas.draw_polyline(run, Color(1, 1, 1, 0.18), 1.0, true)
+		canvas.draw_polyline(run, glow_color, glow_width, true)
+		canvas.draw_polyline(run, main_color, main_width, true)
+		canvas.draw_polyline(run, highlight, 1.0, true)
 
 
 func _draw_bezel(canvas: Control, chart: Chart, t: float) -> void:
@@ -6040,9 +6175,7 @@ func _draw_alpha_commands(canvas: Control, chart: Chart, t: float) -> void:
 			continue
 		if env <= 0.01:
 			continue
-		if command.category() == AlphaCommand.CATEGORY_JLINE:
-			_draw_jline_command(canvas, area, command, env)
-		elif command.category() == AlphaCommand.CATEGORY_TEXT:
+		if command.category() == AlphaCommand.CATEGORY_TEXT:
 			_draw_text_command(canvas, area, command, env)
 	if chips.is_empty():
 		return
@@ -6054,23 +6187,6 @@ func _draw_alpha_commands(canvas: Control, chart: Chart, t: float) -> void:
 		y += 14.0
 
 
-func _draw_jline_command(canvas: Control, area: Rect2, command: AlphaCommand, env: float) -> void:
-	var color := command.color_value("color", Color.WHITE)
-	var alpha := clampf(command.number("alpha", 1.0), 0.0, 1.0) * env
-	if alpha <= 0.01:
-		return
-	var width := clampf(command.number("width", 6.0), 0.5, 24.0)
-	var expand := clampf(command.number("expand", 0.0), 0.0, 1.0)
-	var y := area.get_center().y + area.size.y * 0.34
-	var half := area.size.x * (0.26 + expand * 0.2)
-	var from := Vector2(area.get_center().x - half, y)
-	var to := Vector2(area.get_center().x + half, y)
-	canvas.draw_line(from, to, Color(color.r, color.g, color.b, 0.16 * alpha), width * 3.0, true)
-	canvas.draw_line(from, to, Color(color.r, color.g, color.b, 0.85 * alpha), width, true)
-	canvas.draw_string(UITheme.bold_font(), to + Vector2(6, 4), command.name, HORIZONTAL_ALIGNMENT_LEFT, -1, 10,
-		Color(color.r, color.g, color.b, 0.7 * alpha))
-
-
 func _draw_text_command(canvas: Control, area: Rect2, command: AlphaCommand, env: float) -> void:
 	# JUDGETEXT 没有 content：它的 alpha 只该作用在判定文字上，预览层不画。
 	var content := command.text_value("content", "")
@@ -6080,11 +6196,120 @@ func _draw_text_command(canvas: Control, area: Rect2, command: AlphaCommand, env
 	if alpha <= 0.01:
 		return
 	var font_size := int(clampf(command.number("size", 48.0), 10.0, 200.0))
-	var offset := Vector2(clampf(command.number("x", 0.0), -1.0, 1.0), clampf(command.number("y", 0.0), -1.0, 1.0))
-	var center := area.get_center() + Vector2(offset.x * area.size.x * 0.5, offset.y * area.size.y * 0.5)
+	var center := _text_center(command)
 	var color := command.color_value("color", Color.WHITE)
 	canvas.draw_string(UITheme.bold_font(), Vector2(center.x - area.size.x * 0.5, center.y), content,
 		HORIZONTAL_ALIGNMENT_CENTER, area.size.x, font_size, Color(color.r, color.g, color.b, alpha))
+
+
+## 选中滤镜时在预览里画出环平面扇区，改参数能立刻看到边界。
+func _draw_selected_command_guides(canvas: Control, chart: Chart, t: float) -> void:
+	var command := selected_command
+	if command == null or chart == null or not chart.commands.has(command):
+		return
+	if command.category() != AlphaCommand.CATEGORY_FILTER or not command.flag("region_on", false):
+		return
+	var radius := _ring_radius_at(chart, t)
+	var inner := clampf(command.number("region_inner", 0.0), 0.0, 2.0) * radius
+	var outer := clampf(command.number("region_outer", 1.0), 0.0, 2.0) * radius
+	if outer <= 0.5:
+		return
+	var start := deg_to_rad(command.number("region_angle", 0.0))
+	var span := deg_to_rad(clampf(command.number("region_span", 360.0), 0.0, 360.0))
+	var affine := _screen_affine()
+	var center: Vector2 = affine[0]
+	if not _valid_point(center):
+		return
+	var color := Color(UITheme.VIOLET.r, UITheme.VIOLET.g, UITheme.VIOLET.b, 0.95 if command.enabled else 0.4)
+	var steps := maxi(8, int(72.0 * maxf(0.04, span / TAU)))
+	var outer_points := _region_arc(affine, outer, start, span, steps)
+	var inner_points := _region_arc(affine, inner, start, span, steps) if inner > 0.5 else PackedVector2Array()
+	if span > TAU - 0.01:
+		canvas.draw_polyline(outer_points, color, 2.0, true)
+		if inner_points.size() > 1:
+			canvas.draw_polyline(inner_points, color, 1.8, true)
+		return
+	var fill := PackedVector2Array()
+	for point in outer_points:
+		fill.append(point)
+	if inner_points.size() > 1:
+		for i in range(inner_points.size() - 1, -1, -1):
+			fill.append(inner_points[i])
+	else:
+		fill.append(center)
+	if fill.size() > 2:
+		canvas.draw_colored_polygon(fill, Color(color.r, color.g, color.b, 0.09))
+	canvas.draw_polyline(outer_points, color, 2.0, true)
+	if inner_points.size() > 1:
+		canvas.draw_polyline(inner_points, color, 1.8, true)
+	var a0 := start
+	var a1 := start + span
+	var p0_inner := _affine_point(Vector2(cos(a0), sin(a0)) * inner, affine)
+	var p0_outer := _affine_point(Vector2(cos(a0), sin(a0)) * outer, affine)
+	var p1_inner := _affine_point(Vector2(cos(a1), sin(a1)) * inner, affine)
+	var p1_outer := _affine_point(Vector2(cos(a1), sin(a1)) * outer, affine)
+	canvas.draw_line(p0_inner, p0_outer, color, 1.8, true)
+	canvas.draw_line(p1_inner, p1_outer, color, 1.8, true)
+
+
+func _region_arc(affine: Array, radius: float, start: float, span: float, steps: int) -> PackedVector2Array:
+	var points := PackedVector2Array()
+	for i in steps + 1:
+		var angle := start + span * float(i) / float(steps)
+		points.append(_affine_point(Vector2(cos(angle), sin(angle)) * radius, affine))
+	return points
+
+
+func _text_center(command: AlphaCommand) -> Vector2:
+	var area := get_rect()
+	var offset := Vector2(clampf(command.number("x", 0.0), -1.0, 1.0),
+		clampf(command.number("y", 0.0), -1.0, 1.0))
+	return area.get_center() + Vector2(offset.x * area.size.x * 0.5, offset.y * area.size.y * 0.5)
+
+
+func _text_rect(command: AlphaCommand) -> Rect2:
+	var content := command.text_value("content", "")
+	if content.is_empty():
+		return Rect2()
+	var center := _text_center(command)
+	var font_size := int(clampf(command.number("size", 48.0), 10.0, 200.0))
+	var font := UITheme.bold_font()
+	var text_size := font.get_string_size(content, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size)
+	var height := font.get_height(font_size)
+	return Rect2(center.x - text_size.x * 0.5, center.y - height * 0.5,
+		text_size.x, height).grow(8.0)
+
+
+func _text_command_at(pos: Vector2) -> AlphaCommand:
+	var chart := get_chart()
+	if chart == null:
+		return null
+	var t := get_time_beat()
+	var found: AlphaCommand = null
+	for command in chart.sorted_commands():
+		if not command.enabled or command.category() != AlphaCommand.CATEGORY_TEXT:
+			continue
+		if command.text_value("content", "").is_empty():
+			continue
+		if t < command.beat - 0.0001 or t > command.end_beat() + 0.0001:
+			continue
+		if command.envelope_at(t) <= 0.01:
+			continue
+		if _text_rect(command).has_point(pos):
+			found = command
+	return found
+
+
+func _drag_text(pos: Vector2) -> void:
+	var area := get_rect()
+	var center := pos - _text_drag_offset
+	var nx := clampf((center.x - area.get_center().x) / maxf(1.0, area.size.x * 0.5), -1.0, 1.0)
+	var ny := clampf((center.y - area.get_center().y) / maxf(1.0, area.size.y * 0.5), -1.0, 1.0)
+	_text_drag.params["x"] = nx
+	_text_drag.params["y"] = ny
+	if _app != null:
+		_app.touch_chart()
+	_overlay.queue_redraw()
 
 
 ## 音符下落进度：HS 越大越早冲到判定环，只影响该音符自身。
@@ -6135,6 +6360,16 @@ uniform vec4 tint = vec4(1.0);
 uniform float tint_amount = 0.0;
 uniform vec4 flash = vec4(1.0, 1.0, 1.0, 0.0);
 uniform vec4 fade = vec4(0.0, 0.0, 0.0, 0.0);
+uniform float mask_on = 0.0;
+uniform vec2 mask_center = vec2(0.5);
+uniform vec2 mask_axis_x = vec2(1.0, 0.0);
+uniform vec2 mask_axis_y = vec2(0.0, 1.0);
+uniform float mask_angle_start = 0.0;
+uniform float mask_angle_span = 6.2831853;
+uniform float mask_inner = 0.0;
+uniform float mask_outer = 1.0;
+uniform float mask_feather = 0.1;
+uniform float mask_ring_radius = 1.0;
 
 vec3 rgb2hsv(vec3 c) {
 	vec4 k = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
@@ -6237,6 +6472,25 @@ void fragment() {
 	col = mix(col, flash.rgb, clamp(flash.a, 0.0, 1.0));
 	col = mix(col, fade.rgb, clamp(fade.a, 0.0, 1.0));
 
+	float mask = 1.0;
+	if (mask_on > 0.5) {
+		vec2 local = inverse(mat2(mask_axis_x, mask_axis_y)) * (UV - mask_center);
+		float radius = length(local) / max(mask_ring_radius, 0.0001);
+		float feather = max(mask_feather, 0.0001);
+		float inner = mask_inner <= 0.0001 ? 1.0
+			: smoothstep(mask_inner - feather, mask_inner + feather, radius);
+		float outer = 1.0 - smoothstep(mask_outer - feather, mask_outer + feather, radius);
+		float angle = atan(local.y, local.x);
+		float span = clamp(mask_angle_span, 0.0, 6.2831853);
+		float delta = mod(angle - mask_angle_start + 12.5663706, 6.2831853);
+		float angle_feather = max(mask_feather * 1.5, 0.002);
+		float sector = span >= 6.2831852 ? 1.0
+			: 1.0 - smoothstep(span - angle_feather, span + angle_feather, delta);
+		mask = inner * outer * sector;
+	}
+	vec3 original = texture(screen_tex, SCREEN_UV).rgb;
+	col = mix(original, col, mask);
+
 	COLOR = vec4(clamp(col, 0.0, 1.0), 1.0);
 }
 """
@@ -6272,8 +6526,9 @@ func _filter_state(chart: Chart, t: float) -> Dictionary:
 		"flash": Color(1, 1, 1, 0), "fade": Color(0, 0, 0, 0),
 	}
 	if chart == null:
-		return {"uniforms": state, "active": false}
+		return {"uniforms": state, "active": false, "region": {}}
 	var active := false
+	var last_filter: AlphaCommand = null
 	for command in chart.commands:
 		if not command.enabled or command.category() != AlphaCommand.CATEGORY_FILTER:
 			continue
@@ -6285,6 +6540,9 @@ func _filter_state(chart: Chart, t: float) -> Dictionary:
 			# 停在指令起始拍时包络正好是 0，给一个可见的预览底噪，免得以为指令没生效。
 			env = 0.35
 		active = true
+		if last_filter == null or command.beat > last_filter.beat \
+				or (is_equal_approx(command.beat, last_filter.beat) and command.id > last_filter.id):
+			last_filter = command
 		var strength := clampf(command.number("strength", 0.8), 0.0, 4.0) * env
 		match command.name:
 			"FLASH":
@@ -6344,7 +6602,17 @@ func _filter_state(chart: Chart, t: float) -> Dictionary:
 				state["move"] = Vector2(command.number("x", 0.0), command.number("y", 0.0)) * env * 0.25
 			_:
 				pass
-	return {"uniforms": state, "active": active}
+	var region := {}
+	if last_filter != null:
+		region = {
+			"on": last_filter.flag("region_on", false),
+			"angle": last_filter.number("region_angle", 0.0),
+			"span": last_filter.number("region_span", 360.0),
+			"inner": last_filter.number("region_inner", 0.0),
+			"outer": last_filter.number("region_outer", 1.0),
+			"feather": last_filter.number("region_feather", 0.1),
+		}
+	return {"uniforms": state, "active": active, "region": region}
 
 
 func _stronger_color(current: Variant, candidate: Color) -> Color:
@@ -6362,3 +6630,42 @@ func _apply_filters(chart: Chart, t: float) -> void:
 	var uniforms: Dictionary = state["uniforms"]
 	for key in uniforms:
 		material.set_shader_parameter(String(key), uniforms[key])
+	var region: Dictionary = state.get("region", {})
+	var mask_on := bool(region.get("on", false))
+	material.set_shader_parameter("mask_on", 1.0 if mask_on else 0.0)
+	if not mask_on or chart == null:
+		return
+	var layer_size := _filter_layer.size
+	if layer_size.x < 1.0 or layer_size.y < 1.0:
+		layer_size = size
+	if layer_size.x < 1.0 or layer_size.y < 1.0:
+		return
+	var affine := _screen_affine()
+	var center: Vector2 = affine[0]
+	var x_axis: Vector2 = affine[1]
+	var y_axis: Vector2 = affine[2]
+	material.set_shader_parameter("mask_center", Vector2(center.x / layer_size.x, center.y / layer_size.y))
+	material.set_shader_parameter("mask_axis_x", Vector2(x_axis.x / layer_size.x, x_axis.y / layer_size.y))
+	material.set_shader_parameter("mask_axis_y", Vector2(y_axis.x / layer_size.x, y_axis.y / layer_size.y))
+	material.set_shader_parameter("mask_angle_start", deg_to_rad(float(region.get("angle", 0.0))))
+	material.set_shader_parameter("mask_angle_span", deg_to_rad(clampf(float(region.get("span", 360.0)), 0.0, 360.0)))
+	material.set_shader_parameter("mask_inner", clampf(float(region.get("inner", 0.0)), 0.0, 2.0))
+	material.set_shader_parameter("mask_outer", clampf(float(region.get("outer", 1.0)), 0.0, 2.0))
+	material.set_shader_parameter("mask_feather", clampf(float(region.get("feather", 0.1)), 0.0, 0.5))
+	material.set_shader_parameter("mask_ring_radius", _ring_radius_at(chart, t))
+
+
+## 环平面遮罩的半径基准：用边界采样点的平均半径，非圆形边界也不会除以 0。
+func _ring_radius_at(chart: Chart, beat: float) -> float:
+	var points := _frame_for(chart, beat).sample_points(64)
+	var total := 0.0
+	var count := 0
+	for item in points:
+		if bool(item.get("gap", false)):
+			continue
+		var point: Vector2 = item.get("point", Vector2.ZERO)
+		if not point.is_finite():
+			continue
+		total += point.length()
+		count += 1
+	return maxf(total / maxf(1.0, float(count)), 1.0)

@@ -36,6 +36,7 @@ const CATALOG := [
 			{"key": "width", "label": "粗细 px", "type": "float", "default": 6.0, "min": 0.5, "max": 24.0, "step": 0.5},
 			{"key": "alpha", "label": "不透明度", "type": "float", "default": 1.0, "min": 0.0, "max": 1.0, "step": 0.05},
 			{"key": "expand", "label": "扩张", "type": "float", "default": 0.0, "min": 0.0, "max": 1.0, "step": 0.05},
+			{"key": "blend", "label": "叠加方式", "type": "option", "options": ["后开始接管", "交叉淡入"], "default": "后开始接管"},
 		],
 	},
 	{
@@ -503,9 +504,20 @@ static func default_duration(command_name: String) -> float:
 
 
 static func defaults(command_name: String) -> Dictionary:
+	var spec_entry := spec_of(command_name)
 	var result := {}
-	for entry in Array(spec_of(command_name).get("params", [])):
+	for entry in Array(spec_entry.get("params", [])):
 		result[String(entry.get("key", ""))] = entry.get("default", 0.0)
+	# 滤镜区域是每条滤镜自己的可选遮罩；旧指令没有这些键时按“未启用”读。
+	if String(spec_entry.get("category", "")) == CATEGORY_FILTER:
+		result.merge({
+			"region_on": false,
+			"region_angle": 0.0,
+			"region_span": 360.0,
+			"region_inner": 0.0,
+			"region_outer": 1.0,
+			"region_feather": 0.1,
+		}, true)
 	return result
 
 
@@ -532,6 +544,13 @@ static func normalize(command_name: String, raw: Dictionary) -> Dictionary:
 				result[key] = value if options.has(value) else entry.get("default", "")
 			_:
 				result[key] = String(value)
+	if String(spec_of(command_name).get("category", "")) == CATEGORY_FILTER:
+		result["region_on"] = bool(raw.get("region_on", false))
+		result["region_angle"] = fposmod(float(raw.get("region_angle", 0.0)), 360.0)
+		result["region_span"] = clampf(float(raw.get("region_span", 360.0)), 0.0, 360.0)
+		result["region_inner"] = clampf(float(raw.get("region_inner", 0.0)), 0.0, 2.0)
+		result["region_outer"] = clampf(float(raw.get("region_outer", 1.0)), 0.0, 2.0)
+		result["region_feather"] = clampf(float(raw.get("region_feather", 0.1)), 0.0, 0.5)
 	return result
 
 

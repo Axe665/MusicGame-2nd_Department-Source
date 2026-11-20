@@ -55,6 +55,7 @@ func _initialize() -> void:
 		"test_ring_lane_items_real_chart",
 		"test_ring_timeline_selection_ops",
 		"test_ring_timeline_command_lanes",
+		"test_ring_timeline_filter_menu",
 		"test_ring_playhead_only_redraws_overlay",
 		"test_ring_marquee_and_drag",
 		"test_shape_key_cache_invalidation",
@@ -102,6 +103,7 @@ func _initialize() -> void:
 		"test_region_release_snap",
 		"test_editor_snap_settings_persist",
 		"test_anchor_pair_drag",
+		"test_anchor_partners_untyped_array",
 		"test_path_axis_drag",
 		"test_path_head_beat",
 		"test_path_smoothing",
@@ -246,6 +248,9 @@ func _initialize() -> void:
 		"test_retry_clears_playtest_visuals",
 		"test_alpha_command_catalog",
 		"test_alpha_command_envelope",
+		"test_jline_ring_state",
+		"test_filter_region_state",
+		"test_text_command_center",
 		"test_note_mods_io",
 		"test_note_touch_zones",
 		"test_chart_commands_roundtrip",
@@ -2195,6 +2200,28 @@ func test_ring_timeline_command_lanes() -> bool:
 	timeline.select_command(chart.commands[0])
 	eq(timeline.selection_count(), 1, "指令单选")
 	eq(timeline.selected_command(), chart.commands[0], "selected_command 返回当前指令")
+	timeline.free()
+	workspace.free()
+	app.free()
+	return true
+
+
+func test_ring_timeline_filter_menu() -> bool:
+	var app: App = load("res://charter/app.gd").new()
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	app.chart = chart
+	var workspace := RingWorkspace.new()
+	workspace._app = app
+	var timeline := RingTimeline.new(workspace)
+	workspace._timeline = timeline
+	eq(timeline._filter_menu_names.size(), AlphaCommand.names("filter").size(), "滤镜菜单列出全部滤镜")
+	timeline._filter_menu_beat = 5.0
+	timeline._filter_menu.id_pressed.emit(1)
+	eq(chart.commands.size(), 1, "从菜单添加一条滤镜")
+	if chart.commands.size() == 1:
+		eq(chart.commands[0].name, AlphaCommand.names("filter")[1], "菜单项对应选中的滤镜种类")
+		near(chart.commands[0].beat, 5.0, 0.001, "滤镜落在双击的拍位")
 	timeline.free()
 	workspace.free()
 	app.free()
@@ -5559,6 +5586,21 @@ func test_anchor_pair_drag() -> bool:
 
 
 ## Path 头手柄：起始拍只能在 0 与“尾巴前 0.25 拍”之间。
+## 属性页“复制/删除”传入的是未类型化数组；共享函数必须能接住并返回整对 Anchor。
+func test_anchor_partners_untyped_array() -> bool:
+	var app: App = load("res://charter/app.gd").new()
+	var chart := Chart.new()
+	var pair := chart.make_anchor_pair(4.0, 90.0)
+	for item in pair:
+		chart.notes.append(item)
+	app.chart = chart
+	var picked: Array[Note] = app.with_anchor_partners([pair[0]])
+	eq(picked.size(), 2, "untyped array still carries the anchor partner")
+	ok(picked.has(pair[0]) and picked.has(pair[1]), "both anchors are returned")
+	app.free()
+	return true
+
+
 func test_path_head_beat() -> bool:
 	near(ChartCanvas.path_head_beat(4.0, 8.0), 4.0, 0.0001, "a normal head move keeps the beat")
 	near(ChartCanvas.path_head_beat(-3.0, 8.0), 0.0, 0.0001, "the head never goes before beat 0")
@@ -6446,6 +6488,85 @@ func test_alpha_command_envelope() -> bool:
 	return true
 
 
+func test_jline_ring_state() -> bool:
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	var first := chart.add_command("JLINE", 1.0)
+	first.duration = 4.0
+	first.params["color"] = "#ff0000"
+	first.params["width"] = 10.0
+	first.params["alpha"] = 0.8
+	first.params["expand"] = 0.5
+	var state := Preview3D.jline_state(chart, 2.0)
+	ok(bool(state.get("active", false)), "JLINE active inside its window")
+	near(float(state.get("width", 0.0)), 10.0, 0.001, "JLINE width reaches the ring")
+	near(float(state.get("alpha", 0.0)), 0.8, 0.001, "JLINE alpha reaches the ring")
+	var color: Color = state.get("color", Color.BLACK)
+	near(color.r, 1.0, 0.001, "JLINE red reaches the ring")
+	var second := chart.add_command("JLINE", 2.5)
+	second.duration = 4.0
+	second.params["color"] = "#0000ff"
+	second.params["width"] = 4.0
+	state = Preview3D.jline_state(chart, 3.0)
+	near(float(state.get("width", 0.0)), 4.0, 0.001, "last started JLINE takes over by default")
+	color = state.get("color", Color.BLACK)
+	near(color.b, 1.0, 0.001, "last started JLINE color wins")
+	second.params["blend"] = "交叉淡入"
+	state = Preview3D.jline_state(chart, 3.0)
+	var mixed: Color = state.get("color", Color.BLACK)
+	ok(mixed.r > 0.01 and mixed.b > 0.01, "crossfade mixes both JLINE colors")
+	var width := float(state.get("width", 0.0))
+	ok(width > 4.0 and width < 10.0, "crossfade mixes both JLINE widths")
+	eq(AlphaCommand.defaults("JLINE").get("blend", ""), "后开始接管", "JLINE defaults to last-started blend")
+	return true
+
+
+func test_filter_region_state() -> bool:
+	var defaults := AlphaCommand.defaults("FLASH")
+	eq(defaults.get("region_on", true), false, "old filters stay full-screen by default")
+	eq(float(defaults.get("region_span", 0.0)), 360.0, "region defaults to a full ring")
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	var flash := chart.add_command("FLASH", 1.0)
+	flash.duration = 4.0
+	flash.params["region_on"] = true
+	flash.params["region_angle"] = 30.0
+	flash.params["region_span"] = 90.0
+	flash.params["region_inner"] = 0.4
+	flash.params["region_outer"] = 0.9
+	flash.params["region_feather"] = 0.05
+	var zoom := chart.add_command("ZOOM", 2.0)
+	zoom.duration = 4.0
+	zoom.params["region_on"] = true
+	zoom.params["region_angle"] = 180.0
+	zoom.params["region_span"] = 60.0
+	var preview := Preview3D.new()
+	var state := preview._filter_state(chart, 3.0)
+	ok(bool(state.get("active", false)), "filters are active")
+	var region: Dictionary = state.get("region", {})
+	eq(bool(region.get("on", false)), true, "region is read from the active filter")
+	near(float(region.get("angle", 0.0)), 180.0, 0.001, "last started filter owns the region")
+	near(float(region.get("span", 0.0)), 60.0, 0.001, "region span is kept")
+	var uniforms: Dictionary = state.get("uniforms", {})
+	ok(float(uniforms.get("zoom", 1.0)) > 1.0, "filter effects still merge")
+	preview.free()
+	return true
+
+
+func test_text_command_center() -> bool:
+	var preview := Preview3D.new()
+	preview.size = Vector2(800, 600)
+	var text := AlphaCommand.new("TEXT", 1.0)
+	text.params["content"] = "HELLO"
+	text.params["x"] = 0.5
+	text.params["y"] = -0.5
+	var center := preview._text_center(text)
+	near(center.x, 600.0, 0.001, "text X is normalized to the preview width")
+	near(center.y, 150.0, 0.001, "text Y is normalized to the preview height")
+	preview.free()
+	return true
+
+
 func test_note_mods_io() -> bool:
 	var note := Note.new("tap", 1.0, 90.0, 60.0)
 	ok(note.mods_to_dict().is_empty(), "default note has no mods")
@@ -6631,6 +6752,12 @@ func _make_alpha_chain_chart() -> Chart:
 	text.easing = "ease_in_out"
 	var flash := chart.add_command("FLASH", 6.0)
 	flash.params["strength"] = 0.6
+	flash.params["region_on"] = true
+	flash.params["region_angle"] = 45.0
+	flash.params["region_span"] = 90.0
+	flash.params["region_inner"] = 0.3
+	flash.params["region_outer"] = 0.8
+	flash.params["region_feather"] = 0.05
 	flash.enabled = false
 	chart.refresh_ids()
 	return chart
@@ -6661,6 +6788,11 @@ func _check_alpha_chain(label: String, loaded: Chart, expected_text: String = "H
 	if flash != null:
 		ok(not flash.enabled, "%s FLASH 停用" % label)
 		near(float(flash.params.get("strength", 0.0)), 0.6, 0.001, "%s FLASH 强度" % label)
+		ok(bool(flash.params.get("region_on", false)), "%s FLASH 区域开启" % label)
+		near(float(flash.params.get("region_angle", 0.0)), 45.0, 0.001, "%s FLASH 区域角度" % label)
+		near(float(flash.params.get("region_span", 0.0)), 90.0, 0.001, "%s FLASH 区域跨度" % label)
+		near(float(flash.params.get("region_inner", 0.0)), 0.3, 0.001, "%s FLASH 内半径" % label)
+		near(float(flash.params.get("region_outer", 0.0)), 0.8, 0.001, "%s FLASH 外半径" % label)
 	eq(loaded.notes.size(), 1, "%s 音符数量" % label)
 	if loaded.notes.size() == 1:
 		var note := loaded.notes[0]

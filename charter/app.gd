@@ -1843,11 +1843,12 @@ func get_selected_notes() -> Array[Note]:
 
 
 ## 选中 Anchor 时把同拍、同 pairId 的伙伴一并带上：删除/复制/镜像按整对处理。
-func with_anchor_partners(notes: Array[Note]) -> Array[Note]:
+func with_anchor_partners(notes: Array) -> Array[Note]:
 	var result: Array[Note] = []
 	var seen := {}
-	for note in notes:
-		if seen.has(note.id):
+	for raw in notes:
+		var note := raw as Note
+		if note == null or seen.has(note.id):
 			continue
 		seen[note.id] = true
 		result.append(note)

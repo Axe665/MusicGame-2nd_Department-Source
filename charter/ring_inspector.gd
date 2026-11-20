@@ -225,11 +225,65 @@ func _build_command(chart: Chart, command: AlphaCommand) -> void:
 		_edit(func() -> void: command.enabled = value)
 	)
 	_add_sep()
+	if command.category() == AlphaCommand.CATEGORY_FILTER:
+		_build_filter_type(command)
 	for entry in command.spec().get("params", []):
 		_build_command_param(command, entry as Dictionary)
+	if command.category() == AlphaCommand.CATEGORY_FILTER:
+		_build_filter_region(command)
 	_add_sep()
 	_add_button("删除这条指令 (Del)", func() -> void: timeline.delete_command(command))
 	_add_button("播放头跳到这里", func() -> void: workspace.seek(command.beat))
+
+
+func _build_filter_type(command: AlphaCommand) -> void:
+	var entries := AlphaCommand.catalog(AlphaCommand.CATEGORY_FILTER)
+	var labels: Array[String] = []
+	var names: Array[String] = []
+	var selected := 0
+	for i in entries.size():
+		var entry := entries[i]
+		labels.append(String(entry.get("label", entry.get("name", ""))))
+		names.append(String(entry.get("name", "")))
+		if names[i] == command.name:
+			selected = i
+	_add_option("滤镜类型", labels, selected, func(index: int) -> void:
+		_change_filter_type(command, names[clampi(index, 0, names.size() - 1)])
+	)
+	_add_hint("改类型会按新滤镜的默认参数重建；起始拍、时长和启用状态保留。")
+
+
+func _change_filter_type(command: AlphaCommand, new_name: String) -> void:
+	if command == null or new_name.is_empty() or command.name == new_name:
+		return
+	workspace.mutate_chart(func() -> void:
+		command.name = new_name
+		command.params = AlphaCommand.defaults(new_name)
+	)
+
+
+func _build_filter_region(command: AlphaCommand) -> void:
+	_add_sep()
+	_add_title("作用区域")
+	_add_check("启用区域（只作用于环的一部分）", command.flag("region_on", false), func(value: bool) -> void:
+		_edit(func() -> void: command.params["region_on"] = value)
+	)
+	_add_spin("起始角", command.number("region_angle", 0.0), 0.0, 360.0, 1.0, func(value: float) -> void:
+		_edit(func() -> void: command.params["region_angle"] = fposmod(value, 360.0))
+	)
+	_add_spin("角度跨度", command.number("region_span", 360.0), 0.0, 360.0, 1.0, func(value: float) -> void:
+		_edit(func() -> void: command.params["region_span"] = clampf(value, 0.0, 360.0))
+	)
+	_add_spin("内半径", command.number("region_inner", 0.0), 0.0, 2.0, 0.01, func(value: float) -> void:
+		_edit(func() -> void: command.params["region_inner"] = clampf(value, 0.0, 2.0))
+	)
+	_add_spin("外半径", command.number("region_outer", 1.0), 0.0, 2.0, 0.01, func(value: float) -> void:
+		_edit(func() -> void: command.params["region_outer"] = clampf(value, 0.0, 2.0))
+	)
+	_add_spin("羽化", command.number("region_feather", 0.1), 0.0, 0.5, 0.01, func(value: float) -> void:
+		_edit(func() -> void: command.params["region_feather"] = clampf(value, 0.0, 0.5))
+	)
+	_add_hint("0=圆心，1=判定环；0°=右、90°=上。起点 0°、跨度 360° 就是整环。")
 
 
 func _build_command_param(command: AlphaCommand, param: Dictionary) -> void:

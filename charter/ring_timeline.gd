@@ -52,6 +52,9 @@ var _selected_command: AlphaCommand = null
 var _content: Control
 var _overlay: Control
 var _menu: MenuButton
+var _filter_menu: PopupMenu
+var _filter_menu_beat := 0.0
+var _filter_menu_names: Array[String] = []
 var _content_draws := 0
 var _content_invalidations := 0
 
@@ -126,6 +129,16 @@ func _init(p_workspace) -> void:
 	add_child(_menu)
 	_menu.position = Vector2(size.x - 40.0, 1.0)
 	_menu.size = Vector2(36.0, 20.0)
+	_filter_menu = PopupMenu.new()
+	_filter_menu.add_theme_font_size_override("font_size", 11)
+	for entry in AlphaCommand.catalog(AlphaCommand.CATEGORY_FILTER):
+		_filter_menu_names.append(String(entry.get("name", "")))
+		_filter_menu.add_item(String(entry.get("label", entry.get("name", ""))))
+	_filter_menu.id_pressed.connect(func(index: int) -> void:
+		if index >= 0 and index < _filter_menu_names.size():
+			add_command_of(_filter_menu_names[index], _filter_menu_beat)
+	)
+	add_child(_filter_menu)
 	resized.connect(func() -> void:
 		if _menu != null:
 			_menu.position = Vector2(size.x - 40.0, 1.0)
@@ -356,11 +369,12 @@ func _select_command(command: AlphaCommand) -> void:
 
 
 ## 检查器/指令列表点一条指令：选中并把播放头放到它的起始拍。
-func select_command(command: AlphaCommand) -> void:
+func select_command(command: AlphaCommand, seek: bool = true) -> void:
 	if command == null:
 		return
 	_select_command(command)
-	workspace.seek(command.beat)
+	if seek:
+		workspace.seek(command.beat)
 
 
 ## 选中后同步 App 的旧选择字段，预览滚轮和画形板仍能跟随。
@@ -1278,7 +1292,11 @@ func _press(pos: Vector2, event: InputEventMouseButton) -> void:
 					_begin_command_drag(command, pos)
 			return
 		if event.double_click:
-			add_command_at(lane, workspace.snap(_beat_at(pos.x)))
+			var beat: float = float(workspace.snap(_beat_at(pos.x)))
+			if lane == LANE_COMMAND_FILTER:
+				_show_filter_menu(pos, beat)
+			else:
+				add_command_at(lane, beat)
 			return
 		clear_selection()
 		workspace.seek(workspace.snap(_beat_at(pos.x)))
@@ -1679,6 +1697,14 @@ func add_command_at(lane: int, beat: float) -> void:
 	if names.is_empty():
 		return
 	add_command_of(names[0], beat)
+
+
+## 滤镜轨双击空白：弹出完整类型菜单，选哪条就在落点加哪条。
+func _show_filter_menu(pos: Vector2, beat: float) -> void:
+	if _filter_menu == null or _filter_menu_names.is_empty():
+		return
+	_filter_menu_beat = beat
+	_filter_menu.popup(Rect2i(Vector2i(get_screen_position() + pos), Vector2i(1, 1)))
 
 
 func add_command_of(name: String, beat: float) -> void:
