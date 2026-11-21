@@ -247,6 +247,14 @@ static func export_package(chart: Chart, path: String) -> Error:
 	var data := ChartIO.chart_to_dict(chart)
 	var general: Dictionary = data.get("general", {})
 	var metadata: Dictionary = data.get("metadata", {})
+	# chart_to_dict 优先写 metadata.audio_source（原始文件）；它可能已经被移走，
+	# 而 chart.audio_path 指向项目内还存在的副本。导出必须打包实际能读到的那个。
+	var audio := String(general.get("audio", ""))
+	if not FileAccess.file_exists(audio) and not chart.audio_path.is_empty() \
+			and FileAccess.file_exists(chart.audio_path):
+		general["audio"] = chart.audio_path
+	# 包是自包含的：不把可能失效的原始路径带进去，导入后再导出也不会再丢音频。
+	metadata["audio_source"] = ""
 	var files: Array[String] = []
 	for key in ["audio", "video"]:
 		var value := String(general.get(key, ""))
@@ -330,7 +338,11 @@ static func import_package(path: String) -> Chart:
 		zip.close()
 		last_error = "谱面包里的谱面损坏"
 		return null
-	var base := "user://imports/lbp_%s" % path.md5_text().substr(0, 8)
+	# 按包内容取目录：同一路径重新导出后不会沿用旧素材（旧故事板图会残留）。
+	var stamp := FileAccess.get_md5(path)
+	if stamp.is_empty():
+		stamp = path.md5_text()
+	var base := "user://imports/lbp_%s" % stamp.substr(0, 8)
 	for name in zip.get_files():
 		if name == PACK_MANIFEST or name == PACK_CHART or not _pack_safe(name):
 			continue

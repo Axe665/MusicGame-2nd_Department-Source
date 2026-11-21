@@ -89,6 +89,7 @@ func _initialize() -> void:
 		"test_media_formats",
 		"test_lbp_export",
 		"test_lbp_package",
+		"test_lbp_package_assets",
 		"test_video_export_cursor",
 		"test_video_export_plan_hits",
 		"test_video_export_sfx_capture",
@@ -3369,6 +3370,75 @@ func test_lbp_package() -> bool:
 		eq(back.timing.points.size(), chart.timing.points.size(), "lbp package keeps timing")
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
 	return true
+
+
+## .lbp 包要打包实际存在的音频（audio_source 失效时回退 audio_path），
+## 且同一路径重新导出后不能残留上一版的故事板素材。
+func test_lbp_package_assets() -> bool:
+	var root := "user://lbp_assets_test"
+	var abs_root := ProjectSettings.globalize_path(root)
+	DirAccess.make_dir_recursive_absolute(abs_root)
+	var audio := root + "/music.wav"
+	var f := FileAccess.open(audio, FileAccess.WRITE)
+	f.store_buffer(PackedByteArray([82, 73, 70, 70]))
+	f.close()
+	var sb_dir := root + "/sb"
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(sb_dir))
+	f = FileAccess.open(sb_dir + "/旧图.png", FileAccess.WRITE)
+	f.store_buffer(PackedByteArray([1, 2, 3]))
+	f.close()
+
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	var note := Note.new("tap", 1.0, 90.0, 60.0)
+	note.id = 0
+	chart.notes.append(note)
+	chart.audio_path = audio
+	chart.metadata["audio_source"] = root + "/missing_music.wav"
+	chart.metadata["storyboard"] = sb_dir
+
+	var pack := root + "/same.lbp"
+	ok(LBPIO.export_package(chart, pack) == OK, "lbp assets export ok")
+	var back := LBPIO.import_package(pack)
+	ok(back != null, "lbp assets package imports")
+	var first_sb := String(back.metadata.get("storyboard", "")) if back != null else ""
+	ok(back != null and FileAccess.file_exists(back.audio_path), "stale audio source falls back to audio_path")
+	ok(back != null and FileAccess.get_file_as_bytes(back.audio_path).size() == 4, "fallback audio bytes survive")
+	eq(String(back.metadata.get("audio_source", "")) if back != null else "x", "", "package drops stale audio source")
+	ok(FileAccess.file_exists(first_sb + "/旧图.png"), "storyboard asset packed")
+	var first_base := back.audio_path.get_base_dir().get_base_dir() if back != null else ""
+
+	# 换掉故事板素材，导出到同一个 .lbp，再导入：旧图不能跟着内容哈希一起留下。
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(sb_dir + "/旧图.png"))
+	f = FileAccess.open(sb_dir + "/新图.png", FileAccess.WRITE)
+	f.store_buffer(PackedByteArray([4, 5, 6]))
+	f.close()
+	ok(LBPIO.export_package(chart, pack) == OK, "lbp assets re-export ok")
+	var back2 := LBPIO.import_package(pack)
+	ok(back2 != null, "lbp assets package re-imports")
+	var second_sb := String(back2.metadata.get("storyboard", "")) if back2 != null else ""
+	ok(not FileAccess.file_exists(second_sb + "/旧图.png"), "re-import leaves no stale storyboard asset")
+	ok(FileAccess.file_exists(second_sb + "/新图.png"), "re-import has fresh storyboard asset")
+	var second_base := back2.audio_path.get_base_dir().get_base_dir() if back2 != null else ""
+
+	for path in [pack, pack + ".tmp", audio, sb_dir + "/新图.png"]:
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(sb_dir))
+	DirAccess.remove_absolute(abs_root)
+	for base in [first_base, second_base]:
+		if base.begins_with("user://imports/lbp_"):
+			_remove_test_tree(ProjectSettings.globalize_path(base))
+	return true
+
+
+func _remove_test_tree(path: String) -> void:
+	if not DirAccess.dir_exists_absolute(path):
+		return
+	for name in DirAccess.get_files_at(path):
+		DirAccess.remove_absolute(path.path_join(name))
+	for name in DirAccess.get_directories_at(path):
+		_remove_test_tree(path.path_join(name))
+		DirAccess.remove_absolute(path.path_join(name))
 
 
 func test_note_color_palette() -> bool:
