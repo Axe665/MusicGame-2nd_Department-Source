@@ -189,8 +189,6 @@ var _replay_recorded_size := Vector2.ZERO
 var _record_offset: float = 0.0
 ## 回放用录制里的 offset 序列，不去动用户的设置。
 var _offset_override: float = NAN
-## 回放快慢（1.0 = 原速）。只影响画面，不影响判定。
-var replay_rate: float = 1.0
 ## seek 重算的时间步长：太小慢，太大会让路径判定丢采样。
 const SEEK_STEP_MS := 16.0
 ## 回放的起点/终点（chart ms），进度条按这个区间算比例。
@@ -296,6 +294,13 @@ func _sync_sfx_style() -> void:
 	_sfx.set_style(String(_app.hit_sfx_style) if _app != null else "default")
 
 
+## 回放倍速：优先用录制时记下的；老回放没有 rate 字段就按 1×。
+static func replay_playback_rate(data: Replay, fallback: float) -> float:
+	if data == null:
+		return clampf(fallback, 0.5, 2.0)
+	return clampf(float(data.settings.get("rate", 1.0)), 0.5, 2.0)
+
+
 func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	_close_path_input_log()
 	_source_chart = p_chart
@@ -304,7 +309,7 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	chart = p_chart.mirrored_copy(mirror_mode) if p_chart != null else null
 	start_beat = p_start_beat
 	chart_path = p_chart_path
-	playback_rate = clampf(next_playback_rate, 0.5, 2.0)
+	playback_rate = replay_playback_rate(replay_source, next_playback_rate)
 	_finished = false
 	_running = false
 	_paused = false
@@ -1255,7 +1260,8 @@ func _start_recording() -> void:
 		"perfect_fx": _preview.show_perfect_fx,
 		# 上游新加的「打击音色」：回放时沿用录制时的，声音才对得上。
 		"hit_sfx": String(_app.hit_sfx_style) if _app != null else "default",
-		"rate": 1.0,
+		# 录制倍速：回放按当时的倍速重演，而不是掉回 1×。
+		"rate": playback_rate,
 		# 光标坐标是相对试玩窗口记的；导出 1280x720 时要用它换算倾斜。
 		"cursor_size": [_preview.size.x, _preview.size.y],
 		# 报错/匹配时用：「这张回放是哪首曲子的哪个难度」。
@@ -2505,7 +2511,8 @@ func _pulse_at(angle_degrees: float, beat: float, color: Color, label: String, w
 	if not (p.is_finite() and p.x < 1.0e9):
 		p = _preview.project_u(fposmod(angle_degrees, 360.0) / 360.0, beat)
 	if p.is_finite() and p.x < 1.0e9:
-		var show_fx := label != "PERFECT" or _preview.show_perfect_fx
+		# SEEK 的 PERFECT 反馈是转盘操作的结果，不跟着「PERFECT 特效」开关一起关。
+		var show_fx := label != "PERFECT" or _preview.show_perfect_fx or kind == "seek"
 		var show_label := Preview3D.judge_label_visible(label,
 			String(_preview.hud_options.get("judge_filter", "all")))
 		# 爆点和判定字都关掉时不要再塞脉冲：否则 PERFECT 会把 20 条特效预算吃满。
