@@ -73,6 +73,7 @@ func _initialize() -> void:
 		"test_ring_segment_targets",
 		"test_ring_undo_and_default_circle",
 		"test_ring_insert_advances_when_occupied",
+		"test_ring_insert_at_empty_playhead",
 		"test_ease_bezier",
 		"test_undo_memory_budget",
 		"test_full_chart_round_trip",
@@ -2651,6 +2652,38 @@ func test_ring_insert_advances_when_occupied() -> bool:
 	workspace.insert_next_view()
 	eq(chart.view_states.size(), views_before + 2, "检查器「下一拍」按钮继续加镜头帧")
 	near(workspace.playhead(), 0.5, 0.001, "镜头下一拍按钮推进播放头")
+	timeline.free()
+	workspace.free()
+	app.free()
+	return true
+
+
+## 播放头在空拍时，插入应落在播放头本身；只有已有帧才顺延。
+func test_ring_insert_at_empty_playhead() -> bool:
+	var app: App = load("res://charter/app.gd").new()
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	app.chart = chart
+	app.snap_division = 4
+	app.playhead_beat = 0.0
+	var workspace := RingWorkspace.new()
+	workspace._app = app
+	workspace._view_beats = 16.0
+	var timeline := RingTimeline.new(workspace)
+	workspace._timeline = timeline
+	timeline.size = Vector2(1600, 300)
+	workspace._insert_key_with_shape("S0")
+	eq(chart.shape_keys.size(), 1, "空拍插入新增一帧")
+	near(float(chart.shape_keys[0].get("beat", -1.0)), 0.0, 0.001, "空拍插入落在播放头")
+	near(workspace.playhead(), 0.0, 0.001, "空拍插入不移动播放头")
+	workspace.seek(4.0)
+	workspace._add_view_keyframe()
+	var found := false
+	for state in chart.view_states:
+		if is_equal_approx(state.beat, 4.0):
+			found = true
+			break
+	ok(found, "镜头空拍插入落在播放头")
 	timeline.free()
 	workspace.free()
 	app.free()
