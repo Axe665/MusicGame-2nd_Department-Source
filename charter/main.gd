@@ -217,6 +217,7 @@ func _ready() -> void:
 	if _app != null:
 		_app.chart_changed.connect(_on_chart_changed)
 		_app.chart_live_changed.connect(_on_chart_live_changed)
+		_app.ring_changed.connect(_on_ring_changed)
 		_app.playhead_changed.connect(_on_playhead_changed)
 		_app.seek_requested.connect(_on_seek_requested)
 		_app.selection_changed.connect(_update_status)
@@ -1865,6 +1866,13 @@ func _on_chart_changed() -> void:
 
 
 func _on_chart_live_changed() -> void:
+	_update_transport()
+	_update_status()
+
+
+## 环编辑提交只更新运输条/状态；不重建 SFX 表和音符缓存。
+func _on_ring_changed() -> void:
+	_last_activity_ms = Time.get_ticks_msec()
 	_update_transport()
 	_update_status()
 

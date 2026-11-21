@@ -74,6 +74,7 @@ func _initialize() -> void:
 		"test_ring_undo_and_default_circle",
 		"test_ring_insert_advances_when_occupied",
 		"test_ring_insert_at_empty_playhead",
+		"test_ring_signal_split",
 		"test_ease_bezier",
 		"test_undo_memory_budget",
 		"test_full_chart_round_trip",
@@ -2686,6 +2687,24 @@ func test_ring_insert_at_empty_playhead() -> bool:
 	ok(found, "镜头空拍插入落在播放头")
 	timeline.free()
 	workspace.free()
+	app.free()
+	return true
+
+
+## 环编辑提交只发 ring_changed：不能触发整谱缓存、SFX 表和主检查器重建。
+func test_ring_signal_split() -> bool:
+	var app: App = load("res://charter/app.gd").new()
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	app.chart = chart
+	var counts := [0, 0]
+	app.chart_changed.connect(func() -> void: counts[0] += 1)
+	app.ring_changed.connect(func() -> void: counts[1] += 1)
+	app.mutate_ring(func() -> void:
+		chart.shape_keys.append({"beat": 4.0, "shape_id": "S0", "easing": "linear", "morph": 0.0, "id": 1})
+	)
+	eq(counts[0], 0, "ring edit does not emit chart_changed")
+	eq(counts[1], 1, "ring edit emits ring_changed")
 	app.free()
 	return true
 

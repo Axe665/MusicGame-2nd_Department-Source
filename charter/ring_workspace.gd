@@ -540,8 +540,9 @@ func _ready() -> void:
 				_rebuild_thumbs()
 				_sync_time_tool()
 				if _inspector != null:
-					_inspector.call_deferred("refresh", true)
+					_inspector.call_deferred("refresh")
 		)
+		_app.ring_changed.connect(_on_ring_changed)
 		_app.playhead_changed.connect(func(_beat: float) -> void:
 			var window_moved := _follow_playhead()
 			_sync_time_tool()
@@ -698,7 +699,7 @@ func _build() -> void:
 	if _inspector != null:
 		_inspector.timeline = _timeline
 		# 延迟到当前信号结束后重建，避免在按钮的 pressed 回调里释放按钮。
-		_timeline.selection_changed.connect(func() -> void: _inspector.call_deferred("refresh", true))
+		_timeline.selection_changed.connect(func() -> void: _inspector.call_deferred("refresh_selection"))
 	# 选中变化时立即更新标题（镜头帧/形状帧），不等下一次跨拍。
 	_timeline.selection_changed.connect(func() -> void: _sync_time_tool(true))
 	_timeline.selection_changed.connect(_sync_preview_selection)
@@ -936,6 +937,17 @@ func current_key() -> Dictionary:
 	if chart_data == null:
 		return {}
 	return chart_data.shape_key_at(playhead())
+
+
+## 环编辑提交：只刷新环相关面板，不碰音符缓存和 SFX 表。
+func _on_ring_changed() -> void:
+	if not visible:
+		return
+	_timeline.on_chart_changed()
+	_rebuild_thumbs()
+	_sync_time_tool()
+	if _inspector != null:
+		_inspector.refresh()
 
 
 func _refresh() -> void:
