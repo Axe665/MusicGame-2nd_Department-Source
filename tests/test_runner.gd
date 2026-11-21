@@ -166,6 +166,7 @@ func _initialize() -> void:
 		"test_osu_multi_difficulty",
 		"test_json_roundtrip",
 		"test_chart_project_format",
+		"test_tmc_group_path_round_trip",
 		"test_note_groups",
 		"test_validation_demo",
 		"test_angle_math",
@@ -1908,8 +1909,21 @@ func test_full_chart_round_trip() -> bool:
 		eq(child.trace_pts.size(), 2, "第二段 Path 的手绘轨迹")
 		eq(child.color, 1, "第二段 Path 的配色组")
 		eq(child.lock, true, "第二段 Path 的锁定")
+		near(child.width, 64.0, 0.001, "第二段 Path 的头宽度")
+		near(child.tail_width, 70.0, 0.001, "第二段 Path 的尾宽度")
 	else:
 		ok(false, "重开后找不到第二段 Path")
+	var path_root: Note = null
+	for note in reloaded.notes:
+		if note.type == "path" and note.path_part == 0 and is_equal_approx(note.beat, 2.0):
+			path_root = note
+			break
+	if path_root != null:
+		near(path_root.width, 66.0, 0.001, "Path 头宽度")
+		near(path_root.tail_width, 72.0, 0.001, "Path 尾宽度")
+		near(path_root.wait_beat, 0.5, 0.001, "Path 等待拍数")
+	else:
+		ok(false, "重开后找不到 Path 根段")
 	# 再走一遍 App 的真实保存/打开入口（含校验拦截、难度套组分支、notice 信号）
 	var app: App = load("res://charter/app.gd").new()
 	app.chart = _make_full_chart()
@@ -2050,10 +2064,12 @@ func _make_full_chart() -> Chart:
 	hold.hold_style = "curved"
 	hold.visual_pts = [{"x": 0.1, "y": 0.2, "db": 0.0}]
 	chart.notes.append(hold)
-	var root := Note.new("path", 2.0, 180.0, 60.0)
+	var root := Note.new("path", 2.0, 180.0, 66.0)
 	root.id = chart.next_note_id()
 	root.end_beat = 3.0
 	root.tail_angle = 270.0
+	root.tail_width = 72.0
+	root.wait_beat = 0.5
 	root.trace_pts = [{"x": 0.2, "y": 0.0, "db": 0.0}, {"x": 0.4, "y": 0.2, "db": 1.0}]
 	root.path_gaps = [{"from": 0.1, "to": 0.2}]
 	root.path_speed = 1.3
@@ -2061,10 +2077,11 @@ func _make_full_chart() -> Chart:
 	root.tolerance = 0.3
 	root.samples_per_beat = 6.0
 	chart.notes.append(root)
-	var part := Note.new("path", 3.0, 270.0, 60.0)
+	var part := Note.new("path", 3.0, 270.0, 64.0)
 	part.id = chart.next_note_id()
 	part.end_beat = 4.0
 	part.tail_angle = 0.0
+	part.tail_width = 70.0
 	part.path_part = 1
 	part.path_prev_id = root.id
 	part.path_head_local = root.path_tail_local()
@@ -4160,6 +4177,71 @@ func test_chart_project_format() -> bool:
 		if FileAccess.file_exists(p):
 			DirAccess.remove_absolute(p)
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(dir))
+	return true
+
+
+## TMC 工程的分组 Path 链：组、颜色、锁定、宽度与 Path 修饰必须跟着 id 一起往返。
+func test_tmc_group_path_round_trip() -> bool:
+	var chart := DemoChart.make_demo()
+	chart.ensure_groups()
+	var gid := chart.add_group(150.0)
+	var parts := Note.path_parts_from_code(
+		"[100]path{(part0,40.000,0.000,42.000,180.000,0.720,0.000,0.000,100);" +
+		"(part1,42.000,180.000,44.000,0.000,0.720,0.000,0.000,101)}")
+	for part in parts:
+		part.group_id = gid
+		part.color = 1
+		part.lock = true
+		part.hs = 0.75
+		part.sv = 1.25
+		part.path_style = "ribbon"
+		part.path_speed = 0.8
+		part.tolerance = 0.31
+		part.width = 66.0
+		part.tail_width = 72.0
+		part.path_gaps = [{"from": 0.4, "to": 0.6}]
+		part.trace_pts = [{"x": 0.1, "y": 0.2, "db": 0.0}, {"x": 0.3, "y": 0.4, "db": 0.5}]
+		chart.notes.append(part)
+	chart.refresh_ids()
+	var dir := "user://tmc_group_path"
+	_remove_test_tree(ProjectSettings.globalize_path(dir))
+	eq(ChartIO.save_project([{"name": "G", "chart": chart}], dir, "G"), OK, "分组 Path 工程保存")
+	var project := ChartIO.load_project(dir)
+	ok(bool(project.get("ok", false)), "分组 Path 工程读取")
+	var loaded: Chart = project.get("entries", [])[0].get("chart", null) if bool(project.get("ok", false)) else null
+	ok(loaded != null, "分组 Path 难度加载")
+	if loaded != null:
+		var root: Note = null
+		var child: Note = null
+		for note in loaded.notes:
+			if note.type != "path":
+				continue
+			if is_equal_approx(note.beat, 40.0):
+				root = note
+			elif is_equal_approx(note.beat, 42.0):
+				child = note
+		ok(root != null and child != null, "分组 Path 链两段都在")
+		if root != null:
+			eq(root.group_id, gid, "Path 根段保留分组")
+			eq(root.color, 1, "Path 根段保留配色")
+			eq(root.lock, true, "Path 根段保留锁定")
+			eq(root.path_next_id, child.id if child != null else -1, "Path 根段指向第二段")
+			near(root.width, 66.0, 0.001, "Path 根段头宽度")
+			near(root.tail_width, 72.0, 0.001, "Path 根段尾宽度")
+			near(root.hs, 0.75, 0.001, "Path 根段 hs")
+		if child != null:
+			eq(child.group_id, gid, "Path 第二段保留分组")
+			eq(child.color, 1, "Path 第二段保留配色")
+			eq(child.lock, true, "Path 第二段保留锁定")
+			eq(child.path_style, "ribbon", "Path 第二段保留画法")
+			near(child.path_speed, 0.8, 0.001, "Path 第二段速度")
+			near(child.tolerance, 0.31, 0.001, "Path 第二段容差")
+			near(child.width, 66.0, 0.001, "Path 第二段头宽度")
+			near(child.tail_width, 72.0, 0.001, "Path 第二段尾宽度")
+			eq(child.path_gaps.size(), 1, "Path 第二段擦除缺口")
+			eq(child.trace_pts.size(), 2, "Path 第二段手绘轨迹")
+			near(child.sv, 1.25, 0.001, "Path 第二段 sv")
+	_remove_test_tree(ProjectSettings.globalize_path(dir))
 	return true
 
 
