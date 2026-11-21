@@ -4184,8 +4184,19 @@ func test_playtest_feedback() -> bool:
 	run_preview.hud_options = {"judge_filter": "all"}
 	run._pulse_at(0.0, 0.0, Color.WHITE, "PERFECT", 60.0, "tap", "", Vector2(10, 10))
 	eq(run_preview._pulses.size(), 1, "perfect label still queues when filter allows")
+	# SEEK 的 PERFECT 反馈不跟着「PERFECT 特效」开关走。
+	run_preview.hud_options = {"judge_filter": "below_perfect"}
+	run._pulse_at(0.0, 0.0, Color.WHITE, "PERFECT", 360.0, "seek", "SEEK", Vector2(40, 40))
+	eq(run_preview._pulses.size(), 2, "seek perfect effect ignores the perfect fx toggle")
+	ok(bool(run_preview._pulses[1].get("fx", true)), "seek keeps its burst")
 	run.free()
 	run_preview.free()
+	# 回放沿用录制倍速；老回放没有 rate 字段时回退 1×。
+	near(Playtest.replay_playback_rate(null, 1.5), 1.5, 0.0001, "normal run keeps requested rate")
+	var recorded := Replay.new()
+	recorded.settings = {"rate": 1.35}
+	near(Playtest.replay_playback_rate(recorded, 1.0), 1.35, 0.0001, "replay uses the recorded rate")
+	near(Playtest.replay_playback_rate(Replay.new(), 1.0), 1.0, 0.0001, "old replay falls back to 1x")
 	return true
 
 

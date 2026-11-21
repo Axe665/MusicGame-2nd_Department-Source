@@ -104,10 +104,6 @@ var _stretch_syncing: bool = false
 var _audio: AudioStreamPlayer
 var _audio_path: String = ""
 var _audio_token: int = 0
-## 当前 _audio.stream 的时间伸缩倍率（1 = 原始；>1 = 已经 atempo 过）。
-var _audio_stream_rate: float = 1.0
-## 当前流是按哪个倍速准备的；倍速变了要重新加载。
-var _audio_rate_key: float = 1.0
 var _audio_loading := false
 var _playing: bool = false
 ## 正在拖底部进度条。
@@ -117,6 +113,7 @@ var _last_audio_rebase_msec: int = 0
 var _loop_enabled: bool = false
 var _loop_start: float = 0.0
 var _loop_end: float = 0.0
+## 试玩倍速：只传给 Playtest，编辑器试听固定 1×。
 var _rate: float = 1.0
 var _loop: bool = false
 var _metronome: bool = true
@@ -1795,14 +1792,13 @@ func _ensure_audio() -> void:
 	if _app == null or _app.chart == null:
 		return
 	var path: String = _app.chart.audio_path
-	if path == _audio_path and is_equal_approx(_rate, _audio_rate_key):
+	if path == _audio_path:
 		if _audio_loading:
 			# 同一份音频正在准备：等它完成，避免 _start_play 用空流开跑。
 			while _audio_loading:
 				await get_tree().process_frame
 		return
 	_audio_path = path
-	_audio_rate_key = _rate
 	_audio_token += 1
 	var token := _audio_token
 	_audio_loading = true
@@ -1829,33 +1825,8 @@ func _ensure_audio() -> void:
 		_show_toast("音频不可用：%s" % MediaIO.last_error, "warning")
 		return
 	var base := ChartIO.audio_stream_from_path(prepared)
-	var stream := base
-	var stream_rate := 1.0
-	if absf(_rate - 1.0) >= 0.001:
-		if not MediaIO.has_ffmpeg():
-			_show_toast("变速不变调需要 ffmpeg（当前 PATH 找不到）；已回退变调", "warning")
-		else:
-			var cached := MediaIO.rate_audio_cache_path(prepared, _rate)
-			var total_sec := base.get_length() / maxf(0.1, _rate) if base != null else 0.0
-			var stretched := cached if FileAccess.file_exists(cached) else ""
-			if stretched.is_empty():
-				_show_import_progress()
-				stretched = await MediaIO.prepare_audio_at_rate_async(prepared, _rate, get_tree(), func(_ratio: float, seconds: float) -> void:
-					var ratio := clampf(seconds / total_sec, 0.0, 0.99) if total_sec > 0.0 else -1.0
-					_import_progress_text("变速音频：%s（%.2f×）" % [resolved.get_file(), _rate], ratio, seconds))
-				_hide_import_progress()
-				if token != _audio_token:
-					return
-			if not stretched.is_empty():
-				var fast := ChartIO.audio_stream_from_path(stretched)
-				if fast != null:
-					stream = fast
-					stream_rate = _rate
-			if stream_rate == 1.0:
-				_show_toast("变速音频生成失败，已回退变调：%s" % MediaIO.last_error, "warning")
-	_audio.stream = stream if stream is AudioStream else null
-	_audio_stream_rate = stream_rate
-	_audio.pitch_scale = _rate / maxf(0.01, _audio_stream_rate)
+	_audio.stream = base if base is AudioStream else null
+	_audio.pitch_scale = 1.0
 	_audio_loading = false
 	# 音频长度是「谱面终点」的唯一可信来源：加载到就写进谱面，
 	# 老谱面不用重新导入也能得到正确的尾部上限。
@@ -1864,7 +1835,7 @@ func _ensure_audio() -> void:
 		if length_ms > 0.0 and absf(_app.chart.audio_length_ms() - length_ms) > 1.0:
 			_app.chart.editor["audio_length_ms"] = length_ms
 			_app.status_changed.emit()
-	print("[audio] editor ", prepared, " -> ", _audio.stream, " stream_rate=", _audio_stream_rate, " bus=", _audio.bus)
+	print("[audio] editor ", prepared, " -> ", _audio.stream, " bus=", _audio.bus)
 	if _audio.stream == null:
 		_show_toast("音频不可用：预览使用系统时钟。", "warning")
 
@@ -1988,8 +1959,8 @@ func _rebase_playback(beat: float) -> void:
 	_sfx_event_index = _first_sfx_event(beat)
 	_sfx_last_beat = beat - 0.001
 	if _audio.stream != null:
-		_audio.pitch_scale = _rate / maxf(0.01, _audio_stream_rate)
-		var from_sec := maxf(0.0, (_play_start_chart_ms - _app.chart.offset_ms) / 1000.0) / maxf(0.01, _audio_stream_rate)
+		_audio.pitch_scale = 1.0
+		var from_sec := maxf(0.0, (_play_start_chart_ms - _app.chart.offset_ms) / 1000.0)
 		# 拖进度条时每个鼠标事件都重建音频太贵：节流到约 120ms 一次，
 		# 画面和墙钟照旧每次 seek 都对齐。
 		var now := Time.get_ticks_msec()
@@ -2143,12 +2114,10 @@ func _process(_delta: float) -> void:
 	if _playing:
 		var chart_ms := 0.0
 		if _audio.stream != null and _audio.playing:
-			# 变速音频流里 1 秒 = 谱面 _audio_stream_rate 秒；驱动延迟/混音间隔
-			# 是真实秒，换算成谱面时间要乘倍速。
-			chart_ms = (_audio.get_playback_position() * _audio_stream_rate
-				+ (AudioServer.get_time_since_last_mix() - AudioServer.get_output_latency()) * _rate) * 1000.0 + _app.chart.offset_ms
+			chart_ms = (_audio.get_playback_position()
+				+ AudioServer.get_time_since_last_mix() - AudioServer.get_output_latency()) * 1000.0 + _app.chart.offset_ms
 		else:
-			chart_ms = _play_start_chart_ms + float(Time.get_ticks_usec() - _play_start_usec) / 1000.0 * _rate
+			chart_ms = _play_start_chart_ms + float(Time.get_ticks_usec() - _play_start_usec) / 1000.0
 		var beat: float = _app.chart.timing.chart_ms_to_beat(chart_ms)
 		if _loop_enabled and _loop_end > _loop_start and beat >= _loop_end:
 			_rebase_playback(_loop_start)
@@ -3254,7 +3223,7 @@ func _build_playtest_dialog() -> void:
 
 	_playtest_section(box, "游玩")
 	_playtest_rate = _playtest_spin_row(box, "倍速", 0.5, 2.0, 0.05, 1.0, "×")
-	_playtest_rate.tooltip_text = "试玩和编辑器试听都按这个速度走；声音不变调（每个新倍速首次生成缓存）；局中修改在重开本局后生效；只对本次运行有效"
+	_playtest_rate.tooltip_text = "只对试玩生效，编辑器试听始终 1×；声音不变调（每个新倍速首次生成缓存）；局中修改在重开本局后生效；只对本次运行有效"
 	_playtest_flow = _playtest_spin_row(box, "音符速度", 0.05, 3.0, 0.01, 1.0, "×")
 	_playtest_flow.tooltip_text = "音符从出现到该打的时间 = 1 秒 ÷ 这个倍率；和 BPM 无关，越高越快"
 	_playtest_cursor = _playtest_spin_row(box, "光标大小", 0.5, 2.0, 0.05, 1.0, "×")
@@ -3413,7 +3382,8 @@ func _commit_playtest_settings() -> void:
 		_app.playtest_mirror = ["off", "lr", "rot180"][clampi(_playtest_mirror.selected, 0, 2)]
 	_app.save_settings()
 	_preview.flow_scale = _app.flow_scale
-	_preview.playback_rate = _rate
+	# 编辑器试听始终按原速，试玩倍速只影响 Playtest。
+	_preview.playback_rate = 1.0
 	_preview.cursor_scale = _app.cursor_scale
 	_preview.show_perfect_fx = _app.show_perfect_fx
 	_preview.request_redraw()
