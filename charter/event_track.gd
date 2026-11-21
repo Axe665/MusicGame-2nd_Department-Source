@@ -16,6 +16,7 @@ func _ready() -> void:
 	if _app != null:
 		_app.chart_changed.connect(queue_redraw)
 		_app.chart_live_changed.connect(queue_redraw)
+		_app.ring_changed.connect(queue_redraw)
 		_app.playhead_changed.connect(_on_playhead_changed)
 		_app.selection_changed.connect(queue_redraw)
 

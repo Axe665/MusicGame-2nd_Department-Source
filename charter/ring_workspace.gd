@@ -540,8 +540,9 @@ func _ready() -> void:
 				_rebuild_thumbs()
 				_sync_time_tool()
 				if _inspector != null:
-					_inspector.call_deferred("refresh", true)
+					_inspector.call_deferred("refresh")
 		)
+		_app.ring_changed.connect(_on_ring_changed)
 		_app.playhead_changed.connect(func(_beat: float) -> void:
 			var window_moved := _follow_playhead()
 			_sync_time_tool()
@@ -698,7 +699,7 @@ func _build() -> void:
 	if _inspector != null:
 		_inspector.timeline = _timeline
 		# 延迟到当前信号结束后重建，避免在按钮的 pressed 回调里释放按钮。
-		_timeline.selection_changed.connect(func() -> void: _inspector.call_deferred("refresh", true))
+		_timeline.selection_changed.connect(func() -> void: _inspector.call_deferred("refresh_selection"))
 	# 选中变化时立即更新标题（镜头帧/形状帧），不等下一次跨拍。
 	_timeline.selection_changed.connect(func() -> void: _sync_time_tool(true))
 	_timeline.selection_changed.connect(_sync_preview_selection)
@@ -936,6 +937,17 @@ func current_key() -> Dictionary:
 	if chart_data == null:
 		return {}
 	return chart_data.shape_key_at(playhead())
+
+
+## 环编辑提交：只刷新环相关面板，不碰音符缓存和 SFX 表。
+func _on_ring_changed() -> void:
+	if not visible:
+		return
+	_timeline.on_chart_changed()
+	_rebuild_thumbs()
+	_sync_time_tool()
+	if _inspector != null:
+		_inspector.refresh()
 
 
 func _refresh() -> void:
@@ -1342,12 +1354,15 @@ func _insert_key_snapshot() -> void:
 	var chart_data := chart()
 	if chart_data == null:
 		return
-	var beat := _free_beat(playhead(), "shape")
+	var beat := playhead()
+	# 播放头已有帧才顺延到下一格；空拍上插入应该落在播放头本身。
+	if not chart_data.shape_key_at(beat).is_empty():
+		beat = _free_beat(beat, "shape")
+		if not is_equal_approx(beat, playhead()):
+			seek(beat)
 	if not chart_data.shape_key_at(beat).is_empty():
 		_set_hint("附近没有空拍可插；先拖时间轴到别的拍。")
 		return
-	if not is_equal_approx(beat, playhead()):
-		seek(beat)
 	var shape := _snapshot_shape(beat)
 	_app.mutate_ring(func() -> void:
 		chart_data.shapes[shape.id] = shape
@@ -1368,12 +1383,15 @@ func _insert_key_with_shape(shape_id: String) -> void:
 	var chart_data := chart()
 	if chart_data == null or chart_data.get_shape(shape_id) == null:
 		return
-	var beat := _free_beat(playhead(), "shape")
+	var beat := playhead()
+	# 播放头已有帧才顺延到下一格；空拍上插入应该落在播放头本身。
+	if not chart_data.shape_key_at(beat).is_empty():
+		beat = _free_beat(beat, "shape")
+		if not is_equal_approx(beat, playhead()):
+			seek(beat)
 	if not chart_data.shape_key_at(beat).is_empty():
 		_set_hint("附近没有空拍可插；先拖时间轴到别的拍。")
 		return
-	if not is_equal_approx(beat, playhead()):
-		seek(beat)
 	_app.mutate_ring(func() -> void:
 		chart_data.shape_keys.append({"beat": beat, "shape_id": shape_id, "easing": "linear",
 			"morph": 0.0, "id": chart_data.next_key_id()})

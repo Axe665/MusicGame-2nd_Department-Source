@@ -5,6 +5,9 @@ signal chart_replaced
 signal chart_live_changed
 ## 只动边界/镜头时发这个：预览不用重排 1 万音符，只更新环几何。
 signal ring_live_changed
+## 环编辑的一次提交（keyframe/镜头/指令）：和 chart_changed 分开，
+## 避免重建音符缓存、SFX 表和整页检查器。
+signal ring_changed
 signal selection_changed
 signal playhead_changed(beat: float)
 ## 用户主动跳转（点时间轴、拖进度条）。播放中收到它会重新对齐音频。
@@ -1073,7 +1076,10 @@ func _after_change(ring_only: bool = false) -> void:
 			chart.mark_ring_dirty()
 		else:
 			chart.mark_dirty()
-	chart_changed.emit()
+	if ring_only:
+		ring_changed.emit()
+	else:
+		chart_changed.emit()
 	save_state_changed.emit()
 	status_changed.emit()
 	_emit_validation()

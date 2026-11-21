@@ -121,7 +121,7 @@ godot --path .
 - 纵轴：左列保留**连续拍号**（1、2、3、4、5…），并显示小节线、竖线与 30° 特殊角度参考线；分音网格、右列分音选择器、顶栏 SNAP 和视图页“分音”已隐藏，音符吸附使用当前小节线与竖线的交点
 - 写入方向：画布右上角「从上往下」开关，关闭后时间轴上下翻转（后出现的音符在上），翻转状态随谱面存进 `editor.flow_down`
 - Path/Hold 编辑：弧线 Path 与 Hold 选中后可在预览中拖动青色体节点；五角星 Path 不含可拖节点
-- 格式：File 菜单可导入 osu!std/taiko `.osz`、导出 `.lbp` v2（Tap/Hold 写实际弧宽，Bell 行尾带 `width=` 选项）；导入报告用对话框显示；谱面 notes/shapes 采用紧凑代码：`[id]tap(beat,angle[,width[,1,size]])`、`[id]hold(beat,end,angle[,width])`、`[id]path{(part0,beat,angle,end,end_angle,centrifuge,axis);...}`、`[id]seek(beat,orien)`、`[id]anchor(beat,angle,pair_id[,pair])`、`[id]bell(beat,angle[,width[,radius]])`、`[id]red(beat,end_beat,width)` 与单块无缩进 `shape{[id,closed,segments{...}];...}`；`timing` 位于 `notes` 之前。宽度/大小 Tap 只在非默认时追加可选段：普通 Tap 不写宽度（60°/0.5 l）、普通 Hold 不写宽度（60°）、普通 Bell 不写宽度/半径（30°/26px）；旧版读到尾巴会忽略，旧谱面照常载入。
+- 格式：File 菜单可导入 osu!std/taiko `.osz`、导出 `.lbp` v2（Tap/Hold 写实际弧宽，Bell 行尾带 `width=` 选项）；导入报告用对话框显示；谱面 notes/shapes 采用紧凑代码：`[id]tap(beat,angle[,width[,1,size]])`、`[id]hold(beat,end,angle[,width])`、`[id]path{(part0,beat,angle,end,end_angle,centrifuge,axis[,wait,id]);...}`、`[id]seek(beat,orien)`、`[id]anchor(beat,angle,pair_id[,pair])`、`[id]bell(beat,angle[,width[,radius]])`、`[id]red(beat,end_beat,width[,angle][,shape=S][,polarity=N])` 与单块无缩进 `shape{[id,closed,segments{...}];...}`；`timing` 位于 `notes` 之前。宽度/大小 Tap 只在非默认时追加可选段：普通 Tap 不写宽度（60°/0.5 l）、普通 Hold 不写宽度（60°）、普通 Bell 不写宽度/半径（30°/26px）；旧版读到尾巴会忽略，旧谱面照常载入。
 - 谱面工程：编辑器默认使用三文件谱面文件夹：一个 `.json` 谱面文件 + `audio.wav/ogg` + `cover.jpg/jpeg/png`。谱面文件内部仍保存分组代码、组 BPM、颜色、形状、storyboard、commands 与音符修饰。打开时兼容旧版单 `.json` 谱面、第二代多 JSON 工程和新版多 TMC 工程；新版 TMC 的读写代码保留，但默认另存为只生成三文件文件夹。
 - 分组与真假音符：检查器“组”页位于“谱面”左侧，默认组 0；每组记录基准 BPM、透明度 0–255、True/False 状态与音符总数。音符可切换所属组；False 音符只作装饰，计入组总数但不参与判定/准度、公共角度校验和打击音效。当前组正常显示并可编辑，其他组以 25% 标记显示；点击其他组音符会提示所属组。每个组右上角有“－”删除按钮，删除组会同时移除组内全部音符，并把后续组和前移后的组内音符统一重新编号。假 Path 隐藏轨迹，头尾保留，星头直接在落点用一拍淡入。
 - 速度输入：底部流速/数值输入框获得焦点后可键盘输入，输入期间不触发播放、工具切换、删除等全局快捷键，也不会影响其他输入区块。
@@ -174,7 +174,7 @@ godot --path .
 - 右侧属性：形状帧可改拍、形状、入场过渡、缓动/曲线、缺口、打开 2D 画形板；镜头帧可改拍、推拉、滚转、入场过渡。全部中文标注。
 - 每段一条 cubic-bezier 曲线：拖两个手柄或选线性/缓入/缓出/缓入缓出预设；曲线优先于预设名。
 - 洋葱皮：勾选后显示当前段前后各 N 帧（1–5 可调）的环轮廓。
-- 性能：时间轴拆「静态轨道体 + 播放头覆盖层」，拖播放头/播放时只重绘覆盖层；只遍历可见拍区间的关键帧，帧格按像素密度抽稀。拖形状/镜头帧时音符层暂时隐藏（10k 音符重绘一次约 30ms），松手恢复；环、红区、小节线、洋葱皮仍然跟随。10k 音符 / 200 关键帧下 `ring_key_drag` CPU 中位数 < 1ms、`ring_all_zoom` < 0.1ms。
+- 性能：时间轴拆「静态轨道体 + 播放头覆盖层」，拖播放头/播放时只重绘覆盖层；只遍历可见拍区间的关键帧，帧格按像素密度抽稀。拖形状/镜头帧时音符层暂时隐藏（10k 音符重绘一次约 30ms），松手恢复；环、红区、小节线、洋葱皮仍然跟随。10k 音符 / 200 关键帧下 `ring_key_drag` CPU 中位数 < 1ms、`ring_all_zoom` < 0.1ms。右侧属性页按选择类型缓存，改滑块/步进只同步数值不重建中文 Label；环编辑提交发 `ring_changed`，不重建音符缓存、SFX 表和主检查器。首次打开某类面板仍需构建一次控件（约 0.7–1 秒），之后同类选择均为毫秒级。
 - 存盘升到 v3：形状/镜头关键帧带稳定 `id`、每段 `curve`、入场 `morph`，镜头新增 `dolly`；v1/v2 文件照常打开（自动补 id、迁移镜头缓动、把旧的整段形变显式写成 span）。现代谱不再双写旧 `events`，删光关键帧后重开不会把动画带回来。
 
 ## 格式互通

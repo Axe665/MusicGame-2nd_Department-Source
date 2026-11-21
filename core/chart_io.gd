@@ -127,6 +127,11 @@ static func chart_to_dict(chart: Chart) -> Dictionary:
 			"path":
 				extra["tolerance"] = snappedf(note.tolerance, 0.001)
 				extra["samples"] = snappedf(note.samples_per_beat, 0.001)
+				# Path 头/尾的可见弧宽是检查器可改的；紧凑代码只写离心/轴，宽度旁挂。
+				if not is_equal_approx(note.width, 60.0):
+					extra["path_width"] = snappedf(note.width, 0.001)
+				if not is_equal_approx(note.tail_width, 45.0):
+					extra["tail_width"] = snappedf(note.tail_width, 0.001)
 				if note.path_speed != 1.0:
 					extra["speed"] = snappedf(note.path_speed, 0.001)
 				if note.path_style != "arc":
@@ -238,6 +243,10 @@ static func _apply_note_extras(note: Note, extra: Dictionary) -> void:
 		note.tolerance = float(extra["tolerance"])
 	if extra.has("samples"):
 		note.samples_per_beat = float(extra["samples"])
+	if extra.has("path_width"):
+		note.width = float(extra["path_width"])
+	if extra.has("tail_width"):
+		note.tail_width = float(extra["tail_width"])
 	if extra.has("speed"):
 		note.path_speed = float(extra["speed"])
 	if extra.has("path_style"):
@@ -864,7 +873,7 @@ static func load_project(path: String) -> Dictionary:
 					var local := _leading_code_id(String(code))
 					var internal := _internal_note_id(gid, local)
 					local_map[str(internal)] = local
-					note_codes.append(_prefix_code_id(String(code), internal))
+					note_codes.append(_prefix_code_id(String(code), internal, gid))
 		var group_points := _project_group_bpm_points(bpm_data, main, groups_meta)
 		var points: Array = group_points.get("0", _project_timing_points(main, bpm_data))
 		var extras: Dictionary = _ungroup_table(part.get("note_extras", {}), 0)
@@ -1147,12 +1156,34 @@ static func _leading_code_id(code: String) -> int:
 	return int(text.substr(1, close - 1)) if close > 1 else 0
 
 
-static func _prefix_code_id(code: String, new_id: int) -> String:
+## 分组代码里的 Path 链：不仅根 [id]，每个 part 的第 9 段也要换成组内全局 id。
+## 否则 note_extras / note_colors 按 id 旁挂的组、颜色、锁定、容差等属性会在
+## TMC 工程往返时对不上号（Path 的 to_code 会把每段自己的 id 写进代码）。
+static func _prefix_code_id(code: String, new_id: int, group_id: int) -> String:
 	var text := String(code).strip_edges()
 	var close := text.find("]")
 	if not text.begins_with("[") or close <= 1:
 		return text
-	return "[%d]%s" % [new_id, text.substr(close + 1)]
+	var rest := text.substr(close + 1)
+	var packed := rest.strip_edges()
+	if not (packed.begins_with("path{") and packed.ends_with("}")):
+		return "[%d]%s" % [new_id, rest]
+	var root_local := _local_note_id(new_id)
+	var body := packed.substr(5, packed.length() - 6)
+	var rewritten: Array[String] = []
+	var index := 0
+	for raw in body.split(";", true):
+		var segment := String(raw).strip_edges()
+		var inner := segment.trim_prefix("(").trim_suffix(")")
+		var fields := inner.split(",", true)
+		# 老代码没有 wait / id 两段：补 0，再用解析器的同一套回退规则。
+		while fields.size() < 9:
+			fields.append("0")
+		var local := int(fields[8]) if int(fields[8]) > 0 else (root_local + 1000 * index)
+		fields[8] = str(_internal_note_id(group_id, local))
+		rewritten.append("(" + ",".join(fields) + ")")
+		index += 1
+	return "[%d]path{%s}" % [new_id, ";".join(rewritten)]
 
 
 static func _ungroup_table(table: Dictionary, prefix: int) -> Dictionary:

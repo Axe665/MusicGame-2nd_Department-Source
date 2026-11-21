@@ -110,6 +110,7 @@ func _ready() -> void:
 		_app.chart_changed.connect(_on_chart_changed)
 		_app.chart_replaced.connect(_clear_clipboard_on_chart_replace)
 		_app.chart_live_changed.connect(_on_chart_live_changed)
+		_app.ring_changed.connect(_on_chart_live_changed)
 		_app.playhead_changed.connect(_on_playhead_changed)
 		_app.selection_changed.connect(_on_selection_changed)
 		_app.tool_changed.connect(_on_tool_changed)

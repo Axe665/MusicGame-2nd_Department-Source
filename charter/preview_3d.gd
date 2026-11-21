@@ -379,6 +379,7 @@ func _ready() -> void:
 		_app.chart_changed.connect(_on_chart_changed)
 		_app.chart_live_changed.connect(_on_chart_live_changed)
 		_app.ring_live_changed.connect(_on_ring_live_changed)
+		_app.ring_changed.connect(_on_ring_changed)
 		_app.selection_changed.connect(_on_selection_changed)
 		_app.playhead_changed.connect(_on_playhead_changed)
 		_app.tool_changed.connect(_on_tool_changed)
@@ -1599,6 +1600,14 @@ func _on_ring_live_changed() -> void:
 		_force_3d_frame = true
 	if _overlay != null:
 		_overlay.queue_redraw()
+
+
+## 环编辑一次提交（改形状/镜头/指令）：只重建环几何，音符缓存全部保留。
+func _on_ring_changed() -> void:
+	_on_ring_live_changed()
+	_mesh_dirty = true
+	_force_3d_frame = true
+	queue_redraw()
 
 
 func _on_selection_changed() -> void:

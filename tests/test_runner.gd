@@ -73,6 +73,8 @@ func _initialize() -> void:
 		"test_ring_segment_targets",
 		"test_ring_undo_and_default_circle",
 		"test_ring_insert_advances_when_occupied",
+		"test_ring_insert_at_empty_playhead",
+		"test_ring_signal_split",
 		"test_ease_bezier",
 		"test_undo_memory_budget",
 		"test_full_chart_round_trip",
@@ -89,6 +91,7 @@ func _initialize() -> void:
 		"test_media_formats",
 		"test_lbp_export",
 		"test_lbp_package",
+		"test_lbp_package_assets",
 		"test_video_export_cursor",
 		"test_video_export_plan_hits",
 		"test_video_export_sfx_capture",
@@ -165,6 +168,7 @@ func _initialize() -> void:
 		"test_osu_multi_difficulty",
 		"test_json_roundtrip",
 		"test_chart_project_format",
+		"test_tmc_group_path_round_trip",
 		"test_note_groups",
 		"test_validation_demo",
 		"test_angle_math",
@@ -797,6 +801,14 @@ func test_seek_and_limit_code() -> bool:
 	ok(not Note.TYPES.has("trace"), "trace is removed")
 	var region := Region.from_dict({"id": 1, "kind": "red", "start_beat": 1.0, "end_beat": 2.0})
 	eq(region.kind, "limit", "legacy red region becomes limit")
+	# 新语法的 shape / polarity 尾巴：旧代码只读前四段，新代码要能往返。
+	region.shape = "S1"
+	region.polarity = 0
+	var region_back := Region.from_code(region.to_code())
+	ok(region_back != null, "limit region code parses")
+	if region_back != null:
+		eq(region_back.shape, "S1", "limit region keeps shape")
+		eq(region_back.polarity, 0, "limit region keeps polarity")
 	eq(String(region.to_dict()["kind"]), "limit", "limit region kind serialized")
 	var limit := Region.from_code("[4]red(1.0,2.0,90.0)")
 	ok(limit != null, "limit code parses")
@@ -1907,8 +1919,21 @@ func test_full_chart_round_trip() -> bool:
 		eq(child.trace_pts.size(), 2, "第二段 Path 的手绘轨迹")
 		eq(child.color, 1, "第二段 Path 的配色组")
 		eq(child.lock, true, "第二段 Path 的锁定")
+		near(child.width, 64.0, 0.001, "第二段 Path 的头宽度")
+		near(child.tail_width, 70.0, 0.001, "第二段 Path 的尾宽度")
 	else:
 		ok(false, "重开后找不到第二段 Path")
+	var path_root: Note = null
+	for note in reloaded.notes:
+		if note.type == "path" and note.path_part == 0 and is_equal_approx(note.beat, 2.0):
+			path_root = note
+			break
+	if path_root != null:
+		near(path_root.width, 66.0, 0.001, "Path 头宽度")
+		near(path_root.tail_width, 72.0, 0.001, "Path 尾宽度")
+		near(path_root.wait_beat, 0.5, 0.001, "Path 等待拍数")
+	else:
+		ok(false, "重开后找不到 Path 根段")
 	# 再走一遍 App 的真实保存/打开入口（含校验拦截、难度套组分支、notice 信号）
 	var app: App = load("res://charter/app.gd").new()
 	app.chart = _make_full_chart()
@@ -2049,10 +2074,12 @@ func _make_full_chart() -> Chart:
 	hold.hold_style = "curved"
 	hold.visual_pts = [{"x": 0.1, "y": 0.2, "db": 0.0}]
 	chart.notes.append(hold)
-	var root := Note.new("path", 2.0, 180.0, 60.0)
+	var root := Note.new("path", 2.0, 180.0, 66.0)
 	root.id = chart.next_note_id()
 	root.end_beat = 3.0
 	root.tail_angle = 270.0
+	root.tail_width = 72.0
+	root.wait_beat = 0.5
 	root.trace_pts = [{"x": 0.2, "y": 0.0, "db": 0.0}, {"x": 0.4, "y": 0.2, "db": 1.0}]
 	root.path_gaps = [{"from": 0.1, "to": 0.2}]
 	root.path_speed = 1.3
@@ -2060,10 +2087,11 @@ func _make_full_chart() -> Chart:
 	root.tolerance = 0.3
 	root.samples_per_beat = 6.0
 	chart.notes.append(root)
-	var part := Note.new("path", 3.0, 270.0, 60.0)
+	var part := Note.new("path", 3.0, 270.0, 64.0)
 	part.id = chart.next_note_id()
 	part.end_beat = 4.0
 	part.tail_angle = 0.0
+	part.tail_width = 70.0
 	part.path_part = 1
 	part.path_prev_id = root.id
 	part.path_head_local = root.path_tail_local()
@@ -2627,6 +2655,56 @@ func test_ring_insert_advances_when_occupied() -> bool:
 	near(workspace.playhead(), 0.5, 0.001, "镜头下一拍按钮推进播放头")
 	timeline.free()
 	workspace.free()
+	app.free()
+	return true
+
+
+## 播放头在空拍时，插入应落在播放头本身；只有已有帧才顺延。
+func test_ring_insert_at_empty_playhead() -> bool:
+	var app: App = load("res://charter/app.gd").new()
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	app.chart = chart
+	app.snap_division = 4
+	app.playhead_beat = 0.0
+	var workspace := RingWorkspace.new()
+	workspace._app = app
+	workspace._view_beats = 16.0
+	var timeline := RingTimeline.new(workspace)
+	workspace._timeline = timeline
+	timeline.size = Vector2(1600, 300)
+	workspace._insert_key_with_shape("S0")
+	eq(chart.shape_keys.size(), 1, "空拍插入新增一帧")
+	near(float(chart.shape_keys[0].get("beat", -1.0)), 0.0, 0.001, "空拍插入落在播放头")
+	near(workspace.playhead(), 0.0, 0.001, "空拍插入不移动播放头")
+	workspace.seek(4.0)
+	workspace._add_view_keyframe()
+	var found := false
+	for state in chart.view_states:
+		if is_equal_approx(state.beat, 4.0):
+			found = true
+			break
+	ok(found, "镜头空拍插入落在播放头")
+	timeline.free()
+	workspace.free()
+	app.free()
+	return true
+
+
+## 环编辑提交只发 ring_changed：不能触发整谱缓存、SFX 表和主检查器重建。
+func test_ring_signal_split() -> bool:
+	var app: App = load("res://charter/app.gd").new()
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	app.chart = chart
+	var counts := [0, 0]
+	app.chart_changed.connect(func() -> void: counts[0] += 1)
+	app.ring_changed.connect(func() -> void: counts[1] += 1)
+	app.mutate_ring(func() -> void:
+		chart.shape_keys.append({"beat": 4.0, "shape_id": "S0", "easing": "linear", "morph": 0.0, "id": 1})
+	)
+	eq(counts[0], 0, "ring edit does not emit chart_changed")
+	eq(counts[1], 1, "ring edit emits ring_changed")
 	app.free()
 	return true
 
@@ -3371,6 +3449,75 @@ func test_lbp_package() -> bool:
 	return true
 
 
+## .lbp 包要打包实际存在的音频（audio_source 失效时回退 audio_path），
+## 且同一路径重新导出后不能残留上一版的故事板素材。
+func test_lbp_package_assets() -> bool:
+	var root := "user://lbp_assets_test"
+	var abs_root := ProjectSettings.globalize_path(root)
+	DirAccess.make_dir_recursive_absolute(abs_root)
+	var audio := root + "/music.wav"
+	var f := FileAccess.open(audio, FileAccess.WRITE)
+	f.store_buffer(PackedByteArray([82, 73, 70, 70]))
+	f.close()
+	var sb_dir := root + "/sb"
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(sb_dir))
+	f = FileAccess.open(sb_dir + "/旧图.png", FileAccess.WRITE)
+	f.store_buffer(PackedByteArray([1, 2, 3]))
+	f.close()
+
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	var note := Note.new("tap", 1.0, 90.0, 60.0)
+	note.id = 0
+	chart.notes.append(note)
+	chart.audio_path = audio
+	chart.metadata["audio_source"] = root + "/missing_music.wav"
+	chart.metadata["storyboard"] = sb_dir
+
+	var pack := root + "/same.lbp"
+	ok(LBPIO.export_package(chart, pack) == OK, "lbp assets export ok")
+	var back := LBPIO.import_package(pack)
+	ok(back != null, "lbp assets package imports")
+	var first_sb := String(back.metadata.get("storyboard", "")) if back != null else ""
+	ok(back != null and FileAccess.file_exists(back.audio_path), "stale audio source falls back to audio_path")
+	ok(back != null and FileAccess.get_file_as_bytes(back.audio_path).size() == 4, "fallback audio bytes survive")
+	eq(String(back.metadata.get("audio_source", "")) if back != null else "x", "", "package drops stale audio source")
+	ok(FileAccess.file_exists(first_sb + "/旧图.png"), "storyboard asset packed")
+	var first_base := back.audio_path.get_base_dir().get_base_dir() if back != null else ""
+
+	# 换掉故事板素材，导出到同一个 .lbp，再导入：旧图不能跟着内容哈希一起留下。
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(sb_dir + "/旧图.png"))
+	f = FileAccess.open(sb_dir + "/新图.png", FileAccess.WRITE)
+	f.store_buffer(PackedByteArray([4, 5, 6]))
+	f.close()
+	ok(LBPIO.export_package(chart, pack) == OK, "lbp assets re-export ok")
+	var back2 := LBPIO.import_package(pack)
+	ok(back2 != null, "lbp assets package re-imports")
+	var second_sb := String(back2.metadata.get("storyboard", "")) if back2 != null else ""
+	ok(not FileAccess.file_exists(second_sb + "/旧图.png"), "re-import leaves no stale storyboard asset")
+	ok(FileAccess.file_exists(second_sb + "/新图.png"), "re-import has fresh storyboard asset")
+	var second_base := back2.audio_path.get_base_dir().get_base_dir() if back2 != null else ""
+
+	for path in [pack, pack + ".tmp", audio, sb_dir + "/新图.png"]:
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(sb_dir))
+	DirAccess.remove_absolute(abs_root)
+	for base in [first_base, second_base]:
+		if base.begins_with("user://imports/lbp_"):
+			_remove_test_tree(ProjectSettings.globalize_path(base))
+	return true
+
+
+func _remove_test_tree(path: String) -> void:
+	if not DirAccess.dir_exists_absolute(path):
+		return
+	for name in DirAccess.get_files_at(path):
+		DirAccess.remove_absolute(path.path_join(name))
+	for name in DirAccess.get_directories_at(path):
+		_remove_test_tree(path.path_join(name))
+		DirAccess.remove_absolute(path.path_join(name))
+
+
 func test_note_color_palette() -> bool:
 	var chart := DemoChart.make_demo()
 	eq(chart.palette_count(), 0, "palette starts empty")
@@ -4090,6 +4237,85 @@ func test_chart_project_format() -> bool:
 		if FileAccess.file_exists(p):
 			DirAccess.remove_absolute(p)
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(dir))
+	return true
+
+
+## TMC 工程的分组 Path 链：组、颜色、锁定、宽度与 Path 修饰必须跟着 id 一起往返。
+func test_tmc_group_path_round_trip() -> bool:
+	var chart := DemoChart.make_demo()
+	chart.ensure_groups()
+	var gid := chart.add_group(150.0)
+	var parts := Note.path_parts_from_code(
+		"[100]path{(part0,40.000,0.000,42.000,180.000,0.720,0.000,0.000,100);" +
+		"(part1,42.000,180.000,44.000,0.000,0.720,0.000,0.000,101)}")
+	for part in parts:
+		part.group_id = gid
+		part.color = 1
+		part.lock = true
+		part.hs = 0.75
+		part.sv = 1.25
+		part.path_style = "ribbon"
+		part.path_speed = 0.8
+		part.tolerance = 0.31
+		part.width = 66.0
+		part.tail_width = 72.0
+		part.path_gaps = [{"from": 0.4, "to": 0.6}]
+		part.trace_pts = [{"x": 0.1, "y": 0.2, "db": 0.0}, {"x": 0.3, "y": 0.4, "db": 0.5}]
+		chart.notes.append(part)
+	var region := Region.new(7, 1.0, 2.0)
+	region.width = 60.0
+	region.shape = "S1"
+	region.polarity = 0
+	chart.regions.append(region)
+	chart.refresh_ids()
+	var dir := "user://tmc_group_path"
+	_remove_test_tree(ProjectSettings.globalize_path(dir))
+	eq(ChartIO.save_project([{"name": "G", "chart": chart}], dir, "G"), OK, "分组 Path 工程保存")
+	var project := ChartIO.load_project(dir)
+	ok(bool(project.get("ok", false)), "分组 Path 工程读取")
+	var loaded: Chart = project.get("entries", [])[0].get("chart", null) if bool(project.get("ok", false)) else null
+	ok(loaded != null, "分组 Path 难度加载")
+	if loaded != null:
+		var root: Note = null
+		var child: Note = null
+		for note in loaded.notes:
+			if note.type != "path":
+				continue
+			if is_equal_approx(note.beat, 40.0):
+				root = note
+			elif is_equal_approx(note.beat, 42.0):
+				child = note
+		ok(root != null and child != null, "分组 Path 链两段都在")
+		if root != null:
+			eq(root.group_id, gid, "Path 根段保留分组")
+			eq(root.color, 1, "Path 根段保留配色")
+			eq(root.lock, true, "Path 根段保留锁定")
+			eq(root.path_next_id, child.id if child != null else -1, "Path 根段指向第二段")
+			near(root.width, 66.0, 0.001, "Path 根段头宽度")
+			near(root.tail_width, 72.0, 0.001, "Path 根段尾宽度")
+			near(root.hs, 0.75, 0.001, "Path 根段 hs")
+		if child != null:
+			eq(child.group_id, gid, "Path 第二段保留分组")
+			eq(child.color, 1, "Path 第二段保留配色")
+			eq(child.lock, true, "Path 第二段保留锁定")
+			eq(child.path_style, "ribbon", "Path 第二段保留画法")
+			near(child.path_speed, 0.8, 0.001, "Path 第二段速度")
+			near(child.tolerance, 0.31, 0.001, "Path 第二段容差")
+			near(child.width, 66.0, 0.001, "Path 第二段头宽度")
+			near(child.tail_width, 72.0, 0.001, "Path 第二段尾宽度")
+			eq(child.path_gaps.size(), 1, "Path 第二段擦除缺口")
+			eq(child.trace_pts.size(), 2, "Path 第二段手绘轨迹")
+			near(child.sv, 1.25, 0.001, "Path 第二段 sv")
+		var loaded_region: Region = null
+		for row in loaded.regions:
+			if row.id == 7:
+				loaded_region = row
+				break
+		ok(loaded_region != null, "TMC 区域保留")
+		if loaded_region != null:
+			eq(loaded_region.shape, "S1", "TMC 区域保留 shape")
+			eq(loaded_region.polarity, 0, "TMC 区域保留 polarity")
+	_remove_test_tree(ProjectSettings.globalize_path(dir))
 	return true
 
 

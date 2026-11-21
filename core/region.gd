@@ -56,15 +56,20 @@ static func from_dict(data: Dictionary) -> Region:
 
 func to_code() -> String:
 	# 角度是第 4 段；为 0 时省略，保持旧文件格式不变。
-	if is_zero_approx(angle):
-		return "[%d]red(%s,%s,%s)" % [
-			id, str(snappedf(start_beat, 0.001)), str(snappedf(end_beat, 0.001)),
-			str(snappedf(width, 0.001))
-		]
-	return "[%d]red(%s,%s,%s,%s)" % [
-		id, str(snappedf(start_beat, 0.001)), str(snappedf(end_beat, 0.001)),
-		str(snappedf(width, 0.001)), str(snappedf(angle, 0.001))
+	# 绑定的边界形状 / 极性以命名尾巴追加，旧版本读前 4 段后忽略。
+	var extra := ""
+	if not shape.is_empty():
+		extra += ",shape=%s" % shape
+	if polarity != 1:
+		extra += ",polarity=%d" % polarity
+	var fields: Array[String] = [
+		str(snappedf(start_beat, 0.001)),
+		str(snappedf(end_beat, 0.001)),
+		str(snappedf(width, 0.001)),
 	]
+	if not is_zero_approx(angle) or not extra.is_empty():
+		fields.append(str(snappedf(angle, 0.001)))
+	return "[%d]red(%s)" % [id, ",".join(fields) + extra]
 
 
 static func from_code(code: String) -> Region:
@@ -81,5 +86,11 @@ static func from_code(code: String) -> Region:
 		region.end_beat = float(parts[1]) if parts.size() > 1 else region.start_beat
 		region.width = float(parts[2]) if parts.size() > 2 else 90.0
 		region.angle = float(parts[3]) if parts.size() > 3 else 0.0
+	for index in range(4, parts.size()):
+		var extra := String(parts[index]).strip_edges()
+		if extra.begins_with("shape="):
+			region.shape = extra.substr(6).strip_edges()
+		elif extra.begins_with("polarity="):
+			region.polarity = int(extra.substr(9))
 	region.kind = "limit"
 	return region
