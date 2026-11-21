@@ -799,6 +799,14 @@ func test_seek_and_limit_code() -> bool:
 	ok(not Note.TYPES.has("trace"), "trace is removed")
 	var region := Region.from_dict({"id": 1, "kind": "red", "start_beat": 1.0, "end_beat": 2.0})
 	eq(region.kind, "limit", "legacy red region becomes limit")
+	# 新语法的 shape / polarity 尾巴：旧代码只读前四段，新代码要能往返。
+	region.shape = "S1"
+	region.polarity = 0
+	var region_back := Region.from_code(region.to_code())
+	ok(region_back != null, "limit region code parses")
+	if region_back != null:
+		eq(region_back.shape, "S1", "limit region keeps shape")
+		eq(region_back.polarity, 0, "limit region keeps polarity")
 	eq(String(region.to_dict()["kind"]), "limit", "limit region kind serialized")
 	var limit := Region.from_code("[4]red(1.0,2.0,90.0)")
 	ok(limit != null, "limit code parses")
@@ -4202,6 +4210,11 @@ func test_tmc_group_path_round_trip() -> bool:
 		part.path_gaps = [{"from": 0.4, "to": 0.6}]
 		part.trace_pts = [{"x": 0.1, "y": 0.2, "db": 0.0}, {"x": 0.3, "y": 0.4, "db": 0.5}]
 		chart.notes.append(part)
+	var region := Region.new(7, 1.0, 2.0)
+	region.width = 60.0
+	region.shape = "S1"
+	region.polarity = 0
+	chart.regions.append(region)
 	chart.refresh_ids()
 	var dir := "user://tmc_group_path"
 	_remove_test_tree(ProjectSettings.globalize_path(dir))
@@ -4241,6 +4254,15 @@ func test_tmc_group_path_round_trip() -> bool:
 			eq(child.path_gaps.size(), 1, "Path 第二段擦除缺口")
 			eq(child.trace_pts.size(), 2, "Path 第二段手绘轨迹")
 			near(child.sv, 1.25, 0.001, "Path 第二段 sv")
+		var loaded_region: Region = null
+		for row in loaded.regions:
+			if row.id == 7:
+				loaded_region = row
+				break
+		ok(loaded_region != null, "TMC 区域保留")
+		if loaded_region != null:
+			eq(loaded_region.shape, "S1", "TMC 区域保留 shape")
+			eq(loaded_region.polarity, 0, "TMC 区域保留 polarity")
 	_remove_test_tree(ProjectSettings.globalize_path(dir))
 	return true
 
