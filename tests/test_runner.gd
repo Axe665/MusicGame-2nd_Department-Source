@@ -260,6 +260,7 @@ func _initialize() -> void:
 		"test_alpha_command_envelope",
 		"test_jline_ring_state",
 		"test_filter_region_state",
+		"test_filter_layer_visibility",
 		"test_text_command_center",
 		"test_note_mods_io",
 		"test_note_touch_zones",
@@ -6975,6 +6976,36 @@ func test_filter_region_state() -> bool:
 	near(float(region.get("span", 0.0)), 60.0, 0.001, "region span is kept")
 	var uniforms: Dictionary = state.get("uniforms", {})
 	ok(float(uniforms.get("zoom", 1.0)) > 1.0, "filter effects still merge")
+	preview.free()
+	return true
+
+
+func test_filter_layer_visibility() -> bool:
+	var preview := Preview3D.new()
+	var layer := ColorRect.new()
+	preview.add_child(layer)
+	preview._filter_layer = layer
+	preview._filter_warmup_left = 0
+	var empty := Chart.new()
+	empty.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	preview._update_filter_visibility(empty, 0.0)
+	ok(not layer.visible, "no filter commands keeps the layer hidden")
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	var flash := chart.add_command("FLASH", 1.0)
+	flash.duration = 4.0
+	preview._update_filter_visibility(chart, 0.5)
+	ok(not layer.visible, "before the filter starts the layer stays hidden")
+	preview._update_filter_visibility(chart, 3.0)
+	ok(layer.visible, "an active filter shows the layer")
+	preview._update_filter_visibility(chart, 9.0)
+	ok(not layer.visible, "after the filter ends the layer hides again")
+	preview._filter_warmup_left = Preview3D.FILTER_WARMUP_FRAMES
+	preview._update_filter_visibility(empty, 0.0)
+	ok(layer.visible, "warmup frames keep the layer visible")
+	preview._filter_warmup_left = 0
+	preview._update_filter_visibility(null, 0.0)
+	ok(not layer.visible, "a missing chart hides the layer")
 	preview.free()
 	return true
 

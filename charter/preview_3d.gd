@@ -395,6 +395,13 @@ func _exit_tree() -> void:
 ## 试玩里由实测帧时自动降档，只为让弱机也能稳住节奏。
 ## 全屏滤镜层（屏幕采样 shader）；由 <FLASH>/<HUE>/<ZOOM> 等滤镜指令逐帧驱动。
 var _filter_layer: ColorRect = null
+## 滤镜层是否常驻。false = 只在有滤镜生效时显示（默认，省掉每帧一次整屏拷贝 +
+## 屏幕纹理 mip 链 + 全屏 pass）；true = 旧行为，调试用。
+const FILTER_ALWAYS_ON := false
+## 启动后先让滤镜层可见这么多帧，把 shader 首次编译的卡顿吃掉——这几帧正好是
+## 进入预览/试玩的瞬间，肉眼看不到。
+const FILTER_WARMUP_FRAMES := 3
+var _filter_warmup_left: int = FILTER_WARMUP_FRAMES
 var quality_level: int = 0
 ## 音符弧带采样精度：true = 1/4°（全画质），false = 1/6°（省电，边缘略方）。
 var note_detail_fine: bool = true
@@ -816,8 +823,14 @@ func prepare_playtest_frame(beat: float, delta: float) -> void:
 
 func _process(_delta: float) -> void:
 	var proc_start := Time.get_ticks_usec()
+	# 热身帧计数放在 chart 空检查之前：没有谱面时也要走完预热并隐藏滤镜层。
+	if _filter_warmup_left > 0:
+		_filter_warmup_left -= 1
+		if _filter_warmup_left == 0:
+			_set_filter_visible(false)
 	var chart := get_chart()
 	if chart == null:
+		_update_filter_visibility(null, 0.0)
 		return
 	if follow_app and _app != null and _app.chart != _last_chart_ref:
 		_last_chart_ref = _app.chart
@@ -841,6 +854,8 @@ func _process(_delta: float) -> void:
 		if float(_note_pops[i]["age"]) > NOTE_POP_SEC:
 			_note_pops.remove_at(i)
 	var t := get_time_beat()
+	# 显隐必须在绘制之前定下来（在 _draw 里改 visible 会晚一帧），所以放在 _process。
+	_update_filter_visibility(chart, t)
 	var time_changed := absf(t - _last_process_time) > 0.0005
 	var jline := jline_state(chart, t)
 	var jline_key := _jline_key(jline)
@@ -6571,7 +6586,8 @@ func _build_filter_layer() -> void:
 	_filter_layer.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_filter_layer.color = Color.WHITE
 	_filter_layer.material = material
-	# 常驻可见：没有滤镜时 shader 是恒等透传，换来的是切滤镜时不会临时编译卡一下。
+	# 先可见几帧做预热（编译 shader、建好管线），之后由 _update_filter_visibility()
+	# 按当前拍点有没有滤镜来决定显隐；没有滤镜时这层整层隐藏。
 	_filter_layer.visible = true
 	add_child(_filter_layer)
 	_filter_layer.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -6681,6 +6697,27 @@ func _filter_state(chart: Chart, t: float) -> Dictionary:
 func _stronger_color(current: Variant, candidate: Color) -> Color:
 	var existing: Color = current
 	return candidate if candidate.a > existing.a else existing
+
+
+## 滤镜层按需显隐：当前拍点没有任何滤镜生效时整层隐藏，省掉每帧一次整屏拷贝、
+## 屏幕纹理 mip 链和一次全屏 pass。恒等 pass 只是透传（额外做了 clamp 与一次
+## HSV 往返，误差 ≤1/255），隐藏前后肉眼无差别。
+func _update_filter_visibility(chart: Chart, t: float) -> void:
+	if _filter_warmup_left > 0:
+		_set_filter_visible(true)
+		return
+	if chart == null or chart.commands.is_empty():
+		_set_filter_visible(false)
+		return
+	_set_filter_visible(bool(_filter_state(chart, t).get("active", false)))
+
+
+func _set_filter_visible(active: bool) -> void:
+	if _filter_layer == null:
+		return
+	var wanted := FILTER_ALWAYS_ON or active
+	if _filter_layer.visible != wanted:
+		_filter_layer.visible = wanted
 
 
 func _apply_filters(chart: Chart, t: float) -> void:
