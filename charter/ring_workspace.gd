@@ -382,7 +382,8 @@ class ShapePadOverlay:
 		elif event is InputEventMouseMotion and _drag_vertex >= 0:
 			var local: Vector2 = (event.position - _center()) / maxf(0.0001, _scale())
 			shape.set_vertex(_drag_vertex, local)
-			workspace._app.touch_chart()
+			# 只改环形状：别让音符缓存和音符轨缓存每帧重建。
+			workspace._app.touch_ring_chart()
 			# 3D 网格只认 _mesh_dirty：不标它，拖顶点时环不会跟着变形。
 			if workspace._preview != null:
 				workspace._preview._mesh_dirty = true
@@ -1650,7 +1651,8 @@ func drag_to(beat: float) -> void:
 			_drag_key["beat"] = maxf(0.0, target)
 		"view":
 			_drag_view.beat = maxf(0.0, target)
-	_app.touch_chart()
+	# 拖形状/镜头不动音符：用 ring-only 提交，否则 1 万音符缓存每帧重建。
+	_app.touch_ring_chart()
 	_timeline.invalidate()
 
 
