@@ -1899,7 +1899,7 @@ func _judge_seek(note: Note, ms: float, beat: float) -> void:
 		state["done"] = true
 		_preview.set_note_state(note.id, "hit", beat)
 		_register_hit("PERFECT")
-		var color := Preview3D.seek_direction_color(note.seek_orien)
+		var color := UITheme.SEEK_IN if note.seek_orien == 1 else UITheme.SEEK_OUT
 		_pulse_at(0.0, beat, color, "PERFECT", 360.0, "seek", "SEEK", _preview.project_design(Vector2.ZERO))
 		_play_hit("bell", randf_range(0.98, 1.02))
 		_record_error(float(press["time"]) - target, "Seek #%d PERFECT" % note.id, "PERFECT", float(press["time"]))

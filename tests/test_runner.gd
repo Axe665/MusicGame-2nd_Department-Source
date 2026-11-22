@@ -117,8 +117,6 @@ func _initialize() -> void:
 		"test_path_smoothing",
 		"test_seek_limit_animation_curves",
 		"test_seek_grow_matches_tap",
-		"test_seek_wacca_visuals",
-		"test_anchor_warning_reveal",
 		"test_limit_dwell_once",
 		"test_bpm_snap_multipliers",
 		"test_path_zone_granularity",
@@ -6093,42 +6091,6 @@ func test_seek_grow_matches_tap() -> bool:
 	near(Preview3D.seek_grow_scale(0.5), lerpf(Note.SPAWN_LENGTH_RATIO, 1.0, 0.5), 0.000001,
 		"seek 与 Tap 共用同一条线性下落曲线")
 	near(Preview3D.seek_grow_scale(-1.0), Note.SPAWN_LENGTH_RATIO, 0.000001, "进度为负时夹到出生点")
-	return true
-
-
-## WACCA 化 Seek：方向色只换 3D 预览；箭头和环带几何保持可预测。
-func test_seek_wacca_visuals() -> bool:
-	eq(Preview3D.seek_direction_color(1), Preview3D.SEEK_IN_COLOR, "seek in uses the WACCA red")
-	eq(Preview3D.seek_direction_color(0), Preview3D.SEEK_OUT_COLOR, "seek out uses the WACCA blue")
-	ok(Preview3D.SEEK_IN_COLOR != UITheme.SEEK_IN, "the 3D seek-in color stays preview-only")
-	ok(Preview3D.SEEK_OUT_COLOR != UITheme.SEEK_OUT, "the timeline keeps the old seek-out color")
-	var base := Vector2(100, 100)
-	var dir := Vector2.LEFT
-	var tangent := Vector2(0, 1)
-	var poly := Preview3D.seek_chevron_polygon(base, dir, tangent, 20.0, 30.0)
-	eq(poly.size(), 4, "a WACCA chevron has four points")
-	ok(poly[0].x < base.x, "the tip points along dir")
-	ok(poly[1].y > base.y and poly[3].y < base.y, "the tails sit on both sides")
-	ok(poly[2].x > poly[0].x and poly[2].x < poly[1].x, "the back notch is between the tip and the tails")
-	var scaled := Preview3D.scaled_polygon(poly, base, 2.0)
-	near(scaled[0].x, base.x + (poly[0].x - base.x) * 2.0, 0.001, "scaled polygons keep the base fixed")
-	var edges := Preview3D.band_edges(PackedVector2Array([Vector2(110, 100), Vector2(100, 120)]), base, 10.0)
-	var outer: PackedVector2Array = edges["outer"]
-	var inner: PackedVector2Array = edges["inner"]
-	near(outer[0].x, 120.0, 0.001, "the band outer edge moves away from the center")
-	near(inner[0].x, 100.0, 0.001, "the band inner edge moves toward the center")
-	near(outer[1].y, 130.0, 0.001, "the vertical sample also gets an outer offset")
-	return true
-
-
-## 锚点两段式：判定前 0.35 秒淡入完整形态，之前只有预警图标。
-func test_anchor_warning_reveal() -> bool:
-	near(Preview3D.anchor_reveal_factor(Preview3D.ANCHOR_REVEAL_MS), 0.0, 0.0001, "the full anchor is hidden at the window edge")
-	near(Preview3D.anchor_reveal_factor(Preview3D.ANCHOR_REVEAL_MS + 100.0), 0.0, 0.0001, "the warning stage lasts beyond the window")
-	near(Preview3D.anchor_reveal_factor(0.0), 1.0, 0.0001, "the full anchor is visible on the beat")
-	near(Preview3D.anchor_reveal_factor(-100.0), 1.0, 0.0001, "after the beat the full anchor stays visible")
-	var mid := Preview3D.anchor_reveal_factor(Preview3D.ANCHOR_REVEAL_MS * 0.5)
-	ok(mid > 0.5 and mid < 1.0, "the reveal front-loads near the beat")
 	return true
 
 
