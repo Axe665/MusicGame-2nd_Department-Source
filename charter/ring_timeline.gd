@@ -9,7 +9,11 @@ signal selection_changed
 const GUTTER := 196.0
 const HEADER_H := 24.0
 const RULER_H := 44.0
-const LANE_TOP := 70.0
+## 音符轨紧贴标尺：对音时音符和拍线共享同一个横坐标。
+const NOTE_TOP := 70.0
+const NOTE_ROW_H := 24.0
+const NOTE_GAP := 4.0
+const LANE_TOP := NOTE_TOP + NOTE_ROW_H + NOTE_GAP
 const LANE_H := 56.0
 const LANE_GAP := 2.0
 const AUX_HEAD_H := 20.0
@@ -28,6 +32,9 @@ const LANE_BPM := 3
 const LANE_COMMAND_JLINE := 4
 const LANE_COMMAND_TEXT := 5
 const LANE_COMMAND_FILTER := 6
+const LANE_NOTES := 7
+## 音符轨最多画多少个独立刻线；更密时按步长抽样，避免 1 万音符拖慢静态层。
+const NOTE_DETAIL_LIMIT := 420
 const COMMAND_LANES := [LANE_COMMAND_JLINE, LANE_COMMAND_TEXT, LANE_COMMAND_FILTER]
 const COMMAND_CATEGORIES := ["jline", "text", "filter"]
 
@@ -79,6 +86,13 @@ var _lane_cache_version := -1
 
 var _thumb_cache: Dictionary = {}
 var _thumb_version := -1
+
+## 音符轨缓存：按音符版本重建一次，缩放/滚动时只查可见区间。
+var _note_beats := PackedFloat32Array()
+var _note_spans := PackedFloat32Array()
+var _note_kinds := PackedByteArray()
+var _note_stamp := -1
+var _note_chart: Chart = null
 
 
 class ContentLayer:
@@ -404,6 +418,8 @@ func _beat_at(x: float) -> float:
 
 
 func _lane_top(lane: int) -> float:
+	if lane == LANE_NOTES:
+		return NOTE_TOP
 	if lane == LANE_SHAPE:
 		return LANE_TOP
 	if lane == LANE_CAMERA:
@@ -417,6 +433,8 @@ func _lane_top(lane: int) -> float:
 
 
 func _lane_height(lane: int) -> float:
+	if lane == LANE_NOTES:
+		return NOTE_ROW_H
 	if lane <= LANE_CAMERA:
 		return LANE_H
 	if lane <= LANE_BPM:
@@ -460,7 +478,7 @@ func _is_command_lane(lane: int) -> bool:
 
 
 func _lane_at(y: float) -> int:
-	for lane in [LANE_SHAPE, LANE_CAMERA]:
+	for lane in [LANE_NOTES, LANE_SHAPE, LANE_CAMERA]:
 		if y >= _lane_top(lane) and y <= _lane_top(lane) + _lane_height(lane):
 			return lane
 	if aux_open:
@@ -474,7 +492,7 @@ func _lane_at(y: float) -> int:
 
 
 func _lane_name(lane: int) -> String:
-	return ["形状", "镜头", "边界事件", "BPM 速度", "判定线", "文本", "滤镜"][clampi(lane, 0, 6)]
+	return ["形状", "镜头", "边界事件", "BPM 速度", "判定线", "文本", "滤镜", "音符"][clampi(lane, 0, 7)]
 
 
 func _lane_colour(lane: int) -> Color:
@@ -493,6 +511,8 @@ func _lane_colour(lane: int) -> Color:
 			return UITheme.GOLD
 		6:
 			return UITheme.VIOLET
+		7:
+			return UITheme.MINT
 	return Color.WHITE
 
 
@@ -500,6 +520,8 @@ func _lane_items(lane: int) -> Array:
 	var chart: Chart = workspace.chart()
 	if chart == null:
 		return []
+	if lane == LANE_NOTES:
+		return chart.sorted_notes()
 	if lane == LANE_SHAPE:
 		return chart.sorted_shape_keys()
 	if lane == LANE_CAMERA:
@@ -587,6 +609,8 @@ func _draw_content(canvas: CanvasItem) -> void:
 	var bpb := maxf(1.0, chart.timing.beats_per_bar_at(start))
 	_draw_ruler(canvas, start, span, bpb)
 	_draw_common_grid(canvas, start, span, bpb)
+	if not hidden_lanes.has(LANE_NOTES):
+		_draw_note_lane(canvas, chart, start, span)
 	for lane in [LANE_SHAPE, LANE_CAMERA]:
 		if hidden_lanes.has(lane):
 			continue
@@ -638,7 +662,11 @@ func _draw_ruler(canvas: CanvasItem, start: float, span: float, bpb: float) -> v
 func _draw_common_grid(canvas: CanvasItem, start: float, span: float, bpb: float) -> void:
 	var beat_px := (size.x - GUTTER) / maxf(0.001, span)
 	var bottom := _command_bottom()
-	var top := LANE_TOP
+	var top := NOTE_TOP
+	if not hidden_lanes.has(LANE_NOTES):
+		var note_color := _lane_colour(LANE_NOTES)
+		canvas.draw_rect(Rect2(Vector2(GUTTER, NOTE_TOP), Vector2(size.x - GUTTER, NOTE_ROW_H)),
+			Color(note_color.r, note_color.g, note_color.b, 0.035))
 	for lane in [LANE_SHAPE, LANE_CAMERA]:
 		canvas.draw_rect(Rect2(Vector2(GUTTER, _lane_top(lane)), Vector2(size.x - GUTTER, LANE_H)),
 			Color(_lane_colour(lane).r, _lane_colour(lane).g, _lane_colour(lane).b, 0.03 if lane == 0 else 0.02))
@@ -691,6 +719,92 @@ func _draw_common_grid(canvas: CanvasItem, start: float, span: float, bpb: float
 					canvas.draw_line(Vector2(x, _lane_top(LANE_SHAPE)),
 						Vector2(x, _lane_top(LANE_CAMERA) + LANE_H), Color(1, 1, 1, 0.018), 1.0)
 			b += snap_step
+
+
+func _ensure_note_cache(chart: Chart) -> void:
+	var stamp := chart.note_version * 1000003 + chart.notes.size() * 10007
+	if stamp == _note_stamp and chart == _note_chart:
+		return
+	_note_stamp = stamp
+	_note_chart = chart
+	var notes := chart.sorted_notes()
+	var total := notes.size()
+	_note_beats.resize(total)
+	_note_spans.resize(total)
+	_note_kinds.resize(total)
+	for i in total:
+		var note := notes[i]
+		_note_beats[i] = note.beat
+		_note_spans[i] = maxf(0.0, note.end_beat - note.beat) if note.type in ["hold", "path"] else 0.0
+		_note_kinds[i] = _note_kind(note.type)
+
+
+func _note_kind(note_type: String) -> int:
+	match note_type:
+		"tap":
+			return 0
+		"hold":
+			return 1
+		"path":
+			return 2
+		"seek":
+			return 3
+		"anchor":
+			return 4
+		"bell":
+			return 5
+	return 6
+
+
+func _note_kind_colour(kind: int) -> Color:
+	match kind:
+		0:
+			return UITheme.CYAN
+		1:
+			return UITheme.HOLD
+		2:
+			return UITheme.MINT
+		3:
+			return UITheme.SEEK_IN
+		4:
+			return UITheme.MUTED
+		5:
+			return UITheme.KEY_YELLOW
+	return UITheme.INK
+
+
+## 音符轨：显示每个音符的拍点，Hold/Path 画出持续长度。只画可见区间；
+## 音符太密时按步长抽样，保证静态层重绘不被 1 万音符拖垮。
+func _draw_note_lane(canvas: CanvasItem, chart: Chart, start: float, span: float) -> void:
+	_ensure_note_cache(chart)
+	var top := _lane_top(LANE_NOTES)
+	var center := top + NOTE_ROW_H * 0.5
+	if _note_beats.is_empty():
+		canvas.draw_string(UITheme.FONT_REGULAR, Vector2(GUTTER + 8, center + 4),
+			"谱面没有音符", HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(1, 1, 1, 0.28))
+		return
+	var lo := _note_beats.bsearch(start, true)
+	var hi := _note_beats.bsearch(start + span, false)
+	if hi <= lo:
+		return
+	var visible := hi - lo
+	var step := maxi(1, ceili(float(visible) / float(NOTE_DETAIL_LIMIT)))
+	var tick_h := NOTE_ROW_H - 10.0
+	var i := lo
+	while i < hi:
+		var beat := _note_beats[i]
+		var x := _x_for(beat)
+		if x >= GUTTER - 2.0 and x <= size.x + 2.0:
+			var color := _note_kind_colour(int(_note_kinds[i]))
+			var note_span := _note_spans[i]
+			if note_span > 0.0001:
+				var x2 := clampf(_x_for(beat + note_span), x, size.x - 1.0)
+				if x2 > x + 1.0:
+					canvas.draw_line(Vector2(x, center + tick_h * 0.5 - 1.0),
+						Vector2(x2, center + tick_h * 0.5 - 1.0),
+						Color(color.r, color.g, color.b, 0.45), 1.0)
+			canvas.draw_rect(Rect2(Vector2(x - 1.0, center - tick_h * 0.5), Vector2(2.0, tick_h)), color)
+		i += step
 
 
 func _lane_morph(lane: int, target, span: float) -> float:
@@ -1045,6 +1159,21 @@ func _draw_key_marker(canvas: CanvasItem, lane: int, item, x: float, center: flo
 
 
 func _draw_gutter(canvas: CanvasItem, chart: Chart) -> void:
+	var note_top := _lane_top(LANE_NOTES)
+	var note_color := _lane_colour(LANE_NOTES)
+	var note_dim := hidden_lanes.has(LANE_NOTES)
+	var note_tint := Color(note_color.r, note_color.g, note_color.b, 0.28 if note_dim else 0.95)
+	canvas.draw_rect(Rect2(Vector2(4, note_top + 4), Vector2(3, NOTE_ROW_H - 8)), note_tint)
+	var note_eye := Vector2(20, note_top + 12)
+	canvas.draw_arc(note_eye, 5.0, 0.0, TAU, 12, Color(1, 1, 1, 0.28 if note_dim else 0.68), 1.0, true)
+	canvas.draw_circle(note_eye, 1.6, Color(1, 1, 1, 0.28 if note_dim else 0.75))
+	if note_dim:
+		canvas.draw_line(note_eye + Vector2(-5, 5), note_eye + Vector2(5, -5), UITheme.CORAL, 1.2)
+	canvas.draw_string(UITheme.FONT_REGULAR, Vector2(50, note_top + 16), "音符",
+		HORIZONTAL_ALIGNMENT_LEFT, -1, 12, note_tint)
+	canvas.draw_string(UITheme.mono_font(), Vector2(104, note_top + 16),
+		"%d 个 · 对音" % chart.notes.size(), HORIZONTAL_ALIGNMENT_LEFT, -1, 9,
+		Color(1, 1, 1, 0.34 if note_dim else 0.55))
 	var names := [LANE_SHAPE, LANE_CAMERA]
 	for lane in names:
 		var top := _lane_top(lane)
@@ -1129,7 +1258,7 @@ func _draw_footer(canvas: CanvasItem, chart: Chart) -> void:
 		text += " · 已选段"
 	canvas.draw_string(UITheme.mono_font(), Vector2(8, top + 17), text,
 		HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(1, 1, 1, 0.62))
-	var hints := "双击指令轨空白新增 · 拖指令块改拍 · Del 删除 · ←/→ 微移 · Ctrl+C/V 复制关键帧"
+	var hints := "双击指令轨空白新增 · 拖指令块改拍 · Del 删除 · ←/→ 微移 · Ctrl+C/X/V 复制粘贴关键帧与指令"
 	canvas.draw_string(UITheme.FONT_REGULAR, Vector2(GUTTER - 8, top + 17), hints,
 		HORIZONTAL_ALIGNMENT_RIGHT, size.x - GUTTER, 10, Color(1, 1, 1, 0.34))
 
@@ -1181,6 +1310,13 @@ func _hover_hint(lane: int, item, start: float, end: float) -> String:
 	if chart == null:
 		return ""
 	var secs := (chart.timing.beat_to_chart_ms(end) - chart.timing.beat_to_chart_ms(start)) * 0.001
+	if lane == LANE_NOTES and item is Note:
+		var note := item as Note
+		var ms := chart.timing.beat_to_chart_ms(note.beat) + chart.offset_ms
+		var text := "%s · %.3f 拍 · %s" % [note.type, note.beat, RingWorkspace._fmt_short(ms)]
+		if note.type in ["hold", "path"] and note.end_beat > note.beat:
+			text += " · 长 %.2f 拍" % (note.end_beat - note.beat)
+		return text
 	if lane == LANE_SHAPE and item is Dictionary:
 		var morph := BoundaryRuntime.morph_beats(item, maxf(0.0001, end - start))
 		return "形状 %s · %.2f 拍 · %.2f 秒 · 形变 %.2f 拍" % [
@@ -1255,11 +1391,13 @@ func _press(pos: Vector2, event: InputEventMouseButton) -> void:
 				invalidate()
 				return
 			if pos.x < 44.0:
-				if locked_lanes.has(lane):
-					locked_lanes.erase(lane)
-				else:
-					locked_lanes[lane] = true
-				invalidate()
+				# 音符轨只读，没有锁定概念。
+				if lane != LANE_NOTES:
+					if locked_lanes.has(lane):
+						locked_lanes.erase(lane)
+					else:
+						locked_lanes[lane] = true
+					invalidate()
 				return
 		if pos.y >= _aux_header_top() and pos.y <= _aux_header_top() + AUX_HEAD_H:
 			aux_open = not aux_open
@@ -1278,6 +1416,16 @@ func _press(pos: Vector2, event: InputEventMouseButton) -> void:
 		invalidate_overlay()
 		return
 	if hidden_lanes.has(lane):
+		return
+	# 音符轨：点音符精确跳到它的拍，空白处按吸附跳；按住可以继续擦洗。
+	if lane == LANE_NOTES:
+		var note_hit := _hit_note(pos)
+		_drag_kind = "playhead"
+		if note_hit >= 0:
+			workspace.seek(_note_beats[note_hit])
+		else:
+			workspace.seek(workspace.snap(_beat_at(pos.x)))
+		invalidate_overlay()
 		return
 	# 演出指令：点块选中并拖动，双击空白新增。
 	if _is_command_lane(lane):
@@ -1383,6 +1531,29 @@ func _hit_key(lane: int, items: Array, pos: Vector2) -> int:
 	return -1
 
 
+## 音符轨可能有 1 万个音符：只查光标附近一小段拍，不做全表命中。
+func _hit_note(pos: Vector2) -> int:
+	var chart: Chart = workspace.chart()
+	if chart == null or pos.x < GUTTER:
+		return -1
+	_ensure_note_cache(chart)
+	if _note_beats.is_empty():
+		return -1
+	var px_per_beat := (size.x - GUTTER) / maxf(0.001, workspace.view_beats())
+	var radius := KEY_HIT / maxf(0.001, px_per_beat)
+	var beat := _beat_at(pos.x)
+	var lo := _note_beats.bsearch(beat - radius, true)
+	var hi := _note_beats.bsearch(beat + radius, false)
+	var best := -1
+	var best_distance := INF
+	for i in range(lo, hi):
+		var distance := absf(_x_for(_note_beats[i]) - pos.x)
+		if distance <= KEY_HIT and distance < best_distance:
+			best = i
+			best_distance = distance
+	return best
+
+
 func _hit_command(_lane: int, items: Array, pos: Vector2) -> int:
 	if pos.x < GUTTER or items.is_empty():
 		return -1
@@ -1438,7 +1609,13 @@ func _update_hover(pos: Vector2) -> void:
 			invalidate_overlay()
 		return
 	var items := _lane_items(lane)
-	var index := _hit_command(lane, items, pos) if _is_command_lane(lane) else _hit_key(lane, items, pos)
+	var index := -1
+	if lane == LANE_NOTES:
+		index = _hit_note(pos)
+	elif _is_command_lane(lane):
+		index = _hit_command(lane, items, pos)
+	else:
+		index = _hit_key(lane, items, pos)
 	var segment := -1
 	if index < 0 and not _is_command_lane(lane):
 		segment = _hit_segment(lane, items, pos)
@@ -1578,10 +1755,15 @@ func handle_key(event: InputEventKey) -> bool:
 
 
 func copy_selection() -> void:
+	if _selected_command != null:
+		_clipboard.clear()
+		_clipboard.append({"kind": "command", "offset": 0.0, "data": _selected_command.to_dict()})
+		workspace._set_hint("已复制指令「%s」，播放头处粘贴。" % _selected_command.label())
+		return
 	var shapes := selected_shape_keys()
 	var views := selected_views()
 	if shapes.is_empty() and views.is_empty():
-		workspace._set_hint("没有选中关键帧。")
+		workspace._set_hint("没有选中关键帧或指令。")
 		return
 	_clipboard.clear()
 	var origin := INF
@@ -1611,10 +1793,19 @@ func paste() -> void:
 		return
 	var start: float = workspace.playhead()
 	var added: Array[String] = []
+	var pasted_box: Array = [null]
 	workspace.mutate_chart(func() -> void:
 		for entry in _clipboard:
 			var beat := maxf(0.0, start + float(entry.get("offset", 0.0)))
-			if String(entry.get("kind", "shape")) == "shape":
+			var kind := String(entry.get("kind", "shape"))
+			if kind == "command":
+				var command := AlphaCommand.from_dict(entry.get("data", {}))
+				command.beat = beat
+				command.id = chart.next_command_id()
+				chart.commands.append(command)
+				pasted_box[0] = command
+				continue
+			if kind == "shape":
 				var data: Dictionary = (entry.get("data", {}) as Dictionary).duplicate(true)
 				data["beat"] = beat
 				data["id"] = chart.next_key_id()
@@ -1645,7 +1836,18 @@ func paste() -> void:
 		chart.shape_keys.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
 			return float(a.get("beat", 0.0)) < float(b.get("beat", 0.0)))
 		chart.view_states.sort_custom(func(a: ViewState, b: ViewState) -> bool: return a.beat < b.beat)
+		chart.commands.sort_custom(func(a: AlphaCommand, b: AlphaCommand) -> bool: return a.beat < b.beat)
 	)
+	var pasted_command := pasted_box[0] as AlphaCommand
+	if pasted_command != null:
+		_selected.clear()
+		_segment = ""
+		_selected_command = pasted_command
+		_primary = ""
+		invalidate()
+		selection_changed.emit()
+		workspace._set_hint("已粘贴指令「%s」（%.2f 拍）。" % [pasted_command.label(), pasted_command.beat])
+		return
 	_selected.clear()
 	for token in added:
 		_selected[token] = true

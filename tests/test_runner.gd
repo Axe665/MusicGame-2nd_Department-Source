@@ -58,6 +58,8 @@ func _initialize() -> void:
 		"test_ring_lane_items_real_chart",
 		"test_ring_timeline_selection_ops",
 		"test_ring_timeline_command_lanes",
+		"test_ring_timeline_command_copy_paste",
+		"test_ring_note_lane_cache",
 		"test_ring_timeline_filter_menu",
 		"test_ring_playhead_only_redraws_overlay",
 		"test_ring_marquee_and_drag",
@@ -2232,6 +2234,83 @@ func test_ring_timeline_command_lanes() -> bool:
 	timeline.select_command(chart.commands[0])
 	eq(timeline.selection_count(), 1, "指令单选")
 	eq(timeline.selected_command(), chart.commands[0], "selected_command 返回当前指令")
+	timeline.free()
+	workspace.free()
+	app.free()
+	return true
+
+
+## 演出指令也要能 Ctrl+C/X/V：复制参数，粘贴到播放头，Cut 保留剪贴板。
+func test_ring_timeline_command_copy_paste() -> bool:
+	var app: App = load("res://charter/app.gd").new()
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	app.chart = chart
+	var workspace := RingWorkspace.new()
+	workspace._app = app
+	workspace._view_beats = 16.0
+	var timeline := RingTimeline.new(workspace)
+	workspace._timeline = timeline
+	timeline.size = Vector2(1600, 420)
+	var command := chart.add_command("TEXT", 2.0)
+	command.params["content"] = "复制我"
+	command.duration = 3.0
+	timeline.select_command(command, false)
+	timeline.copy_selection()
+	eq(timeline._clipboard.size(), 1, "复制一条指令")
+	eq(String(timeline._clipboard[0].get("kind", "")), "command", "剪贴板记的是指令")
+	app.playhead_beat = 9.0
+	timeline.paste()
+	eq(chart.commands.size(), 2, "粘贴新增一条指令")
+	var pasted: AlphaCommand = chart.commands[1]
+	near(pasted.beat, 9.0, 0.001, "粘贴落在播放头")
+	eq(pasted.name, "TEXT", "粘贴保留指令类型")
+	eq(pasted.text_value("content"), "复制我", "粘贴保留参数")
+	near(pasted.duration, 3.0, 0.001, "粘贴保留持续拍数")
+	ok(timeline.selected_command() == pasted, "粘贴后选中新指令")
+	timeline.cut_selection()
+	eq(chart.commands.size(), 1, "剪切删除选中的指令")
+	eq(timeline._clipboard.size(), 1, "剪切后剪贴板仍可粘贴")
+	app.playhead_beat = 12.0
+	timeline.paste()
+	eq(chart.commands.size(), 2, "剪切后可再次粘贴")
+	timeline.free()
+	workspace.free()
+	app.free()
+	return true
+
+
+## 音符显示轨：缓存按音符版本构建，能被命中/悬停查询，且排在关键帧轨上方。
+func test_ring_note_lane_cache() -> bool:
+	var app: App = load("res://charter/app.gd").new()
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	for i in 1000:
+		var note := Note.new("tap" if i % 4 else "hold", float(i) * 0.25, 0.0, 60.0)
+		note.id = i + 1
+		if note.type == "hold":
+			note.end_beat = note.beat + 2.0
+		chart.notes.append(note)
+	app.chart = chart
+	var workspace := RingWorkspace.new()
+	workspace._app = app
+	var timeline := RingTimeline.new(workspace)
+	workspace._timeline = timeline
+	timeline.size = Vector2(1600, 420)
+	ok(timeline._lane_top(RingTimeline.LANE_NOTES) < timeline._lane_top(RingTimeline.LANE_SHAPE),
+		"音符轨在形状轨上方")
+	eq(timeline._lane_at(RingTimeline.NOTE_TOP + 4.0), RingTimeline.LANE_NOTES, "音符轨能命中鼠标")
+	eq(timeline._lane_items(RingTimeline.LANE_NOTES).size(), 1000, "音符轨取到全部音符")
+	timeline._ensure_note_cache(chart)
+	eq(timeline._note_beats.size(), 1000, "音符缓存按音符数量构建")
+	near(timeline._note_beats[1], 0.25, 0.001, "缓存按拍排序")
+	near(timeline._note_spans[0], 2.0, 0.001, "Hold 缓存持续长度")
+	eq(timeline._hit_note(Vector2(timeline._x_for(0.25), RingTimeline.NOTE_TOP + 4.0)), 1,
+		"音符轨按光标附近拍命中")
+	eq(timeline._hit_note(Vector2(timeline._x_for(5.125), RingTimeline.NOTE_TOP + 4.0)), -1,
+		"远离音符时不会误命中")
+	timeline._ensure_note_cache(chart)
+	eq(timeline._note_beats.size(), 1000, "同一版本不重复构建")
 	timeline.free()
 	workspace.free()
 	app.free()
