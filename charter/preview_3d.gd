@@ -40,6 +40,12 @@ const HOLD_SLIP_DIM := 0.35
 ## 从音符落在环上的实际大小起步，不再额外放大基座。
 const NOTE_POP_SEC := 0.28
 const NOTE_POP_SCALE := 1.5
+## Seek 的方向色只换 3D 预览（WACCA：朝里红、朝外蓝）；时间轴/画布仍用 UITheme.SEEK_*。
+const SEEK_IN_COLOR := Color("#FF3B55")
+const SEEK_OUT_COLOR := Color("#3FA9FF")
+const SEEK_CHEVRON_COUNT := 16
+## Anchor 两段式：判定前这段时间内，多押线与落点目标环才淡入。
+const ANCHOR_REVEAL_MS := 350.0
 
 var chart_override: Chart = null
 ## 洋葱皮：相邻关键帧的轮廓，由环工作区填。
@@ -4508,21 +4514,117 @@ func _draw_notes(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 			"tap":
 				_draw_tap_note(canvas, chart, note, t, pre)
 			"anchor":
-				var grow := _approach(chart, note.beat, t, note.group_id)
-				var p := _flying_position(chart, note.angle, note.beat, t, pre, note.group_id)
-				var ns := maxf(1.0, _note_scale())
-				var group_mul := chart.group_alpha(note.group_id) / 255.0
-				if _valid_point(p):
-					canvas.draw_circle(p, 40.0 * ns * grow, Color(UITheme.VIOLET.r, UITheme.VIOLET.g, UITheme.VIOLET.b, 0.14 * group_mul))
-				# 多押线：两颗锚点之间一条细实线，随下落逐渐显现。
-				var partner := chart.anchor_partner(note)
-				if partner != null and note.id < partner.id:
-					var q := _flying_position(chart, partner.angle, partner.beat, t, pre, partner.group_id)
-					if _valid_point(p) and _valid_point(q):
-						canvas.draw_line(p, q, Color(UITheme.VIOLET.r, UITheme.VIOLET.g, UITheme.VIOLET.b, 0.55 * grow * group_mul), 2.0, true)
-				_draw_diamond(canvas, p, 24.0 * ns * clampf(grow, 0.35, 1.0), Color(UITheme.VIOLET.r, UITheme.VIOLET.g, UITheme.VIOLET.b, group_mul))
+				_draw_anchor_note(canvas, chart, note, t, pre)
 			"bell":
 				_draw_bell(canvas, chart, note, t)
+
+
+## 锚点两段式：前段只落一颗小菱形预警图标；判定前 0.35 秒，
+## 落点目标环与多押线才淡入，菱形同时长到完整大小。
+## 编辑器里选中的锚点强制完整形态，拖拽时不会只剩预警图标。
+func _draw_anchor_note(canvas: Control, chart: Chart, note: Note, t: float, pre: float) -> void:
+	var p := _flying_position(chart, note.angle, note.beat, t, pre, note.group_id)
+	if not _valid_point(p):
+		return
+	var group_mul := chart.group_alpha(note.group_id) / 255.0
+	if group_mul <= 0.001:
+		return
+	var ns := maxf(1.0, _note_scale())
+	var grow := _approach(chart, note.beat, t, note.group_id)
+	var reveal := _anchor_reveal(chart, note, t)
+	if not playtest_mode and _app != null and _app.selected_notes.has(note.id):
+		reveal = 1.0
+	var violet := Color(UITheme.VIOLET.r, UITheme.VIOLET.g, UITheme.VIOLET.b, group_mul)
+	var center := project_design(Vector2.ZERO)
+	# 预警段拖尾：沿下落方向留两颗更小的残影，读作“还在飞”。
+	if reveal < 0.999 and _valid_point(center) and p.distance_to(center) > 26.0 * ns:
+		var back := (center - p).normalized()
+		for k in 2:
+			var trail := p + back * (15.0 + 11.0 * float(k)) * ns
+			var alpha := (0.20 - 0.07 * float(k)) * (1.0 - reveal) * group_mul
+			if alpha > 0.01:
+				_draw_anchor_trail(canvas, trail, (9.5 - 2.0 * float(k)) * ns,
+					Color(violet.r, violet.g, violet.b, alpha))
+	# 完整形态：多押线最底层，其次两颗目标环，最后才是菱形。
+	if reveal > 0.01:
+		var partner := chart.anchor_partner(note)
+		if partner != null and note.id < partner.id:
+			var q := _flying_position(chart, partner.angle, partner.beat, t, pre, partner.group_id)
+			if _valid_point(q):
+				canvas.draw_line(p, q,
+					Color(violet.r, violet.g, violet.b, 0.58 * reveal * group_mul), 2.0, true)
+		var target_r := 40.0 * ns * (0.84 + 0.16 * reveal)
+		canvas.draw_circle(p, target_r,
+			Color(violet.r, violet.g, violet.b, 0.10 * reveal * group_mul))
+		canvas.draw_arc(p, target_r, 0.0, TAU, 40,
+			Color(violet.r, violet.g, violet.b, 0.62 * reveal * group_mul), 1.6, true)
+		canvas.draw_arc(p, target_r + 3.0 * ns, 0.0, TAU, 40,
+			Color(1, 1, 1, 0.22 * reveal * group_mul), 1.0, true)
+	# 图标本体：从小长到大；预警段带一点呼吸，完整形态时停止。
+	var pulse := 0.5 + 0.5 * sin(_anim_ms() / 1000.0 * 3.2 + float(note.id))
+	var radius := maxf(10.0, 24.0 * clampf(grow, 0.35, 1.0)) * ns
+	radius *= 1.0 + 0.05 * pulse * (1.0 - reveal)
+	_draw_diamond(canvas, p, radius, violet)
+
+
+## 锚点预警拖尾用的小菱形：只画轮廓 + 很淡的填充，不抢主体的白描边。
+func _draw_anchor_trail(canvas: Control, point: Vector2, radius: float, color: Color) -> void:
+	if not _valid_point(point):
+		return
+	var points := PackedVector2Array([
+		point + Vector2(0.0, -radius),
+		point + Vector2(radius, 0.0),
+		point + Vector2(0.0, radius),
+		point + Vector2(-radius, 0.0),
+	])
+	canvas.draw_colored_polygon(points, Color(color.r, color.g, color.b, color.a * 0.55))
+	points.append(points[0])
+	canvas.draw_polyline(points, Color(color.r, color.g, color.b, color.a), 1.2, true)
+
+
+## 0..1：锚点距离判定还有 ms_to_hit 毫秒时，完整形态的显现比例。
+static func anchor_reveal_factor(ms_to_hit: float) -> float:
+	return ease_out_cubic(clampf(1.0 - ms_to_hit / ANCHOR_REVEAL_MS, 0.0, 1.0))
+
+
+func _anchor_reveal(chart: Chart, note: Note, t: float) -> float:
+	var ms_to_hit := chart.timing.beat_to_chart_ms(note.beat) - chart.timing.beat_to_chart_ms(t)
+	return anchor_reveal_factor(ms_to_hit)
+
+
+static func seek_direction_color(orien: int) -> Color:
+	return SEEK_IN_COLOR if orien == 1 else SEEK_OUT_COLOR
+
+
+## WACCA 式 V 形箭头：tip 朝 dir，背面中间凹进去。返回 4 个点。
+static func seek_chevron_polygon(base: Vector2, dir: Vector2, tangent: Vector2, half_w: float, depth: float) -> PackedVector2Array:
+	return PackedVector2Array([
+		base + dir * depth * 0.55,
+		base + tangent * half_w - dir * depth * 0.45,
+		base + dir * depth * 0.08,
+		base - tangent * half_w - dir * depth * 0.45,
+	])
+
+
+static func scaled_polygon(points: PackedVector2Array, origin: Vector2, factor: float) -> PackedVector2Array:
+	var out := PackedVector2Array()
+	for p in points:
+		out.append(origin + (p - origin) * factor)
+	return out
+
+
+## 环带内外边：把路径上的每个点沿离环心方向偏移 half。
+static func band_edges(points: PackedVector2Array, center: Vector2, half: float) -> Dictionary:
+	var outer := PackedVector2Array()
+	var inner := PackedVector2Array()
+	for p in points:
+		var radial := p - center
+		if radial.length_squared() < 0.0001:
+			radial = Vector2.RIGHT
+		var n := radial.normalized()
+		outer.append(p + n * half)
+		inner.append(p - n * half)
+	return {"outer": outer, "inner": inner}
 
 
 func _draw_tap_note(canvas: Control, chart: Chart, note: Note, t: float, pre: float) -> void:
@@ -4604,30 +4706,29 @@ func _draw_seeks(canvas: Control, chart: Chart, t: float) -> void:
 		if _valid_point(edge):
 			ring_radius = maxf(ring_radius, center.distance_to(edge))
 	ring_radius = maxf(20.0, ring_radius)
-	var pre_ms := _pre_read_ms(chart)
 	var now_ms := chart.timing.beat_to_chart_ms(t)
 	# 必须把整个预读窗口都取进来：Seek 从 note.beat - pre 就开始从圆心长大。
 	for note in _notes_around(chart, t, 2.0, 0.5):
 		if note.type != "seek" or t < _spawn_beat(chart, note.beat, note.group_id) or t > note.beat + 0.5:
 			continue
 		var grow := _approach(chart, note.beat, t, note.group_id)
-		var since_ms := grow * pre_ms
 		var state := note_state(note.id)
 		var exit_ms := -1.0
 		if note_state_beats.has(note.id):
 			exit_ms = (t - float(note_state_beats[note.id])) * 60000.0 / maxf(1.0, chart.timing.bpm_at(t))
-		var color := UITheme.SEEK_IN if note.seek_orien == 1 else UITheme.SEEK_OUT
+		var inward := note.seek_orien == 1
+		var color := seek_direction_color(note.seek_orien)
 		var group_mul := chart.group_alpha(note.group_id) / 255.0
 		var fade := 1.0
 		var ring_scale := 1.0
 		var push := 0.0
 		var flash := 0.0
 		if state == "hit" and exit_ms >= 0.0:
-			# 命中：80ms 外扩 6% 并淡出，箭头再往外推 18px。
+			# 命中：80ms 外扩 6% 并淡出，箭头沿方向再推 22px。
 			var p := clampf(exit_ms / 80.0, 0.0, 1.0)
 			fade = 1.0 - p
 			ring_scale = 1.0 + 0.06 * p
-			push = 18.0 * ease_out_cubic(p)
+			push = 22.0 * ease_out_cubic(p)
 		elif state == "miss" and exit_ms >= 0.0:
 			# 失误：转红闪两次，不震屏。
 			var p := clampf(exit_ms / 120.0, 0.0, 1.0)
@@ -4637,51 +4738,69 @@ func _draw_seeks(canvas: Control, chart: Chart, t: float) -> void:
 		elif t > note.beat:
 			fade = clampf((note.beat + 0.5 - t) / 0.5, 0.0, 1.0)
 		fade *= group_mul
+		if fade <= 0.01:
+			continue
 		# 和 Tap/Bell 同一条下落曲线：出生在 1/6 环半径，判定那一拍正好落到环上。
-		# 原来用「屏幕最大半径的正圆」，椭圆环上会在 60% 进度就撞到短轴边界，
-		# 看起来就是 seek 比别的音符早到、也更快。
 		var scale_now := seek_grow_scale(grow) * ring_scale
-		var ring_points := _arc_points_scaled(0.0, 360.0, t, 96, scale_now)
-		if ring_points.size() > 1:
-			canvas.draw_polyline(ring_points, Color(color.r, color.g, color.b, 0.16 * fade), 10.0, true)
-			canvas.draw_polyline(ring_points, Color(color.r, color.g, color.b, 0.95 * fade), 3.0, true)
-			if flash > 0.0:
-				canvas.draw_polyline(ring_points, Color(1, 1, 1, 0.85 * flash * fade), 2.0, true)
-		# 箭头的锚点也走环上的点；正圆时它和旧版一模一样。
+		var points := _arc_points_scaled(0.0, 360.0, t, 96, scale_now)
+		if points.size() < 8:
+			continue
 		var radius := ring_radius * scale_now
-		var inward := note.seek_orien == 1
-		var count := 8
-		# 方向流水：离判定越近跑得越快（40 → 90 px/s）。
-		var near := clampf((since_ms - (pre_ms - 600.0)) / 600.0, 0.0, 1.0)
-		var speed := lerpf(40.0, 90.0, near) * 0.001
-		var drift := fposmod(now_ms * speed, 14.0)
+		var band_w := clampf(radius * 0.085, 16.0, 60.0) * float(_skin()["band"])
+		var half_band := band_w * 0.5
+		var edges := band_edges(points, center, half_band)
+		var outer: PackedVector2Array = edges["outer"]
+		var inner: PackedVector2Array = edges["inner"]
+		var pulse := 0.5 + 0.5 * sin(now_ms * 0.0028)
+		# 环带：柔光 → 深色厚带 → 外圈冷白亮边 + 内圈方向色亮边。
+		canvas.draw_polyline(points, Color(color.r, color.g, color.b, (0.08 + 0.05 * pulse) * fade),
+			band_w * 2.2, false)
+		var fill := color.darkened(0.62)
+		canvas.draw_polyline(points, Color(fill.r, fill.g, fill.b, 0.88 * fade), band_w, false)
+		canvas.draw_polyline(outer, Color(0.70, 0.94, 1.0, 0.88 * fade), 2.0, true)
+		canvas.draw_polyline(inner, Color(color.r, color.g, color.b, 0.95 * fade), 2.6, true)
+		if flash > 0.0:
+			canvas.draw_polyline(outer, Color(1, 1, 1, 0.85 * flash * fade), 2.4, true)
+			canvas.draw_polyline(inner, Color(1, 1, 1, 0.85 * flash * fade), 2.4, true)
+		# WACCA 式 V 形箭头：整圈 16 支，静态，随接近轻微呼吸。
+		var count := SEEK_CHEVRON_COUNT
+		var spacing_px := TAU * radius / float(count)
+		var half_w := maxf(7.0, spacing_px * 0.30)
+		var depth := maxf(10.0, band_w * 1.10)
+		var chevron_scale := 1.0 + 0.035 * (pulse - 0.5)
+		var alpha := 0.92 * fade
+		var rim := Color(1.0, 0.94, 0.96) if inward else Color(0.92, 0.96, 1.0)
+		var chevron_color := Color(1, 1, 1) if flash > 0.0 else color
+		var bevel := chevron_color.darkened(0.45)
 		for i in count:
-			var a := TAU * float(i) / float(count) - PI * 0.5
-			var dir := Vector2(cos(a), sin(a))
-			# 里向心、外向外：方向与滚轮一致（外 = 上滑）。
-			var sign := -1.0 if inward else 1.0
-			var arrow_p := clampf((since_ms - float(i) * 8.0) / 140.0, 0.0, 1.0)
-			var scale := lerpf(0.6, 1.0, ease_out_back(arrow_p))
-			var alpha := ease_out_cubic(arrow_p) * 0.9 * fade
-			if alpha <= 0.001:
+			var deg := 360.0 * float(i) / float(count)
+			var base := _arc_point_scaled(deg, t, scale_now)
+			if not _valid_point(base):
 				continue
-			for k in 3:
-				var layer := float(k)
-				if k > 0 and arrow_p < 1.0:
-					continue
-				var travel := sign * (drift + 14.0 * layer + push)
-				var anchor := _arc_point_scaled(rad_to_deg(a), t, scale_now)
-				if not _valid_point(anchor):
-					anchor = center + dir * radius
-				var base := anchor + dir * travel
-				var tip := base + dir * sign * 8.0 * scale
-				var side := Vector2(-dir.y, dir.x) * 4.5 * scale
-				var layer_alpha := alpha * (1.0 if k == 0 else 0.35 / layer)
-				canvas.draw_colored_polygon(PackedVector2Array([
-					tip, base + side, base - side,
-				]), Color(color.r, color.g, color.b, layer_alpha))
+			var dir := center - base
+			if dir.length_squared() < 0.0001:
+				continue
+			dir = dir.normalized()
+			if not inward:
+				dir = -dir
+			var tangent := Vector2(-dir.y, dir.x)
+			base += dir * push
+			var poly := seek_chevron_polygon(base, dir, tangent,
+				half_w * chevron_scale, depth * chevron_scale)
+			canvas.draw_colored_polygon(scaled_polygon(poly, base, 1.26),
+				Color(0, 0, 0, 0.52 * alpha))
+			canvas.draw_colored_polygon(scaled_polygon(poly, base, 1.12),
+				Color(rim.r, rim.g, rim.b, 0.92 * alpha))
+			canvas.draw_colored_polygon(poly,
+				Color(chevron_color.r, chevron_color.g, chevron_color.b, alpha))
+			var inner_poly := scaled_polygon(poly, base, 0.52)
+			for j in inner_poly.size():
+				inner_poly[j] += dir * depth * 0.06
+			canvas.draw_colored_polygon(inner_poly,
+				Color(bevel.r, bevel.g, bevel.b, 0.55 * alpha))
 		var label := "SEEK IN" if inward else "SEEK OUT"
-		_draw_label(canvas, label, center + Vector2(radius + 12.0, -radius - 8.0),
+		_draw_label(canvas, label,
+			center + Vector2(radius + half_band + 12.0, -radius - half_band - 8.0),
 			color if flash <= 0.0 else Color(1, 1, 1, 1))
 
 
