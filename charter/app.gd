@@ -55,7 +55,7 @@ var msaa_3d_level: int = 1
 var ring_pad_rect: Array = []
 var note_detail_fine: bool = true
 var note_glow: bool = true
-## path 身体画法："tread"（粗 chevron 履带，默认）/ "ribbon"（半透明丝带）。
+## path 身体画法："tread"（粗 chevron 履带，默认）/ "ribbon"（半透明丝带）/ "comet"（彗星星尘尾）。
 var path_style: String = "tread"
 ## 时间页：改 BPM 时让后面的音符/事件保持真实毫秒位置（而不是保持拍位）。
 var bpm_lock_ms: bool = false
@@ -632,7 +632,7 @@ func _load_settings() -> void:
 			note_detail_fine = bool(data.get("note_detail_fine", note_detail_fine))
 			note_glow = bool(data.get("note_glow", note_glow))
 			var style_mode := String(data.get("path_style", path_style))
-			path_style = style_mode if style_mode in ["tread", "ribbon"] else "tread"
+			path_style = style_mode if style_mode in ["tread", "ribbon", "comet"] else "tread"
 			bpm_lock_ms = bool(data.get("bpm_lock_ms", bpm_lock_ms))
 			var trail_mode := String(data.get("cursor_trail", cursor_trail))
 			cursor_trail = trail_mode if trail_mode in ["long", "short", "off"] else "long"

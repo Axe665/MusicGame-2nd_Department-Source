@@ -43,7 +43,7 @@ const QUALITY_OPTIONS := [
 	{"key": "use_3d_ring", "label": "3D 环", "choices": [["开", 158], ["关", 159]]},
 	{"key": "note_detail_fine", "label": "音符精细度", "choices": [["全画质", 63], ["省电", 64]]},
 	{"key": "note_glow", "label": "音符光晕", "choices": [["开", 65], ["关", 66]]},
-	{"key": "path_style", "label": "Path 画法", "choices": [["履带（粗，默认）", 180], ["丝带（半透明）", 181]]},
+	{"key": "path_style", "label": "Path 画法", "choices": [["履带（粗，默认）", 180], ["丝带（半透明）", 181], ["彗星（星尘尾）", 182]]},
 	{"key": "cursor_trail", "label": "光标拖尾", "choices": [["长", 67], ["短", 68], ["关", 69]]},
 	{"key": "fx_budget", "label": "命中特效", "choices": [["完整", 70], ["精简", 71], ["关", 72]]},
 	{"key": "ring_3d_scale", "label": "3D 环分辨率", "choices": [["高 0.85", 163], ["中 0.65", 164], ["低 0.5", 165]]},
@@ -1249,7 +1249,7 @@ func _quality_index(key: String) -> int:
 		"note_glow":
 			return 0 if _app.note_glow else 1
 		"path_style":
-			return 0 if _app.path_style == "tread" else 1
+			return clampi(["tread", "ribbon", "comet"].find(_app.path_style), 0, 2)
 		"cursor_trail":
 			return ["long", "short", "off"].find(_app.cursor_trail)
 		"fx_budget":
@@ -1289,7 +1289,7 @@ func _set_quality_index(key: String, index: int) -> void:
 		"note_glow":
 			_app.note_glow = index == 0
 		"path_style":
-			_app.path_style = "tread" if index == 0 else "ribbon"
+			_app.path_style = ["tread", "ribbon", "comet"][clampi(index, 0, 2)]
 			# 画法只影响画面，不该把「预设」打成自定义。
 			_apply_visual_options()
 			return

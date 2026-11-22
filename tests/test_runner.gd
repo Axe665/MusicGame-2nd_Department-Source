@@ -117,6 +117,10 @@ func _initialize() -> void:
 		"test_path_smoothing",
 		"test_seek_limit_animation_curves",
 		"test_seek_grow_matches_tap",
+		"test_seek_wacca_visuals",
+		"test_anchor_warning_reveal",
+		"test_limit_web_layout",
+		"test_comet_path_taper",
 		"test_limit_dwell_once",
 		"test_bpm_snap_multipliers",
 		"test_path_zone_granularity",
@@ -6091,6 +6095,70 @@ func test_seek_grow_matches_tap() -> bool:
 	near(Preview3D.seek_grow_scale(0.5), lerpf(Note.SPAWN_LENGTH_RATIO, 1.0, 0.5), 0.000001,
 		"seek 与 Tap 共用同一条线性下落曲线")
 	near(Preview3D.seek_grow_scale(-1.0), Note.SPAWN_LENGTH_RATIO, 0.000001, "进度为负时夹到出生点")
+	return true
+
+
+## WACCA 化 Seek：20 支宽 V、红内蓝外只作用于 3D 预览、环带内外边正确。
+func test_seek_wacca_visuals() -> bool:
+	eq(Preview3D.seek_direction_color(1), Preview3D.SEEK_IN_COLOR, "seek in uses the WACCA red")
+	eq(Preview3D.seek_direction_color(0), Preview3D.SEEK_OUT_COLOR, "seek out uses the WACCA blue")
+	ok(Preview3D.SEEK_IN_COLOR != UITheme.SEEK_IN, "the 3D seek-in color stays preview-only")
+	ok(Preview3D.SEEK_OUT_COLOR != UITheme.SEEK_OUT, "the timeline keeps the old seek-out color")
+	eq(Preview3D.SEEK_CHEVRON_COUNT, 20, "the WACCA ring uses 20 chevrons")
+	var base := Vector2(100, 100)
+	var dir := Vector2.LEFT
+	var tangent := Vector2(0, 1)
+	var poly := Preview3D.seek_chevron_polygon(base, dir, tangent, 20.0, 30.0)
+	eq(poly.size(), 6, "a WACCA V chevron has six points")
+	ok(poly[0].x < base.x, "the tip points along dir")
+	ok(poly[1].y > base.y and poly[5].y < base.y, "the outer tails sit on both sides")
+	ok(poly[3].x > poly[0].x and poly[3].x < poly[1].x, "the inner notch is between the tip and the tails")
+	var tri := Geometry2D.triangulate_polygon(poly)
+	ok(tri.size() >= 3, "the concave V chevron triangulates")
+	var scaled := Preview3D.scaled_polygon(poly, base, 2.0)
+	near(scaled[0].x, base.x + (poly[0].x - base.x) * 2.0, 0.001, "scaled polygons keep the base fixed")
+	var edges := Preview3D.band_edges(PackedVector2Array([Vector2(110, 100), Vector2(100, 120)]), base, 10.0)
+	var outer: PackedVector2Array = edges["outer"]
+	var inner: PackedVector2Array = edges["inner"]
+	near(outer[0].x, 120.0, 0.001, "the band outer edge moves away from the center")
+	near(inner[0].x, 100.0, 0.001, "the band inner edge moves toward the center")
+	near(outer[1].y, 130.0, 0.001, "the vertical sample also gets an outer offset")
+	return true
+
+
+## 锚点两段式：判定前 0.35 秒淡入完整形态，之前只有落点预警。
+func test_anchor_warning_reveal() -> bool:
+	near(Preview3D.anchor_reveal_factor(Preview3D.ANCHOR_REVEAL_MS), 0.0, 0.0001, "the full anchor is hidden at the window edge")
+	near(Preview3D.anchor_reveal_factor(Preview3D.ANCHOR_REVEAL_MS + 100.0), 0.0, 0.0001, "the warning stage lasts beyond the window")
+	near(Preview3D.anchor_reveal_factor(0.0), 1.0, 0.0001, "the full anchor is visible on the beat")
+	near(Preview3D.anchor_reveal_factor(-100.0), 1.0, 0.0001, "after the beat the full anchor stays visible")
+	var mid := Preview3D.anchor_reveal_factor(Preview3D.ANCHOR_REVEAL_MS * 0.5)
+	ok(mid > 0.5 and mid < 1.0, "the reveal front-loads near the beat")
+	return true
+
+
+## Estella 蛛网：8 向主肋（360° 时 9 条线，首尾重合）+ 3 圈弧。
+func test_limit_web_layout() -> bool:
+	eq(Preview3D.limit_web_rib_count(360.0), 9, "a full circle uses 8 unique ribs")
+	eq(Preview3D.limit_web_rib_count(180.0), 5, "a half circle keeps the 45-degree skeleton")
+	eq(Preview3D.limit_web_rib_count(90.0), 3, "a quarter circle has three ribs")
+	eq(Preview3D.limit_web_rib_count(45.0), 2, "a narrow sector keeps its two edges")
+	eq(Preview3D.limit_web_rib_count(10.0), 2, "very narrow sectors never collapse below two ribs")
+	var scales := Preview3D.limit_web_arc_scales()
+	eq(scales.size(), 3, "the web has three concentric arcs")
+	near(scales[0], 0.76, 0.0001, "the first arc sits near the inner edge")
+	near(scales[2], 0.92, 0.0001, "the last arc sits near the outer edge")
+	return true
+
+
+## 彗星 Path：头粗尾细、透明度单调衰减。
+func test_comet_path_taper() -> bool:
+	near(Preview3D.comet_width_at(0.0, 1.0), 18.0, 0.001, "the comet head is the widest")
+	near(Preview3D.comet_width_at(1.0, 1.0), 3.0, 0.001, "the tail tip stays readable")
+	ok(Preview3D.comet_width_at(0.4, 1.0) > Preview3D.comet_width_at(0.8, 1.0), "the dust tail tapers")
+	near(Preview3D.comet_alpha_at(0.0), 1.0, 0.001, "the comet head is opaque")
+	near(Preview3D.comet_alpha_at(1.0), 0.0, 0.001, "the tail tip fades out")
+	ok(Preview3D.comet_alpha_at(0.5) > Preview3D.comet_alpha_at(0.9), "the tail alpha falls monotonically")
 	return true
 
 
