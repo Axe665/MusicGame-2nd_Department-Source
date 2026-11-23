@@ -358,6 +358,7 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 		_preview.note_detail_fine = bool(_app.note_detail_fine)
 		_preview.note_glow = bool(_app.note_glow)
 		_preview.path_style = String(_app.path_style)
+		_preview.limit_exit_animation = bool(_app.limit_exit_animation)
 		_preview.cursor_trail_mode = String(_app.cursor_trail)
 		_preview.fx_budget = String(_app.fx_budget)
 		_preview.bar_lines_visible = bool(_app.bar_lines)

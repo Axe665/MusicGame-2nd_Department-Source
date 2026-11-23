@@ -55,8 +55,8 @@ var msaa_3d_level: int = 1
 var ring_pad_rect: Array = []
 var note_detail_fine: bool = true
 var note_glow: bool = true
-## path 身体画法："tread"（粗 chevron 履带，默认）/ "ribbon"（半透明丝带）。
-var path_style: String = "tread"
+var path_style: String = Preview3D.PATH_STYLES[0]
+var limit_exit_animation: bool = true
 ## 时间页：改 BPM 时让后面的音符/事件保持真实毫秒位置（而不是保持拍位）。
 var bpm_lock_ms: bool = false
 ## long / short / off
@@ -633,7 +633,8 @@ func _load_settings() -> void:
 			note_detail_fine = bool(data.get("note_detail_fine", note_detail_fine))
 			note_glow = bool(data.get("note_glow", note_glow))
 			var style_mode := String(data.get("path_style", path_style))
-			path_style = style_mode if style_mode in ["tread", "ribbon"] else "tread"
+			path_style = style_mode if style_mode in Preview3D.PATH_STYLES else Preview3D.PATH_STYLES[0]
+			limit_exit_animation = bool(data.get("limit_exit_animation", true))
 			bpm_lock_ms = bool(data.get("bpm_lock_ms", bpm_lock_ms))
 			var trail_mode := String(data.get("cursor_trail", cursor_trail))
 			cursor_trail = trail_mode if trail_mode in ["long", "short", "off"] else "long"
@@ -847,6 +848,7 @@ func effective_latency_sec() -> float:
 
 func save_settings() -> void:
 	var data := {"settings_version": 1, "path_wait_indicator": path_wait_indicator, "note_skin": note_skin, "hit_fx_style": hit_fx_style, "show_perfect_fx": show_perfect_fx, "hit_sfx_style": hit_sfx_style, "ffmpeg": ffmpeg_path, "frame_cap": frame_cap, "video_encoder": video_encoder, "audio_buffer_ms": audio_buffer_ms, "playtest_offset_ms": playtest_offset_ms, "audio_latency_ms": audio_latency_ms, "music_volume": music_volume, "sfx_volume": sfx_volume, "dynamic_offset": dynamic_offset, "playtest_auto": playtest_auto, "playtest_mirror": playtest_mirror, "playback_scroll": playback_scroll, "background_brightness": background_brightness, "mouse_tilt": mouse_tilt, "startup_tabs": startup_tabs, "osu_favorites": osu_favorites, "last_bias_ms": last_bias_ms, "cursor_scale": cursor_scale, "flow_scale": flow_scale, "aa_2d_level": aa_2d_level, "msaa_3d_level": msaa_3d_level, "ring_pad_rect": ring_pad_rect, "angle_divisions": angle_divisions, "note_detail_fine": note_detail_fine, "note_glow": note_glow, "path_style": path_style, "bpm_lock_ms": bpm_lock_ms, "cursor_trail": cursor_trail, "fx_budget": fx_budget, "ring_3d_scale": ring_3d_scale, "bar_lines": bar_lines, "quality_preset": quality_preset,
+		"limit_exit_animation": limit_exit_animation,
 		"hud_scale": hud_scale, "hud_combo_mode": hud_combo_mode, "hud_progress_style": hud_progress_style,
 		"hud_judge_position": hud_judge_position, "hud_judge_filter": hud_judge_filter, "hud_opacity": hud_opacity,
 		"hud_show_title": hud_show_title, "hud_show_difficulty": hud_show_difficulty,

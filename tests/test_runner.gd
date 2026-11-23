@@ -117,6 +117,7 @@ func _initialize() -> void:
 		"test_path_smoothing",
 		"test_seek_limit_animation_curves",
 		"test_seek_grow_matches_tap",
+		"test_seek_warning_order",
 		"test_limit_dwell_once",
 		"test_bpm_snap_multipliers",
 		"test_path_zone_granularity",
@@ -1282,14 +1283,17 @@ func test_path_run_split() -> bool:
 		Vector2(300, 0), Vector2(400, 0), Vector2(500, 0),
 	])
 	var middle: Array[bool] = [false, false, true, true, false, false]
-	var split := Preview3D.split_path_runs(middle_line, middle)
+	var starts: Array[int] = []
+	var split := Preview3D.split_path_runs(middle_line, middle, starts)
 	eq(split.size(), 2, "erased middle splits into two visible runs")
+	eq(starts, [0, 4], "visible comet guides retain their original sample indices after a cut")
 	var gap := PackedVector2Array([
 		Vector2(0, 0), Vector2(10, 0), Vector2(INF, INF),
 		Vector2(20, 0), Vector2(30, 0),
 	])
 	var gap_flags: Array[bool] = [false, false, false, false, false]
-	eq(Preview3D.split_path_runs(gap, gap_flags).size(), 2, "invalid sample starts a new run")
+	eq(Preview3D.split_path_runs(gap, gap_flags, starts).size(), 2, "invalid sample starts a new run")
+	eq(starts, [0, 3], "a new projection replaces previous comet guide indices")
 	return true
 
 
@@ -1307,6 +1311,8 @@ func test_style_presets() -> bool:
 	eq(Preview3D.tier_fx_scale("MISS"), 1.0, "a MISS keeps the full hit effect")
 	var cursor := Preview3D.new()
 	near(cursor.cursor_scale, 1.0, 0.0001, "cursor scale defaults to 1x")
+	near(Preview3D.cursor_main_diameter(1.0), 30.6, 0.0001, "Path belt fits the white cursor ring")
+	near(Preview3D.cursor_main_diameter(1.5), 45.9, 0.0001, "Path belt follows a live cursor scale change")
 	cursor.free()
 	ok(Playtest.PATH_TAIL_RADIUS >= 180.0, "path tail judgement is forgiving")
 	eq(Playtest.BELL_WINDOW_MS, 130.0, "a gold note keeps a forgiving drag window")
@@ -6075,11 +6081,15 @@ func test_seek_limit_animation_curves() -> bool:
 	near(Preview3D.ease_out_cubic(0.0), 0.0, 0.0001, "ease out starts at 0")
 	near(Preview3D.ease_out_cubic(1.0), 1.0, 0.0001, "ease out ends at 1")
 	ok(Preview3D.ease_out_cubic(0.5) > 0.5, "ease out front-loads the motion")
-	near(Preview3D.limit_fill_alpha(0.0), 0.12, 0.0001, "a limit region starts almost empty")
-	ok(Preview3D.limit_fill_alpha(110.0) > 0.48, "110ms in, the fill is nearly solid")
-	ok(Preview3D.limit_fill_alpha(1000.0) < 0.62, "breathing never turns the fill opaque")
-	near(Preview3D.limit_flash_alpha(0.0), 0.35, 0.0001, "activation flashes white")
-	near(Preview3D.limit_flash_alpha(70.0), 0.0, 0.0001, "the flash is gone after 70ms")
+	var incoming: Vector3 = Preview3D.limit_visual_state(0.5, -100.0)
+	ok(incoming.x < 1.0 and incoming.x - incoming.y < 0.32, "the leading edge approaches before the wall fills")
+	var active: Vector3 = Preview3D.limit_visual_state(1.0, 0.0)
+	near(active.x, 1.0, 0.0001, "Limit reaches the judgment ring on activation")
+	near(active.y, 0.68, 0.0001, "the active wall covers the judged depth")
+	near(active.z, 1.0, 0.0001, "the active wall is fully visible")
+	var exiting: Vector3 = Preview3D.limit_visual_state(1.0, Preview3D.LIMIT_EXIT_MS * 0.5)
+	ok(exiting.x > active.x and exiting.x - exiting.y < active.x - active.y, "the wall moves outward and contracts")
+	near(Preview3D.limit_visual_state(1.0, Preview3D.LIMIT_EXIT_MS).z, 0.0, 0.0001, "Limit fades out at the end of its exit")
 	return true
 
 
@@ -6094,6 +6104,33 @@ func test_seek_grow_matches_tap() -> bool:
 	near(Preview3D.seek_grow_scale(0.5), lerpf(Note.SPAWN_LENGTH_RATIO, 1.0, 0.5), 0.000001,
 		"seek 与 Tap 共用同一条线性下落曲线")
 	near(Preview3D.seek_grow_scale(-1.0), Note.SPAWN_LENGTH_RATIO, 0.000001, "进度为负时夹到出生点")
+	return true
+
+
+func test_seek_warning_order() -> bool:
+	var preview: Preview3D = Preview3D.new()
+	var chart: Chart = Chart.new()
+	var inward: Note = Note.new("seek", chart.timing.chart_ms_to_beat(1000.0), 0.0)
+	inward.seek_orien = 1
+	var outward: Note = Note.new("seek", chart.timing.chart_ms_to_beat(1120.0), 0.0)
+	outward.seek_orien = 0
+	chart.notes.assign([inward, outward])
+	var early: Vector2 = preview._seek_warning_strengths(chart, chart.timing.chart_ms_to_beat(690.0), 690.0)
+	eq(early, Vector2.ZERO, "Seek rim is idle more than 300ms before judgment")
+	var ramp: Vector2 = preview._seek_warning_strengths(chart, chart.timing.chart_ms_to_beat(760.0), 760.0)
+	ok(ramp.x > 0.5 and ramp.y == 0.0, "the Seek rim is already bright early in the warning window")
+	var first: Vector2 = preview._seek_warning_strengths(chart, chart.timing.chart_ms_to_beat(950.0), 950.0)
+	ok(first.x > 0.0 and first.y == 0.0, "overlapping windows present the earlier Seek first")
+	var second: Vector2 = preview._seek_warning_strengths(chart, chart.timing.chart_ms_to_beat(1060.0), 1060.0)
+	ok(second.x == 0.0 and second.y > 0.0, "the next Seek gets its own pre-judgment cue")
+	var end: Vector2 = preview._seek_warning_strengths(chart, outward.beat, 1120.0)
+	eq(end, Vector2.ZERO, "the Seek warning ends at judgment")
+	inward.beat = outward.beat
+	chart.mark_dirty()
+	preview._on_chart_changed()
+	var together: Vector2 = preview._seek_warning_strengths(chart, chart.timing.chart_ms_to_beat(1060.0), 1060.0)
+	ok(together.x > 0.0 and together.y > 0.0, "opposite Seek notes at one time keep both colors")
+	preview.free()
 	return true
 
 
