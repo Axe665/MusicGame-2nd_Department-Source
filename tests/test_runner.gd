@@ -261,6 +261,8 @@ func _initialize() -> void:
 		"test_jline_ring_state",
 		"test_filter_region_state",
 		"test_filter_layer_visibility",
+		"test_playfield_quality_settings",
+		"test_storyboard_cache_budget",
 		"test_text_command_center",
 		"test_note_mods_io",
 		"test_note_touch_zones",
@@ -7007,6 +7009,81 @@ func test_filter_layer_visibility() -> bool:
 	preview._update_filter_visibility(null, 0.0)
 	ok(not layer.visible, "a missing chart hides the layer")
 	preview.free()
+	return true
+
+
+func test_playfield_quality_settings() -> bool:
+	var app: Node = load("res://charter/app.gd").new()
+	var preview := Preview3D.new()
+	preview._build_layers()
+	app.use_3d_ring = false
+	app.msaa_3d_level = 0
+	app.ring_3d_scale = "low"
+	preview.apply_playfield_quality(app)
+	ok(not preview._viewport_container.visible, "the flat playfield hides the 3D targets")
+	eq(preview._subviewport.render_target_update_mode, SubViewport.UPDATE_DISABLED, "flat mode skips the 3D render")
+	eq(preview._subviewport.msaa_3d, Viewport.MSAA_DISABLED, "the preview uses the requested AA")
+	near(preview._subviewport.scaling_3d_scale, 0.5, 0.001, "the preview uses the requested scale")
+	app.use_3d_ring = true
+	app.msaa_3d_level = 2
+	preview.apply_playfield_quality(app)
+	ok(preview._viewport_container.visible and preview._force_3d_frame, "reenabling 3D schedules a fresh frame")
+	eq(preview._subviewport.msaa_3d, Viewport.MSAA_4X, "AA changes apply without rebuilding the preview")
+	preview.free()
+	app.free()
+	return true
+
+
+func test_storyboard_cache_budget() -> bool:
+	var previous_textures: Dictionary = Preview3D._tex_cache
+	var previous_boost: Dictionary = Preview3D._tex_boost
+	var previous_sizes: Dictionary[String, int] = Preview3D._tex_sizes
+	var previous_use: Dictionary[String, int] = Preview3D._tex_last_used
+	var previous_boards: Dictionary = Preview3D._board_cache
+	var previous_bytes: int = Preview3D._tex_cache_bytes
+	var previous_trim_ms: int = Preview3D._tex_next_trim_ms
+	var previous_generation: int = Preview3D._tex_generation
+	var previous_eviction_generation: int = Preview3D._tex_eviction_generation
+	Preview3D._tex_cache = {}
+	Preview3D._tex_boost = {}
+	Preview3D._tex_sizes = {}
+	Preview3D._tex_last_used = {}
+	Preview3D._board_cache = {}
+	Preview3D._tex_cache_bytes = 0
+	Preview3D._tex_next_trim_ms = 0
+
+	var image := Image.create_empty(16, 16, false, Image.FORMAT_RGBA8)
+	var bytes: int = image.get_data_size()
+	var now: int = 10000
+	Preview3D._cache_storyboard_texture("active", image, 1.0, now - 4000)
+	Preview3D._cache_storyboard_texture("oldest", image, 2.0, now - 3000)
+	Preview3D._cache_storyboard_texture("recent", image, 1.0, now - 1000)
+	Preview3D.keep_storyboard_texture("active", now)
+	Preview3D._trim_storyboard_textures(now, bytes * 2)
+	ok(not Preview3D._tex_cache.has("oldest") and not Preview3D._tex_boost.has("oldest"), "the oldest unused texture and its metadata are evicted")
+	ok(Preview3D._tex_cache.has("active") and Preview3D._tex_cache.has("recent"), "the trim preserves current and recently used textures")
+	eq(Preview3D._tex_cache_bytes, bytes * 2, "eviction accounts for the released image bytes")
+	Preview3D._trim_storyboard_textures(now + 250, bytes)
+	eq(Preview3D._tex_cache.size(), 2, "an active scene can temporarily exceed the budget")
+	Preview3D._trim_storyboard_textures(now + 4000, bytes)
+	eq(Preview3D._tex_cache.size(), 1, "temporary overage is trimmed after the scene stops using its textures")
+
+	for i in Preview3D.STORYBOARD_BOARD_CACHE_LIMIT:
+		Preview3D._cache_storyboard(str(i), Storyboard.new())
+	Preview3D._get_cached_storyboard("0")
+	Preview3D._cache_storyboard("new", Storyboard.new())
+	ok(Preview3D._board_cache.has("0") and not Preview3D._board_cache.has("1"), "parsed boards also evict the least recently used entry")
+	eq(Preview3D._board_cache.size(), Preview3D.STORYBOARD_BOARD_CACHE_LIMIT, "parsed board cache stays bounded")
+
+	Preview3D._tex_cache = previous_textures
+	Preview3D._tex_boost = previous_boost
+	Preview3D._tex_sizes = previous_sizes
+	Preview3D._tex_last_used = previous_use
+	Preview3D._board_cache = previous_boards
+	Preview3D._tex_cache_bytes = previous_bytes
+	Preview3D._tex_next_trim_ms = previous_trim_ms
+	Preview3D._tex_generation = previous_generation
+	Preview3D._tex_eviction_generation = previous_eviction_generation
 	return true
 
 

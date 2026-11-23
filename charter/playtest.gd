@@ -336,7 +336,6 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	_preview.path_judgement_states = _states
 	_preview.custom_cursor_visible = true
 	_preview.show_hud = true
-	_preview.use_3d_ring = true
 	# 环随鼠标倾斜（远端原版：绕 X/Y 旋转 + 环心轻微平移）。
 	_preview.mouse_tilt = true
 	_preview.show_debug = false
@@ -361,9 +360,8 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 		_preview.path_style = String(_app.path_style)
 		_preview.cursor_trail_mode = String(_app.cursor_trail)
 		_preview.fx_budget = String(_app.fx_budget)
-		_preview.ring_3d_scale = String(_app.ring_3d_scale)
 		_preview.bar_lines_visible = bool(_app.bar_lines)
-		_preview.apply_ring_quality()
+		_preview.apply_playfield_quality(_app)
 	_preview.auto_cursor = Vector2.INF
 	if auto_play:
 		_preview.auto_cursor = _preview.project_design(Vector2.ZERO)
@@ -402,6 +400,7 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	_tick_index = -1
 	_ready_layer.visible = true
 	_ready_layer.queue_redraw()
+	_preview.warm_up_filters()
 	await get_tree().process_frame
 	await get_tree().process_frame
 	if token != _setup_token or not is_inside_tree():

@@ -77,10 +77,10 @@ var use_3d_ring: bool = true:
 			return
 		use_3d_ring = value
 		if _viewport_container != null:
-			_viewport_container.visible = value
+			_viewport_container.visible = value and show_playfield
 		if _subviewport != null:
-			_subviewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS if value else SubViewport.UPDATE_DISABLED
-			_render_mode = -1 if value else SubViewport.UPDATE_DISABLED
+			_subviewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
+			_render_mode = SubViewport.UPDATE_DISABLED
 		_force_3d_frame = value
 		_mesh_dirty = true
 		if _overlay != null:
@@ -123,6 +123,15 @@ var _storyboard_chart: Chart = null
 ## 3936 sprite 的 .osb 实测 parse 232ms，135 张图解码更久，重建一次就是一次卡顿。
 static var _board_cache: Dictionary = {}
 static var _tex_cache: Dictionary = {}
+const STORYBOARD_BOARD_CACHE_LIMIT: int = 4
+const STORYBOARD_TEXTURE_BUDGET: int = 128 * 1024 * 1024
+const STORYBOARD_TEXTURE_ENTRY_LIMIT: int = 512
+const STORYBOARD_TEXTURE_GRACE_MS: int = 2000
+static var _tex_sizes: Dictionary[String, int] = {}
+static var _tex_last_used: Dictionary[String, int] = {}
+static var _tex_cache_bytes: int = 0
+static var _tex_next_trim_ms: int = 0
+static var _tex_eviction_generation: int = 0
 ## 解码放后台线程：135 张 2560x1440 的图同步解码 = 几秒卡死。
 ## 主线程只做 ImageTexture 上传（必须主线程），其余在 WorkerThreadPool 里跑。
 static var _tex_pending: Dictionary = {}
@@ -165,6 +174,8 @@ var _sb_priority_until: float = -INF
 var _sb_texture_generation: int = -1
 var _sb_paths: Dictionary = {}
 var _sb_all_textures_cached: bool = false
+var _sb_eviction_generation: int = -1
+var _sb_keepalive_ms: int = -500
 ## storyboard 的 Background 层里有谱面背景图时，静态背景层要关掉（对照 lazer ReplacesBackground）。
 var _storyboard_replaces_background := false
 ## 背景层（Background/Video）单独一层，垫在 3D 判定环下面。
@@ -424,6 +435,13 @@ func set_quality_level(level: int) -> void:
 	apply_ring_quality()
 
 
+func apply_playfield_quality(settings: Node) -> void:
+	use_3d_ring = bool(settings.use_3d_ring)
+	msaa_3d_level = int(settings.msaa_3d_level)
+	ring_3d_scale = String(settings.ring_3d_scale)
+	apply_ring_quality()
+
+
 ## 3D 背景分辨率：菜单选的高/中/低，再叠加弱机自动降档（降一档，最低 0.4）。
 func apply_ring_quality() -> void:
 	if _subviewport == null:
@@ -627,7 +645,7 @@ func _build_layers() -> void:
 	_cursor_layer.set("cursor_only", true)
 	add_child(_cursor_layer)
 	_cursor_layer.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	_viewport_container.visible = use_3d_ring
+	_viewport_container.visible = use_3d_ring and show_playfield
 	# storyboard 的 Background 层要垫在 3D 判定环下面，Foreground/Overlay 走 _overlay。
 	# 故事板统一裁到安全框：裁剪容器 = 安全框，绘制子节点铺满它。
 	# 背景/加色背景在 3D 判定环下面；Foreground 在环上面、音符下面；
@@ -830,6 +848,7 @@ func _process(_delta: float) -> void:
 			_set_filter_visible(false)
 	var chart := get_chart()
 	if chart == null:
+		_trim_storyboard_textures(Time.get_ticks_msec())
 		_update_filter_visibility(null, 0.0)
 		return
 	if follow_app and _app != null and _app.chart != _last_chart_ref:
@@ -934,13 +953,17 @@ func _process(_delta: float) -> void:
 			_queue_storyboard_redraw()
 	if mouse_moved or time_changed or view_changed or not _cursor_trail.is_empty():
 		_cursor_layer.queue_redraw()
+	var render_playfield: bool = use_3d_ring and show_playfield
 	if _viewport_container != null:
-		_viewport_container.visible = show_playfield
-	if use_3d_ring:
+		_force_3d_frame = _force_3d_frame or (render_playfield and not _viewport_container.visible)
+		_viewport_container.visible = render_playfield
+	if render_playfield:
 		var animate_3d := playing or playtest_mode or _tilt.distance_to(_tilt_target) > 0.01
 		# 形变时每帧都要重画：UPDATE_ONCE 渲染完会被引擎改回 DISABLED，
 		# 而缓存的 _render_mode 还停在 ONCE，后面的帧就再也不更新（正是卡顿/不动的来源）。
 		_update_3d_mode(animate_3d, view_changed or _mesh_dirty or mesh_key != _last_mesh_key)
+	elif _subviewport != null and _render_mode != SubViewport.UPDATE_DISABLED:
+		freeze_ring_3d(true)
 	_last_process_time = t
 	_last_mouse_screen = mouse_screen
 	_perf_proc_usec += Time.get_ticks_usec() - proc_start
@@ -2589,7 +2612,7 @@ func project_u(u: float, beat: float) -> Vector2:
 func draw_overlay(canvas: Control) -> void:
 	var chart := get_chart()
 	var t := get_time_beat()
-	# 先无条件写一遍滤镜 uniform：指令被删掉或谱面被换掉时也要把画面还原成恒等透传。
+	# 切换谱面或移出滤镜区间时也要隐藏处理层。
 	_apply_filters(chart, t)
 	if chart == null:
 		return
@@ -2806,12 +2829,12 @@ func _ensure_storyboard(chart: Chart) -> void:
 	if dir.is_empty():
 		_refresh_background_layering()
 		return
-	var board: Storyboard = _board_cache.get(dir)
 	if not _board_cache.has(dir):
 		_start_parse(dir)
 		_sb_waiting_dir = dir
 		_refresh_background_layering()
 		return
+	var board: Storyboard = _get_cached_storyboard(dir)
 	if board == null:
 		_refresh_background_layering()
 		return
@@ -2831,17 +2854,33 @@ func preload_storyboard_textures(opening_end_ms: float) -> bool:
 
 
 func _update_storyboard_textures(chart: Chart, beat: float, opening_end_ms: float = -INF) -> bool:
+	var now: int = Time.get_ticks_msec()
 	if not show_storyboard:
+		_trim_storyboard_textures(now)
 		return true
 	_finish_storyboard_parses()
 	_ensure_storyboard(chart)
 	_take_parsed_board()
 	if _storyboard == null:
+		_trim_storyboard_textures(now)
 		return _sb_waiting_dir.is_empty()
+	if now - _sb_keepalive_ms >= 500:
+		_sb_keepalive_ms = now
+		# CanvasItem keeps its draw commands while paused, so a visible
+		# sprite can remain on screen without touching the texture getter.
+		for item in _sb_render_items:
+			if show_storyboard_background or String(item["layer"]) not in ["Background", "Video"]:
+				keep_storyboard_texture(_storyboard_asset_path(String(item["path"])), now)
+		for full in _sb_priority:
+			keep_storyboard_texture(full, now)
 	pump_storyboard_textures()
 	if _sb_texture_generation != _tex_generation:
 		_sb_texture_generation = _tex_generation
 		_queue_storyboard_redraw()
+	if _sb_eviction_generation != _tex_eviction_generation:
+		_sb_eviction_generation = _tex_eviction_generation
+		_sb_priority_ms = INF
+		_sb_all_textures_cached = false
 	if _sb_all_textures_cached:
 		return true
 	var ms: float = chart.timing.beat_to_chart_ms(beat) - chart.offset_ms
@@ -2857,12 +2896,14 @@ func _update_storyboard_textures(chart: Chart, beat: float, opening_end_ms: floa
 			if sprite.commands.is_empty():
 				continue
 			var full: String = _storyboard_asset_path(sprite.path)
-			if _tex_cache.has(full):
-				continue
-			has_missing_texture = true
+			var cached: bool = _tex_cache.has(full)
+			has_missing_texture = has_missing_texture or not cached
 			if not show_storyboard_background and sprite.layer in ["Background", "Video"]:
 				continue
 			if sprite.start_time > end_ms or sprite.end_time < ms:
+				continue
+			if cached:
+				_tex_last_used[full] = now
 				continue
 			if not seen.has(full):
 				seen[full] = true
@@ -2919,7 +2960,7 @@ static func _finish_storyboard_parses() -> void:
 		_parse_pending.erase(dir)
 		_parse_mutex.lock()
 		if int(job["revision"]) == int(_parse_revisions.get(dir, 0)):
-			_board_cache[dir] = _parse_done.get(dir)
+			_cache_storyboard(dir, _parse_done.get(dir))
 		_parse_done.erase(dir)
 		_parse_mutex.unlock()
 
@@ -2933,7 +2974,7 @@ func _take_parsed_board() -> void:
 		_start_parse(dir)
 		return
 	_sb_waiting_dir = ""
-	var board: Storyboard = _board_cache.get(dir)
+	var board: Storyboard = _get_cached_storyboard(dir)
 	if board == null:
 		return
 	_storyboard = board
@@ -2947,6 +2988,72 @@ func _take_parsed_board() -> void:
 	_queue_storyboard_redraw()
 
 
+static func _cache_storyboard(dir: String, board: Storyboard) -> void:
+	_board_cache.erase(dir)
+	_board_cache[dir] = board
+	if _board_cache.size() > STORYBOARD_BOARD_CACHE_LIMIT:
+		_board_cache.erase(_board_cache.keys()[0])
+
+
+static func _get_cached_storyboard(dir: String) -> Storyboard:
+	var board: Storyboard = _board_cache[dir]
+	_cache_storyboard(dir, board)
+	return board
+
+
+static func storyboard_texture(full: String) -> Texture2D:
+	if not _tex_cache.has(full):
+		request_storyboard_texture(full)
+		return null
+	_tex_last_used[full] = Time.get_ticks_msec()
+	return _tex_cache[full]
+
+
+static func keep_storyboard_texture(full: String, now: int) -> void:
+	if _tex_cache.has(full):
+		_tex_last_used[full] = now
+
+
+static func _cache_storyboard_texture(full: String, image: Image, boost: float, now: int) -> void:
+	var bytes: int = 0
+	var texture: Texture2D = null
+	if image != null:
+		texture = ImageTexture.create_from_image(image)
+		# RGB images may occupy four bytes per pixel after upload.
+		bytes = maxi(image.get_data_size(), image.get_width() * image.get_height() * 4)
+		_tex_boost[full] = boost
+	else:
+		_tex_boost.erase(full)
+	_tex_cache[full] = texture
+	_tex_cache_bytes += bytes - _tex_sizes.get(full, 0)
+	_tex_sizes[full] = bytes
+	_tex_last_used[full] = now
+	_tex_generation += 1
+
+
+static func _trim_storyboard_textures(now: int, byte_budget: int = STORYBOARD_TEXTURE_BUDGET) -> void:
+	if _tex_cache_bytes <= byte_budget and _tex_cache.size() <= STORYBOARD_TEXTURE_ENTRY_LIMIT:
+		return
+	if now < _tex_next_trim_ms:
+		return
+	_tex_next_trim_ms = now + 250
+	# Allow a temporary overage if the current scene needs more than the budget.
+	# Evicting recently drawn or prefetched sprites would force reloads mid-song.
+	var paths: Array[String] = _tex_last_used.keys()
+	paths.sort_custom(func(a: String, b: String) -> bool: return _tex_last_used[a] < _tex_last_used[b])
+	for full in paths:
+		if now - _tex_last_used[full] < STORYBOARD_TEXTURE_GRACE_MS:
+			break
+		_tex_cache_bytes -= _tex_sizes[full]
+		_tex_sizes.erase(full)
+		_tex_last_used.erase(full)
+		_tex_boost.erase(full)
+		_tex_cache.erase(full)
+		_tex_eviction_generation += 1
+		if _tex_cache_bytes <= byte_budget and _tex_cache.size() <= STORYBOARD_TEXTURE_ENTRY_LIMIT:
+			break
+
+
 ## 把一张图排进后台解码队列（同一张只排一次）。
 static func request_storyboard_texture(full: String) -> void:
 	if _tex_cache.has(full) or _tex_pending.has(full):
@@ -2958,6 +3065,8 @@ static func request_storyboard_texture(full: String) -> void:
 
 ## 限制所有消费者合计每帧只上传一张大图，解码完成的任务也占队列位置。
 static func pump_storyboard_textures() -> void:
+	var now: int = Time.get_ticks_msec()
+	_trim_storyboard_textures(now)
 	var frame: int = Engine.get_process_frames()
 	if _tex_upload_frame == frame:
 		return
@@ -2972,11 +3081,9 @@ static func pump_storyboard_textures() -> void:
 		_tex_decoded.erase(full)
 		_tex_mutex.unlock()
 		var image: Image = entry[0] if not entry.is_empty() else null
-		_tex_cache[full] = null
-		_tex_generation += 1
+		var boost: float = float(entry[1]) if image != null else 1.0
+		_cache_storyboard_texture(full, image, boost, now)
 		if image != null:
-			_tex_cache[full] = ImageTexture.create_from_image(image)
-			_tex_boost[full] = float(entry[1])
 			_tex_upload_frame = frame
 			return
 
@@ -3127,9 +3234,8 @@ func _draw_storyboard_layers(canvas: Control, chart: Chart, t: float, layers: Ar
 			continue
 		for item in group:
 			var full: String = _storyboard_asset_path(String(item["path"]))
-			var texture: Texture2D = _tex_cache.get(full)
+			var texture: Texture2D = storyboard_texture(full)
 			if texture == null:
-				request_storyboard_texture(full)
 				continue
 			var sprite_size := Vector2(texture.get_width(), texture.get_height())
 			var anchor := _storyboard_anchor(int(item["origin"]), sprite_size)
@@ -6593,6 +6699,16 @@ func _build_filter_layer() -> void:
 	_filter_layer.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 
 
+## 只为带滤镜的试玩在准备层底下再预热几帧，把 shader 首次编译的卡顿吃掉。
+func warm_up_filters() -> void:
+	if _filter_layer == null or not _filter_layer.is_inside_tree():
+		return
+	if DisplayServer.get_name() == "headless" or not RenderingServer.render_loop_enabled:
+		return
+	_filter_warmup_left = maxi(_filter_warmup_left, FILTER_WARMUP_FRAMES)
+	_set_filter_visible(true)
+
+
 ## 把当前拍点上所有启用中的滤镜指令合成为一组 shader 参数。
 func _filter_state(chart: Chart, t: float) -> Dictionary:
 	var state := {
@@ -6723,10 +6839,13 @@ func _set_filter_visible(active: bool) -> void:
 func _apply_filters(chart: Chart, t: float) -> void:
 	if _filter_layer == null:
 		return
+	var state: Dictionary = _filter_state(chart, t)
+	# 没有滤镜生效时层本身由 _update_filter_visibility() 隐藏，这里不再写恒等 uniform。
+	if not bool(state["active"]):
+		return
 	var material := _filter_layer.material as ShaderMaterial
 	if material == null:
 		return
-	var state := _filter_state(chart, t)
 	var uniforms: Dictionary = state["uniforms"]
 	for key in uniforms:
 		material.set_shader_parameter(String(key), uniforms[key])

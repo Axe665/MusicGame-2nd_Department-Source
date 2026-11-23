@@ -37,7 +37,9 @@ var _items: Array[Dictionary] = []
 var _normal_items: Dictionary = {}
 var _additive_items: Dictionary = {}
 var _texture_generation: int = -1
+var _texture_keepalive_ms: int = -500
 var _fit_pending: Dictionary = {}
+var _fit_texture_sizes: Dictionary[String, Vector2] = {}
 var _fit_ms: float = 0.0
 var _wide_cache := -1
 var _drag_indices: Array[int] = []
@@ -137,16 +139,17 @@ func _compute_content_bounds(field_bounds: Rect2, ms: float) -> Rect2:
 		var sprite = item.get("sprite")
 		if sprite == null:
 			continue
-		var full := dir + "/" + String(item["path"]).get_file()
-		var tex_size := _texture_size(full)
-		if tex_size == Vector2.ZERO:
+		var full: String = dir.path_join(String(item["path"]).get_file())
+		if not _fit_texture_sizes.has(full):
 			if not Preview3D._tex_cache.has(full):
+				Preview3D.request_storyboard_texture(full)
 				_fit_pending[full] = true
+				continue
+			_remember_fit_texture_size(full)
+		var size_design: Vector2 = _fit_texture_sizes[full]
+		if size_design == Vector2.ZERO:
 			continue
-		# 贴图超过 1024 时被缩小过，设计尺寸要乘回 boost，否则「适配内容」会算小。
-		var boost := float(Preview3D._tex_boost.get(full, 1.0))
-		var size_design := tex_size * boost
-		var anchor := Preview3D._storyboard_anchor(int(item["origin"]), tex_size) * boost
+		var anchor := Preview3D._storyboard_anchor(int(item["origin"]), size_design)
 		var sprite_scale: Vector2 = item["scale"]
 		var pos: Vector2 = item["pos"]
 		var corners := [
@@ -186,6 +189,7 @@ func fit_field() -> void:
 	fit_mode = "field"
 	_bounds_valid = false
 	_fit_pending.clear()
+	_fit_texture_sizes.clear()
 	zoom = 1.0
 	pan = Vector2.ZERO
 	queue_redraw()
@@ -194,8 +198,11 @@ func fit_field() -> void:
 func fit_content() -> void:
 	fit_mode = "content"
 	_fit_pending.clear()
+	_fit_texture_sizes.clear()
 	_fit_ms = playhead_ms
 	_bounds_cache = _compute_content_bounds(Rect2(Vector2.ZERO, Vector2(field_width(), 480.0)), _fit_ms)
+	if _fit_pending.is_empty():
+		_fit_texture_sizes.clear()
 	_bounds_valid = true
 	zoom = 1.0
 	pan = Vector2.ZERO
@@ -209,6 +216,7 @@ func set_board(value: Storyboard, path: String) -> void:
 	_wide_cache = -1
 	_items = []
 	_fit_pending.clear()
+	_fit_texture_sizes.clear()
 	_bounds_valid = false
 	if board != null:
 		for i in board.sprites.size():
@@ -257,19 +265,25 @@ func set_layer_locked(layer: String, locked: bool) -> void:
 
 
 func _texture(full: String) -> Texture2D:
-	if not Preview3D._tex_cache.has(full):
-		Preview3D.request_storyboard_texture(full)
-	return Preview3D._tex_cache.get(full)
+	return Preview3D.storyboard_texture(full)
 
 
-func _texture_size(full: String) -> Vector2:
+func _remember_fit_texture_size(full: String) -> void:
 	var texture: Texture2D = _texture(full)
-	return texture.get_size() if texture != null else Vector2.ZERO
+	# 保存设计尺寸，让贴图在其他异步加载完成前也可以被缓存淘汰。
+	var boost := float(Preview3D._tex_boost.get(full, 1.0))
+	_fit_texture_sizes[full] = texture.get_size() * boost if texture != null else Vector2.ZERO
 
 
 func _process(_delta: float) -> void:
 	if not is_visible_in_tree() or board == null or dir.is_empty():
 		return
+	var now: int = Time.get_ticks_msec()
+	if now - _texture_keepalive_ms >= 500:
+		_texture_keepalive_ms = now
+		for item in _items:
+			if not hidden_layers.has(String(item["layer"])):
+				Preview3D.keep_storyboard_texture(dir.path_join(String(item["path"]).get_file()), now)
 	Preview3D.pump_storyboard_textures()
 	if _texture_generation != Preview3D._tex_generation:
 		_texture_generation = Preview3D._tex_generation
@@ -278,17 +292,19 @@ func _process(_delta: float) -> void:
 		return
 	for full: String in _fit_pending.keys():
 		if Preview3D._tex_cache.has(full):
+			_remember_fit_texture_size(full)
 			_fit_pending.erase(full)
-		else:
-			Preview3D.request_storyboard_texture(full)
-			return
+	if not _fit_pending.is_empty():
+		Preview3D.request_storyboard_texture(_fit_pending.keys()[0])
+		return
 	_bounds_cache = _compute_content_bounds(Rect2(Vector2.ZERO, Vector2(field_width(), 480.0)), _fit_ms)
+	_fit_texture_sizes.clear()
 	queue_redraw()
 
 
 ## 一个 item 的绘制参数（画、命中、框选共用一套）。
 func _item_geometry(item: Dictionary, layout: Dictionary) -> Dictionary:
-	var full := dir + "/" + String(item["path"]).get_file()
+	var full: String = dir.path_join(String(item["path"]).get_file())
 	var texture := _texture(full)
 	if texture == null:
 		return {}
