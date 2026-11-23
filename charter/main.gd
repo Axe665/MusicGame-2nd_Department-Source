@@ -1328,21 +1328,18 @@ func _apply_visual_options() -> void:
 	_app.apply_visual_quality()
 	if _preview == null:
 		return
-	_preview.use_3d_ring = _app.use_3d_ring
 	_preview.note_detail_fine = _app.note_detail_fine
 	_preview.note_glow = _app.note_glow
 	_preview.path_style = _app.path_style
 	_preview.cursor_trail_mode = _app.cursor_trail
 	_preview.fx_budget = _app.fx_budget
-	_preview.ring_3d_scale = _app.ring_3d_scale
-	_preview.msaa_3d_level = _app.msaa_3d_level
 	_preview.bar_lines_visible = _app.bar_lines
 	_preview.hud_options = _app.hud_options()
 	_preview.show_storyboard = _app.show_storyboard
 	_preview.show_storyboard_background = _app.show_storyboard_background
 	_preview.set_storyboard_visible(_app.show_storyboard)
 	_preview._refresh_background_layering()
-	_preview.apply_ring_quality()
+	_preview.apply_playfield_quality(_app)
 	_preview.request_redraw()
 	# 试玩里有自己的 Preview3D：局内改画质要同时推给它。
 	if _playtest != null and _playtest._preview != null:
@@ -1352,13 +1349,12 @@ func _apply_visual_options() -> void:
 		inner.path_style = _app.path_style
 		inner.cursor_trail_mode = _app.cursor_trail
 		inner.fx_budget = _app.fx_budget
-		inner.ring_3d_scale = _app.ring_3d_scale
 		inner.bar_lines_visible = _app.bar_lines
 		inner.hud_options = _app.hud_options()
 		inner.show_storyboard = _app.show_storyboard
 		inner.show_storyboard_background = _app.show_storyboard_background
 		inner._refresh_background_layering()
-		inner.apply_ring_quality()
+		inner.apply_playfield_quality(_app)
 		inner.request_redraw()
 
 

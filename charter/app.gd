@@ -625,6 +625,7 @@ func _load_settings() -> void:
 			# 旧版只有 aa_2d 布尔值，读进来换算成三档。
 			aa_2d_level = clampi(int(data.get("aa_2d_level", 2 if bool(data.get("aa_2d", true)) else 0)), 0, 3)
 			msaa_3d_level = clampi(int(data.get("msaa_3d_level", 1)), 0, 7)
+			use_3d_ring = bool(data.get("use_3d_ring", use_3d_ring))
 			if data.get("ring_pad_rect") is Array:
 				ring_pad_rect = data["ring_pad_rect"]
 			var divisions := int(data.get("angle_divisions", angle_divisions))
@@ -851,7 +852,8 @@ func save_settings() -> void:
 		"hud_show_title": hud_show_title, "hud_show_difficulty": hud_show_difficulty,
 		"hud_show_percent": hud_show_percent, "hud_show_time": hud_show_time,
 		"hud_show_watermark": hud_show_watermark,
-		"mouse_keys": mouse_keys, "show_storyboard": show_storyboard, "show_storyboard_background": show_storyboard_background,
+		"mouse_keys": mouse_keys, "use_3d_ring": use_3d_ring,
+		"show_storyboard": show_storyboard, "show_storyboard_background": show_storyboard_background,
 		"preview_width": preview_width, "inspector_width": inspector_width, "preview_collapsed": preview_collapsed}
 	var file := FileAccess.open(SETTINGS_PATH, FileAccess.WRITE)
 	if file != null:
