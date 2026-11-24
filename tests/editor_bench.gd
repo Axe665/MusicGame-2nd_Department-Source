@@ -121,7 +121,6 @@ func _make_chart(count: int, segments: int) -> Chart:
 		note.id = chart.next_note_id()
 		if type == "hold":
 			note.end_beat = beat + 2.0
-			note.hold_style = "straight"
 		elif type == "path":
 			note.end_beat = beat + 2.0
 			note.tail_angle = fposmod(angle + 90.0, 360.0)

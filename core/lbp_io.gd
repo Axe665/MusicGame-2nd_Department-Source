@@ -2,6 +2,8 @@ class_name LBPIO
 extends RefCounted
 
 static var last_error: String = ""
+## 导出成功但有东西没打包（素材路径不存在）时写这里，调用方可以当警告提示。
+static var last_warning: String = ""
 
 
 static func export_to_file(chart: Chart, path: String) -> Error:
@@ -148,8 +150,6 @@ static func _note_line(chart: Chart, note: Note) -> String:
 			return "tap,%s,%s,%s%s" % [_beat(chart, note.beat), _num(note.angle), _num(note.arc_width()), options]
 		"hold":
 			var suffix := ""
-			if note.hold_style == "curved":
-				suffix = ",style=curved"
 			if not note.visual_pts.is_empty():
 				suffix += ",body=%s" % _points(note.visual_pts)
 			return "hold,%s,%s,%s,%s%s%s" % [_beat(chart, note.beat), _num(note.angle), _num(note.arc_width()), _beat(chart, note.end_beat), suffix, options]
@@ -159,8 +159,6 @@ static func _note_line(chart: Chart, note: Note) -> String:
 				suffix += ",visual=%s" % _points(note.visual_pts)
 			if not note.trace_pts.is_empty():
 				suffix += ",pts=%s" % _trace_points(note.trace_pts)
-			if note.path_style != "arc":
-				suffix += ",style=%s" % note.path_style
 			if note.path_speed != 1.0:
 				suffix += ",speed=%s" % _num(note.path_speed)
 			if not note.path_gaps.is_empty():
@@ -174,7 +172,10 @@ static func _note_line(chart: Chart, note: Note) -> String:
 				suffix, options,
 			]
 		"seek":
-			return "seek,%s,%d%s" % [_beat(chart, note.beat), 1 if note.seek_orien == 1 else 0, options]
+			var suffix := ""
+			if not is_equal_approx(note.seek_width(), 360.0):
+				suffix = ",width=%s,angle=%s" % [_num(note.seek_width()), _num(fposmod(note.angle, 360.0))]
+			return "seek,%s,%d%s%s" % [_beat(chart, note.beat), 1 if note.seek_orien == 1 else 0, suffix, options]
 		"anchor":
 			var suffix := ""
 			if note.anchor_pair >= 0:
@@ -255,19 +256,32 @@ static func export_package(chart: Chart, path: String) -> Error:
 		general["audio"] = chart.audio_path
 	# 包是自包含的：不把可能失效的原始路径带进去，导入后再导出也不会再丢音频。
 	metadata["audio_source"] = ""
+	last_warning = ""
+	var missing: Array[String] = []
 	var files: Array[String] = []
 	for key in ["audio", "video"]:
 		var value := String(general.get(key, ""))
+		if value.is_empty():
+			continue
 		if FileAccess.file_exists(value):
 			files.append(value)
+		else:
+			missing.append(value.get_file())
 	var cover := String(metadata.get("background", ""))
-	if FileAccess.file_exists(cover):
-		files.append(cover)
+	if not cover.is_empty():
+		if FileAccess.file_exists(cover):
+			files.append(cover)
+		else:
+			missing.append(cover.get_file())
 	var sb_dir := String(metadata.get("storyboard", ""))
-	var sb_files: Array[String] = []
-	if not sb_dir.is_empty() and DirAccess.dir_exists_absolute(sb_dir):
-		for name in DirAccess.get_files_at(sb_dir):
-			sb_files.append(sb_dir + "/" + name)
+	var sb_files: Array[Dictionary] = []
+	if not sb_dir.is_empty():
+		if DirAccess.dir_exists_absolute(sb_dir):
+			_pack_walk(sb_dir, "assets/sb/", sb_files)
+		else:
+			missing.append(sb_dir.get_file())
+	if not missing.is_empty():
+		last_warning = "素材文件不在磁盘上，没有打进包：%s" % ", ".join(missing)
 
 	# 写临时文件再改名：导出中断不会留下半个包。
 	var temp := path + ".tmp"
@@ -291,8 +305,9 @@ static func export_package(chart: Chart, path: String) -> Error:
 		if cover == src:
 			metadata["background"] = dst
 	if not sb_files.is_empty():
-		for src in sb_files:
-			if _pack_write(packer, "assets/sb/" + _pack_name(src.get_file()),
+		for item in sb_files:
+			var src := String(item.get("src", ""))
+			if _pack_write(packer, String(item.get("dst", "")),
 					FileAccess.get_file_as_bytes(src)) != OK:
 				packer.close()
 				last_error = "打包故事板失败：%s" % src.get_file()
@@ -338,8 +353,11 @@ static func import_package(path: String) -> Chart:
 		zip.close()
 		last_error = "谱面包里的谱面损坏"
 		return null
-	# 按包内容取目录：同一路径重新导出后不会沿用旧素材（旧故事板图会残留）。
-	var stamp := FileAccess.get_md5(path)
+	# 按包内容取目录：同一份谱重复导出/导入（哪怕文件名前缀变了）仍然落到同一个目录，
+	# 素材换过则内容 hash 变化，自动换新目录，不会沿用旧素材。
+	var stamp := _pack_stamp(zip)
+	if stamp.is_empty():
+		stamp = FileAccess.get_md5(path)
 	if stamp.is_empty():
 		stamp = path.md5_text()
 	var base := "user://imports/lbp_%s" % stamp.substr(0, 8)
@@ -386,9 +404,45 @@ static func _pack_write(packer: ZIPPacker, name: String, bytes: PackedByteArray)
 	return err
 
 
+## 反复导出/导入会给素材叠上一层 "00_" 前缀；剥掉它，文件名不会越滚越长。
 static func _pack_name(name: String) -> String:
 	var clean := name.validate_filename().strip_edges()
+	while clean.length() > 3 and clean[2] == "_" \
+			and clean[0] >= "0" and clean[0] <= "9" \
+			and clean[1] >= "0" and clean[1] <= "9":
+		clean = clean.substr(3)
 	return clean if not clean.is_empty() else "asset"
+
+
+## 故事板可能带子目录：递归收集，保留相对结构。
+static func _pack_walk(dir: String, prefix: String, out: Array[Dictionary]) -> void:
+	for name in DirAccess.get_files_at(dir):
+		out.append({"src": dir.path_join(name), "dst": prefix + _pack_name(name)})
+	for sub in DirAccess.get_directories_at(dir):
+		if sub.begins_with("."):
+			continue
+		_pack_walk(dir.path_join(sub), prefix + _pack_name(sub) + "/", out)
+
+
+## 包内容指纹：谱面 JSON + 所有素材的字节，与压缩包文件名/时间无关。
+static func _pack_stamp(zip: ZIPReader) -> String:
+	var ctx := HashingContext.new()
+	if ctx.start(HashingContext.HASH_MD5) != OK:
+		return ""
+	var names := zip.get_files()
+	names.sort()
+	for name in names:
+		if name == PACK_MANIFEST or not _pack_safe(name):
+			continue
+		if not zip.file_exists(name):
+			continue
+		var label := String(name).to_utf8_buffer()
+		var bytes := zip.read_file(name)
+		if not label.is_empty():
+			ctx.update(label)
+		if not bytes.is_empty():
+			ctx.update(bytes)
+	return ctx.finish().hex_encode()
 
 
 ## 包内路径只允许相对、正斜杠；挡住 zip-slip（../、绝对路径、盘符）。

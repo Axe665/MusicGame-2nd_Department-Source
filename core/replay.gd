@@ -68,14 +68,19 @@ func add_release(time_ms: float, key: int) -> void:
 	events.append({"t": snappedf(time_ms, 1.0), "k": "release", "key": key})
 
 
-func add_seek(time_ms: float, lo_ms: float, hi_ms: float, direction: int) -> void:
-	events.append({
+func add_seek(time_ms: float, lo_ms: float, hi_ms: float, direction: int, unit: Vector2 = Vector2.INF) -> void:
+	var event := {
 		"t": snappedf(time_ms, 1.0),
 		"k": "seek",
 		"lo": snappedf(lo_ms, 0.01),
 		"hi": snappedf(hi_ms, 0.01),
 		"dir": direction,
-	})
+	}
+	# 窄 Seek 要求滚轮那一刻光标在弧上：坐标写单位值，换窗口尺寸仍然对得上。
+	if unit.is_finite():
+		event["x"] = snappedf(unit.x, 0.0001)
+		event["y"] = snappedf(unit.y, 0.0001)
+	events.append(event)
 
 
 func add_offset(time_ms: float, value_ms: float) -> void:

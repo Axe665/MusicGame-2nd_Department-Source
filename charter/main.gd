@@ -43,8 +43,8 @@ const QUALITY_OPTIONS := [
 	{"key": "use_3d_ring", "label": "3D 环", "choices": [["开", 158], ["关", 159]]},
 	{"key": "note_detail_fine", "label": "音符精细度", "choices": [["全画质", 63], ["省电", 64]]},
 	{"key": "note_glow", "label": "音符光晕", "choices": [["开", 65], ["关", 66]]},
-	{"key": "path_style", "label": "Path 画法", "choices": [["双线折纹（默认）", 183], ["Y 形分叉", 184], ["彗星", 182], ["履带（粗）", 180], ["丝带（半透明）", 181]]},
-	{"key": "limit_exit_animation", "label": "Limit 退场动画", "choices": [["开", 185], ["关", 186]]},
+	{"key": "perfect_fx", "label": "PERFECT 特效", "choices": [["开", 73], ["关", 74]]},
+	{"key": "path_style", "label": "Path 画法", "choices": [["履带（粗，默认）", 180], ["丝带（半透明）", 181]]},
 	{"key": "cursor_trail", "label": "光标拖尾", "choices": [["长", 67], ["短", 68], ["关", 69]]},
 	{"key": "fx_budget", "label": "命中特效", "choices": [["完整", 70], ["精简", 71], ["关", 72]]},
 	{"key": "ring_3d_scale", "label": "3D 环分辨率", "choices": [["高 0.85", 163], ["中 0.65", 164], ["低 0.5", 165]]},
@@ -142,6 +142,12 @@ var _lbp_dialog: FileDialog
 var _report_dialog: AcceptDialog
 var _difficulty_dialog: ConfirmationDialog
 var _difficulty_list: ItemList
+var _difficulty_edit: ConfirmationDialog = null
+var _difficulty_name_edit: LineEdit = null
+var _difficulty_stars_spin: SpinBox = null
+var _difficulty_confirm: ConfirmationDialog = null
+var _difficulty_delete_index: int = -1
+var _save_all_dialog: FileDialog = null
 var _pending_osz: String = ""
 var _pending_kind: String = "osu"
 var _import_dir_dialog: FileDialog
@@ -493,6 +499,12 @@ func _build_ui() -> void:
 		["新建", 0], ["打开", 1], ["保存", 2], ["另存为", 3], ["-", 0],
 		["导入", [["歌曲 / 识别 BPM…", 9], ["导入视频…", 19], ["谱面 (.osz/.zip/.txt)", 6], ["舞萌文件夹", 8], ["在线舞萌谱面…", 15], ["故事板 (.osb)…", 28], ["在线 osu! 谱面…", 18], ["回放 (.replay)…", 57]]],
 		["导出", [["导出 .lbp", 7]]],
+		["难度", [
+			["新建空白难度", 58], ["复制当前难度", 16], ["-", 0],
+			["重命名…", 59], ["星数…", 60], ["-", 0],
+			["上移", 62], ["下移", 63], ["-", 0],
+			["删除当前难度", 61], ["保存全部难度", 17],
+		]],
 		["-", 0], ["恢复自动保存", 4], ["-", 0], ["退出", 5],
 	]))
 	brand_row.add_child(_menu("编辑", [
@@ -1249,10 +1261,10 @@ func _quality_index(key: String) -> int:
 			return 0 if _app.note_detail_fine else 1
 		"note_glow":
 			return 0 if _app.note_glow else 1
+		"perfect_fx":
+			return 0 if _app.show_perfect_fx else 1
 		"path_style":
 			return Preview3D.PATH_STYLES.find(_app.path_style)
-		"limit_exit_animation":
-			return 0 if _app.limit_exit_animation else 1
 		"cursor_trail":
 			return ["long", "short", "off"].find(_app.cursor_trail)
 		"fx_budget":
@@ -1291,13 +1303,11 @@ func _set_quality_index(key: String, index: int) -> void:
 			_app.note_detail_fine = index == 0
 		"note_glow":
 			_app.note_glow = index == 0
+		"perfect_fx":
+			_app.show_perfect_fx = index == 0
 		"path_style":
 			_app.path_style = Preview3D.PATH_STYLES[clampi(index, 0, Preview3D.PATH_STYLES.size() - 1)]
 			# 画法只影响画面，不该把「预设」打成自定义。
-			_apply_visual_options()
-			return
-		"limit_exit_animation":
-			_app.limit_exit_animation = index == 0
 			_apply_visual_options()
 			return
 		"cursor_trail":
@@ -1337,8 +1347,8 @@ func _apply_visual_options() -> void:
 		return
 	_preview.note_detail_fine = _app.note_detail_fine
 	_preview.note_glow = _app.note_glow
+	_preview.show_perfect_fx = _app.show_perfect_fx
 	_preview.path_style = _app.path_style
-	_preview.limit_exit_animation = _app.limit_exit_animation
 	_preview.cursor_trail_mode = _app.cursor_trail
 	_preview.fx_budget = _app.fx_budget
 	_preview.bar_lines_visible = _app.bar_lines
@@ -1354,8 +1364,8 @@ func _apply_visual_options() -> void:
 		var inner: Preview3D = _playtest._preview
 		inner.note_detail_fine = _app.note_detail_fine
 		inner.note_glow = _app.note_glow
+		inner.show_perfect_fx = _app.show_perfect_fx
 		inner.path_style = _app.path_style
-		inner.limit_exit_animation = _app.limit_exit_animation
 		inner.cursor_trail_mode = _app.cursor_trail
 		inner.fx_budget = _app.fx_budget
 		inner.bar_lines_visible = _app.bar_lines
@@ -1744,7 +1754,6 @@ func _sync_appearance() -> void:
 	_preview.note_skin = _app.note_skin
 	_apply_visual_options()
 	_refresh_view_menu()
-	_preview.hit_fx_style = _app.hit_fx_style
 	_preview.show_perfect_fx = _app.show_perfect_fx
 	_preview.cursor_scale = _app.cursor_scale
 	_preview.refresh_style()
@@ -1764,7 +1773,6 @@ func _sync_from_app() -> void:
 	_preview.show_debug = _app.debug_overlay
 	_preview.flow_scale = _app.flow_scale
 	_preview.note_skin = _app.note_skin
-	_preview.hit_fx_style = _app.hit_fx_style
 	_preview.show_perfect_fx = _app.show_perfect_fx
 	_preview.cursor_scale = _app.cursor_scale
 	_sfx.set_style(_app.hit_sfx_style)
@@ -2061,11 +2069,11 @@ func _build_sfx_events() -> void:
 	for note in _app.chart.notes:
 		match note.type:
 			"tap":
-				_add_sfx_event(note.beat, HitSfx.kind_for_note(note))
+				_add_sfx_event(note.beat, "don")
 			"hold":
 				_add_sfx_event(note.beat, "don")
 			"path":
-				_add_sfx_event(note.beat, HitSfx.kind_for_note(note))
+				_add_sfx_event(note.beat, "don")
 				_add_sfx_event(note.end_beat, "tail")
 			"anchor":
 				_add_sfx_event(note.beat, "anchor", 1.0)
@@ -2798,7 +2806,7 @@ func _refresh_import_difficulty() -> void:
 	if _import_diff == null:
 		return
 	var names: Array[String] = _app.difficulty_names() if _app != null else []
-	var show: bool = names.size() > 1
+	var show: bool = names.size() >= 1
 	if _import_diff_label != null:
 		_import_diff_label.visible = show
 	_import_diff.visible = show
@@ -2814,7 +2822,7 @@ func _refresh_import_difficulty() -> void:
 func _add_difficulty_copy() -> void:
 	if _app == null or _app.chart == null:
 		return
-	var index: int = _app.add_difficulty_copy("难度 %d" % (_app.difficulties.size() + 1))
+	var index: int = _app.add_difficulty_copy("")
 	if index < 0:
 		_show_toast("复制难度失败", "error")
 		return
@@ -2822,9 +2830,137 @@ func _add_difficulty_copy() -> void:
 	_show_toast("已新增难度 %s（改完记得「保存全部难度」）" % _app.difficulty_name(index), "info")
 
 
+## 新建空白难度：同曲同音频同 BPM 同边界动画，但不带音符。
+func _add_difficulty_blank() -> void:
+	if _app == null or _app.chart == null:
+		return
+	var index: int = _app.add_difficulty_blank("")
+	if index < 0:
+		_show_toast("新建难度失败", "error")
+		return
+	_sync_from_app()
+	_show_toast("已新建空白难度 %s（改完记得「保存全部难度」）" % _app.difficulty_name(index), "info")
+
+
+func _build_difficulty_dialogs() -> void:
+	if _difficulty_edit != null:
+		return
+	_difficulty_edit = ConfirmationDialog.new()
+	_difficulty_edit.ok_button_text = "应用"
+	_difficulty_edit.cancel_button_text = "取消"
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 6)
+	var name_row := HBoxContainer.new()
+	var name_label := Label.new()
+	name_label.text = "名字"
+	UITheme.style_mono(name_label, 11, UITheme.MUTED)
+	name_row.add_child(name_label)
+	_difficulty_name_edit = LineEdit.new()
+	_difficulty_name_edit.custom_minimum_size = Vector2(240, 24)
+	name_row.add_child(_difficulty_name_edit)
+	box.add_child(name_row)
+	var stars_row := HBoxContainer.new()
+	var stars_label := Label.new()
+	stars_label.text = "星数"
+	UITheme.style_mono(stars_label, 11, UITheme.MUTED)
+	stars_row.add_child(stars_label)
+	_difficulty_stars_spin = SpinBox.new()
+	_difficulty_stars_spin.min_value = 0.0
+	_difficulty_stars_spin.max_value = 20.0
+	_difficulty_stars_spin.step = 0.1
+	_difficulty_stars_spin.custom_minimum_size = Vector2(100, 24)
+	stars_row.add_child(_difficulty_stars_spin)
+	var stars_hint := Label.new()
+	stars_hint.text = "0 = 未知"
+	UITheme.style_mono(stars_hint, 10, UITheme.MUTED)
+	stars_row.add_child(stars_hint)
+	box.add_child(stars_row)
+	_difficulty_edit.add_child(box)
+	_difficulty_edit.confirmed.connect(func() -> void:
+		if _app == null or _app.difficulties.is_empty():
+			return
+		var index := clampi(_app.difficulty_index, 0, _app.difficulties.size() - 1)
+		var name := _difficulty_name_edit.text.strip_edges()
+		if not name.is_empty():
+			_app.rename_difficulty(index, name)
+		_app.set_difficulty_stars(index, _difficulty_stars_spin.value)
+		_sync_from_app()
+	)
+	add_child(_difficulty_edit)
+
+	_difficulty_confirm = ConfirmationDialog.new()
+	_difficulty_confirm.title = "删除难度"
+	_difficulty_confirm.ok_button_text = "删除"
+	_difficulty_confirm.cancel_button_text = "取消"
+	_difficulty_confirm.confirmed.connect(func() -> void:
+		if _app == null or _difficulty_delete_index < 0:
+			return
+		if _app.remove_difficulty(_difficulty_delete_index):
+			_sync_from_app()
+			_show_toast("已删除难度", "info")
+		_difficulty_delete_index = -1
+	)
+	add_child(_difficulty_confirm)
+
+	_save_all_dialog = FileDialog.new()
+	_save_all_dialog.file_mode = FileDialog.FILE_MODE_OPEN_DIR
+	_save_all_dialog.access = FileDialog.ACCESS_FILESYSTEM
+	_save_all_dialog.title = "保存全部难度到工程文件夹"
+	_save_all_dialog.dir_selected.connect(func(path: String) -> void:
+		if _app != null and _app.save_set_file(path):
+			_sync_from_app()
+		elif _app != null:
+			_show_toast("保存难度工程失败", "error")
+	)
+	add_child(_save_all_dialog)
+
+
+func _open_difficulty_edit(edit_name: bool) -> void:
+	if _app == null or _app.difficulties.is_empty():
+		_show_toast("还没有难度组：先用「复制当前难度」或「新建空白难度」建一个", "warning")
+		return
+	_build_difficulty_dialogs()
+	var index := clampi(_app.difficulty_index, 0, _app.difficulties.size() - 1)
+	var entry: Dictionary = _app.difficulties[index]
+	_difficulty_name_edit.text = String(entry.get("name", ""))
+	var stars := float(entry.get("stars", -1.0))
+	_difficulty_stars_spin.value = maxf(0.0, stars)
+	_difficulty_edit.title = "重命名难度（%d / %d）" % [index + 1, _app.difficulties.size()] if edit_name \
+		else "设置星数（%d / %d）" % [index + 1, _app.difficulties.size()]
+	_difficulty_edit.popup_centered()
+	if edit_name:
+		_difficulty_name_edit.grab_focus()
+		_difficulty_name_edit.select_all()
+	else:
+		_difficulty_stars_spin.get_line_edit().grab_focus()
+
+
+func _delete_difficulty() -> void:
+	if _app == null or _app.difficulties.size() <= 1:
+		_show_toast("至少保留一个难度", "warning")
+		return
+	_build_difficulty_dialogs()
+	_difficulty_delete_index = clampi(_app.difficulty_index, 0, _app.difficulties.size() - 1)
+	_difficulty_confirm.dialog_text = "删除难度「%s」？不会动其它难度。" % _app.difficulty_name(_difficulty_delete_index)
+	_difficulty_confirm.popup_centered()
+
+
+func _move_difficulty(delta: int) -> void:
+	if _app == null or _app.difficulties.size() < 2:
+		return
+	if not _app.move_difficulty(_app.difficulty_index, delta):
+		return
+	_sync_from_app()
+	_show_toast("难度顺序已调整（%d / %d）" % [_app.difficulty_index + 1, _app.difficulties.size()], "info")
+
+
 func _save_all_difficulties() -> void:
 	if _app == null or _app.difficulties.is_empty():
 		_show_toast("当前没有多难度组，先导入或新增一个难度", "warning")
+		return
+	if _app.set_path.is_empty():
+		_build_difficulty_dialogs()
+		_save_all_dialog.popup_centered_ratio(0.7)
 		return
 	if _app.save_set_file():
 		_sync_from_app()
@@ -2906,6 +3042,18 @@ func _on_menu(id: int) -> void:
 			_add_difficulty_copy()
 		17:
 			_save_all_difficulties()
+		58:
+			_add_difficulty_blank()
+		59:
+			_open_difficulty_edit(true)
+		60:
+			_open_difficulty_edit(false)
+		61:
+			_delete_difficulty()
+		62:
+			_move_difficulty(-1)
+		63:
+			_move_difficulty(1)
 		4:
 			_app.load_autosave()
 			_sync_from_app()
@@ -2978,6 +3126,12 @@ func _on_menu(id: int) -> void:
 
 
 func _save() -> void:
+	if _app == null or _app.chart == null:
+		return
+	# 多难度但还没存过整组：必须走「保存全部难度」，否则其余难度会丢。
+	if _app.difficulties.size() > 1 and _app.set_path.is_empty():
+		_save_all_difficulties()
+		return
 	if _app.chart_path.is_empty():
 		_save_dialog.popup_centered_ratio(0.75)
 	else:
@@ -3264,7 +3418,7 @@ func _build_playtest_dialog() -> void:
 	box.add_child(_playtest_mouse)
 	_playtest_perfect_fx = CheckBox.new()
 	_playtest_perfect_fx.text = "显示 PERFECT 特效"
-	_playtest_perfect_fx.tooltip_text = "关闭后 PERFECT 不再画命中爆点和弧光，只保留判定字；默认关闭"
+	_playtest_perfect_fx.tooltip_text = "关闭后 PERFECT 不再在判定环外侧亮光扇和碎屑；默认开启"
 	box.add_child(_playtest_perfect_fx)
 
 	box.add_child(HSeparator.new())

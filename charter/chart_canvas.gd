@@ -1139,30 +1139,41 @@ func _draw_donut(point: Vector2, radius: float, color: Color) -> void:
 func _draw_seek(note: Note) -> void:
 	var y := _beat_to_y(note.beat)
 	var selected := _is_note_selected(note.id)
-	var x0 := _u_to_x(0.0)
-	var x1 := _u_to_x(1.0)
 	var color := UITheme.INK
 	if not note.seek_pending:
 		color = UITheme.SEEK_OUT if note.seek_orien == 0 else UITheme.SEEK_IN
 	var width := 3.0 if selected else 1.6
-	draw_line(Vector2(x0, y), Vector2(x1, y), Color(color.r, color.g, color.b, 0.95), width, true)
-	if selected:
-		draw_line(Vector2(x0, y), Vector2(x1, y), Color(1, 1, 1, 0.25), width + 2.0, true)
+	var span := note.seek_width()
+	# 窄 Seek 只画自己那段弧；整圈仍是贯穿整行。
+	var intervals := _u_intervals(note.angle, span)
+	for interval in intervals:
+		var x0 := _u_to_x(interval.x)
+		var x1 := _u_to_x(interval.y)
+		if x1 <= x0 + 0.5:
+			continue
+		draw_line(Vector2(x0, y), Vector2(x1, y), Color(color.r, color.g, color.b, 0.95), width, true)
+		if selected:
+			draw_line(Vector2(x0, y), Vector2(x1, y), Color(1, 1, 1, 0.25), width + 2.0, true)
 	if note.seek_pending:
 		return
 	# 外在上、里在下；尖端指向滚轮方向（外 = 上滑）。
 	var direction := -1.0 if note.seek_orien == 0 else 1.0
-	var count := 12
-	for i in range(1, count):
-		var x := lerpf(x0, x1, float(i) / float(count))
-		var tip := Vector2(x, y + 4.5 * direction)
-		draw_colored_polygon(PackedVector2Array([
-			tip,
-			Vector2(x - 2.5, y + 1.2 * direction),
-			Vector2(x + 2.5, y + 1.2 * direction),
-		]), color)
+	var count := clampi(int(span / 15.0), 2, 12)
+	for interval in intervals:
+		var x0 := _u_to_x(interval.x)
+		var x1 := _u_to_x(interval.y)
+		for i in range(1, count):
+			var x := lerpf(x0, x1, float(i) / float(count))
+			var tip := Vector2(x, y + 4.5 * direction)
+			draw_colored_polygon(PackedVector2Array([
+				tip,
+				Vector2(x - 2.5, y + 1.2 * direction),
+				Vector2(x + 2.5, y + 1.2 * direction),
+			]), color)
+	_draw_width_handles(note, y)
 	if _show_type_label(note):
-		_draw_type_label("SEEK OUT" if note.seek_orien == 0 else "SEEK IN", Vector2(x0 + 6.0, y - 6.0), color)
+		var first := intervals[0] if not intervals.is_empty() else Vector2(0.0, 1.0)
+		_draw_type_label("SEEK OUT" if note.seek_orien == 0 else "SEEK IN", Vector2(_u_to_x(first.x) + 6.0, y - 6.0), color)
 
 
 func _draw_anchor(note: Note) -> void:
@@ -1762,7 +1773,7 @@ func _on_left_press(event: InputEventMouseButton) -> void:
 		"path":
 			_place_path(beat, u)
 		"seek":
-			_create_seek_at(beat)
+			_create_seek_at(beat, u)
 		"limit":
 			_begin_red(beat, u)
 		"boundary":
@@ -1982,8 +1993,21 @@ func _note_hit(note: Note, pos: Vector2) -> Dictionary:
 			return {}
 		"seek":
 			var y := _beat_to_y(note.beat)
-			if absf(pos.y - y) <= 8.0:
-				return {"part": "body", "distance": absf(pos.y - y)}
+			if absf(pos.y - y) > 8.0:
+				return {}
+			# 端点手柄只在选中时生效（和 Tap / Hold 一致）。
+			if _is_note_selected(note.id):
+				var edge_distance := INF
+				for interval in _u_intervals(note.angle, note.seek_width()):
+					edge_distance = minf(edge_distance,
+						minf(absf(pos.x - _u_to_x(interval.x)), absf(pos.x - _u_to_x(interval.y))))
+				if edge_distance >= 9.0:
+					edge_distance = INF
+				if is_finite(edge_distance):
+					return {"part": "width", "distance": edge_distance}
+			for interval in _u_intervals(note.angle, note.seek_width()):
+				if pos.x >= _u_to_x(interval.x) - 4.0 and pos.x <= _u_to_x(interval.y) + 4.0:
+					return {"part": "body", "distance": absf(pos.y - y)}
 			return {}
 	return {}
 
@@ -2225,6 +2249,8 @@ func _drag_width_update(screen: Vector2) -> void:
 	var width := 0.0
 	if _drag_width_note.type == "bell":
 		width = dragged_bell_width(_drag_width_start, delta_u, _drag_width_side)
+	elif _drag_width_note.type == "seek":
+		width = dragged_seek_width(_drag_width_start, delta_u, _drag_width_side)
 	else:
 		width = dragged_width(
 			_drag_width_start, delta_u, _drag_width_side, _drag_width_note.length_ratio())
@@ -2372,14 +2398,15 @@ func _place_path(beat: float, u: float) -> void:
 		_pending_path_parent = null
 
 
-func _create_seek_at(beat: float) -> void:
+func _create_seek_at(beat: float, u: float = 0.0) -> void:
 	var chart: Chart = _app.chart
 	if chart == null:
 		return
 	for item in chart.notes:
 		if item.type == "seek" and item.seek_pending:
 			item.seek_pending = false
-	var note := Note.new("seek", beat, 0.0, 360.0)
+	# 整圈 Seek 的角无所谓；窄弧从放下去的位置开始，之后再拖两端。
+	var note := Note.new("seek", beat, fposmod(u * 360.0, 360.0), 360.0)
 	note.id = chart.next_note_id()
 	note.group_id = chart.current_group
 	note.end_beat = beat
@@ -2484,6 +2511,11 @@ static func dragged_region_angle(start_angle: float, delta_u: float, side: int) 
 ## 金键只有 24–30°，按 u 的 1:1 换算（约 0.57°/px），别用 Tap 的 2 倍速。
 static func dragged_bell_width(start_width: float, delta_u: float, side: int) -> float:
 	return clampf(start_width + delta_u * 360.0 * float(side), Note.BELL_MIN_WIDTH, Note.BELL_MAX_WIDTH)
+
+
+## Seek 的弧宽 10–360°，同样是 1:1：画出来多宽就是判定弧多宽。
+static func dragged_seek_width(start_width: float, delta_u: float, side: int) -> float:
+	return clampf(start_width + delta_u * 360.0 * float(side), Note.SEEK_MIN_WIDTH, 360.0)
 
 
 func _begin_red(beat: float, u: float) -> void:

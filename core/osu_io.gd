@@ -3,7 +3,6 @@ extends RefCounted
 
 static var last_error: String = ""
 
-const TAIKO_STACK_GAP := 0.32
 const STD_STREAM_STEP := 45.0
 const STD_JUMP_DISTANCE := 128.0
 
@@ -18,21 +17,26 @@ static func list_osz_difficulties(path: String, star_hints: Dictionary = {}) -> 
 	if zip.open(path) != OK:
 		last_error = "无法打开 .osz：%s" % path
 		return result
+	var file_index := 0
 	for name in zip.get_files():
 		if name.get_extension().to_lower() != "osu":
 			continue
 		var text := zip.read_file(name).get_string_from_utf8()
 		var meta := _read_osu_meta(text)
 		var version := String(meta.get("version", ""))
+		# index 是「压缩包里的原始顺序」，import_osz 按它取 .osu；不支持的模式只跳过、不占位。
+		var current_index := file_index
+		file_index += 1
+		# 导入只认 osu!std；mania/catch/taiko 难度不出现在列表里。
+		if int(meta.get("mode", 0)) != 0:
+			continue
 		result.append({
-			# 这里必须是"压缩包里的原始顺序"，转谱时按它取 .osu，排序后不能改。
-			"index": result.size(),
+			"index": current_index,
 			"file": name,
 			"title": String(meta.get("title", name.get_file().get_basename())),
 			"artist": String(meta.get("artist", "")),
 			"creator": String(meta.get("creator", "")),
 			"version": version,
-			"mode": int(meta.get("mode", 0)),
 			"stars": float(star_hints.get(version, -1.0)),
 		})
 	zip.close()
@@ -295,8 +299,8 @@ static func parse_osu(text: String, source_name: String = "") -> Dictionary:
 				"fields": fields,
 			})
 	var mode := int(general.get("Mode", "0"))
-	if mode != 0 and mode != 1:
-		last_error = "只支持 osu!std 和 osu!taiko，当前 Mode=%d" % mode
+	if mode != 0:
+		last_error = "只支持 osu!std，当前 Mode=%d" % mode
 		return {}
 	var slider_multiplier := float(difficulty.get("SliderMultiplier", "1.4"))
 	slider_multiplier = maxf(slider_multiplier, 0.1)
@@ -347,105 +351,22 @@ static func parse_osu(text: String, source_name: String = "") -> Dictionary:
 	chart.timing.sort_points()
 	var report: Array[String] = []
 	report.append("来源：%s" % source_name)
-	report.append("模式：%s" % ("osu!taiko" if mode == 1 else "osu!std"))
+	report.append("模式：osu!std")
 	report.append("BPM 点：%d；offset：%.0f ms；SliderMultiplier：%.2f" % [chart.timing.points.size(), chart.offset_ms, slider_multiplier])
 	objects_raw.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return float(a["time"]) < float(b["time"]))
-	if mode == 0:
-		var std_counts := _convert_std_continuous(objects_raw, chart, timing_raw, slider_multiplier, circle_radius, difficulty)
-		var deduped := _dedupe_std_simultaneous(chart, std_counts)
-		var snapped := ConvertOptimizer.snap_heads_to_path_tails(chart)
-		var shift := _shift_chart_to_zero(chart)
-		chart.refresh_ids()
-		report.append("保留：Tap %d，Path %d，Hold %d；跳过：spinner %d，无效 %d" % [std_counts["tap"], std_counts["path"], std_counts["hold"], std_counts["spinner"], std_counts["invalid"]])
-		report.append("Sentakki 转换：circle → 环上 Tap；slider → 段库 Path；lazy/短 → Hold；流向按相邻中点，大跳按两端道差，Path 直接推进到相对终点道。")
-		report.append("同刻去重：删除 %d 个；尾判撞头判：吸附 %d 个（鼠标只有一只）。" % [deduped, snapped])
-		if shift > 0.001:
-			report.append("已整体平移 %.2f 拍，使最早 note 落在 beat 0；offset 调整为 %.0f ms。" % [shift, chart.offset_ms])
-		if int(std_counts["spinner"]) > 0:
-			report.append("注意：spinner 没有头尾，按设计不导入。")
-		return {"chart": chart, "report": report, "_events": events, "_general": general}
-
-	var counts := {"tap": 0, "hold": 0, "spinner": 0, "invalid": 0}
-	var taiko_prev_beat := -1.0e9
-	var taiko_prev_angle := 0.0
-	for object in objects_raw:
-		var type := int(object["type"])
-		if type & 8:
-			counts["spinner"] += 1
-			continue
-		if type & 128:
-			counts["invalid"] += 1
-			continue
-		var beat: float = chart.timing.audio_ms_to_beat(float(object["time"]))
-		var hit_sound := int(object["hit_sound"])
-		var kat := _is_taiko_kat(hit_sound)
-		var finish := (hit_sound & 4) != 0
-		if type & 1:
-			var gap := beat - taiko_prev_beat
-			var angle := taiko_prev_angle
-			if gap >= TAIKO_STACK_GAP:
-				angle = _taiko_lane(taiko_prev_angle, kat)
-			var width := 90.0 if finish else (76.0 if kat else 58.0)
-			var note := Note.new("tap", beat, fposmod(angle, 360.0), width)
-			note.id = chart.next_note_id()
-			chart.notes.append(note)
-			taiko_prev_beat = beat
-			taiko_prev_angle = fposmod(angle, 360.0)
-			counts["tap"] += 1
-		elif type & 2:
-			var duration := _slider_beats(object, chart, timing_raw, slider_multiplier)
-			var gap := beat - taiko_prev_beat
-			var angle := taiko_prev_angle
-			if gap >= TAIKO_STACK_GAP:
-				angle = _taiko_lane(taiko_prev_angle, kat)
-			if duration < 1.5:
-				# 短滑条按 osu!taiko 习惯拆成拍点，不生成需要长按的 Hold。
-				var span := clampf(duration, 0.25, 1.5)
-				var count := maxi(1, int(round(span / 0.5)))
-				var last_beat := beat
-				for i in count:
-					var tap_beat := beat + span * float(i) / float(count)
-					var tap := Note.new("tap", tap_beat, fposmod(angle, 360.0), 76.0 if kat else 58.0)
-					tap.id = chart.next_note_id()
-					chart.notes.append(tap)
-					last_beat = tap_beat
-					counts["tap"] += 1
-				taiko_prev_beat = last_beat
-			else:
-				var hold := Note.new("hold", beat, fposmod(angle, 360.0), 58.0)
-				hold.id = chart.next_note_id()
-				hold.end_beat = beat + duration
-				chart.notes.append(hold)
-				taiko_prev_beat = beat + duration
-				counts["hold"] += 1
-			taiko_prev_angle = fposmod(angle, 360.0)
-		else:
-			counts["invalid"] += 1
+	var std_counts := _convert_std_continuous(objects_raw, chart, timing_raw, slider_multiplier, circle_radius, difficulty)
+	var deduped := _dedupe_std_simultaneous(chart, std_counts)
+	var snapped := ConvertOptimizer.snap_heads_to_path_tails(chart)
 	var shift := _shift_chart_to_zero(chart)
 	chart.refresh_ids()
-	report.append("保留：Tap %d，Hold %d；跳过：spinner %d，无效 %d" % [counts["tap"], counts["hold"], counts["spinner"], counts["invalid"]])
+	report.append("保留：Tap %d，Path %d，Hold %d；跳过：spinner %d，无效 %d" % [std_counts["tap"], std_counts["path"], std_counts["hold"], std_counts["spinner"], std_counts["invalid"]])
+	report.append("Sentakki 转换：circle → 环上 Tap；slider → 段库 Path；lazy/短 → Hold；流向按相邻中点，大跳按两端道差，Path 直接推进到相对终点道。")
+	report.append("同刻去重：删除 %d 个；尾判撞头判：吸附 %d 个（鼠标只有一只）。" % [deduped, snapped])
 	if shift > 0.001:
 		report.append("已整体平移 %.2f 拍，使最早 note 落在 beat 0；offset 调整为 %.0f ms。" % [shift, chart.offset_ms])
-	report.append("taiko 映射：don/kat 按 hitsound（whistle/clap = kat）分色；就近取 0/90/180/270 两车道，密集段堆叠不甩圈；短滑条 → Tap，长滑条 → Hold；spinner 跳过。")
-	if counts["spinner"] > 0:
+	if int(std_counts["spinner"]) > 0:
 		report.append("注意：spinner 没有头尾，按设计不导入。")
 	return {"chart": chart, "report": report, "_events": events, "_general": general}
-
-static func _is_taiko_kat(hit_sound: int) -> bool:
-	return (hit_sound & 2) != 0 or (hit_sound & 8) != 0
-
-
-static func _taiko_lane(previous: float, kat: bool) -> float:
-	# 同一类音落在固定车道上，跨 don/kat 时只走最近的 90°。
-	var base := 90.0 if kat else 0.0
-	var best := base
-	var best_distance := INF
-	for candidate in [base, fposmod(base + 180.0, 360.0)]:
-		var distance := absf(JudgeMath.angle_delta(previous, candidate))
-		if distance < best_distance:
-			best_distance = distance
-			best = candidate
-	return best
 
 
 static func _shift_chart_to_zero(chart: Chart) -> float:
@@ -608,7 +529,6 @@ static func _convert_std_continuous(objects_raw: Array, chart: Chart, timing_raw
 				end_beat = beat + duration_beats
 				note = Note.new("hold", beat, u, 60.0)
 				note.end_beat = end_beat
-				note.hold_style = "straight"
 				counts["hold"] += 1
 		if note == null:
 			note = Note.new("tap", beat, u, 60.0)

@@ -120,8 +120,6 @@ static func chart_to_dict(chart: Chart) -> Dictionary:
 		var extra := {}
 		match note.type:
 			"hold":
-				if note.hold_style != "straight":
-					extra["hold_style"] = note.hold_style
 				if not note.visual_pts.is_empty():
 					extra["visual"] = Note._points_to_dict(note.visual_pts)
 			"path":
@@ -134,8 +132,6 @@ static func chart_to_dict(chart: Chart) -> Dictionary:
 					extra["tail_width"] = snappedf(note.tail_width, 0.001)
 				if note.path_speed != 1.0:
 					extra["speed"] = snappedf(note.path_speed, 0.001)
-				if note.path_style != "arc":
-					extra["path_style"] = note.path_style
 				if not note.path_gaps.is_empty():
 					extra["path_gaps"] = Note._ranges_to_array(note.path_gaps)
 				if not note.trace_pts.is_empty():
@@ -237,8 +233,6 @@ static func _keys_from_events(chart: Chart) -> Array[Dictionary]:
 
 ## note_extras 侧表：补齐紧凑代码丢掉的 Hold/Path/Bell 字段。
 static func _apply_note_extras(note: Note, extra: Dictionary) -> void:
-	if extra.has("hold_style"):
-		note.hold_style = String(extra["hold_style"])
 	if extra.has("tolerance"):
 		note.tolerance = float(extra["tolerance"])
 	if extra.has("samples"):
@@ -249,8 +243,6 @@ static func _apply_note_extras(note: Note, extra: Dictionary) -> void:
 		note.tail_width = float(extra["tail_width"])
 	if extra.has("speed"):
 		note.path_speed = float(extra["speed"])
-	if extra.has("path_style"):
-		note.path_style = String(extra["path_style"])
 	if extra.has("path_gaps"):
 		note.path_gaps = Note._ranges_from_array(extra["path_gaps"])
 	if extra.has("trace"):
@@ -839,6 +831,7 @@ static func load_project(path: String) -> Dictionary:
 		last_error = "谱面工程必须包含 music 音频文件"
 		return {"ok": false, "error": last_error}
 	var names: Array = main.get("difficulty_list", main.get("difficulties", []))
+	var stars_raw: Array = main.get("difficulty_stars", [])
 	var view: Dictionary = main.get("view", {})
 	var entries: Array = []
 	for i in chart_files.size():
@@ -913,12 +906,13 @@ static func load_project(path: String) -> Dictionary:
 				"title": String(main.get("title", "")),
 				"artist": String(main.get("artist", "")),
 				"creator": String(main.get("creator", main.get("charter", ""))),
-				"version": String(main.get("chart_version", name)),
+				"version": String(part.get("chart_version", "")) if not String(part.get("chart_version", "")).is_empty() else String(main.get("chart_version", name)),
 				"tags": String(main.get("tags", "")),
 				"license": String(main.get("license", "")),
 				"background": String(main.get("background", "")) if not String(main.get("background", "")).is_empty() else (dir.path_join(jacket) if not jacket.is_empty() else ""),
 				"storyboard": String(main.get("storyboard", "")),
 				"widescreen": int(main.get("widescreen", 0)),
+				"face_camera": int(main.get("face_camera", 1)),
 				"audio_source": String(main.get("audio_source", "")),
 			},
 			"timing": {"offset_ms": float(main.get("offset_ms", 0.0)), "points": points},
@@ -948,7 +942,8 @@ static func load_project(path: String) -> Dictionary:
 		chart.ensure_note_local_ids()
 		chart.project_dir = dir
 		chart.project_main_path = main_path
-		entries.append({"name": name, "chart": chart})
+		var stars := float(stars_raw[i]) if i < stars_raw.size() else -1.0
+		entries.append({"name": name, "stars": stars, "chart": chart})
 	if entries.is_empty():
 		last_error = "谱面工程没有可用难度"
 		return {"ok": false, "error": last_error}
@@ -985,8 +980,10 @@ static func save_project(entries: Array, path: String, title: String = "", sourc
 	var base := chart_to_dict(first)
 	var meta: Dictionary = first.metadata
 	var names: Array[String] = []
+	var stars: Array = []
 	for entry in entries:
 		names.append(String(entry.get("name", "难度")))
+		stars.append(snappedf(float(entry.get("stars", -1.0)), 0.01))
 	var audio_name := _copy_project_audio(first, dir)
 	var jacket_name := _copy_project_jacket(first, dir)
 	var view := {
@@ -1003,6 +1000,7 @@ static func save_project(entries: Array, path: String, title: String = "", sourc
 		"creator": String(meta.get("creator", "")),
 		"difficulty": names[0],
 		"difficulty_list": names,
+		"difficulty_stars": stars,
 		"bpm": _first_bpm(first),
 		"beats_per_bar": _first_beats_per_bar(first),
 		"offset_ms": snappedf(first.offset_ms, 0.001),
@@ -1020,6 +1018,7 @@ static func save_project(entries: Array, path: String, title: String = "", sourc
 		"storyboard": String(first.metadata.get("storyboard", "")),
 		"chart_version": String(first.metadata.get("version", names[0])),
 		"widescreen": int(first.metadata.get("widescreen", 0)),
+		"face_camera": 1 if bool(first.metadata.get("face_camera", true)) else 0,
 		"view": view,
 		"source": source,
 	}
@@ -1067,6 +1066,7 @@ static func save_project(entries: Array, path: String, title: String = "", sourc
 			"format": FORMAT,
 			"version": VERSION,
 			"difficulty": String(chart.difficulty if not chart.difficulty.is_empty() else entries[i].get("name", "难度")),
+			"chart_version": String(chart.metadata.get("version", "")),
 			"groups": _group_codes(chart, part),
 			"current_group": chart.current_group,
 			"regions": part.get("regions", []),
@@ -1262,6 +1262,7 @@ static func _main_tmc(main: Dictionary) -> String:
 	lines.append("creator=" + String(main.get("creator", main.get("charter", ""))))
 	lines.append("difficulty=" + String(main.get("difficulty", "")))
 	lines.append("difficulty_list=" + JSON.stringify(main.get("difficulty_list", [])))
+	lines.append("difficulty_stars=" + JSON.stringify(main.get("difficulty_stars", [])))
 	lines.append("bpm=" + str(main.get("bpm", 120.0)))
 	lines.append("beats_per_bar=" + str(main.get("beats_per_bar", 4)))
 	lines.append("offset_ms=" + str(main.get("offset_ms", 0.0)))
@@ -1279,6 +1280,7 @@ static func _main_tmc(main: Dictionary) -> String:
 	lines.append("storyboard=" + String(main.get("storyboard", "")))
 	lines.append("chart_version=" + String(main.get("chart_version", main.get("difficulty", ""))))
 	lines.append("widescreen=" + str(main.get("widescreen", 0)))
+	lines.append("face_camera=" + str(main.get("face_camera", 1)))
 	lines.append("source=" + String(main.get("source", "")))
 	lines.append("default_shape=" + String(view.get("default_shape", "S0")))
 	lines.append("editor=" + JSON.stringify(view.get("editor", {})))
@@ -1289,6 +1291,7 @@ static func _main_tmc(main: Dictionary) -> String:
 static func _chart_tmc(part: Dictionary) -> String:
 	var lines: Array[String] = ["!tmc-chart 1"]
 	lines.append("difficulty=" + String(part.get("difficulty", "")))
+	lines.append("chart_version=" + String(part.get("chart_version", "")))
 	lines.append("current_group=" + str(part.get("current_group", 0)))
 	for block in part.get("groups", []):
 		lines.append(String(block))
@@ -1406,6 +1409,7 @@ static func _parse_main_tmc(text: String) -> Dictionary:
 		"creator": str(fields.get("creator", fields.get("charter", ""))),
 		"difficulty": str(fields.get("difficulty", "")),
 		"difficulty_list": fields.get("difficulty_list", []),
+		"difficulty_stars": fields.get("difficulty_stars", []),
 		"bpm": float(fields.get("bpm", 120.0)),
 		"beats_per_bar": int(fields.get("beats_per_bar", 4)),
 		"offset_ms": float(fields.get("offset_ms", 0.0)),
@@ -1423,6 +1427,7 @@ static func _parse_main_tmc(text: String) -> Dictionary:
 		"storyboard": str(fields.get("storyboard", "")),
 		"chart_version": str(fields.get("chart_version", fields.get("difficulty", ""))),
 		"widescreen": int(fields.get("widescreen", 0)),
+		"face_camera": int(fields.get("face_camera", 1)),
 		"source": str(fields.get("source", "")),
 		"view": view,
 	}
@@ -1452,6 +1457,7 @@ static func _parse_chart_tmc(text: String) -> Dictionary:
 			var value := line.substr(at + 1)
 			match key:
 				"difficulty": result["difficulty"] = value.strip_edges()
+				"chart_version": result["chart_version"] = value.strip_edges()
 				"current_group": result["current_group"] = int(value)
 				"region": result["regions"].append(value.strip_edges())
 				"command": result["commands"].append(_tmc_value(value))

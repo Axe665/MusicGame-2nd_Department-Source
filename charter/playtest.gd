@@ -342,8 +342,7 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	_preview.flow_scale = flow
 	_preview.playback_rate = playback_rate
 	_preview.note_skin = String(_app.note_skin if _app != null else "candy")
-	_preview.hit_fx_style = String(_app.hit_fx_style if _app != null else "burst")
-	_preview.show_perfect_fx = bool(_app.show_perfect_fx if _app != null else false)
+	_preview.show_perfect_fx = bool(_app.show_perfect_fx if _app != null else true)
 	_preview.cursor_scale = float(_app.cursor_scale if _app != null else 1.0)
 	_preview.hud_title = String(chart.metadata.get("title", "")) if chart != null else ""
 	_preview.hud_difficulty = String(chart.difficulty) if chart != null else ""
@@ -358,7 +357,6 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 		_preview.note_detail_fine = bool(_app.note_detail_fine)
 		_preview.note_glow = bool(_app.note_glow)
 		_preview.path_style = String(_app.path_style)
-		_preview.limit_exit_animation = bool(_app.limit_exit_animation)
 		_preview.cursor_trail_mode = String(_app.cursor_trail)
 		_preview.fx_budget = String(_app.fx_budget)
 		_preview.bar_lines_visible = bool(_app.bar_lines)
@@ -675,9 +673,8 @@ func _refresh_pause_status() -> void:
 	if _mouse_keys_toggle != null:
 		_mouse_keys_toggle.set_pressed_no_signal(bool(_app.mouse_keys))
 	var skin_label := String(Preview3D.skin_presets().get(_preview.note_skin, {}).get("label", _preview.note_skin))
-	var fx_label := String(Preview3D.hit_fx_presets().get(_preview.hit_fx_style, _preview.hit_fx_style))
 	var mirror_suffix := "" if mirror_mode == "off" else "，镜像 %s" % _mirror_label()
-	_pause_style.text = "皮肤 %s，特效 %s%s%s" % [skin_label, fx_label, "，AUTO" if auto_play else "", mirror_suffix]
+	_pause_style.text = "皮肤 %s%s%s" % [skin_label, "，AUTO" if auto_play else "", mirror_suffix]
 	_pause_tiers.text = "PERFECT %d   GREAT %d   GOOD %d   BAD %d   MISS %d" % [
 		int(_tier_counts.get("PERFECT", 0)), int(_tier_counts.get("GREAT", 0)),
 		int(_tier_counts.get("GOOD", 0)), int(_tier_counts.get("BAD", 0)),
@@ -1256,7 +1253,6 @@ func _start_recording() -> void:
 		"flow": _preview.flow_scale,
 		"cursor_scale": _preview.cursor_scale,
 		"note_skin": _preview.note_skin,
-		"hit_fx": _preview.hit_fx_style,
 		"perfect_fx": _preview.show_perfect_fx,
 		# 上游新加的「打击音色」：回放时沿用录制时的，声音才对得上。
 		"hit_sfx": String(_app.hit_sfx_style) if _app != null else "default",
@@ -1304,8 +1300,6 @@ func _enter_replay(data: Replay) -> void:
 	_preview.cursor_scale = float(data.settings.get("cursor_scale", _preview.cursor_scale))
 	if data.settings.has("note_skin"):
 		_preview.note_skin = String(data.settings["note_skin"])
-	if data.settings.has("hit_fx"):
-		_preview.hit_fx_style = String(data.settings["hit_fx"])
 	if data.settings.has("perfect_fx"):
 		_preview.show_perfect_fx = bool(data.settings["perfect_fx"])
 	if data.settings.has("hit_sfx") and _sfx != null:
@@ -1365,12 +1359,16 @@ func _apply_replay_event(event: Dictionary) -> void:
 			_keys_held.erase(released)
 			_release_ms[released] = stamp
 		"seek":
-			_seek_presses.append({
+			var seek_press := {
 				"time": stamp,
 				"lo": float(event.get("lo", stamp)),
 				"hi": float(event.get("hi", stamp)),
 				"orien": int(event.get("dir", 0)),
-			})
+			}
+			# 旧回放没有坐标：只有窄 Seek 才需要，缺省时按「不检查位置」处理。
+			if event.has("x") and event.has("y"):
+				seek_press["mouse"] = _replay_point(float(event["x"]), float(event["y"]))
+			_seek_presses.append(seek_press)
 		"offset":
 			_offset_override = float(event.get("v", 0.0))
 
@@ -1658,12 +1656,21 @@ func _auto_step(ms: float, beat: float, _delta: float) -> void:
 func _auto_press_note(note: Note, state: Dictionary, beat: float) -> void:
 	if note.type == "seek":
 		var seek_ms := float(state["target_ms"])
+		var seek_point: Vector2 = _auto_cursor
+		if note.seek_width() < 359.5:
+			# 窄 Seek 要求滚动时站在弧上：先把光标放到弧的中点。
+			var arc_point: Vector2 = _preview.seek_screen(note, beat)
+			if arc_point.is_finite():
+				seek_point = arc_point
+				_auto_cursor = arc_point
+				_preview.auto_cursor = arc_point
 		_seek_presses.append({
 			"time": seek_ms,
 			"orien": note.seek_orien,
+			"mouse": seek_point,
 		})
 		if _record != null:
-			_record.add_seek(seek_ms, seek_ms, seek_ms, note.seek_orien)
+			_record.add_seek(seek_ms, seek_ms, seek_ms, note.seek_orien, _unit_point(seek_point))
 		return
 	var key := AUTO_KEY_A if _auto_key_phase % 2 == 0 else AUTO_KEY_B
 	_auto_key_phase += 1
@@ -1703,6 +1710,7 @@ func _auto_cursor_target(ms: float, beat: float) -> Vector2:
 		center = Vector2.ZERO
 	var body := Vector2.INF
 	var bell_point := Vector2.INF
+	var seek_point := Vector2.INF
 	var last := mini(_ordered_notes.size(), _judge_from + 64)
 	for i in range(maxi(0, _judge_from - 4), last):
 		var note := _ordered_notes[i]
@@ -1721,9 +1729,18 @@ func _auto_cursor_target(ms: float, beat: float) -> Vector2:
 					var bell: Dictionary = _preview.bell_screen(note, beat)
 					if not bell.is_empty():
 						bell_point = bell["center"]
+			"seek":
+				# 窄 Seek 要先把光标送到弧上，滚动才生效。
+				if note.seek_width() < 359.5 and not seek_point.is_finite() \
+						and ms >= target - AUTO_LEAD_MS - 200.0 and ms <= target + 120.0:
+					var arc_point: Vector2 = _preview.seek_screen(note, beat)
+					if arc_point.is_finite():
+						seek_point = arc_point
 			"path":
 				if not body.is_finite() and ms >= target - AUTO_PREVIEW_MS and ms <= end_ms + 120.0:
 					body = _auto_body_point(note, ms, beat, end_ms)
+	if seek_point.is_finite():
+		return _auto_avoid_red(seek_point, beat, center)
 	if bell_point.is_finite():
 		return _auto_avoid_red(bell_point, beat, center)
 	if body.is_finite():
@@ -1878,6 +1895,7 @@ func _judge_seek(note: Note, ms: float, beat: float) -> void:
 	var target := float(state["target_ms"])
 	if ms < target - HIT_WINDOW_MS:
 		return
+	var narrow: bool = note.seek_width() < 359.5
 	var picked := -1
 	var best := INF
 	for i in _seek_presses.size():
@@ -1888,6 +1906,10 @@ func _judge_seek(note: Note, ms: float, beat: float) -> void:
 		if span_hi < target - HIT_WINDOW_MS or span_lo > target + HIT_WINDOW_MS:
 			continue
 		if int(press.get("orien", -1)) != note.seek_orien:
+			continue
+		# 窄 Seek：滚轮那一下光标必须已经站在这段弧上（旧回放没有坐标就不检查）。
+		if narrow and press.has("mouse") \
+				and not _preview.seek_contains(note, beat, press["mouse"] as Vector2):
 			continue
 		var distance := absf(press_error(press, target))
 		if distance < best:
@@ -1900,7 +1922,9 @@ func _judge_seek(note: Note, ms: float, beat: float) -> void:
 		_preview.set_note_state(note.id, "hit", beat)
 		_register_hit("PERFECT")
 		var color := UITheme.SEEK_IN if note.seek_orien == 1 else UITheme.SEEK_OUT
-		_pulse_at(0.0, beat, color, "PERFECT", 360.0, "seek", "SEEK", _preview.project_design(Vector2.ZERO))
+		var hit_point: Vector2 = _preview.seek_screen(note, beat) if narrow else _preview.project_design(Vector2.ZERO)
+		_pulse_at(note.angle if narrow else 0.0, beat, color, "PERFECT",
+			note.seek_width() if narrow else 360.0, "seek", "SEEK", hit_point)
 		_play_hit("bell", randf_range(0.98, 1.02))
 		_record_error(float(press["time"]) - target, "Seek #%d PERFECT" % note.id, "PERFECT", float(press["time"]))
 		return
@@ -1910,7 +1934,9 @@ func _judge_seek(note: Note, ms: float, beat: float) -> void:
 		_miss_count += 1
 		_add_judgement("MISS")
 		_combo = 0
-		_pulse_at(0.0, beat, UITheme.RED, "MISS", 360.0, "seek", "", _preview.project_design(Vector2.ZERO))
+		var miss_point: Vector2 = _preview.seek_screen(note, beat) if narrow else _preview.project_design(Vector2.ZERO)
+		_pulse_at(note.angle if narrow else 0.0, beat, UITheme.RED, "MISS",
+			note.seek_width() if narrow else 360.0, "seek", "", miss_point)
 		_add_log("MISS Seek #%d @ %.0fms" % [note.id, target])
 
 
@@ -1926,9 +1952,10 @@ func _judge_tap(note: Note, ms: float, beat: float) -> void:
 		state["done"] = true
 		_preview.set_note_state(note.id, "hit")
 		_preview.add_note_pop("tap", note, beat)
+		_preview.add_ring_light(note, tier == "PERFECT")
 		_register_hit(tier)
 		_pulse_at(note.angle, beat, _tier_color(tier), tier, note.arc_width(), "tap", _timing_detail(error, tier))
-		_play_hit(HitSfx.kind_for_note(note), randf_range(0.98, 1.02))
+		_play_hit("don", randf_range(0.98, 1.02))
 		_record_error(float(press["time"]) - target, "Tap #%d %s" % [note.id, tier], tier, float(press["time"]))
 		return
 	if ms > target + HIT_WINDOW_MS:
@@ -1958,6 +1985,7 @@ func _judge_hold(note: Note, ms: float, beat: float) -> void:
 			state["head_tier"] = head_tier
 			_preview.set_note_state(note.id, "holding")
 			_preview.add_note_pop("hold", note, beat)
+			_preview.add_ring_light(note, head_tier == "PERFECT")
 			_pulse_at(note.angle, beat, _tier_color(head_tier), head_tier, note.arc_width(), "hold", _timing_detail(head_error, head_tier))
 			_play_hit("don")
 			_add_log("HOLD #%d HEAD %s" % [note.id, head_tier])
@@ -2047,7 +2075,7 @@ func _judge_path(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 				_write_path_input_log({"kind": "head", "note": note.id, "time_ms": ms,
 					"error_ms": head_error, "mouse": _path_log_point(press.get("mouse", Vector2.INF))})
 				_register_hit(tier)
-				_play_hit(HitSfx.kind_for_note(note), randf_range(0.98, 1.02))
+				_play_hit("don", randf_range(0.98, 1.02))
 				# 星头用实际的星头屏幕位置，平面星星（V / 折线）也能炸在正确的位置。
 				_pulse_at(note.angle, beat, _tier_color(tier), tier, note.arc_width(), "path", _timing_detail(head_error, tier), head_point)
 				# 星头是按键时机，和 Tap 同源，可以喂给动态校准与散布图。
@@ -2299,6 +2327,8 @@ func _judge_bell(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 	if bool(state.get("armed", false)):
 		state["done"] = true
 		_preview.set_note_state(note.id, "hit")
+		_preview.add_note_pop("bell", note, beat)
+		_preview.add_ring_light(note, true)
 		_register_hit("PERFECT")
 		var bell: Dictionary = _preview.bell_screen(note, beat)
 		if not bell.is_empty():
@@ -2380,6 +2410,8 @@ func _judge_anchor_pairs(ms: float, beat: float) -> void:
 			_preview.set_note_state(partner_id, "hit")
 			_preview.add_note_pop("anchor", owner_note, beat)
 			_preview.add_note_pop("anchor", partner_note, beat)
+			_preview.add_ring_light(owner_note, tier == "PERFECT")
+			_preview.add_ring_light(partner_note, tier == "PERFECT")
 			# 两颗都算完整命中：连击 +2、准确率两个样本、档位计数 +2。
 			_register_hit(tier)
 			_register_hit(tier)
@@ -2504,23 +2536,20 @@ static func limit_dwell_break(state: Dictionary, inside: bool, step_sec: float, 
 	return false
 
 
-func _pulse_at(angle_degrees: float, beat: float, color: Color, label: String, width: float = 60.0, kind: String = "tap", detail: String = "", screen_point: Vector2 = Vector2.INF) -> void:
+func _pulse_at(angle_degrees: float, beat: float, color: Color, label: String, _width: float = 60.0, kind: String = "tap", detail: String = "", screen_point: Vector2 = Vector2.INF) -> void:
 	if _preview == null:
 		return
 	var p := screen_point
 	if not (p.is_finite() and p.x < 1.0e9):
 		p = _preview.project_u(fposmod(angle_degrees, 360.0) / 360.0, beat)
 	if p.is_finite() and p.x < 1.0e9:
-		# SEEK 的 PERFECT 反馈是转盘操作的结果，不跟着「PERFECT 特效」开关一起关。
-		var show_fx := label != "PERFECT" or _preview.show_perfect_fx or kind == "seek"
 		var show_label := Preview3D.judge_label_visible(label,
 			String(_preview.hud_options.get("judge_filter", "all")))
-		# 爆点和判定字都关掉时不要再塞脉冲：否则 PERFECT 会把 20 条特效预算吃满。
-		if not show_fx and not show_label:
+		# 「命中特效 = 关」而且这颗不进判定字时不必塞脉冲：免得把 20 条预算吃满。
+		# Seek / Path 的反馈是功能性的，不跟着这个开关关。
+		if _preview.fx_budget == "off" and not show_label and kind not in ["seek", "path"]:
 			return
-		_preview.add_hit_pulse(p, color, label, kind, detail, show_fx)
-		if show_fx:
-			_preview.add_arc_flash(angle_degrees, width, beat, color)
+		_preview.add_hit_pulse(p, color, label, kind, detail)
 
 
 ## One press belongs to the note whose timing/position fits it best. This runs
@@ -3086,15 +3115,17 @@ func _input(event: InputEvent) -> void:
 		var now_ms := _chart_ms() + float(_app.playtest_offset_ms if _app != null else 0.0)
 		var span := _input_interval(now_ms)
 		var orien := 0 if event.button_index == MOUSE_BUTTON_WHEEL_UP else 1
+		var point: Vector2 = _preview.get_global_transform_with_canvas().affine_inverse() * event.position
 		if not replay_mode and seek_tick_allowed(orien, _last_seek_orien, now_ms - _last_seek_ms):
 			_seek_presses.append({
 				"time": (span.x + span.y) * 0.5,
 				"lo": span.x,
 				"hi": span.y,
 				"orien": orien,
+				"mouse": point,
 			})
 			if _recording and _record != null:
-				_record.add_seek((span.x + span.y) * 0.5, span.x, span.y, orien)
+				_record.add_seek((span.x + span.y) * 0.5, span.x, span.y, orien, _unit_point(point))
 		# 被丢弃的那一笔也要记账，否则上下交替时每一笔都被上一次同向放行。
 		_last_seek_orien = orien
 		_last_seek_ms = now_ms
@@ -3170,10 +3201,6 @@ func _input(event: InputEvent) -> void:
 		if event.pressed and not event.echo:
 			if event.keycode == KEY_F6:
 				_cycle_note_skin(1)
-				get_viewport().set_input_as_handled()
-				return
-			if event.keycode == KEY_F7:
-				_cycle_hit_fx(1)
 				get_viewport().set_input_as_handled()
 				return
 			if event.keycode == KEY_F8:
@@ -3523,16 +3550,6 @@ func _cycle_note_skin(step: int) -> void:
 	_preview.note_skin = String(keys[posmod(index + step, keys.size())])
 	if _app != null:
 		_app.note_skin = _preview.note_skin
-		_app.save_settings()
-	_update_hud_state()
-
-
-func _cycle_hit_fx(step: int) -> void:
-	var keys := Preview3D.hit_fx_presets().keys()
-	var index := keys.find(_preview.hit_fx_style)
-	_preview.hit_fx_style = String(keys[posmod(index + step, keys.size())])
-	if _app != null:
-		_app.hit_fx_style = _preview.hit_fx_style
 		_app.save_settings()
 	_update_hud_state()
 

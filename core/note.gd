@@ -14,6 +14,8 @@ const HOLD_HEAD_LENGTH_SCALE := 0.5
 ## 旧谱和导出的 Bell 都是 45°，载入时统一收敛，避免一条金键比 Tap 长 45%。
 const BELL_MIN_WIDTH := 24.0
 const BELL_MAX_WIDTH := 30.0
+## Seek 的弧宽下限：再窄就分不清「要站在弧上」了。
+const SEEK_MIN_WIDTH := 10.0
 ## 舞萌星星的默认深蓝色。
 const DEFAULT_PATH_COLOR := Color(0.55, 0.75, 1.0)
 const SIZED_TAP_MIN := 0.0
@@ -36,7 +38,6 @@ var wait_beat: float = 0.0
 var tail_angle: float = 0.0
 var tail_width: float = 45.0
 var hold: bool = true
-var hold_style: String = "straight"
 var radius: float = 44.0
 var tolerance: float = 0.24
 var samples_per_beat: float = 4.0
@@ -92,12 +93,8 @@ var sv: float = 1.0
 var head_speed: float = 1.0
 ## 出生位置：0 = 圆心，1 = 判定环（默认 0，和其它音符一致）。
 var spawn: float = 0.0
-## 出生动画拍数；0 表示用预览默认的预读时长。
-var spawn_beats: float = 0.0
 ## 飞行途中的弹跳幅度（0 = 不弹），按 1 - q² 曲线偏离。
 var bounce: float = 0.0
-## 弹跳周期拍数；0 表示整段飞行。
-var bounce_beats: float = 0.0
 ## 弹跳方向：0 = 向环内凹，1 = 向环外凸。
 var bounce_dir: int = 0
 ## 旧版触摸区字段：只为读取旧谱往返保留，当前版本不参与判定/预览，也不在编辑器里暴露。
@@ -148,6 +145,13 @@ func arc_width() -> float:
 ## 金键的有效弧宽。数据已收敛，这里再兜底一次，编辑器直接改 width 也不会越界。
 func bell_width() -> float:
 	return clampf(width, BELL_MIN_WIDTH, BELL_MAX_WIDTH)
+
+
+## Seek 的判定弧宽（度）：10–360。360 = 整圈，不要求光标先站到弧上。
+func seek_width() -> float:
+	if width <= 0.0:
+		return 360.0
+	return clampf(width, SEEK_MIN_WIDTH, 360.0)
 
 
 # ---------------------------------------------------------------- 演出修饰取值
@@ -533,12 +537,8 @@ func mods_to_dict() -> Dictionary:
 		mods["head_speed"] = snappedf(head_speed, 0.001)
 	if not is_equal_approx(spawn, 0.0):
 		mods["spawn"] = snappedf(spawn, 0.001)
-	if not is_equal_approx(spawn_beats, 0.0):
-		mods["spawn_beats"] = snappedf(spawn_beats, 0.001)
 	if not is_equal_approx(bounce, 0.0):
 		mods["bounce"] = snappedf(bounce, 0.001)
-	if not is_equal_approx(bounce_beats, 0.0):
-		mods["bounce_beats"] = snappedf(bounce_beats, 0.001)
 	if bounce_dir != 0:
 		mods["bounce_dir"] = 1 if bounce_dir > 0 else 0
 	if not touch_start.is_empty():
@@ -554,9 +554,7 @@ func apply_mods(raw: Dictionary) -> void:
 	sv = clampf(float(raw.get("sv", sv)), 0.05, 8.0)
 	head_speed = clampf(float(raw.get("head_speed", head_speed)), 0.2, 4.0)
 	spawn = clampf(float(raw.get("spawn", spawn)), 0.0, 1.0)
-	spawn_beats = maxf(0.0, float(raw.get("spawn_beats", spawn_beats)))
 	bounce = clampf(float(raw.get("bounce", bounce)), 0.0, 1.0)
-	bounce_beats = maxf(0.0, float(raw.get("bounce_beats", bounce_beats)))
 	bounce_dir = 1 if int(raw.get("bounce_dir", bounce_dir)) > 0 else 0
 	var start := String(raw.get("touch_start", touch_start)).strip_edges().to_upper()
 	var tail := String(raw.get("touch_end", touch_end)).strip_edges().to_upper()
@@ -585,8 +583,6 @@ func to_dict() -> Dictionary:
 		"hold":
 			data["end_beat"] = snappedf(end_beat, 0.001)
 			data["hold"] = hold
-			if hold_style != "straight":
-				data["hold_style"] = hold_style
 			if not visual_pts.is_empty():
 				data["visual"] = _points_to_dict(visual_pts)
 		"path":
@@ -603,8 +599,6 @@ func to_dict() -> Dictionary:
 			data["samples"] = snappedf(samples_per_beat, 0.001)
 			if path_speed != 1.0:
 				data["speed"] = snappedf(path_speed, 0.001)
-			if path_style != "arc":
-				data["path_style"] = path_style
 			if not path_gaps.is_empty():
 				data["path_gaps"] = _ranges_to_array(path_gaps)
 			if not visual_pts.is_empty():
@@ -623,6 +617,9 @@ func to_dict() -> Dictionary:
 				data["head_y"] = snappedf(path_head_local.y, 0.0001)
 		"seek":
 			data["orien"] = 1 if seek_orien == 1 else 0
+			if not is_equal_approx(seek_width(), 360.0):
+				data["width"] = snappedf(seek_width(), 0.001)
+				data["angle"] = snappedf(fposmod(angle, 360.0), 0.001)
 		"anchor":
 			if anchor_pair >= 0:
 				data["pair"] = anchor_pair
@@ -657,12 +654,10 @@ static func from_dict(raw: Dictionary) -> Note:
 	note.tail_angle = float(raw.get("tail_angle", note.angle))
 	note.tail_width = float(raw.get("tail_width", note.width))
 	note.hold = bool(raw.get("hold", true))
-	note.hold_style = String(raw.get("hold_style", "straight"))
 	note.radius = float(raw.get("radius", 24.0))
 	note.tolerance = float(raw.get("tolerance", 0.24))
 	note.samples_per_beat = float(raw.get("samples", 4.0))
 	note.path_speed = float(raw.get("speed", 1.0))
-	note.path_style = String(raw.get("path_style", "arc"))
 	note.space = "plane" if note.type == "path" else "ring"
 	note.anchor_pair = int(raw.get("pair", -1))
 	note.pair_id = String(raw.get("pair_id", ""))
@@ -685,8 +680,8 @@ static func from_dict(raw: Dictionary) -> Note:
 		note.apply_mods(raw["mods"])
 	if note.type == "seek":
 		note.seek_orien = 1 if int(raw.get("orien", 0)) == 1 else 0
-		note.angle = 0.0
-		note.width = 360.0
+		note.angle = fposmod(float(raw.get("angle", 0.0)), 360.0)
+		note.width = clampf(float(raw.get("width", 360.0)), SEEK_MIN_WIDTH, 360.0)
 		note.end_beat = note.beat
 	if note.type == "path":
 		if raw.has("centrifuge"):
@@ -707,7 +702,6 @@ static func from_dict(raw: Dictionary) -> Note:
 			note.path_controls_set = true
 			note.path_legacy = true
 			note.visual_pts.clear()
-			note.path_style = "arc"
 			if note.trace_pts.is_empty():
 				# Legacy angle-only Path: migrate it immediately to the new
 				# axis/centrifuge representation. Explicit legacy traces keep
@@ -764,6 +758,10 @@ func to_code() -> String:
 				return "[%d]hold(%s,%s,%s,%s)" % [cid, b, _code_num(end_beat), a, _code_num(width)]
 			return "[%d]hold(%s,%s,%s)" % [cid, b, _code_num(end_beat), a]
 		"seek":
+			# 旧格式 [id]seek(beat,orien) = 整圈；窄弧再追加弧宽和中心角。
+			if not is_equal_approx(seek_width(), 360.0):
+				return "[%d]seek(%s,%d,%s,%s)" % [cid, b, 1 if seek_orien == 1 else 0,
+					_code_num(seek_width()), _code_num(fposmod(angle, 360.0))]
 			return "[%d]seek(%s,%d)" % [cid, b, 1 if seek_orien == 1 else 0]
 		"anchor":
 			if anchor_pair >= 0:
@@ -840,8 +838,10 @@ static func from_code(code: String) -> Note:
 			note.beat = float(parts[0]) if parts.size() > 0 else 0.0
 			note.end_beat = note.beat
 			note.seek_orien = 1 if parts.size() > 1 and int(parts[1]) == 1 else 0
-			note.angle = 0.0
 			note.width = 360.0
+			if parts.size() > 2:
+				note.width = clampf(float(parts[2]), SEEK_MIN_WIDTH, 360.0)
+			note.angle = fposmod(float(parts[3]), 360.0) if parts.size() > 3 else 0.0
 		"anchor":
 			note.beat = float(parts[0]) if parts.size() > 0 else 0.0
 			note.end_beat = note.beat

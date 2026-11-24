@@ -127,7 +127,7 @@ func _run() -> void:
 		playtest._judge_path(note, 1000.0, 2.0, point)
 		_check(playtest._sfx._index == before + 1, "Path head hit triggers exactly one sound")
 		var player: AudioStreamPlayer = playtest._sfx._players[before % playtest._sfx._players.size()]
-		_check(player.stream == playtest._sfx._streams[HitSfx.kind_for_note(note)], "Path head uses same sound as matching Tap")
+		_check(player.stream == playtest._sfx._streams["don"], "Path head uses the tap sound")
 		_check(await _await_peak(capture) > 0.001, "Path head hit reaches SFX bus")
 		playtest._judge_path(note, 1010.0, 2.02, point)
 		_check(playtest._sfx._index == before + 1, "judged Path head never repeats its sound")
@@ -135,7 +135,7 @@ func _run() -> void:
 		_check(playtest._sfx._index == before + 2 and bool(playtest._states[note.id]["slide_cued"]), "waiting still ends with a separate slide cue")
 		app.set_chart(chart, "", false)
 		editor._build_sfx_events()
-		_check(editor._sfx_events[0]["kind"] == HitSfx.kind_for_note(note), "editor Path head matches Tap sound too")
+		_check(editor._sfx_events[0]["kind"] == "don", "editor Path head matches the tap sound too")
 	AudioServer.remove_bus_effect(bus, 0)
 	playtest.free()
 	editor.free()
