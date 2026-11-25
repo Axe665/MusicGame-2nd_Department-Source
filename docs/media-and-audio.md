@@ -85,7 +85,6 @@ BPM 检测、FLAC 转码、变速不变调和视频封装都走同一个入口 `
 | 文件 | 用途 |
 |---|---|
 | `tap_don.ogg` | 普通 Tap / don、Hold 头部 |
-| `tap_kat.wav` | kat Tap（当前用音符宽度 70° ≤ width < 85° 区分） |
 | `hold_end.ogg` | Hold 完成（头尾都不再额外调整音高） |
 | `path.wav` | Path 头部、滑动型 Trace 的起点 |
 | `path_tail.wav` | Path 终点 |

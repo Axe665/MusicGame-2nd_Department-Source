@@ -58,7 +58,7 @@ godot --path .
 |---|---|
 | Ctrl+N / Ctrl+O | 新建 / 打开 |
 | Ctrl+S / Ctrl+Shift+S | 保存 / 另存为 |
-| Ctrl+Z / Ctrl+Y | 撤销 / 重做，最多 200 步 |
+| Ctrl+Z / Ctrl+Y | 撤销 / 重做，最多 200 步（按快照里的音符总量限内存，万音符谱约 12 步） |
 | Ctrl+C / Ctrl+X / Ctrl+V | 复制 / 剪切 / 粘贴选中的音符 |
 | Ctrl+A | 镜像粘贴 |
 | A | 单个音符选中时原地镜像 |

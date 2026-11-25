@@ -1257,7 +1257,7 @@ func _build_view_page(page: VBoxContainer) -> void:
 		_app.preview_sfx.emit()
 		_app.notice.emit("打击音效：%s" % sfx_labels[index], "info")
 	)
-	_label(page, "试玩中 F6 换皮肤、F7 换特效；音效只改打击音色，不改判定。", 11, UITheme.MUTED)
+	_label(page, "试玩中 F6 换皮肤；音效只改打击音色，不改判定。", 11, UITheme.MUTED)
 	_section(page, "显示")
 	_setting_option(page, "Path 启动指示", App.PATH_WAIT_LABELS, maxi(0, App.PATH_WAIT_MODES.find(_app.path_wait_indicator)), func(index: int) -> void:
 		_app.path_wait_indicator = App.PATH_WAIT_MODES[index]
