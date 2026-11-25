@@ -1,4 +1,6 @@
-# Tamaki₃ 剩余工作清单
+# 路线图与工作记录
+
+> 这份清单是早期开发阶段的工作记录，原文件为仓库根目录的 `REMAINING_WORK.md`。其中的基线（分支名、测试数量）和部分设计（例如 Path 中间判定点、四套皮肤）已经被后续版本替代，当前行为以 [其他文档](../README.md#文档) 为准。
 
 > 基线：分支 `feat/tamaki3-charter`，测试 253 passed / 0 failed。
 > 最近提交：Path 平面化、Hold 弯条、osu/Simai 平面 Path、编辑器平面绘制。
