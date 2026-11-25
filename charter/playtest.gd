@@ -1201,6 +1201,7 @@ func _start_audio() -> void:
 
 
 func _process(delta: float) -> void:
+	LoadTrace.frame_tick(delta)
 	if _ready_layer != null and _ready_layer.visible:
 		_process_ready(delta)
 		return

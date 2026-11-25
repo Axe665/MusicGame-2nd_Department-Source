@@ -870,17 +870,17 @@ func _draw_regions(plot: Rect2) -> void:
 			var x1 := _u_to_x(interval.y)
 			var rect := Rect2(Vector2(x0, top), Vector2(maxf(2.0, x1 - x0), height))
 			draw_rect(rect, Color(color.r, color.g, color.b, 0.16))
-			draw_rect(rect, Color(color.r, color.g, color.b, 0.55), false, 1.0)
+			_draw_rect_outline(rect, Color(color.r, color.g, color.b, 0.55), 1.0)
 			draw_string(UITheme.mono_font(), Vector2(x0 + 4, top + 12), "LIMIT %d" % region.id, HORIZONTAL_ALIGNMENT_LEFT, -1, 9, color)
 		if _is_region_selected(region.id):
-			draw_rect(Rect2(Vector2(_u_to_x(0.0), top), Vector2(plot.size.x, height)), Color(1, 1, 1, 0.35), false, 1.0)
+			_draw_rect_outline(Rect2(Vector2(_u_to_x(0.0), top), Vector2(plot.size.x, height)), Color(1, 1, 1, 0.35), 1.0)
 			# 宽度手柄：上下两条边上各画一对，抓到任意一条都能改宽度。
 			for interval in _u_intervals(region.angle, region.width):
 				for y in [top, top + height]:
 					for x in [_u_to_x(interval.x), _u_to_x(interval.y)]:
 						var handle := Rect2(Vector2(x - 6.0, y - 6.0), Vector2(12.0, 12.0))
 						draw_rect(handle, UITheme.INK)
-						draw_rect(handle, UITheme.BG, false, 1.5)
+						_draw_rect_outline(handle, UITheme.BG, 1.5)
 
 
 func _draw_events(plot: Rect2) -> void:
@@ -900,7 +900,7 @@ func _draw_events(plot: Rect2) -> void:
 		var x1 := _u_to_x(event.target_u1)
 		var rect := Rect2(Vector2(x0, top), Vector2(maxf(2.0, x1 - x0), height))
 		draw_rect(rect, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.07))
-		draw_rect(rect, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.30), false, 1.0)
+		_draw_rect_outline(rect, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.30), 1.0)
 		if height > 14.0:
 			draw_string(UITheme.mono_font(), Vector2(x0 + 3, top + 10), "%s → %s" % [event.from_shape, event.to_shape], HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.7))
 
@@ -989,13 +989,13 @@ func _draw_other_group_note(note: Note) -> void:
 			var tail_angle := note.tail_angle if note.type == "path" else note.angle
 			var tail := Vector2(_u_to_x(fposmod(tail_angle, 360.0) / 360.0), y2)
 			draw_line(head, tail, tint, 2.0, true)
-			draw_circle(head, 4.0, tint)
+			_draw_dot(head, 4.0, tint)
 		"seek":
 			draw_line(Vector2(_u_to_x(0.0), y), Vector2(_u_to_x(1.0), y), tint, 2.0, true)
 		"anchor":
-			draw_circle(Vector2(_u_to_x(fposmod(note.angle, 360.0) / 360.0), y), 4.0, tint)
+			_draw_dot(Vector2(_u_to_x(fposmod(note.angle, 360.0) / 360.0), y), 4.0, tint)
 		"bell":
-			draw_circle(Vector2(_u_to_x(fposmod(note.angle, 360.0) / 360.0), y), 4.0, tint)
+			_draw_dot(Vector2(_u_to_x(fposmod(note.angle, 360.0) / 360.0), y), 4.0, tint)
 
 
 func _draw_tap(note: Note) -> void:
@@ -1007,8 +1007,8 @@ func _draw_tap(note: Note) -> void:
 		if x1 - x0 < 1.0:
 			continue
 		draw_line(Vector2(x0, y), Vector2(x1, y), Color(UITheme.CORAL.r, UITheme.CORAL.g, UITheme.CORAL.b, 0.92), 10.0, true)
-		draw_circle(Vector2(x0, y), 5.0, UITheme.CORAL)
-		draw_circle(Vector2(x1, y), 5.0, UITheme.CORAL)
+		_draw_dot(Vector2(x0, y), 5.0, UITheme.CORAL)
+		_draw_dot(Vector2(x1, y), 5.0, UITheme.CORAL)
 		var tick_x := x0 + 5.0
 		while tick_x < x1 - 4.0:
 			draw_line(Vector2(tick_x, y - 4.0), Vector2(tick_x, y + 4.0), Color(0, 0, 0, 0.24), 1.0)
@@ -1018,7 +1018,7 @@ func _draw_tap(note: Note) -> void:
 			draw_line(Vector2(x0, y + 7.0), Vector2(x1, y + 7.0), UITheme.INK, 1.0)
 	var center_x := _u_to_x(fposmod(note.angle, 360.0) / 360.0)
 	draw_line(Vector2(center_x, y - 8.0), Vector2(center_x, y + 8.0), UITheme.INK, 2.0)
-	draw_circle(Vector2(center_x, y), 2.2, UITheme.INK)
+	_draw_dot(Vector2(center_x, y), 2.2, UITheme.INK)
 	_draw_width_handles(note, y)
 	if _show_type_label(note):
 		_draw_type_label("TAP", Vector2(center_x + 8.0, y + 12.0), UITheme.CORAL)
@@ -1042,14 +1042,14 @@ func _draw_hold(note: Note) -> void:
 			continue
 		var rect := Rect2(Vector2(x0, top), Vector2(x1 - x0, height))
 		draw_rect(rect, Color(color.r, color.g, color.b, 0.32))
-		draw_rect(rect, Color(color.r, color.g, color.b, 0.95), false, 1.5)
+		_draw_rect_outline(rect, Color(color.r, color.g, color.b, 0.95), 1.5)
 	_draw_hexagon(Vector2(x, y0), 9.0 if selected else 8.0, color)
 	_draw_ring(Vector2(x, y1), 6.0, color)
 	_draw_width_handles(note, y0)
 	if selected:
 		# 尾巴手柄：拖它只改结束拍。
-		draw_circle(Vector2(x, y1), 6.0, UITheme.INK)
-		draw_arc(Vector2(x, y1), 6.0, 0.0, TAU, 16, UITheme.BG, 1.5, true)
+		_draw_dot(Vector2(x, y1), 6.0, UITheme.INK)
+		_draw_ring_at(Vector2(x, y1), 6.0, 1.5, UITheme.BG)
 	if _show_type_label(note):
 		_draw_type_label("HOLD", Vector2(x + 11.0, y0 + 12.0), color)
 
@@ -1111,15 +1111,15 @@ func _draw_path(note: Note) -> void:
 			var local := float(point.get("db", 0.0))
 			if note.erased_at(local):
 				continue
-			draw_circle(_path_screen_point(note, local), 2.5, UITheme.CYAN)
+			_draw_dot(_path_screen_point(note, local), 2.5, UITheme.CYAN)
 	_draw_width_band(head_draw_angle, note.width, y0, UITheme.CYAN)
 	_draw_width_band(tail_draw_angle, note.tail_width, y1, tail_color)
 	_draw_star(Vector2(x0, y0), 9.0 if selected else 8.0, head_color)
 	_draw_donut(Vector2(x1, y1), 7.0, tail_color)
 	if selected:
 		# 头/尾都能拖：白圈标出可抓的位置（宽度手柄只在 Tap/Hold 上）。
-		draw_arc(Vector2(x0, y0), 11.0, 0.0, TAU, 24, UITheme.INK, 1.5, true)
-		draw_arc(Vector2(x1, y1), 11.0, 0.0, TAU, 24, UITheme.INK, 1.5, true)
+		_draw_ring_at(Vector2(x0, y0), 11.0, 1.5, UITheme.INK)
+		_draw_ring_at(Vector2(x1, y1), 11.0, 1.5, UITheme.INK)
 	if _show_type_label(note):
 		_draw_type_label("PATH", Vector2(x0 + 11.0, y0 + 12.0), UITheme.CYAN)
 
@@ -1137,9 +1137,80 @@ func _append_dashes(a: Vector2, b: Vector2, dash: float, out: PackedVector2Array
 		cursor += dash * 2.0
 
 
+## draw_circle / draw_arc / 描边 draw_rect 每次都要现建多边形（实测 6–19µs/次），
+## 时间轴上每颗音符要画 1–6 个。改成按尺寸烘焙、1:1 贴图染色（~0.2µs/次）——和试玩 overlay
+## 的圆头同一个思路。缓存键按半径取整，一次运行最多十几张几十像素的小图。
+static var _disc_cache: Dictionary = {}
+static var _ring_cache: Dictionary = {}
+
+static func _bake_alpha(n: int, alpha_at: Callable) -> ImageTexture:
+	var img := Image.create(n, n, false, Image.FORMAT_RGBA8)
+	var c := float(n) * 0.5
+	for y in n:
+		for x in n:
+			var d := Vector2(float(x) + 0.5 - c, float(y) + 0.5 - c).length()
+			var a := clampf(float(alpha_at.call(d)), 0.0, 1.0)
+			if a > 0.0:
+				img.set_pixel(x, y, Color(1.0, 1.0, 1.0, a))
+	return ImageTexture.create_from_image(img)
+
+static func _disc_texture(radius: float) -> Texture2D:
+	var key := int(round(radius * 4.0))
+	if _disc_cache.has(key):
+		return _disc_cache[key]
+	if _disc_cache.size() > 400:
+		_disc_cache.clear()
+	var n := maxi(4, int(ceil(radius * 2.0 + 2.0)))
+	var tex := _bake_alpha(n, func(d: float) -> float:
+		return 1.0 - smoothstep(radius - 0.7, radius + 0.7, d))
+	_disc_cache[key] = tex
+	return tex
+
+static func _ring_texture(radius: float, thickness: float) -> Texture2D:
+	var key := "%d_%d" % [int(round(radius * 4.0)), int(round(thickness * 4.0))]
+	if _ring_cache.has(key):
+		return _ring_cache[key]
+	if _ring_cache.size() > 400:
+		_ring_cache.clear()
+	var half := maxf(thickness, 0.5) * 0.5
+	var n := maxi(4, int(ceil(radius + half)) * 2 + 2)
+	var outer := radius + half
+	var inner := radius - half
+	var tex := _bake_alpha(n, func(d: float) -> float:
+		return smoothstep(inner - 0.6, inner + 0.6, d) * (1.0 - smoothstep(outer - 0.6, outer + 0.6, d)))
+	_ring_cache[key] = tex
+	return tex
+
+func _draw_dot(point: Vector2, radius: float, color: Color) -> void:
+	if radius <= 0.0:
+		return
+	var tex := _disc_texture(radius)
+	var half := Vector2(tex.get_size()) * 0.5
+	draw_texture_rect(tex, Rect2(point - half, half * 2.0), false, color)
+
+## 圆环：按 (半径, 线宽) 烘焙，保证和原来的 draw_arc 一样粗，不随半径缩放。
+func _draw_ring_at(point: Vector2, radius: float, thickness: float, color: Color) -> void:
+	if radius <= 0.0:
+		return
+	var tex := _ring_texture(radius, thickness)
+	var half := Vector2(tex.get_size()) * 0.5
+	draw_texture_rect(tex, Rect2(point - half, half * 2.0), false, color)
+
+## 描边矩形：draw_rect(filled=false) 也是现建多边形（6µs/次），四条实心矩形只要 0.6µs。
+func _draw_rect_outline(rect: Rect2, color: Color, width: float) -> void:
+	var w := minf(width, minf(rect.size.x, rect.size.y))
+	if w <= 0.0 or rect.size.x <= 0.0 or rect.size.y <= 0.0:
+		return
+	var grown := rect.grow(width * 0.5)
+	draw_rect(Rect2(grown.position, Vector2(grown.size.x, w)), color)
+	draw_rect(Rect2(grown.position + Vector2(0.0, grown.size.y - w), Vector2(grown.size.x, w)), color)
+	draw_rect(Rect2(grown.position + Vector2(0.0, w), Vector2(w, grown.size.y - w * 2.0)), color)
+	draw_rect(Rect2(grown.position + Vector2(grown.size.x - w, w), Vector2(w, grown.size.y - w * 2.0)), color)
+
+
 func _draw_donut(point: Vector2, radius: float, color: Color) -> void:
-	draw_circle(point, radius, color)
-	draw_circle(point, radius * 0.48, UITheme.BG)
+	_draw_dot(point, radius, color)
+	_draw_dot(point, radius * 0.48, UITheme.BG)
 
 
 func _draw_seek(note: Note) -> void:
@@ -1209,7 +1280,7 @@ func _draw_bell(note: Note) -> void:
 	var half := 7.0 if selected else 6.0
 	var tip := 4.5
 	if selected:
-		draw_circle(p, span * 0.5 + 9.0, Color(UITheme.KEY_YELLOW.r, UITheme.KEY_YELLOW.g, UITheme.KEY_YELLOW.b, 0.16))
+		_draw_dot(p, span * 0.5 + 9.0, Color(UITheme.KEY_YELLOW.r, UITheme.KEY_YELLOW.g, UITheme.KEY_YELLOW.b, 0.16))
 	_bell_bar(p, span + 4.0, half + 2.0, Color(0, 0, 0, 0.5))
 	_bell_bar(p, span, half, Color(1, 1, 1, 0.94))
 	_bell_bar(p, span, half * 0.62, UITheme.KEY_YELLOW)
@@ -1217,7 +1288,7 @@ func _draw_bell(note: Note) -> void:
 		for x in [p.x - span * 0.5, p.x + span * 0.5]:
 			var handle := Rect2(Vector2(x - 6.0, p.y - 6.0), Vector2(12.0, 12.0))
 			draw_rect(handle, UITheme.INK)
-			draw_rect(handle, UITheme.BG, false, 1.5)
+			_draw_rect_outline(handle, UITheme.BG, 1.5)
 
 
 	if _show_type_label(note):
@@ -1231,8 +1302,8 @@ func _bell_span(note: Note) -> float:
 
 func _bell_bar(p: Vector2, span: float, half: float, color: Color) -> void:
 	draw_rect(Rect2(p + Vector2(-span * 0.5, -half), Vector2(span, half * 2.0)), color)
-	draw_circle(p + Vector2(-span * 0.5, 0.0), half, color)
-	draw_circle(p + Vector2(span * 0.5, 0.0), half, color)
+	_draw_dot(p + Vector2(-span * 0.5, 0.0), half, color)
+	_draw_dot(p + Vector2(span * 0.5, 0.0), half, color)
 
 
 func _show_type_label(note: Note) -> bool:
@@ -1246,7 +1317,7 @@ func _draw_type_label(text: String, pos: Vector2, color: Color) -> void:
 func _draw_star(p: Vector2, r: float, color: Color) -> void:
 	var points := _scaled_polygon(_unit_star(), p, r)
 	draw_polyline(points, color, 2.0, true)
-	draw_circle(p, 1.8, color)
+	_draw_dot(p, 1.8, color)
 
 
 ## 单位多边形只算一次：每帧几十个 Star/Hold 图标，重复算三角函数不值。
@@ -1291,12 +1362,12 @@ static func _scaled_polygon(unit: PackedVector2Array, p: Vector2, r: float) -> P
 func _draw_hexagon(p: Vector2, r: float, color: Color) -> void:
 	draw_colored_polygon(_scaled_polygon(_unit_hex_fill(), p, r), color)
 	draw_polyline(_scaled_polygon(_unit_hex_outline(), p, r), UITheme.BG, 1.5, true)
-	draw_circle(p, r * 0.35, UITheme.BG)
+	_draw_dot(p, r * 0.35, UITheme.BG)
 
 
 func _draw_ring(p: Vector2, r: float, color: Color) -> void:
-	draw_arc(p, r, 0.0, TAU, 28, color, 2.0, true)
-	draw_circle(p, 1.6, color)
+	_draw_ring_at(p, r, 2.0, color)
+	_draw_dot(p, 1.6, color)
 
 
 func _draw_arrowhead(p: Vector2, direction: Vector2, color: Color) -> void:
@@ -1342,13 +1413,13 @@ func _draw_width_handles(note: Note, y: float) -> void:
 		for x in [_u_to_x(interval.x), _u_to_x(interval.y)]:
 			var rect := Rect2(Vector2(x - 6.0, y - 6.0), Vector2(12.0, 12.0))
 			draw_rect(rect, UITheme.INK)
-			draw_rect(rect, UITheme.BG, false, 1.5)
+			_draw_rect_outline(rect, UITheme.BG, 1.5)
 
 
 func _draw_diamond(p: Vector2, r: float, color: Color) -> void:
 	var points := PackedVector2Array([p + Vector2(0, -r), p + Vector2(r, 0), p + Vector2(0, r), p + Vector2(-r, 0), p + Vector2(0, -r)])
 	draw_polyline(points, color, 2.0, true)
-	draw_circle(p, 2.0, color)
+	_draw_dot(p, 2.0, color)
 
 
 func _u_intervals(angle: float, width: float) -> Array[Vector2]:
@@ -1384,13 +1455,13 @@ func _draw_legend(plot: Rect2) -> void:
 			"path":
 				_draw_star(p, 5.0, color)
 			"seek":
-				draw_arc(p, 4.0, 0.0, TAU, 18, color, 1.6, true)
-				draw_arc(p, 2.2, 0.0, TAU, 14, Color(color.r, color.g, color.b, 0.6), 1.0, true)
+				_draw_ring_at(p, 4.0, 1.6, color)
+				_draw_ring_at(p, 2.2, 1.0, Color(color.r, color.g, color.b, 0.6))
 			"anchor":
 				_draw_diamond(p, 4.0, color)
 			"bell":
-				draw_arc(p, 4.0, 0.0, TAU, 16, color, 1.5, true)
-				draw_circle(p, 1.5, color)
+				_draw_ring_at(p, 4.0, 1.5, color)
+				_draw_dot(p, 1.5, color)
 			"limit":
 				draw_arc(p, 4.0, -PI * 0.8, PI * 0.2, 12, color, 3.0, true)
 		draw_string(UITheme.mono_font(), Vector2(x + 9, y + 4), String(entry["label"]), HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(1, 1, 1, 0.48))
