@@ -6,6 +6,8 @@ const TOOL_ORDER := [
 	["event", "事件 E"],
 ]
 
+const AsyncChartLoad = preload("res://core/async_chart_load.gd")
+
 var _app: Node = null
 var _preview: Preview3D
 var _preview_box: VBoxContainer
@@ -36,7 +38,7 @@ var _hud_widgets: Dictionary = {}
 
 ## 画质菜单：每项一行子菜单，行标题带当前值，子项打勾。只影响渲染，不碰判定。
 const QUALITY_OPTIONS := [
-	{"key": "preset", "label": "预设", "choices": [["极高（4× 抗锯齿）", 80], ["高（2× 抗锯齿）", 81], ["中", 82], ["低", 83]]},
+	{"key": "preset", "label": "预设", "choices": [["极高（4× 抗锯齿）", 80], ["高（2× 抗锯齿）", 81], ["中", 82], ["低", 83], ["自动（按实测帧时间）", 84]]},
 	{"key": "frame_cap", "label": "帧率上限", "choices": [["60", 90], ["120", 91], ["144", 92], ["240", 93], ["垂直同步", 94], ["不限", 95]]},
 	{"key": "aa_2d_level", "label": "2D 抗锯齿", "choices": [["关", 60], ["MSAA 2×", 61], ["MSAA 4×", 62], ["MSAA 8×", 84]]},
 	{"key": "msaa_3d_level", "label": "3D 抗锯齿", "choices": [["关", 150], ["MSAA 2×", 151], ["MSAA 4×", 152], ["MSAA 8×", 153], ["FXAA（便宜）", 154], ["TAA（平滑，可能拖影）", 155], ["MSAA 2× + FXAA", 156], ["MSAA 4× + FXAA", 157]]},
@@ -164,6 +166,13 @@ var _osu_browser: OsuBrowser
 ## 设置里「转码缓存」体积显示。
 var _cache_label: Label = null
 var _import_progress: AcceptDialog = null
+## 单谱异步解析：遮罩 + 进度，避免打开大谱时卡住主线程。
+var _load_task: RefCounted = null
+var _load_overlay: Control = null
+var _load_label: Label = null
+var _load_bar: ProgressBar = null
+## 解析通常 20–40ms：超过这个时间才弹遮罩，避免闪一下。
+var _load_show_at_msec: int = 0
 var _import_progress_label: Label = null
 var _import_progress_bar: ProgressBar = null
 var _new_dialog: NewChartDialog
@@ -205,6 +214,12 @@ var _volume_sliders: Array = []
 
 
 func _ready() -> void:
+	if OS.is_debug_build():
+		print("[hw] gpu=%s vendor=%s api=%s" % [
+			RenderingServer.get_video_adapter_name(),
+			RenderingServer.get_video_adapter_vendor(),
+			RenderingServer.get_video_adapter_api_version(),
+		])
 	_app = get_node_or_null("/root/App")
 	# 保存的渲染后端和当前进程不一致时，先重启到目标后端再建界面。
 	if _apply_saved_renderer():
@@ -1356,7 +1371,7 @@ func _set_hud_index(key: String, index: int) -> void:
 func _quality_index(key: String) -> int:
 	match key:
 		"preset":
-			return ["ultra", "high", "mid", "low"].find(_app.quality_preset)
+			return ["ultra", "high", "mid", "low", "auto"].find(_app.quality_preset)
 		"frame_cap":
 			return ["60", "120", "144", "240", "vsync", "unlimited"].find(_app.frame_cap)
 		"aa_2d_level":
@@ -1396,7 +1411,7 @@ func _quality_index(key: String) -> int:
 
 func _set_quality_index(key: String, index: int) -> void:
 	if key == "preset":
-		_app.apply_quality_preset(["ultra", "high", "mid", "low"][clampi(index, 0, 3)])
+		_app.apply_quality_preset(["ultra", "high", "mid", "low", "auto"][clampi(index, 0, 4)])
 		return
 	match key:
 		"renderer_backend":
@@ -1537,7 +1552,7 @@ func _build_quality_rows(parent: Control) -> void:
 		if key == "preset":
 			pick.add_item("自定义")
 		pick.item_selected.connect(func(index: int) -> void:
-			if key == "preset" and index > 3:
+			if key == "preset" and index > 4:
 				return
 			_set_quality_index(key, index)
 			_app.save_settings()
@@ -1750,6 +1765,9 @@ func _build_dialogs() -> void:
 	_open_dialog.title = "打开谱面文件夹 / 单文件 / 谱面包"
 	var open_selected := func(path: String) -> void:
 		_app.ensure_tab()
+		if _can_async_open(path):
+			_begin_async_open(path)
+			return
 		if _app.load_chart(path):
 			_app.add_tab_from_current()
 			_sync_from_app()
@@ -2245,6 +2263,7 @@ func _update_idle_cap() -> void:
 
 
 func _process(_delta: float) -> void:
+	_poll_async_open()
 	_update_idle_cap()
 	if _app == null or _app.chart == null:
 		return
@@ -2860,6 +2879,97 @@ func _prepare_import_media() -> void:
 				chart.audio_path = prepared
 	_hide_import_progress()
 	_app.save_set_file()
+
+
+## 只有「单谱 JSON」走异步；工程集/三文件/lbp 还带素材处理，保持原来的同步路径。
+func _can_async_open(path: String) -> bool:
+	if not path.to_lower().ends_with(".json"):
+		return false
+	if _app._is_set_file(path) or ChartIO.is_project_path(path):
+		return false
+	if ChartIO.is_three_file_path(path):
+		return false
+	return true
+
+
+func _begin_async_open(path: String) -> void:
+	if _load_task != null:
+		return
+	_load_task = AsyncChartLoad.new()
+	_load_task.begin(path)
+	_load_show_at_msec = Time.get_ticks_msec() + 120
+	if _load_label != null:
+		_load_label.text = "正在解析 %%s…" % path.get_file()
+	if _load_bar != null:
+		_load_bar.value = 0.0
+
+
+func _poll_async_open() -> void:
+	if _load_task == null:
+		return
+	var done: int = _load_task.poll()
+	if done == 0:
+		if _load_overlay == null and Time.get_ticks_msec() >= _load_show_at_msec:
+			_ensure_load_overlay()
+			_load_overlay.visible = true
+		if _load_bar != null:
+			var total := ChartIO.parse_total
+			_load_bar.value = 0.0 if total <= 0 else clampf(float(ChartIO.parse_done) / float(total), 0.0, 1.0) * 100.0
+		return
+	var task := _load_task
+	_load_task = null
+	if _load_overlay != null:
+		_load_overlay.visible = false
+	if task.chart == null:
+		_show_toast("打开失败：%%s" %% task.error, "error")
+		_app.restore_active_tab()
+		return
+	_app.set_chart(task.chart, task.path)
+	_app.add_tab_from_current()
+	_sync_from_app()
+	_refresh_tabs()
+	_show_toast("已打开 %%s" %% task.path.get_file())
+
+
+func _ensure_load_overlay() -> void:
+	if _load_overlay != null:
+		return
+	_load_overlay = Control.new()
+	_load_overlay.name = "LoadOverlay"
+	_load_overlay.mouse_filter = Control.MOUSE_FILTER_STOP
+	_load_overlay.visible = false
+	add_child(_load_overlay)
+	_load_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	var dim := ColorRect.new()
+	dim.color = Color(0.02, 0.03, 0.05, 0.55)
+	dim.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_load_overlay.add_child(dim)
+	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	var center := CenterContainer.new()
+	center.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_load_overlay.add_child(center)
+	center.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	var panel := PanelContainer.new()
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.05, 0.06, 0.08, 0.97)
+	sb.border_color = Color(1, 1, 1, 0.12)
+	sb.set_border_width_all(1)
+	sb.set_corner_radius_all(10)
+	sb.set_content_margin_all(18)
+	panel.add_theme_stylebox_override("panel", sb)
+	panel.custom_minimum_size = Vector2(380, 0)
+	center.add_child(panel)
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 10)
+	panel.add_child(box)
+	_load_label = UITheme.style_label(Label.new(), 13, UITheme.INK)
+	_load_label.text = "正在解析…"
+	box.add_child(_load_label)
+	_load_bar = ProgressBar.new()
+	_load_bar.max_value = 100.0
+	_load_bar.show_percentage = false
+	_load_bar.custom_minimum_size = Vector2(344, 8)
+	box.add_child(_load_bar)
 
 
 func _show_import_progress() -> void:

@@ -80,6 +80,8 @@ const DYNAMIC_LIMIT_MS := 50.0
 const JUDGE_LOOKAHEAD_MS := 1500.0
 const JUDGE_LOOKBEHIND_MS := 6000.0
 
+const LoadTrace = preload("res://core/load_trace.gd")
+
 var _app: Node = null
 var chart: Chart = null
 ## 试玩用的原谱；chart 可能是它的镜像副本（重试必须从原谱重建）。
@@ -144,6 +146,8 @@ var _last_seek_ms: float = -1.0e9
 var _last_frame_ms: float = 16.7
 ## 连续多少个统计窗口装不下目标帧：用来给弱机自动降画质。
 var _slow_windows: int = 0
+## 高回报率鼠标只提示一次。
+var _hw_warned: bool = false
 ## 每个键上一次按下的时间，用来吃掉手抖双击。
 var _last_press_ms: Dictionary = {}
 var _keys_held: Dictionary = {}
@@ -396,6 +400,7 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 		_open_path_input_log()
 		_start_play()
 		return
+	LoadTrace.begin("playtest %s" % chart_path.get_file())
 	_ready_phase = "load"
 	_ready_progress = 0.0
 	_tick_index = -1
@@ -409,6 +414,7 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	await _prepare_audio(token)
 	if token != _setup_token or not is_inside_tree():
 		return
+	LoadTrace.mark("音频")
 	_ready_phase = "fill"
 	_ready_progress = 0.0
 	_ready_delay = 0.3
@@ -446,6 +452,7 @@ static func run_mouse_mode(is_replay: bool) -> int:
 
 
 func _start_play() -> void:
+	LoadTrace.end("开始播放")
 	_ready_phase = "done"
 	_ready_layer.visible = false
 	_running = true
@@ -2920,8 +2927,17 @@ func _probe_frame_time() -> void:
 		if _slow_windows >= 2 and _preview.quality_level == 0:
 			_preview.set_quality_level(1)
 			_add_log("画质降档：中位帧 %.1fms，超预算 %.1fms" % [median, budget])
+			# 「自动」档把实测结果落成具体档位并保存：下次开局直接是合适的画质。
+			if _app != null and _app.quality_preset == "auto":
+				var stepped: String = _app.step_down_auto_quality()
+				if not stepped.is_empty():
+					_add_log("自动画质降到 %s" % stepped)
+					_app.notice.emit("帧时间超出预算，自动画质已降到 %s" % stepped, "warning")
 	else:
 		_slow_windows = 0
+	if _app != null and not _hw_warned and _app.mouse_poll_hz >= 800:
+		_hw_warned = true
+		_app.notice.emit("检测到鼠标回报率约 %dHz：高回报率会增加输入事件开销" % _app.mouse_poll_hz, "info")
 	# 只在出现明显卡顿时打印，正常游玩不会刷屏。
 	if (worst > 8.0 or spikes > 20) and OS.is_debug_build():
 		print("[frame] t=%.1fs n=%d med=%.1fms p95=%.1fms max=%.1fms spikes=%d notes=%d" % [

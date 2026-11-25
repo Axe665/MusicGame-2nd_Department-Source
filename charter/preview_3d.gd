@@ -231,9 +231,14 @@ var _overlay: Control
 var _cursor_layer: Control
 ## 分层 overlay：每层一个 CanvasItem，只有内容变化的层才 queue_redraw。
 ## 顺序就是绘制顺序（下 → 上），和 draw_overlay() 的历史顺序一致。
-const OVERLAY_LAYERS: Array[String] = ["stage", "bars", "combo", "seek", "limit", "path", "hold", "notes", "fx", "hud"]
-## 时间/镜头/几何变化时，这些层都要重画。
-const OVERLAY_SCENE_LAYERS: Array[String] = ["stage", "bars", "combo", "seek", "limit", "path", "hold", "notes", "fx", "hud"]
+const OVERLAY_LAYERS: Array[String] = ["stage", "bars", "combo", "seek", "limit", "path", "hold", "notes", "fx", "hud_live", "hud_static"]
+## 时间/镜头/几何变化时，这些层都要重画。HUD 拆成两层单独限频（见 HUD_LIVE_MS/HUD_STATIC_MS）。
+const OVERLAY_SCENE_LAYERS: Array[String] = ["stage", "bars", "combo", "seek", "limit", "path", "hold", "notes", "fx"]
+## 实时层（环进度/判定环动画）最多 60Hz；静态层（左右信息列）最多 20Hz，和 HUD 数值刷新同频。
+const HUD_LIVE_MS := 16.667
+const HUD_STATIC_MS := 50.0
+var _hud_live_usec: int = 0
+var _hud_static_usec: int = 0
 var _layer_nodes: Dictionary = {}
 ## 小节线：所有线段的实例化绘制（一条 MultiMesh，一次 draw call）。
 var _bars_multi: MultiMesh
@@ -1030,6 +1035,8 @@ func _process(_delta: float) -> void:
 	_playhead_redraw_pending = false
 	if scene_dirty:
 		_invalidate_layers(OVERLAY_SCENE_LAYERS)
+		# HUD 拆两层：环进度 60Hz 就够，信息列本来就只有 20Hz 的新值。
+		_invalidate_hud()
 		_perf_frames += 1
 		if chart != null:
 			var bars_t := Time.get_ticks_usec()
@@ -2751,11 +2758,14 @@ func draw_layer(layer: String, canvas: Control) -> void:
 			if draw_note_layers:
 				_draw_note_pops(canvas)
 			_draw_pulses(canvas)
-		"hud":
+		"hud_live":
 			_draw_onion(canvas, chart, t)
 			_draw_boundary_controls(canvas, chart)
 			if show_hud:
-				_draw_hud(canvas, chart, t)
+				_draw_hud_live(canvas, chart, t)
+		"hud_static":
+			if show_hud:
+				_draw_hud_static(canvas, chart, t)
 			if show_debug:
 				_draw_debug(canvas, chart, t)
 	var used := Time.get_ticks_usec() - started_usec
@@ -2771,7 +2781,7 @@ func draw_layer(layer: String, canvas: Control) -> void:
 			_perf_sections[3] += used
 		"fx":
 			_perf_sections[4] += used
-		"hud":
+		"hud_live", "hud_static":
 			_perf_sections[5] += used
 		"bars":
 			_perf_sections[6] += used
@@ -2779,10 +2789,23 @@ func draw_layer(layer: String, canvas: Control) -> void:
 
 ## 所有层都重画（判定/编辑状态变化时用；每帧路径只重画变化的那几层）。
 func _redraw_all() -> void:
-	for layer in OVERLAY_LAYERS:
+	for layer in OVERLAY_SCENE_LAYERS:
 		var node: Control = _layer_nodes.get(layer)
 		if node != null:
 			node.queue_redraw()
+	_invalidate_hud()
+
+
+## HUD 两层按时间门限重画。判定每命中一个音符都会 _redraw_all，
+## 这里再挡一层：HUD 数值本来就只 20Hz 刷新，没必要跟着每个判定重画。
+func _invalidate_hud() -> void:
+	var hud_now := Time.get_ticks_usec()
+	if _hud_live_usec == 0 or float(hud_now - _hud_live_usec) / 1000.0 >= HUD_LIVE_MS:
+		_hud_live_usec = hud_now
+		_invalidate_layers(["hud_live"])
+	if _hud_static_usec == 0 or float(hud_now - _hud_static_usec) / 1000.0 >= HUD_STATIC_MS:
+		_hud_static_usec = hud_now
+		_invalidate_layers(["hud_static"])
 
 
 func _invalidate_layers(layers: Array) -> void:
@@ -6214,11 +6237,25 @@ func _draw_cached_text(canvas: Control, key: String, font: Font, pos: Vector2, t
 	(entry["line"] as TextLine).draw(canvas.get_canvas_item(), pos, color)
 
 
-func _draw_hud(canvas: Control, chart: Chart, t: float) -> void:
+## 实时 HUD：环进度/判定环动画。编辑器另有整块仪表，一起限到 60Hz。
+func _draw_hud_live(canvas: Control, chart: Chart, t: float) -> void:
 	if playtest_mode:
-		_draw_play_hud(canvas, chart, t)
+		var bounds := size
+		if bounds.x < 320.0 or bounds.y < 240.0:
+			return
+		var op := clampf(float(hud_options.get("opacity", 100)) / 100.0, 0.3, 1.0)
+		var hs := clampf(bounds.y / 900.0, 0.8, 1.8)
+		var s := hs * clampf(float(hud_options.get("scale", 100)) / 100.0, 0.5, 2.0)
+		var progress := clampf(t / maxf(1.0, chart.duration_beats()), 0.0, 1.0)
+		_draw_ring_gauge(canvas, progress, hud_accuracy, s, op)
 		return
 	_draw_editor_hud(canvas, chart, t)
+
+
+## 静态 HUD：左右信息列，只在数值刷新（20Hz）时重画。
+func _draw_hud_static(canvas: Control, chart: Chart, t: float) -> void:
+	if playtest_mode:
+		_draw_play_hud_columns(canvas, chart, t)
 
 
 ## 编辑器预览的旧仪表：进度 / 评级 / 准度三段弧 + 误差条。
@@ -6306,7 +6343,7 @@ func _draw_play_combo_layer(canvas: Control) -> void:
 ## 试玩 HUD v3：信息贴着环的左右两侧，垂直居中。
 ## 左：TRACK / 曲名 / 难度 / 可选进度与用时；右：ACCURACY / 大字准度 / 评级章 / 连击。
 ## 判定字仍在音符处；五档计数只在暂停页和结算页显示。
-func _draw_play_hud(canvas: Control, chart: Chart, t: float) -> void:
+func _draw_play_hud_columns(canvas: Control, chart: Chart, t: float) -> void:
 	var bounds := size
 	if bounds.x < 320.0 or bounds.y < 240.0:
 		return
@@ -6320,7 +6357,6 @@ func _draw_play_hud(canvas: Control, chart: Chart, t: float) -> void:
 	var center: Vector2 = layout["center"]
 	var accuracy := hud_accuracy
 	var progress := clampf(t / maxf(1.0, chart.duration_beats()), 0.0, 1.0)
-	_draw_ring_gauge(canvas, progress, accuracy, s, op)
 	# 舞台外圈刻度大约在判定环的 1.19×；HUD 再退到 1.2×，避免压到装饰环。
 	var ring_r: float = float(layout["ring"]) * 1.2
 	var gap := 20.0 * s

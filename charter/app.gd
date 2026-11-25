@@ -47,6 +47,8 @@ var path_wait_indicator: String = "progress"
 var note_skin: String = "candy"
 ## 画质选项（视图 → 画质）。全部只影响渲染，不碰判定。
 var quality_preset: String = "high"
+## 「自动」档当前落到哪一档；实测超预算时逐级下降并保存。
+var auto_quality_preset: String = "high"
 ## 渲染后端：auto / vulkan / opengl3。启动时由 main 读，切换后需要重启。
 var renderer_mode: String = "auto"
 ## 0 = 关，1 = 2×，2 = 4×（2D 层的 MSAA）。高画质用 2×，极高才上 4×。
@@ -716,7 +718,9 @@ func _load_settings() -> void:
 			var backend := String(data.get("renderer_mode", "auto"))
 			renderer_mode = backend if backend in ["auto", "vulkan", "opengl3"] else "auto"
 			var preset := String(data.get("quality_preset", "high"))
-			quality_preset = preset if preset in ["ultra", "high", "mid", "low", "custom"] else "high"
+			quality_preset = preset if preset in ["auto", "ultra", "high", "mid", "low", "custom"] else "high"
+			var auto_preset := String(data.get("auto_quality_preset", "high"))
+			auto_quality_preset = auto_preset if auto_preset in ["ultra", "high", "mid", "low"] else "high"
 			hud_scale = int(data.get("hud_scale", hud_scale))
 			hud_scale = hud_scale if hud_scale in [80, 100, 120] else 100
 			var combo_mode := String(data.get("hud_combo_mode", hud_combo_mode))
@@ -821,7 +825,9 @@ func apply_visual_quality() -> void:
 ## 预设：一次把画质项调成一组常用组合（单项改动后预设显示为「自定义」）。
 func apply_quality_preset(name: String) -> void:
 	quality_preset = name
-	match name:
+	# 自动档不写死：用 auto_quality_preset 记住实测推荐到的那一档。
+	var base := auto_quality_preset if name == "auto" else name
+	match base:
 		"ultra":
 			aa_2d_level = 3
 			msaa_3d_level = 2
@@ -850,7 +856,6 @@ func apply_quality_preset(name: String) -> void:
 			ring_3d_scale = "mid"
 			bar_lines = true
 		_:
-			quality_preset = "high"
 			aa_2d_level = 1
 			msaa_3d_level = 1
 			note_detail_fine = true
@@ -859,6 +864,19 @@ func apply_quality_preset(name: String) -> void:
 			fx_budget = "full"
 			ring_3d_scale = "high"
 			bar_lines = true
+
+
+## 实测超预算时给「自动」档降一级并保存；返回新档位（没变则返回空串）。
+func step_down_auto_quality() -> String:
+	var order := ["ultra", "high", "mid", "low"]
+	var at := order.find(auto_quality_preset)
+	if at < 0 or at >= order.size() - 1:
+		return ""
+	auto_quality_preset = order[at + 1]
+	if quality_preset == "auto":
+		apply_quality_preset("auto")
+	save_settings()
+	return auto_quality_preset
 
 
 ## 帧率选项：60 / 120 保留垂直同步（跑不满就自动落到下一个整除，稳定优先）；
@@ -921,7 +939,7 @@ func effective_latency_sec() -> float:
 
 
 func save_settings() -> void:
-	var data := {"settings_version": 1, "path_wait_indicator": path_wait_indicator, "note_skin": note_skin, "show_perfect_fx": show_perfect_fx, "hit_sfx_style": hit_sfx_style, "ffmpeg": ffmpeg_path, "frame_cap": frame_cap, "video_encoder": video_encoder, "audio_buffer_ms": audio_buffer_ms, "playtest_offset_ms": playtest_offset_ms, "audio_latency_ms": audio_latency_ms, "music_volume": music_volume, "sfx_volume": sfx_volume, "dynamic_offset": dynamic_offset, "playtest_auto": playtest_auto, "playtest_mirror": playtest_mirror, "playback_scroll": playback_scroll, "background_brightness": background_brightness, "mouse_tilt": mouse_tilt, "startup_tabs": startup_tabs, "osu_favorites": osu_favorites, "last_bias_ms": last_bias_ms, "cursor_scale": cursor_scale, "flow_scale": flow_scale, "aa_2d_level": aa_2d_level, "msaa_3d_level": msaa_3d_level, "ring_pad_rect": ring_pad_rect, "angle_divisions": angle_divisions, "note_detail_fine": note_detail_fine, "note_glow": note_glow, "path_style": path_style, "bpm_lock_ms": bpm_lock_ms, "cursor_trail": cursor_trail, "fx_budget": fx_budget, "ring_3d_scale": ring_3d_scale, "bar_lines": bar_lines, "quality_preset": quality_preset, "renderer_mode": renderer_mode,
+	var data := {"settings_version": 1, "path_wait_indicator": path_wait_indicator, "note_skin": note_skin, "show_perfect_fx": show_perfect_fx, "hit_sfx_style": hit_sfx_style, "ffmpeg": ffmpeg_path, "frame_cap": frame_cap, "video_encoder": video_encoder, "audio_buffer_ms": audio_buffer_ms, "playtest_offset_ms": playtest_offset_ms, "audio_latency_ms": audio_latency_ms, "music_volume": music_volume, "sfx_volume": sfx_volume, "dynamic_offset": dynamic_offset, "playtest_auto": playtest_auto, "playtest_mirror": playtest_mirror, "playback_scroll": playback_scroll, "background_brightness": background_brightness, "mouse_tilt": mouse_tilt, "startup_tabs": startup_tabs, "osu_favorites": osu_favorites, "last_bias_ms": last_bias_ms, "cursor_scale": cursor_scale, "flow_scale": flow_scale, "aa_2d_level": aa_2d_level, "msaa_3d_level": msaa_3d_level, "ring_pad_rect": ring_pad_rect, "angle_divisions": angle_divisions, "note_detail_fine": note_detail_fine, "note_glow": note_glow, "path_style": path_style, "bpm_lock_ms": bpm_lock_ms, "cursor_trail": cursor_trail, "fx_budget": fx_budget, "ring_3d_scale": ring_3d_scale, "bar_lines": bar_lines, "quality_preset": quality_preset, "auto_quality_preset": auto_quality_preset, "renderer_mode": renderer_mode,
 		"hud_scale": hud_scale, "hud_combo_mode": hud_combo_mode, "hud_progress_style": hud_progress_style,
 		"hud_judge_position": hud_judge_position, "hud_judge_filter": hud_judge_filter, "hud_opacity": hud_opacity,
 		"hud_show_title": hud_show_title, "hud_show_difficulty": hud_show_difficulty,
@@ -1191,6 +1209,25 @@ func _flush_live_change() -> void:
 	else:
 		chart_live_changed.emit()
 	status_changed.emit()
+
+
+## 鼠标回报率：只统计 1 秒。≥800Hz 的鼠标每秒产生上千个 motion 事件，
+## 是「明明帧率够却觉得拖」的常见原因（Estella 也单独检测这一项）。
+var mouse_poll_hz: int = 0
+var _poll_events: int = 0
+var _poll_since_usec: int = 0
+
+
+func _input(event: InputEvent) -> void:
+	if event is InputEventMouseMotion:
+		var now := Time.get_ticks_usec()
+		if _poll_since_usec == 0:
+			_poll_since_usec = now
+		_poll_events += 1
+		if now - _poll_since_usec >= 1000000:
+			mouse_poll_hz = _poll_events
+			_poll_events = 0
+			_poll_since_usec = now
 
 
 func _process(delta: float) -> void:
