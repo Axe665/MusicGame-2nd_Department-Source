@@ -2629,9 +2629,10 @@ func draw_overlay(canvas: Control) -> void:
 		_draw_bezel(canvas, chart, t)
 	var t_bar := Time.get_ticks_usec()
 	_draw_bar_lines(canvas, chart, t, pre)
-	_draw_red_regions(canvas, chart, t)
 	_perf_sections[6] += Time.get_ticks_usec() - t_bar
-	# 图层顺序：滑条底带 → Path → Hold → Tap/Anchor/Bell，命中目标始终在上层。
+	# 图层顺序（下 → 上）：Seek → Limit → Path → Hold → Tap/Anchor/Bell → 命中反馈。
+	# Seek 只是预告环，红区是要回避的障碍，重合时红区盖住 Seek；
+	# 其余音符是要打的目标，永远压在红区上层。
 	# Combo 单独压在音符层下面，下落音符可以盖住它；左右两列仍在 HUD 层。
 	if playtest_mode and show_hud:
 		_draw_play_combo_layer(canvas)
@@ -2641,6 +2642,7 @@ func draw_overlay(canvas: Control) -> void:
 		_draw_seeks(canvas, chart, t)
 	var sec2 := Time.get_ticks_usec()
 	_perf_sections[0] += sec2 - sec_usec
+	_draw_red_regions(canvas, chart, t)
 	if draw_note_layers:
 		_draw_paths(canvas, chart, t, pre)
 	sec_usec = Time.get_ticks_usec()
@@ -3935,7 +3937,8 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, project
 		var alpha: float = dim * end_fade * group_mul * head_alpha
 		if alpha > 0.001 and _valid_point(point):
 			var center: Vector2 = project_design(Vector2.ZERO)
-			_draw_path_head_ball(canvas, center.lerp(point, fall_ratio), (center - point).normalized(),
+			# 下落途中只画素圆，不画箭头；箭头等星头落到环上、开始划了才出现。
+			_draw_path_head_ball(canvas, center.lerp(point, fall_ratio), Vector2.ZERO,
 				ball_width, accent, alpha)
 	_draw_path_tail(canvas, tail, true, ns * PATH_SIZE_SCALE, accent, dim * trail_fade * end_fade)
 	# 轨迹球：到判定拍后沿轨迹前进。
@@ -4705,7 +4708,10 @@ func _draw_notes(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 			continue
 		if t >= _spawn_beat(chart, note.beat, note.group_id) and t <= note.beat + tail_beats:
 			visible.append(note)
-	visible.sort_custom(func(a: Note, b: Note) -> bool: return a.beat > b.beat)
+	visible.sort_custom(func(a: Note, b: Note) -> bool:
+		if not is_equal_approx(a.beat, b.beat):
+			return a.beat > b.beat
+		return _note_layer_rank(a.type) < _note_layer_rank(b.type))
 	for note in visible:
 		if note_is_retired(note_state(note.id)):
 			continue
@@ -4716,6 +4722,16 @@ func _draw_notes(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 				_draw_anchor(canvas, chart, note, t)
 			"bell":
 				_draw_bell(canvas, chart, note, t)
+
+
+## 同拍叠放次序（数字小的先画，在下层）：Anchor 宝石最大压底，Tap 次之，Bell 的金键最上。
+static func _note_layer_rank(type: String) -> int:
+	match type:
+		"anchor":
+			return 0
+		"tap":
+			return 1
+	return 2
 
 
 func _anchor_gem_position(landing: Vector2, fall_ratio: float) -> Vector2:
@@ -5042,8 +5058,8 @@ func _draw_seek_ring(canvas: Control, note: Note, beat: float, scale: float, siz
 				continue
 			run.append(p)
 		_draw_seek_band(canvas, run, size, color, band_alpha)
-	# 箭头：整圈 12 组；窄弧按 45° 一组，至少给一组。
-	var arrows: int = 12 if full else clampi(roundi(width / 45.0), 1, 12)
+	# 箭头：整圈 16 组；窄弧按 45° 一组，至少给一组。
+	var arrows: int = 16 if full else clampi(roundi(width / 45.0), 1, 16)
 	var spots: Array[Vector2] = []
 	for i in arrows:
 		var angle: float = fposmod(note.angle, 360.0) if arrows == 1 \
@@ -5070,21 +5086,37 @@ func _draw_seek_ring(canvas: Control, note: Note, beat: float, scale: float, siz
 		if radial.is_zero_approx():
 			continue
 		radial = radial.normalized()
-		# Seek Out 箭头朝圆心、Seek In 箭头朝环外。
+		# 箭头整组贴在环带外侧（Seek In，尖朝环外）或内侧（Seek Out，尖朝圆心），
+		# 都在环带外 16px 起步、60px 长，WACCA 式高挑箭形。
+		var depth: float = 60.0 * size
+		var tip: Vector2
+		if inward:
+			tip = spot + radial * (16.0 * size + push * size + depth)
+		else:
+			tip = spot - radial * (16.0 * size + depth - push * size)
 		var direction: Vector2 = radial if inward else -radial
-		var tip: Vector2 = spot + radial * push * size + direction * (35.0 * size)
-		_draw_seek_chevron(canvas, tip, direction, 25.0 * size, color, arrow_alpha)
+		_draw_seek_chevron(canvas, tip, direction, depth, color, arrow_alpha)
 
 
+## 高挑的箭形：黑外描边 + 白壳 + 主题色芯（层次和 Tap 弧带一致），尾部留凹口。
 func _draw_seek_chevron(canvas: Control, tip: Vector2, direction: Vector2, depth: float, color: Color, alpha: float) -> void:
 	var back: Vector2 = tip - direction * depth
-	var wing: Vector2 = direction.orthogonal() * (0.76 * depth)
-	var points: PackedVector2Array = PackedVector2Array([
-		tip, back + wing, back + wing * 0.39, tip - direction * (0.62 * depth), back - wing * 0.39, back - wing,
+	var wing: Vector2 = direction.orthogonal() * (0.42 * depth)
+	var shape: PackedVector2Array = PackedVector2Array([
+		tip, back + wing, back + wing * 0.52, tip - direction * (0.58 * depth), back - wing * 0.52, back - wing,
 	])
-	canvas.draw_colored_polygon(points, Color(color, alpha))
-	points.append(tip)
-	canvas.draw_polyline(points, Color(0.034, 0.047, 0.076, 0.8 * alpha), 1.2, true)
+	var centre := Vector2.ZERO
+	for p in shape:
+		centre += p
+	centre /= float(shape.size())
+	var scaled := func(k: float) -> PackedVector2Array:
+		var out := PackedVector2Array()
+		for p in shape:
+			out.append(centre + (p - centre) * k)
+		return out
+	canvas.draw_colored_polygon(scaled.call(1.0), Color(0.03, 0.04, 0.07, 0.88 * alpha))
+	canvas.draw_colored_polygon(scaled.call(0.88), Color(1, 1, 1, 0.95 * alpha))
+	canvas.draw_colored_polygon(scaled.call(0.70), Color(color.r, color.g, color.b, alpha))
 
 
 ## 判定环上的 Seek 弧带：材质和 Tap 完全相同（同样的 _stroke_band、同样的圆头），
