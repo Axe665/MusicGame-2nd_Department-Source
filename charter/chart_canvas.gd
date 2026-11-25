@@ -756,12 +756,16 @@ func _draw_grid(plot: Rect2) -> void:
 				label_step *= 2
 	var first_beat := maxi(0, floori(top_beat) - 1)
 	var last_beat := ceili(bottom_beat) + 1
+	# 缩到 4px/拍 以下时拍线已经糊成一片，只留小节线，省掉成百上千条线。
+	var hide_beat_lines := beat_px < 4.0
 	for beat in range(first_beat, last_beat + 1):
+		var bpb := chart.timing.beats_per_bar_at(float(beat))
+		var is_bar := beat % bpb == 0
+		if hide_beat_lines and not is_bar:
+			continue
 		var y := _beat_to_y(float(beat))
 		if y < plot.position.y - 2.0 or y > plot.end.y + 2.0:
 			continue
-		var bpb := chart.timing.beats_per_bar_at(float(beat))
-		var is_bar := beat % bpb == 0
 		var bar_index := int(beat / bpb) if bpb > 0 else 0
 		var accent := is_bar and uniform_bpb > 0 and bar_index % BAR_ACCENT_EVERY == 0
 		var width := 3.2 if accent else beat_line_width(is_bar, emphasize)
@@ -800,6 +804,8 @@ func _draw_grid(plot: Rect2) -> void:
 
 func _draw_beat_subdivisions(plot: Rect2, emphasize: bool) -> void:
 	if _app == null:
+		return
+	if _effective_px_per_beat() < 4.0:
 		return
 	var offsets := TimingMap.beat_subdivision_offsets(int(_app.beat_subdivisions))
 	if offsets.is_empty():

@@ -2793,62 +2793,109 @@ func _invalidate_layers(layers: Array) -> void:
 
 
 ## ── 着色器管线预热 ────────────────────────────────────────────────
-## Godot 在某个材质/混合模式第一次被绘制时才编译管线，第一次出现的 Tap、
-## Anchor 会卡一帧。Estella 用 GameplayPipelineWarmup + PrewarmProbe 在载入时
-## 把材质逐个"演"一遍；这里用一张合成谱在 READY 层后面画 4 帧，覆盖所有音符
-## 类型、Limit 与命中特效，再恢复真实谱面。
+## Godot 在某个材质/混合模式第一次被绘制时才编译管线。Estella 用
+## GameplayPipelineWarmup + PrewarmProbe 在载入时分帧把材质"演"一遍，并用
+## RENDERING_INFO_PIPELINE_COMPILATIONS_* 确认编译归零；这里同样分 4 组、
+## 每帧一组，最后等计数器连续两帧不变（最多 12 帧）。
+## READY 层不透明，预热用 1% alpha 绘制（alpha=0 会被整层剔除）。
 var _warmup_state: Dictionary = {}
+var _warmup_chart: Chart = null
+var _warmup_groups: Array = []
+var _warmup_group: int = -1
+var _warmup_frames: int = 0
+var _warmup_stable: int = 0
+var _warmup_compiles: Array = []
+var _warmup_finished: bool = false
 
 
 func begin_shader_warmup() -> void:
 	if not _warmup_state.is_empty():
 		return
 	var t := get_time_beat()
-	var warm: Chart = DemoChart.make_empty({"title": "warmup", "bpm": 120.0})
-	var notes: Array[Note] = []
-	notes.append(Note.new("tap", t, 0.0, 48.0))
-	notes.append(Note.new("tap", t, 120.0, 72.0))
+	_warmup_chart = DemoChart.make_empty({"title": "warmup", "bpm": 120.0})
+	var g0: Array[Note] = [Note.new("tap", t, 0.0, 48.0)]
+	var g1: Array[Note] = [Note.new("anchor", t, 180.0, 24.0), Note.new("bell", t, 300.0, 26.0)]
 	var hold := Note.new("hold", t - 0.5, 240.0, 30.0)
 	hold.end_beat = t + 1.0
-	notes.append(hold)
 	var seek := Note.new("seek", t, 0.0, 360.0)
 	seek.seek_orien = 1
-	notes.append(seek)
-	notes.append(Note.new("anchor", t, 180.0, 24.0))
-	notes.append(Note.new("bell", t, 300.0, 26.0))
 	var path := Note.new("path", t - 0.5, 60.0, 60.0)
 	path.end_beat = t + 1.0
 	path.space = "plane"
 	path.tail_angle = 200.0
 	path.generate_path_shape()
-	notes.append(path)
-	warm.notes.assign(notes)
-	warm.refresh_ids()
-	var region := Region.new()
-	region.kind = "limit"
-	region.start_beat = t - 1.0
-	region.end_beat = t + 1.0
-	region.angle = 0.0
-	region.width = 120.0
-	warm.regions.append(region)
+	var g2: Array[Note] = [hold, path, seek]
+	_warmup_groups = [g0, g1, g2]
+	var next_id := 900000
+	for group in _warmup_groups:
+		for note in group:
+			note.id = next_id
+			next_id += 1
 	_warmup_state = {
 		"chart": chart_override,
 		"time": time_beat,
 		"modulate": modulate,
 		"follow_app": follow_app,
 	}
-	chart_override = warm
+	chart_override = _warmup_chart
 	time_beat = t
 	follow_app = false
-	# alpha=0 会被整层剔除、不提交绘制；留 1% 仍然肉眼看不出（还被 READY 层盖住）。
 	modulate = Color(1, 1, 1, 0.01)
-	add_note_pop("perfect", warm.notes[0], t)
-	add_ring_light(warm.notes[0], true)
-	_invalidate_layers(OVERLAY_LAYERS)
+	_warmup_group = -1
+	_warmup_frames = 0
+	_warmup_stable = 0
+	_warmup_compiles = _compile_snapshot()
+	_warmup_finished = false
+	shader_warmup_step()
 
 
 func shader_warmup_active() -> bool:
 	return not _warmup_state.is_empty()
+
+
+func shader_warmup_done() -> bool:
+	return _warmup_finished
+
+
+## 每帧推进一组；全部画完后等编译计数器连续两帧不变。
+func shader_warmup_step() -> void:
+	if _warmup_state.is_empty() or _warmup_finished:
+		return
+	_warmup_frames += 1
+	if _warmup_group + 1 < _warmup_groups.size():
+		_warmup_group += 1
+		_warmup_chart.notes.assign(_warmup_groups[_warmup_group])
+		_sorted_notes_chart = null
+		if _warmup_group == _warmup_groups.size() - 1:
+			var region := Region.new()
+			region.kind = "limit"
+			region.start_beat = time_beat - 1.0
+			region.end_beat = time_beat + 1.0
+			region.angle = 0.0
+			region.width = 120.0
+			_warmup_chart.regions.assign([region])
+			add_note_pop("perfect", _warmup_groups[0][0], time_beat)
+			add_ring_light(_warmup_groups[0][0], true)
+		_invalidate_layers(OVERLAY_LAYERS)
+		return
+	var now := _compile_snapshot()
+	if now == _warmup_compiles:
+		_warmup_stable += 1
+	else:
+		_warmup_stable = 0
+		_warmup_compiles = now
+	if _warmup_stable >= 2 or _warmup_frames >= 12:
+		_warmup_finished = true
+
+
+func _compile_snapshot() -> Array:
+	return [
+		RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_PIPELINE_COMPILATIONS_CANVAS),
+		RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_PIPELINE_COMPILATIONS_MESH),
+		RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_PIPELINE_COMPILATIONS_SURFACE),
+		RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_PIPELINE_COMPILATIONS_DRAW),
+		RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_PIPELINE_COMPILATIONS_SPECIALIZATION),
+	]
 
 
 func end_shader_warmup() -> void:
@@ -2861,6 +2908,9 @@ func end_shader_warmup() -> void:
 	_note_pops.clear()
 	_ring_lights.clear()
 	_warmup_state.clear()
+	_warmup_chart = null
+	_warmup_groups.clear()
+	_warmup_finished = true
 	_invalidate_layers(OVERLAY_LAYERS)
 
 
