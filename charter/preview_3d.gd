@@ -9,8 +9,8 @@ signal ring_rotate(degrees: float)
 ## 环编辑：在预览里点中文本指令时通知工作区同步选择。
 signal command_selected(command: AlphaCommand)
 
-const RING_WIDTH := 5.0
-const GLOW_WIDTH := 26.0
+const RING_WIDTH := 4.0
+const GLOW_WIDTH := 18.0
 const PREVIEW_MARGIN := 1.24
 ## 鼠标视差的最大倾斜角（度）。试玩固定 7°，编辑器预览用这个值。
 const MOUSE_TILT_DEGREES := 11.0
@@ -259,10 +259,6 @@ static var _cap_shell_tex: Texture2D
 static var _cap_core_tex: Texture2D
 var _ring_material: StandardMaterial3D
 var _glow_material: StandardMaterial3D
-## 判定环的实体底盘：宽环带把 4px 的亮线变成有厚度的轨道。
-var _band_mesh: MeshInstance3D
-var _band_material: ShaderMaterial
-const RING_BAND_WIDTH := 46.0
 var _stage_material: StandardMaterial3D
 var _bezel_material: StandardMaterial3D
 var _shadow_material: StandardMaterial3D
@@ -322,6 +318,8 @@ var _indexed_path_roots: Array[Note] = []
 var _path_index: Array[VisiblePath] = []
 var _path_prefix_end := PackedFloat64Array()
 var _path_strokes: Dictionary[Note, PathStroke] = {}
+## 箭头退场：记录每条轨迹的擦除前沿速度（fraction/拍），用来算 180ms 的退场进度。
+var _path_front: Dictionary = {}
 var _path_overlap_samples: Dictionary[Note, PackedVector2Array] = {}
 var _overlap_paths: Array[Note] = []
 var _overlap_any: bool = false
@@ -831,6 +829,7 @@ func _build_3d() -> void:
 	_ring_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	_ring_material.cull_mode = BaseMaterial3D.CULL_DISABLED
 	_ring_material.albedo_color = Color(0.62, 0.64, 0.68, 0.95)
+	_ring_material.albedo_texture = _edge_fade_texture()
 	_ring_material.render_priority = 3
 
 	_glow_material = StandardMaterial3D.new()
@@ -838,6 +837,7 @@ func _build_3d() -> void:
 	_glow_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	_glow_material.cull_mode = BaseMaterial3D.CULL_DISABLED
 	_glow_material.albedo_color = Color(0.37, 0.85, 0.81, 0.12)
+	_glow_material.albedo_texture = _edge_fade_texture()
 	_glow_material.render_priority = 2
 
 	_stage_material = StandardMaterial3D.new()
@@ -889,14 +889,12 @@ func _build_3d() -> void:
 	_bezel_material.albedo_color = Color(0.95, 0.90, 0.78, 0.80)
 	_bezel_material.render_priority = 4
 
-	_band_material = ShaderMaterial.new()
-	_band_material.shader = load("res://charter/ring_band.gdshader")
-
 	_shadow_material = StandardMaterial3D.new()
 	_shadow_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	_shadow_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	_shadow_material.cull_mode = BaseMaterial3D.CULL_DISABLED
 	_shadow_material.albedo_color = Color(0.0, 0.0, 0.0, 0.55)
+	_shadow_material.albedo_texture = _edge_fade_texture()
 	_shadow_material.render_priority = 1
 
 	_disc_mesh = MeshInstance3D.new()
@@ -926,8 +924,6 @@ func _build_3d() -> void:
 	_ring_root.add_child(_shadow_mesh)
 	_glow_mesh = MeshInstance3D.new()
 	_ring_root.add_child(_glow_mesh)
-	_band_mesh = MeshInstance3D.new()
-	_ring_root.add_child(_band_mesh)
 	_ring_mesh = MeshInstance3D.new()
 	_ring_root.add_child(_ring_mesh)
 
@@ -1211,7 +1207,6 @@ func _update_camera_fit(chart: Chart, zoom: float, ellipse: float, dolly: float 
 func _update_ring_mesh(chart: Chart, beat: float) -> void:
 	var points := _frame_for(chart, beat).sample_points(192)
 	_ring_mesh.mesh = _build_ribbon(points, _ring_line_width, _ring_material)
-	_band_mesh.mesh = _build_ribbon(points, RING_BAND_WIDTH, _band_material)
 	_glow_mesh.mesh = _build_ribbon(points, _ring_glow_width, _glow_material)
 	_shadow_mesh.mesh = _build_ribbon(points, 30.0, _shadow_material)
 	_last_mesh_beat = beat
@@ -1419,7 +1414,21 @@ func _build_bezel_gpu() -> void:
 	_bezel_mesh.mesh = mesh
 
 
-func _build_ribbon(points: Array[Dictionary], width: float, material: Material, offset: float = 0.0) -> ImmediateMesh:
+## 环带边缘的 alpha 渐变：UV.y 0→1 横跨带宽，两端各淡出一小段，
+## 硬多边形边（尤其是近乎水平的切线处）就不会显出 1–2px 的台阶。
+static var _edge_fade_tex: ImageTexture
+
+static func _edge_fade_texture() -> Texture2D:
+	if _edge_fade_tex == null:
+		var img := Image.create(8, 1, false, Image.FORMAT_RGBA8)
+		var ramp := [0.0, 0.45, 1.0, 1.0, 1.0, 1.0, 0.45, 0.0]
+		for x in 8:
+			img.set_pixel(x, 0, Color(1, 1, 1, float(ramp[x])))
+		_edge_fade_tex = ImageTexture.create_from_image(img)
+	return _edge_fade_tex
+
+
+func _build_ribbon(points: Array[Dictionary], width: float, material: Material) -> ImmediateMesh:
 	var mesh := ImmediateMesh.new()
 	mesh.surface_begin(Mesh.PRIMITIVE_TRIANGLES, material)
 	var half := width * 0.5
@@ -1450,9 +1459,6 @@ func _build_ribbon(points: Array[Dictionary], width: float, material: Material, 
 			continue
 		var na: Vector2 = normals[i]
 		var nb: Vector2 = normals[(i + 1) % count]
-		if offset != 0.0:
-			na += na.normalized() * offset
-			nb += nb.normalized() * offset
 		var v0 := pa + na
 		var v1 := pa - na
 		var v2 := pb + nb
@@ -3755,13 +3761,11 @@ func _draw_flat_ring(canvas: Control, chart: Chart, t: float) -> void:
 		_draw_flat_ring_run(canvas, run, glow_color, glow_width, main_color, main_width)
 
 
-## 2D 回退环套用和 3D 一样的结构：深色底盘 + 发光 + 判定线 + 内缘高光。
 func _draw_flat_ring_run(canvas: Control, run: PackedVector2Array, glow_color: Color,
 		glow_width: float, main_color: Color, main_width: float) -> void:
-	canvas.draw_polyline(run, Color(0.03, 0.04, 0.06, 0.55), RING_BAND_WIDTH, true)
 	canvas.draw_polyline(run, glow_color, glow_width, true)
 	canvas.draw_polyline(run, main_color, main_width, true)
-	canvas.draw_polyline(run, Color(1, 1, 1, 0.38), 1.0, true)
+	canvas.draw_polyline(run, Color(1, 1, 1, 0.18), 1.0, true)
 
 
 func _draw_bezel(canvas: Control, chart: Chart, t: float) -> void:
@@ -4041,6 +4045,7 @@ func _draw_paths(canvas: Control, chart: Chart, t: float, _pre: float) -> void:
 		for note: Note in _path_strokes.keys():
 			if not visible.has(note):
 				_path_strokes.erase(note)
+				_path_front.erase(note.id)
 	if visible.is_empty():
 		return
 	# 接力高亮：还没划完的星里，只有尾判定最早的那条（或几条同时到点）保持全亮。
@@ -4147,34 +4152,37 @@ static func split_path_runs(points: PackedVector2Array, erased: Array, starts: A
 	return result
 
 
-## 光标后方 120ms 的轨迹淡出 + 前沿亮边。
-## 轨迹时长按拍算，先换成秒才能知道 120ms 对应多长一段。
-func _draw_path_erase_tail(canvas: Control, chart: Chart, note: Note, t: float, target: float,
+## 手划过之后的一小段（180ms 内走过的距离）里，箭头按年龄放大 + 淡出。
+func _draw_path_exit_chevrons(canvas: Control, chart: Chart, note: Note, t: float, target: float,
 		accent: Color, dim: float, ns: float) -> void:
-	target = clampf(target, 0.0, 1.0)
-	if target <= 0.001:
-		return
 	var total := note.duration()
-	var seconds := total * 60.0 / maxf(1.0, chart.timing.bpm_at(note.beat))
-	var fade := clampf(0.12 / maxf(0.05, seconds), 0.004, 0.25)
-	var from := maxf(0.0, target - fade)
-	var steps := 10
-	var points := PackedVector2Array()
-	var colors := PackedColorArray()
-	for i in steps + 1:
-		var k := float(i) / float(steps)
-		points.append(_path_screen_point(chart, note, total * lerpf(from, target, k), t, true, 1.0))
-		colors.append(Color(accent.r, accent.g, accent.b, pow(k, 0.65) * dim))
-	if points.size() < 2:
+	if total <= 0.001 or target <= 0.0001:
 		return
-	var band := 5.0 * PATH_SIZE_SCALE * ns * float(_skin()["band"]) * 1.7
-	canvas.draw_polyline_colors(points, colors, band, false)
-	# 前沿亮边：最后两段加一条细白线，划过去的地方亮一下就灭。
-	var front := PackedVector2Array()
-	for i in range(maxi(0, steps - 2), steps + 1):
-		front.append(points[i])
-	if front.size() >= 2:
-		canvas.draw_polyline(front, Color(1, 1, 1, 0.55 * dim), 2.0, true)
+	var info: Dictionary = _path_front.get(note.id, {})
+	var prev_t := float(info.get("t", t))
+	var prev_f := float(info.get("f", target))
+	var speed := float(info.get("speed", 0.0))
+	if t > prev_t + 0.00005:
+		var inst := maxf(0.0, (target - prev_f) / (t - prev_t))
+		speed = lerpf(speed, inst, 0.4)
+	_path_front[note.id] = {"t": t, "f": target, "speed": speed}
+	var per_sec := speed * maxf(1.0, chart.timing.bpm_at(note.beat)) / 60.0
+	if per_sec <= 0.0005:
+		return
+	var back := minf(target, per_sec * 0.12)
+	if back <= 0.0005:
+		return
+	var tail := PackedVector2Array()
+	for i in 5:
+		var f := lerpf(target - back, target, float(i) / 4.0)
+		tail.append(_path_screen_point(chart, note, total * f, t, true, 1.0))
+	var size := 12.0 * ns * PATH_SIZE_SCALE
+	var spacing := maxf(18.0, size * 1.4)
+	for sample in _chevron_samples(tail, spacing, size * 1.6):
+		var age := clampf(1.0 - sample.fraction, 0.0, 1.0)
+		_draw_chevron(canvas, sample.point, sample.direction,
+			Color(accent.r, accent.g, accent.b, clampf(1.7 * (1.0 - age), 0.0, 1.0) * dim),
+			size * (1.0 + 0.2 * age))
 
 
 func _path_stroke_runs(chart: Chart, note: Note, beat: float, projection_key: String, count: int) -> Array[PackedVector2Array]:
@@ -4268,11 +4276,11 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, project
 				# 试玩时轨迹已经被擦到光标处，剩下的每一段都在前方，不该再按“piece 内比例”压暗。
 				var chevron_color := future if playtest_mode else (passed if sample.fraction < progress else future)
 				_draw_chevron(canvas, sample.point, sample.direction, chevron_color, chevron_size)
-	# 削除动画：光标后方 120ms 的轨迹还在淡出，前沿一道亮边——像被"吃掉"，不是硬切。
-	if playtest_mode and not decorative and trail_dim > 0.001:
+	# 箭头退场：手刚划过的 180ms 内，箭头逐个放大淡出（AstroDX ExitSequence 的语义）。
+	if playtest_mode and trail_dim > 0.001:
 		var cuts: Array = path_cuts.get(note.id, [])
 		if cuts.size() == 1 and float(cuts[0].get("from", 0.0)) <= 0.001:
-			_draw_path_erase_tail(canvas, chart, note, t, float(cuts[0].get("to", 0.0)),
+			_draw_path_exit_chevrons(canvas, chart, note, t, float(cuts[0].get("to", 0.0)),
 				accent, trail_dim, ns)
 	if selected:
 		# 中间判定点只在选中时绘制，避免多星星铺满采样点拖慢编辑器。
