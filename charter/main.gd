@@ -52,6 +52,7 @@ const QUALITY_OPTIONS := [
 	{"key": "background_brightness", "label": "背景明暗", "choices": [["关", 96], ["25%", 97], ["50%", 98], ["75%", 99], ["100%（默认）", 100]]},
 	{"key": "show_storyboard", "label": "故事板", "choices": [["开", 166], ["关", 167]]},
 	{"key": "show_storyboard_background", "label": "故事板背景层", "choices": [["开", 168], ["关", 169]]},
+	{"key": "renderer_backend", "label": "渲染后端（重启生效）", "choices": [["自动", 176], ["Vulkan", 177], ["OpenGL 兼容", 178]]},
 	{"key": "video_encoder", "label": "视频导出编码器", "choices": [["自动（优先硬件）", 170], ["NVENC", 171], ["QSV", 172], ["VideoToolbox", 173], ["VAAPI（Linux）", 174], ["libx264（软件）", 175]]},
 ]
 
@@ -205,6 +206,9 @@ var _volume_sliders: Array = []
 
 func _ready() -> void:
 	_app = get_node_or_null("/root/App")
+	# 保存的渲染后端和当前进程不一致时，先重启到目标后端再建界面。
+	if _apply_saved_renderer():
+		return
 	# 启动就算「刚活动过」，否则开局直接进 10fps 静止档。
 	_last_activity_ms = Time.get_ticks_msec()
 	theme = UITheme.build()
@@ -221,6 +225,7 @@ func _ready() -> void:
 	_sfx.set_style(String(_app.hit_sfx_style) if _app != null else "default")
 	_build_dialogs()
 	_build_audio_popup()
+	call_deferred("_check_gpu_crash_loop")
 	if _app != null:
 		_app.chart_changed.connect(_on_chart_changed)
 		_app.chart_live_changed.connect(_on_chart_live_changed)
@@ -260,6 +265,109 @@ func _ready() -> void:
 	for arg in OS.get_cmdline_user_args():
 		if arg.begins_with("--replay="):
 			call_deferred("_open_replay_file", arg.get_slice("=", 1))
+
+
+## ── 渲染后端与 GPU 崩溃回退（仿 Estella 的 RendererFallback）──────────────
+## 记录跨进程的启动状态：上一进程没走到 _exit_tree（崩溃/掉驱动）且存活不足 20 秒，
+## 就累计一次；连续两次就在下次启动时提示改用 OpenGL 兼容模式。
+const GPU_STATE_PATH := "user://gpu_state.json"
+const GPU_SHORT_RUN_SEC := 20
+
+
+func _renderer_driver() -> String:
+	var args := OS.get_cmdline_args()
+	for i in args.size() - 1:
+		if args[i] == "--rendering-driver":
+			return args[i + 1]
+	return ""
+
+
+## 保存的后端和当前进程不一致时重启一次；由 --renderer-applied 防止循环。
+func _apply_saved_renderer() -> bool:
+	var applied := "--renderer-applied" in OS.get_cmdline_args()
+	if applied or _app == null:
+		return false
+	var want := String(_app.renderer_mode)
+	var want_driver := ""
+	if want == "opengl3":
+		want_driver = "opengl3"
+	elif want == "vulkan":
+		want_driver = "vulkan"
+	if want_driver.is_empty() or want_driver == _renderer_driver():
+		return false
+	return _relaunch_with_driver(want_driver)
+
+
+func _relaunch_with_driver(driver: String) -> bool:
+	if driver.is_empty():
+		return false
+	var args: Array[String] = ["--rendering-driver", driver, "--renderer-applied", "--"]
+	args.append_array(OS.get_cmdline_user_args())
+	var pid := OS.create_process(OS.get_executable_path(), args)
+	if pid <= 0:
+		push_warning("重启失败：无法启动新进程")
+		return false
+	get_tree().quit()
+	return true
+
+
+func _check_gpu_crash_loop() -> void:
+	var state := {}
+	if FileAccess.file_exists(GPU_STATE_PATH):
+		var f := FileAccess.open(GPU_STATE_PATH, FileAccess.READ)
+		if f != null:
+			var parsed: Variant = JSON.parse_string(f.get_as_text())
+			f.close()
+			if parsed is Dictionary:
+				state = parsed
+	var now := int(Time.get_unix_time_from_system())
+	var short_runs := int(state.get("short_runs", 0))
+	if bool(state.get("running", false)):
+		var started := int(state.get("started_at", 0))
+		short_runs = short_runs + 1 if now - started < GPU_SHORT_RUN_SEC else 0
+	_write_gpu_state({"running": true, "started_at": now, "short_runs": short_runs})
+	if short_runs < 2 or _renderer_driver() == "opengl3":
+		return
+	_show_gpu_fallback_dialog(short_runs)
+
+
+func _write_gpu_state(state: Dictionary) -> void:
+	var f := FileAccess.open(GPU_STATE_PATH, FileAccess.WRITE)
+	if f == null:
+		return
+	f.store_string(JSON.stringify(state))
+	f.close()
+
+
+func _show_gpu_fallback_dialog(short_runs: int) -> void:
+	var dlg := ConfirmationDialog.new()
+	dlg.title = "显卡兼容提示"
+	dlg.dialog_text = "上次启动在 %d 秒内退出了 %d 次，可能是显卡驱动或渲染后端不稳定。\n\n要改用 OpenGL 兼容模式重启吗？" % [GPU_SHORT_RUN_SEC, short_runs]
+	dlg.ok_button_text = "改用 OpenGL 并重启"
+	dlg.cancel_button_text = "继续使用当前设置"
+	dlg.confirmed.connect(func() -> void:
+		_app.renderer_mode = "opengl3"
+		_app.save_settings()
+		_relaunch_with_driver("opengl3"))
+	dlg.canceled.connect(func() -> void: _write_gpu_state({"running": true, "started_at": int(Time.get_unix_time_from_system()), "short_runs": 0}))
+	add_child(dlg)
+	dlg.popup_centered()
+
+
+func _offer_renderer_restart(driver: String) -> void:
+	var dlg := ConfirmationDialog.new()
+	dlg.title = "渲染后端"
+	dlg.dialog_text = "切换渲染后端需要重启制谱器。现在重启吗？"
+	dlg.ok_button_text = "立即重启"
+	dlg.cancel_button_text = "稍后"
+	dlg.confirmed.connect(func() -> void: _relaunch_with_driver(driver))
+	add_child(dlg)
+	dlg.popup_centered()
+
+
+## 正常退出：清掉“正在运行”标记和崩溃计数。
+func _exit_tree() -> void:
+	_write_gpu_state({"running": false, "started_at": 0, "short_runs": 0})
 
 
 ## 无人值守性能基准：载入 Apollo 谱，从扫圈段自动打 25 秒后退出。
@@ -1281,6 +1389,8 @@ func _quality_index(key: String) -> int:
 			return 0 if _app.show_storyboard_background else 1
 		"video_encoder":
 			return ["auto", "nvenc", "qsv", "videotoolbox", "vaapi", "libx264"].find(_app.video_encoder)
+		"renderer_backend":
+			return ["auto", "vulkan", "opengl3"].find(_app.renderer_mode)
 	return -1
 
 
@@ -1289,6 +1399,12 @@ func _set_quality_index(key: String, index: int) -> void:
 		_app.apply_quality_preset(["ultra", "high", "mid", "low"][clampi(index, 0, 3)])
 		return
 	match key:
+		"renderer_backend":
+			_app.renderer_mode = ["auto", "vulkan", "opengl3"][clampi(index, 0, 2)]
+			_app.save_settings()
+			if _app.renderer_mode != "auto":
+				_offer_renderer_restart(_app.renderer_mode)
+			return
 		"frame_cap":
 			_app.frame_cap = ["60", "120", "144", "240", "vsync", "unlimited"][clampi(index, 0, 5)]
 			_app.apply_frame_cap()
