@@ -37,9 +37,15 @@ func _draw_notes(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 	t_notes += Time.get_ticks_usec() - s
 
 
-func _draw_hud(canvas: Control, chart: Chart, t: float) -> void:
+func _draw_hud_live(canvas: Control, chart: Chart, t: float) -> void:
 	var s := Time.get_ticks_usec()
-	super._draw_hud(canvas, chart, t)
+	super._draw_hud_live(canvas, chart, t)
+	t_hud += Time.get_ticks_usec() - s
+
+
+func _draw_hud_static(canvas: Control, chart: Chart, t: float) -> void:
+	var s := Time.get_ticks_usec()
+	super._draw_hud_static(canvas, chart, t)
 	t_hud += Time.get_ticks_usec() - s
 
 
@@ -50,7 +56,8 @@ func _draw_cursor(canvas: Control, chart: Chart, t: float) -> void:
 
 
 func summary() -> String:
-	var f := float(maxi(1, draw_count)) * 1000.0
+	# 走分层路径时 draw_overlay 不会被调用，帧数只能用 _perf_frames。
+	var f := float(maxi(1, _perf_frames)) * 1000.0
 	return "paths=%.2f holds=%.2f notes=%.2f hud=%.2f cursor=%.2f" % [
 		float(t_paths) / f, float(t_holds) / f,
 		float(t_notes) / f, float(t_hud) / f, float(t_cursor) / f,

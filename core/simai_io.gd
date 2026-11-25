@@ -253,7 +253,6 @@ static func _parse_single(token: String, beat: float, bpm: float, chart: Chart, 
 		var hold := Note.new("hold", beat, SimaiSlide.button_angle(head), 62.0)
 		hold.end_beat = beat + maxf(0.25, float(hold_time["move"]))
 		hold.hold = true
-		hold.hold_style = "straight"
 		if body.contains("b"):
 			hold.width = 72.0
 		return hold

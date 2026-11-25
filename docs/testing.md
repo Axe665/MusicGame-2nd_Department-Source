@@ -61,7 +61,6 @@ godot --headless --path . res://tests/replay_integration.tscn      # 回放集�
 - osu!std 落道：合成谱面里左、中、右、上、左上五个 circle 按 Sentakki 的流和大跳落到 5/1/1/6/4 道，所有角度都落在 Sentakki 的 45° 道上
 - osu!std 导入：offset、BPM、circle、slider、spinner 跳过、连续环流角度、可变宽度、Slide Trace/Hold 分类、B/L/C/P 曲线采样、负拍平移
 - osu!std 的 45° 流步长、Slide wait 阶段、同刻去重和尾判吸附
-- osu!taiko 导入：don/kat 车道、密集堆叠、短滑条拆点、长滑条鼓滚、spinner 跳过
 - `.osz` 多难度列表和指定难度导入
 - Simai 导入：难度列表、offset、按钮角度、Hold/Slide 时长、同刻去重、重叠星星缩短/降 Tap、Touch 外圈排布
 - 舞萌鼠标层：尾判吸附、轨迹压短、超过 45° 的快速折返压到 45°、A-B-A-B 交互段锁定（45° 仍超速时整段叠成一处）、45° 以内邻键来回（不少于 3 颗）收成叠键、压角后补一遍、Bell 与近旁 Tap/Hold 同角度、轨外音符删除、Hold 缩短

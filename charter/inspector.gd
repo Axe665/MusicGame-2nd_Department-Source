@@ -844,7 +844,19 @@ func _build_note_page_for(page: VBoxContainer, note: Note) -> void:
 			_active_note.seek_pending = false
 	)
 	_note_widgets["seek_orien"] = seek_orien
-	_label(seek_body, "外 = 滚轮上滑；里 = 滚轮下滑。", 11, UITheme.MUTED)
+	var seek_w := _spin(seek_body, "弧宽 °", note.seek_width(), Note.SEEK_MIN_WIDTH, 360.0, 1.0,
+		func(value: float) -> void:
+			if _active_note != null:
+				_active_note.width = clampf(value, Note.SEEK_MIN_WIDTH, 360.0)
+	)
+	_note_widgets["seek_w"] = seek_w
+	var seek_a := _spin(seek_body, "中心角 °", fposmod(note.angle, 360.0), 0.0, 360.0, 1.0,
+		func(value: float) -> void:
+			if _active_note != null:
+				_active_note.angle = fposmod(value, 360.0)
+	)
+	_note_widgets["seek_a"] = seek_a
+	_label(seek_body, "外 = 滚轮上滑；里 = 滚轮下滑。360° = 整圈，任意位置滚动即可；小于 360° 时滚轮那一刻光标必须站在这段弧上（±55px），环上会收一圈就位环。", 11, UITheme.MUTED)
 
 	var mods_body := _note_group(page, "mods", "演出修饰")
 	var hs_spin := _spin(mods_body, "下落速度 HS", note.hs, 0.2, 4.0, 0.05, func(value: float) -> void:
@@ -1044,6 +1056,8 @@ func _refresh_note_page() -> void:
 	_note_widgets["mod_bounce_dir"].selected = 1 if note.bounce_dir == 1 else 0
 	_note_rows["mod_head"].visible = note.type in ["hold", "path"]
 	_note_widgets["mod_bounce_dir"].get_parent().visible = note.bounce > 0.0001
+	_note_widgets["seek_w"].value = note.seek_width()
+	_note_widgets["seek_a"].value = fposmod(note.angle, 360.0)
 	_note_widgets["bell_u"].value = note.center_u
 	_note_widgets["bell_w"].value = note.bell_width()
 	_note_widgets["bell_preview"].set_arc_width(note.bell_width())
@@ -1233,17 +1247,6 @@ func _build_view_page(page: VBoxContainer) -> void:
 		_app.save_settings()
 		_app.appearance_changed.emit()
 		_app.notice.emit("音符皮肤：%s" % skin_labels[index], "info")
-	)
-	var fx_presets := Preview3D.hit_fx_presets()
-	var fx_keys: Array = fx_presets.keys()
-	var fx_labels: Array[String] = []
-	for key in fx_keys:
-		fx_labels.append(String(fx_presets[key]))
-	_setting_option(page, "打击特效", fx_labels, maxi(0, fx_keys.find(_app.hit_fx_style)), func(index: int) -> void:
-		_app.hit_fx_style = String(fx_keys[index])
-		_app.save_settings()
-		_app.appearance_changed.emit()
-		_app.notice.emit("打击特效：%s" % fx_labels[index], "info")
 	)
 	var sfx_keys: Array[String] = ["default", "crisp", "deep", "mute"]
 	var sfx_labels: Array[String] = ["原声", "清脆", "厚重", "静音"]

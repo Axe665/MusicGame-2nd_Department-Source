@@ -94,6 +94,8 @@ func _initialize() -> void:
 		"test_lbp_export",
 		"test_lbp_package",
 		"test_lbp_package_assets",
+		"test_lbp_package_prefix_and_nesting",
+		"test_difficulty_management",
 		"test_video_export_cursor",
 		"test_video_export_plan_hits",
 		"test_video_export_sfx_capture",
@@ -117,6 +119,9 @@ func _initialize() -> void:
 		"test_path_smoothing",
 		"test_seek_limit_animation_curves",
 		"test_seek_grow_matches_tap",
+		"test_hit_ring_light",
+		"test_note_fall_curves_match_tap",
+		"test_seek_warning_order",
 		"test_limit_dwell_once",
 		"test_bpm_snap_multipliers",
 		"test_path_zone_granularity",
@@ -164,8 +169,8 @@ func _initialize() -> void:
 		"test_video_direct_decode",
 		"test_osu_browser_alignment",
 		"test_hold_stack_alpha",
-		"test_osu_taiko_import",
-		"test_osu_taiko_flow",
+		"test_osu_taiko_rejected",
+		"test_osz_difficulties_std_only",
 		"test_osu_bpm_change",
 		"test_osu_multi_difficulty",
 		"test_json_roundtrip",
@@ -802,6 +807,19 @@ func test_seek_and_limit_code() -> bool:
 	eq(restored.type, "seek", "seek code type")
 	eq(restored.seek_orien, 1, "seek code orientation")
 	near(restored.beat, 3.5, 0.001, "seek code beat")
+	near(restored.seek_width(), 360.0, 0.001, "a plain seek code is still a full circle")
+	# 窄 Seek：弧宽和中心角都要能存能读。
+	seek.width = 90.0
+	seek.angle = 135.0
+	ok(seek.to_code().begins_with("[7]seek(3.5,1,"), "narrow seek code keeps the width field")
+	var narrow := Note.from_code(seek.to_code())
+	near(narrow.seek_width(), 90.0, 0.001, "narrow seek width survives the code")
+	near(narrow.angle, 135.0, 0.001, "narrow seek centre angle survives the code")
+	var dict := Note.from_dict(seek.to_dict())
+	near(dict.seek_width(), 90.0, 0.001, "narrow seek width survives JSON")
+	near(dict.angle, 135.0, 0.001, "narrow seek centre angle survives JSON")
+	near(Note.from_dict(Note.new("seek", 2.0, 0.0, 360.0).to_dict()).seek_width(), 360.0, 0.001,
+		"old full-circle seeks keep 360")
 	ok(Note.TYPES.has("seek"), "seek is a note type")
 	ok(not Note.TYPES.has("trace"), "trace is removed")
 	var region := Region.from_dict({"id": 1, "kind": "red", "start_beat": 1.0, "end_beat": 2.0})
@@ -998,7 +1016,6 @@ func test_note_flags_code() -> bool:
 	var curved := Note.new("hold", 1.0, 0.0, 60.0)
 	curved.id = 1
 	curved.end_beat = 2.0
-	curved.hold_style = "curved"
 	curved.visual_pts = [{"db": 0.0, "da": 0.0, "x": 0.1, "y": 0.2}]
 	var plane_path := Note.new("path", 3.0, 0.0, 60.0)
 	plane_path.id = 2
@@ -1015,7 +1032,6 @@ func test_note_flags_code() -> bool:
 	if extras_back != null:
 		for note in extras_back.notes:
 			if note.type == "hold":
-				eq(note.hold_style, "curved", "hold style survives the roundtrip")
 				eq(note.visual_pts.size(), 1, "hold body survives the roundtrip")
 			elif note.type == "path":
 				near(note.tolerance, 0.31, 0.001, "path tolerance survives the roundtrip")
@@ -1217,7 +1233,9 @@ func test_path_stroke_cache() -> bool:
 	eq(initial[0].size(), 9, "the stroke includes both endpoints at its requested sampling density")
 	preview.set_path_erased_to(note, 0.5)
 	var cut: Array[PackedVector2Array] = preview._path_stroke_runs(chart, note, 0.1, "static", 8)
-	eq(cut[0][0], Vector2(0.625, 0.0), "erasing splits the existing projected points")
+	# osu!lazer 式精确裁切：切口落在 0.5（擦除位置），而不是下一个采样点 0.625。
+	eq(cut[0][0], Vector2(0.5, 0.0), "the cut edge lands on the exact erase position")
+	eq(cut[0][1], Vector2(0.625, 0.0), "the next sample still follows the original projection")
 	eq(preview.projections, 9, "changing only the cut reuses the projection")
 	var moved: Array[PackedVector2Array] = preview._path_stroke_runs(chart, note, 0.2, "moved", 8)
 	eq(moved, cut, "changing the projection keeps the cut")
@@ -1282,14 +1300,17 @@ func test_path_run_split() -> bool:
 		Vector2(300, 0), Vector2(400, 0), Vector2(500, 0),
 	])
 	var middle: Array[bool] = [false, false, true, true, false, false]
-	var split := Preview3D.split_path_runs(middle_line, middle)
+	var starts: Array[int] = []
+	var split := Preview3D.split_path_runs(middle_line, middle, starts)
 	eq(split.size(), 2, "erased middle splits into two visible runs")
+	eq(starts, [0, 4], "visible path guides retain their original sample indices after a cut")
 	var gap := PackedVector2Array([
 		Vector2(0, 0), Vector2(10, 0), Vector2(INF, INF),
 		Vector2(20, 0), Vector2(30, 0),
 	])
 	var gap_flags: Array[bool] = [false, false, false, false, false]
-	eq(Preview3D.split_path_runs(gap, gap_flags).size(), 2, "invalid sample starts a new run")
+	eq(Preview3D.split_path_runs(gap, gap_flags, starts).size(), 2, "invalid sample starts a new run")
+	eq(starts, [0, 3], "a new projection replaces previous path guide indices")
 	return true
 
 
@@ -1299,14 +1320,13 @@ func test_style_presets() -> bool:
 		ok(skins.has(key), "skin preset %s exists" % key)
 		if skins.has(key):
 			ok(float(skins[key].get("scale", 0.0)) > 1.0, "skin %s enlarges notes" % key)
-	var effects := Preview3D.hit_fx_presets()
-	for key in ["burst", "ring", "prism", "ink"]:
-		ok(effects.has(key), "hit effect %s exists" % key)
 	eq(Preview3D.tier_fx_scale("PERFECT"), 1.0, "a PERFECT keeps the full hit effect")
 	ok(Preview3D.tier_fx_scale("BAD") < Preview3D.tier_fx_scale("GOOD"), "a BAD hit draws a smaller effect")
 	eq(Preview3D.tier_fx_scale("MISS"), 1.0, "a MISS keeps the full hit effect")
 	var cursor := Preview3D.new()
 	near(cursor.cursor_scale, 1.0, 0.0001, "cursor scale defaults to 1x")
+	near(Preview3D.cursor_main_diameter(1.0), 30.6, 0.0001, "Path belt fits the white cursor ring")
+	near(Preview3D.cursor_main_diameter(1.5), 45.9, 0.0001, "Path belt follows a live cursor scale change")
 	cursor.free()
 	ok(Playtest.PATH_TAIL_RADIUS >= 180.0, "path tail judgement is forgiving")
 	eq(Playtest.BELL_WINDOW_MS, 130.0, "a gold note keeps a forgiving drag window")
@@ -1917,7 +1937,6 @@ func test_full_chart_round_trip() -> bool:
 			child = note
 			break
 	if child != null:
-		eq(child.path_style, "ribbon", "第二段 Path 的画法")
 		near(child.path_speed, 0.8, 0.001, "第二段 Path 的速度")
 		near(child.tolerance, 0.31, 0.001, "第二段 Path 的容差")
 		eq(child.path_gaps.size(), 1, "第二段 Path 的擦除缺口")
@@ -2012,7 +2031,6 @@ func test_lbp_export_covers_all_types() -> bool:
 		ok(text.contains(needle), "LBP 导出包含 %s" % needle)
 	ok(text.contains("erase="), "LBP 导出带擦除缺口")
 	ok(text.contains("lock=1"), "LBP 导出带锁定")
-	ok(text.contains("style=ribbon"), "LBP 导出带 Path 画法")
 	var path := "user://roundtrip_check.lbp.txt"
 	eq(LBPIO.export_to_file(chart, path), OK, "LBP 导出到文件")
 	ok(FileAccess.file_exists(path), "LBP 文件存在")
@@ -2076,7 +2094,6 @@ func _make_full_chart() -> Chart:
 	var hold := Note.new("hold", 1.5, 90.0, 60.0)
 	hold.id = chart.next_note_id()
 	hold.end_beat = 3.0
-	hold.hold_style = "curved"
 	hold.visual_pts = [{"x": 0.1, "y": 0.2, "db": 0.0}]
 	chart.notes.append(hold)
 	var root := Note.new("path", 2.0, 180.0, 66.0)
@@ -2088,7 +2105,6 @@ func _make_full_chart() -> Chart:
 	root.trace_pts = [{"x": 0.2, "y": 0.0, "db": 0.0}, {"x": 0.4, "y": 0.2, "db": 1.0}]
 	root.path_gaps = [{"from": 0.1, "to": 0.2}]
 	root.path_speed = 1.3
-	root.path_style = "ribbon"
 	root.tolerance = 0.3
 	root.samples_per_beat = 6.0
 	chart.notes.append(root)
@@ -2100,7 +2116,6 @@ func _make_full_chart() -> Chart:
 	part.path_part = 1
 	part.path_prev_id = root.id
 	part.path_head_local = root.path_tail_local()
-	part.path_style = "ribbon"
 	part.path_speed = 0.8
 	part.tolerance = 0.31
 	part.path_gaps = [{"from": 0.2, "to": 0.4}]
@@ -3590,6 +3605,110 @@ func test_lbp_package_assets() -> bool:
 	return true
 
 
+## .lbp 反复往返：素材名不再叠前缀、同一内容复用导入目录、故事板子目录保留、
+## 缺素材时仍然导出但给警告。
+func test_lbp_package_prefix_and_nesting() -> bool:
+	var root := "user://lbp_prefix_test"
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(root + "/sb/sub"))
+	var audio := root + "/music.wav"
+	var f := FileAccess.open(audio, FileAccess.WRITE)
+	f.store_buffer(PackedByteArray([82, 73, 70, 70]))
+	f.close()
+	f = FileAccess.open(root + "/sb/sub/nested.png", FileAccess.WRITE)
+	f.store_buffer(PackedByteArray([9, 9, 9]))
+	f.close()
+
+	var chart := Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	chart.audio_path = audio
+	chart.metadata["storyboard"] = root + "/sb"
+
+	var pack := root + "/a.lbp"
+	eq(LBPIO.export_package(chart, pack), OK, "nested lbp export")
+	ok(LBPIO.last_warning.is_empty(), "complete chart exports without warnings")
+	var back := LBPIO.import_package(pack)
+	ok(back != null, "nested lbp import")
+	if back == null:
+		return false
+	var sb := String(back.metadata.get("storyboard", ""))
+	ok(FileAccess.file_exists(sb + "/sub/nested.png"), "storyboard subdirectory survives the package")
+
+	var pack2 := root + "/b.lbp"
+	eq(LBPIO.export_package(back, pack2), OK, "second lbp export")
+	var zip := ZIPReader.new()
+	eq(zip.open(pack2), OK, "second pack readable")
+	var stacked := false
+	for name in zip.get_files():
+		if String(name).contains("00_00"):
+			stacked = true
+	zip.close()
+	ok(not stacked, "re-export does not stack asset prefixes")
+	var twice := LBPIO.import_package(pack2)
+	ok(twice != null, "second lbp import")
+	if twice != null:
+		eq(twice.audio_path.get_base_dir(), back.audio_path.get_base_dir(),
+			"same package content reuses the import folder")
+
+	var missing_chart := Chart.new()
+	missing_chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	missing_chart.audio_path = root + "/nope.wav"
+	eq(LBPIO.export_package(missing_chart, root + "/c.lbp"), OK, "missing asset still exports")
+	ok(not LBPIO.last_warning.is_empty(), "missing asset raises a warning")
+
+	for name in ["a.lbp", "b.lbp", "c.lbp", "music.wav", "sb/sub/nested.png", "sb/sub", "sb"]:
+		var path := ProjectSettings.globalize_path(root.path_join(name))
+		if FileAccess.file_exists(path):
+			DirAccess.remove_absolute(path)
+		elif DirAccess.dir_exists_absolute(path):
+			DirAccess.remove_absolute(path)
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(root))
+	for item in [back, twice]:
+		if item == null:
+			continue
+		var base: String = item.audio_path.get_base_dir().get_base_dir()
+		if base.begins_with("user://imports/lbp_"):
+			_remove_test_tree(ProjectSettings.globalize_path(base))
+	return true
+
+
+## 难度管理：复制/空白/重命名/星数/上下移/删除 都走同一份列表，并切换当前谱面。
+func test_difficulty_management() -> bool:
+	var app: App = load("res://charter/app.gd").new()
+	app.set_chart(DemoChart.make_demo())
+	eq(app.difficulties.size(), 0, "single chart starts without a difficulty list")
+	var note_count := app.chart.notes.size()
+
+	var copy := app.add_difficulty_copy("")
+	eq(copy, 1, "copy appends after the current chart")
+	eq(app.difficulties.size(), 2, "copy keeps the original as difficulty 1")
+	eq(app.difficulty_index, 1, "copy becomes the active difficulty")
+	ok(app.chart != null and app.chart.notes.size() == note_count, "copy carries the notes")
+	ok(app.chart != app.difficulties[0].get("chart"), "copy is an independent chart")
+
+	var blank := app.add_difficulty_blank("")
+	eq(blank, 2, "blank difficulty appended")
+	eq(app.chart.notes.size(), 0, "blank difficulty has no notes")
+	ok(app.chart.shapes.size() >= 1, "blank difficulty keeps the boundary shapes")
+	near(app.chart.timing.points[0].bpm, app.difficulties[0].get("chart").timing.points[0].bpm, 0.001,
+		"blank difficulty keeps the bpm")
+
+	ok(app.rename_difficulty(2, "Master"), "rename difficulty")
+	eq(app.difficulty_name(2), "Master", "renamed difficulty shows the new name")
+	eq(String(app.chart.metadata.get("version", "")), "Master", "rename writes the chart version")
+	ok(app.set_difficulty_stars(2, 12.5), "set difficulty stars")
+	eq(app.difficulty_name(2), "Master  12.50★", "stars show next to the name")
+
+	ok(app.move_difficulty(2, -1), "move difficulty up")
+	eq(app.difficulty_index, 1, "moved difficulty stays active")
+	eq(String(app.difficulties[1].get("name", "")), "Master", "difficulty order changed")
+
+	ok(app.remove_difficulty(1), "remove difficulty")
+	eq(app.difficulties.size(), 2, "remove drops one entry")
+	ok(app.difficulty_index < app.difficulties.size(), "active index stays in range")
+	app.free()
+	return true
+
+
 func _remove_test_tree(path: String) -> void:
 	if not DirAccess.dir_exists_absolute(path):
 		return
@@ -3793,11 +3912,10 @@ SliderMultiplier: 1.4
 	return true
 
 
-func test_osu_taiko_import() -> bool:
+func test_osu_taiko_rejected() -> bool:
 	var text := """osu file format v14
 
 [General]
-AudioFilename: audio.ogg
 Mode: 1
 
 [Metadata]
@@ -3806,74 +3924,55 @@ Artist: A
 Creator: C
 Version: Oni
 
-[Difficulty]
-SliderMultiplier: 1.4
-
 [TimingPoints]
 0,500,4,2,0,100,1,0
 
 [HitObjects]
 256,192,1000,1,0,0:0:0:0:
-256,192,1250,1,2,0:0:0:0:
-256,192,1500,1,4,0:0:0:0:
-256,192,1750,1,0,0:0:0:0:
-256,192,2000,2,0,B|300:192,1,280,0|0,0:0|0:0,0:0:0:0:
-256,192,4000,8,0,5000,0:0:0:0:
 """
 	var result := OsuIO.parse_osu(text, "taiko.osu")
-	ok(not result.is_empty(), "osu taiko parsed")
-	if result.is_empty():
-		return false
-	var chart: Chart = result["chart"]
-	eq(chart.notes.size(), 5, "taiko spinner skipped, short objects kept")
-	eq(chart.notes[0].type, "tap", "taiko don tap")
-	near(chart.notes[0].angle, 0.0, 0.001, "taiko don lane")
-	near(chart.notes[1].angle, 90.0, 0.001, "taiko kat lane")
-	eq(chart.notes[1].width, 76.0, "taiko kat width")
-	near(chart.notes[2].angle, 0.0, 0.001, "taiko finish stays don")
-	eq(chart.notes[2].width, 90.0, "taiko finish width")
-	near(chart.notes[3].angle, 0.0, 0.001, "taiko don returns to nearby lane")
-	eq(chart.notes[4].type, "hold", "long taiko slider is a drumroll")
-	near(chart.notes[4].end_beat, 6.0, 0.001, "taiko drumroll duration")
+	ok(result.is_empty(), "taiko charts are rejected")
+	ok(OsuIO.last_error.contains("osu!std"), "taiko rejection names the only supported mode")
 	return true
 
 
-func test_osu_taiko_flow() -> bool:
-	var text := """osu file format v14
+## .osz 列表只列出 osu!std，且 index 仍指向压缩包里的原始 .osu 顺序。
+func test_osz_difficulties_std_only() -> bool:
+	var path := "user://osz_std_only.osz"
+	var packer := ZIPPacker.new()
+	if packer.open(path) != OK:
+		return false
+	packer.start_file("a_taiko.osu")
+	packer.write_file("""osu file format v14
 
 [General]
 Mode: 1
 
 [Metadata]
-Title: Flow
-Artist: A
-Creator: C
+Title: T
 Version: Oni
+""".to_utf8_buffer())
+	packer.close_file()
+	packer.start_file("b_std.osu")
+	packer.write_file("""osu file format v14
 
-[Difficulty]
-SliderMultiplier: 1.4
+[General]
+Mode: 0
 
-[TimingPoints]
-0,500,4,2,0,100,1,0
-
-[HitObjects]
-256,192,1000,1,0,0:0:0:0:
-256,192,1125,1,2,0:0:0:0:
-256,192,1250,1,0,0:0:0:0:
-256,192,1375,1,2,0:0:0:0:
-256,192,1500,1,0,0:0:0:0:
-"""
-	var result := OsuIO.parse_osu(text, "taiko_flow.osu")
-	ok(not result.is_empty(), "taiko flow parsed")
-	if result.is_empty():
-		return false
-	var chart: Chart = result["chart"]
-	eq(chart.notes.size(), 5, "taiko flow note count")
-	var stacked := true
-	for i in range(1, chart.notes.size()):
-		if absf(JudgeMath.angle_delta(chart.notes[0].angle, chart.notes[i].angle)) > 0.001:
-			stacked = false
-	ok(stacked, "dense taiko notes stack instead of rotating")
+[Metadata]
+Title: S
+Version: Hard
+""".to_utf8_buffer())
+	packer.close_file()
+	packer.close()
+	var diffs := OsuIO.list_osz_difficulties(path)
+	eq(diffs.size(), 1, "only osu!std difficulties are listed")
+	if not diffs.is_empty():
+		eq(String(diffs[0]["version"]), "Hard", "the std difficulty is kept")
+		eq(int(diffs[0]["index"]), 1, "index still points at the original .osu")
+		var imported := OsuIO.import_osz(path, int(diffs[0]["index"]))
+		ok(not imported.is_empty(), "the listed index imports the std difficulty")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
 	return true
 
 
@@ -3907,7 +4006,6 @@ SliderMultiplier: 1.4
 	var chart: Chart = result["chart"]
 	eq(chart.notes.size(), 3, "slider kinds note count")
 	eq(chart.notes[0].type, "hold", "short slider -> hold")
-	eq(chart.notes[0].hold_style, "straight", "short slider hold is straight")
 	eq(chart.notes[1].type, "path", "repeat slider -> sentakki slide")
 	ok(chart.notes[1].end_beat > chart.notes[1].beat, "repeat slider slide has duration")
 	eq(chart.notes[2].type, "path", "long slider -> plane path")
@@ -4138,12 +4236,13 @@ func test_hold_stack_alpha() -> bool:
 
 
 func test_judgement_text_font() -> bool:
-	# 判定提示里的“早/晚”必须用含中文的字体：等宽字体缺中文字形，
-	# 每个不同的提示串都会触发一次系统字体回退（单次 ~18ms），判定密集时卡顿。
+	# 等宽字体本身没有中文字形。必须显式挂 fallback：否则每个含中文的新串都会
+	# 触发一次系统字体回退（实测单次 ~18ms，HUD 每次数值变化就是一帧卡死）。
 	var regular := UITheme.FONT_REGULAR
-	var mono := UITheme.FONT_MONO
+	var mono := UITheme.mono_font()
 	ok(regular.has_char("早".unicode_at(0)), "judgement detail font has CJK glyphs")
-	ok(not mono.has_char("早".unicode_at(0)), "mono font still lacks CJK (do not use it for judgement text)")
+	ok(not mono.fallbacks.is_empty(), "mono font has an explicit CJK fallback")
+	ok(mono.has_char("早".unicode_at(0)), "mono font resolves CJK through the fallback")
 	return true
 
 
@@ -4202,7 +4301,7 @@ Version: Easy
 	var second := """osu file format v14
 
 [General]
-Mode: 1
+Mode: 0
 
 [Metadata]
 Title: Second
@@ -4279,8 +4378,11 @@ func test_chart_project_format() -> bool:
 	chart.group_bpm_points[group_id] = group_points
 	chart.timing.points.append(TimingPoint.new(8.0, 140.0, 3))
 	var copy := ChartIO.chart_from_dict(ChartIO.chart_to_dict(chart))
+	chart.metadata["face_camera"] = false
+	chart.metadata["version"] = "Beginner V"
+	copy.metadata["version"] = "Master V"
 	var dir := "user://project_format_test"
-	var entries: Array = [{"name": "Beginner", "chart": chart}, {"name": "Master", "chart": copy}]
+	var entries: Array = [{"name": "Beginner", "stars": 3.5, "chart": chart}, {"name": "Master", "stars": 12.5, "chart": copy}]
 	eq(ChartIO.save_project(entries, dir, "project test"), OK, "multi difficulty project save")
 	ok(FileAccess.file_exists(dir.path_join("main.tmc")), "main.tmc")
 	ok(FileAccess.file_exists(dir.path_join("chart0.tmc")), "chart0.tmc")
@@ -4314,6 +4416,11 @@ func test_chart_project_format() -> bool:
 		eq(first.groups.size(), 2, "groups survive project")
 		near(first.group_bpm_at(group_id, 9.0), 180.0, 0.001, "group bpm change survives project")
 		eq(first.timing.points.size(), 2, "bpm change survives")
+		eq(bool(first.metadata.get("face_camera", true)), false, "face_camera survives project")
+		eq(String(first.metadata.get("version", "")), "Beginner V", "first difficulty version survives")
+		var second: Chart = loaded.entries[1].chart
+		eq(String(second.metadata.get("version", "")), "Master V", "second difficulty version survives")
+		near(float(loaded.entries[1].get("stars", -1.0)), 12.5, 0.001, "difficulty stars survive the project")
 	for name in ["main.tmc", "chart0.tmc", "chart1.tmc", "shaped.tmc", "color.tmc", "bpmlist.tmc", "storyboard.tmc", "music.wav", "music.ogg", "music.mp3"]:
 		var p := ProjectSettings.globalize_path(dir.path_join(name))
 		if FileAccess.file_exists(p):
@@ -4336,7 +4443,6 @@ func test_tmc_group_path_round_trip() -> bool:
 		part.lock = true
 		part.hs = 0.75
 		part.sv = 1.25
-		part.path_style = "ribbon"
 		part.path_speed = 0.8
 		part.tolerance = 0.31
 		part.width = 66.0
@@ -4380,7 +4486,6 @@ func test_tmc_group_path_round_trip() -> bool:
 			eq(child.group_id, gid, "Path 第二段保留分组")
 			eq(child.color, 1, "Path 第二段保留配色")
 			eq(child.lock, true, "Path 第二段保留锁定")
-			eq(child.path_style, "ribbon", "Path 第二段保留画法")
 			near(child.path_speed, 0.8, 0.001, "Path 第二段速度")
 			near(child.tolerance, 0.31, 0.001, "Path 第二段容差")
 			near(child.width, 66.0, 0.001, "Path 第二段头宽度")
@@ -4470,33 +4575,30 @@ func test_group_note_speed() -> bool:
 	return true
 
 
-## 回放要保留系统鼠标（进度条/暂停可点）；PERFECT 特效关闭只跳过爆点，判定字仍在。
+## 回放要保留系统鼠标（进度条/暂停可点）；「命中特效=关」只留判定字。
 func test_playtest_feedback() -> bool:
 	eq(Playtest.run_mouse_mode(true), Input.MOUSE_MODE_VISIBLE, "replay keeps the system cursor")
 	eq(Playtest.run_mouse_mode(false), Input.MOUSE_MODE_HIDDEN, "normal play keeps the custom cursor")
 	var preview := Preview3D.new()
-	preview.add_hit_pulse(Vector2(10, 10), Color.WHITE, "PERFECT", "tap", "", false)
-	eq(preview._pulses.size(), 1, "perfect pulse is still created for its label")
-	ok(not bool(preview._pulses[0].get("fx", true)), "perfect pulse can skip the burst")
-	preview.add_hit_pulse(Vector2(30, 30), Color.WHITE, "GREAT", "tap", "", true)
-	ok(bool(preview._pulses[1].get("fx", true)), "other tiers keep their effect")
+	preview.add_hit_pulse(Vector2(10, 10), Color.WHITE, "PERFECT", "tap", "")
+	eq(preview._pulses.size(), 1, "a perfect pulse is queued for its label")
+	ok(not preview._pulses[0].has("sparks"), "pulses no longer carry their own shards")
 	preview.free()
-	# PERFECT 爆点和判定字都关掉时，不占特效预算。
+	# 命中特效关 + 判定字过滤掉 PERFECT 时，不占特效预算。
 	var run := Playtest.new()
 	var run_preview := Preview3D.new()
 	run._preview = run_preview
-	run_preview.show_perfect_fx = false
+	run_preview.fx_budget = "off"
 	run_preview.hud_options = {"judge_filter": "below_perfect"}
 	run._pulse_at(0.0, 0.0, Color.WHITE, "PERFECT", 60.0, "tap", "", Vector2(10, 10))
 	eq(run_preview._pulses.size(), 0, "hidden perfect pulse is not queued")
 	run_preview.hud_options = {"judge_filter": "all"}
 	run._pulse_at(0.0, 0.0, Color.WHITE, "PERFECT", 60.0, "tap", "", Vector2(10, 10))
 	eq(run_preview._pulses.size(), 1, "perfect label still queues when filter allows")
-	# SEEK 的 PERFECT 反馈不跟着「PERFECT 特效」开关走。
+	# SEEK 的转盘反馈是功能性提示，不跟着「命中特效=关」消失。
 	run_preview.hud_options = {"judge_filter": "below_perfect"}
 	run._pulse_at(0.0, 0.0, Color.WHITE, "PERFECT", 360.0, "seek", "SEEK", Vector2(40, 40))
-	eq(run_preview._pulses.size(), 2, "seek perfect effect ignores the perfect fx toggle")
-	ok(bool(run_preview._pulses[1].get("fx", true)), "seek keeps its burst")
+	eq(run_preview._pulses.size(), 2, "seek keeps its own burst when effects are off")
 	run.free()
 	run_preview.free()
 	# 回放沿用录制倍速；老回放没有 rate 字段时回退 1×。
@@ -4615,7 +4717,6 @@ func test_simai_import() -> bool:
 	for note in chart.notes:
 		types.append(note.type)
 	eq(types, ["tap", "hold", "path", "bell"], "simai note types")
-	eq(chart.notes[1].hold_style, "straight", "simai hold imports straight")
 	eq(Validator.errors(Validator.validate(chart)).size(), 0, "simai import is playable without double-hand conflicts")
 	if chart.notes.size() >= 3:
 		near(chart.notes[0].angle, 45.0, 0.001, "simai button 1 is top-right")
@@ -5772,6 +5873,12 @@ func test_bell_width_drag() -> bool:
 	ok(ChartCanvas.dragged_bell_width(27.0, 0.01, -1) < 27.0, "dragging the left edge grows outward")
 	near(ChartCanvas.dragged_bell_width(27.0, 1.0, 1), Note.BELL_MAX_WIDTH, 0.0001, "bell width stops at 30 degrees")
 	near(ChartCanvas.dragged_bell_width(27.0, -1.0, 1), Note.BELL_MIN_WIDTH, 0.0001, "bell width stops at 24 degrees")
+	# Seek 的弧宽就是画出来的弧：1:1 跟手，范围 10–360。
+	near(ChartCanvas.dragged_seek_width(90.0, 0.0, 1), 90.0, 0.0001, "no movement keeps the seek arc")
+	ok(ChartCanvas.dragged_seek_width(90.0, 0.02, 1) > 90.0, "dragging right widens the seek arc")
+	ok(ChartCanvas.dragged_seek_width(90.0, 0.02, -1) < 90.0, "dragging the left handle widens it outward")
+	near(ChartCanvas.dragged_seek_width(90.0, 1.0, 1), 360.0, 0.0001, "a seek arc stops at a full ring")
+	near(ChartCanvas.dragged_seek_width(90.0, -1.0, 1), Note.SEEK_MIN_WIDTH, 0.0001, "a seek arc never goes below 10 degrees")
 	return true
 
 
@@ -6075,11 +6182,12 @@ func test_seek_limit_animation_curves() -> bool:
 	near(Preview3D.ease_out_cubic(0.0), 0.0, 0.0001, "ease out starts at 0")
 	near(Preview3D.ease_out_cubic(1.0), 1.0, 0.0001, "ease out ends at 1")
 	ok(Preview3D.ease_out_cubic(0.5) > 0.5, "ease out front-loads the motion")
-	near(Preview3D.limit_fill_alpha(0.0), 0.12, 0.0001, "a limit region starts almost empty")
-	ok(Preview3D.limit_fill_alpha(110.0) > 0.48, "110ms in, the fill is nearly solid")
-	ok(Preview3D.limit_fill_alpha(1000.0) < 0.62, "breathing never turns the fill opaque")
-	near(Preview3D.limit_flash_alpha(0.0), 0.35, 0.0001, "activation flashes white")
-	near(Preview3D.limit_flash_alpha(70.0), 0.0, 0.0001, "the flash is gone after 70ms")
+	var incoming: Vector3 = Preview3D.limit_visual_state(0.5)
+	ok(incoming.x < 1.0 and incoming.x - incoming.y < 0.32, "the leading edge approaches before the wall fills")
+	var active: Vector3 = Preview3D.limit_visual_state(1.0)
+	near(active.x, 1.0, 0.0001, "Limit reaches the judgment ring on activation")
+	near(active.y, 0.68, 0.0001, "the active wall covers the judged depth")
+	near(active.z, 1.0, 0.0001, "the active wall is fully visible")
 	return true
 
 
@@ -6094,6 +6202,100 @@ func test_seek_grow_matches_tap() -> bool:
 	near(Preview3D.seek_grow_scale(0.5), lerpf(Note.SPAWN_LENGTH_RATIO, 1.0, 0.5), 0.000001,
 		"seek 与 Tap 共用同一条线性下落曲线")
 	near(Preview3D.seek_grow_scale(-1.0), Note.SPAWN_LENGTH_RATIO, 0.000001, "进度为负时夹到出生点")
+	return true
+
+
+## 环上回应：只有 PERFECT 亮；「PERFECT 特效」和「命中特效」各自把关；碎屑共用同屏预算。
+func test_hit_ring_light() -> bool:
+	var preview: Preview3D = Preview3D.new()
+	var note := Note.new("tap", 1.0, 0.0, 60.0)
+	preview.add_ring_light(note, false)
+	eq(preview._ring_lights.size(), 0, "non-perfect hits stay quiet")
+	preview.add_ring_light(note, true)
+	eq(preview._ring_lights.size(), 1, "a perfect hit spawns one ring light")
+	ok(bool(preview._ring_lights[0].get("shards", false)), "a full budget keeps the shards")
+	preview.show_perfect_fx = false
+	preview.add_ring_light(note, true)
+	eq(preview._ring_lights.size(), 1, "the PERFECT switch suppresses it")
+	preview.show_perfect_fx = true
+	preview.fx_budget = "off"
+	preview.add_ring_light(note, true)
+	eq(preview._ring_lights.size(), 1, "effects off leaves only the judgement text")
+	preview.fx_budget = "light"
+	preview.add_ring_light(note, true)
+	eq(preview._ring_lights.size(), 2, "simplified keeps the light fan")
+	ok(not bool(preview._ring_lights[1].get("shards", false)), "simplified drops the shards")
+	preview.note_glow = false
+	preview.add_ring_light(note, true)
+	eq(preview._ring_lights.size(), 3, "the glow material switch no longer gates it")
+	preview.note_glow = true
+	preview.fx_budget = "full"
+	preview._ring_lights.clear()
+	for i in 8:
+		preview.add_ring_light(note, true)
+	eq(preview._ring_lights.size(), Preview3D.SHARD_GROUP_BUDGET, "ring lights are capped in dense sections")
+	preview.free()
+	return true
+
+
+## Anchor / Seek / Path 和 Tap 共用同一条下落曲线，不能再按音符种类各飞各的。
+func test_note_fall_curves_match_tap() -> bool:
+	var preview: Preview3D = Preview3D.new()
+	var chart: Chart = Chart.new()
+	chart.timing.points = [TimingPoint.new(0.0, 120.0, 4)]
+	var tap := Note.new("tap", 8.0, 0.0, 60.0)
+	var seek := Note.new("seek", 8.0, 0.0, 360.0)
+	var anchor := Note.new("anchor", 8.0, 0.0, 0.0)
+	var path := Note.new("path", 8.0, 0.0, 60.0)
+	path.end_beat = 10.0
+	chart.notes.assign([tap, seek, anchor, path])
+	var spawn := preview._spawn_beat(chart, tap.beat)
+	near(preview._note_progress(chart, tap, spawn), 0.0, 0.001, "tap spawns at progress 0")
+	for note: Note in [seek, anchor, path]:
+		near(preview._note_progress(chart, note, spawn), 0.0, 0.001, "%s shares the tap spawn beat" % note.type)
+		near(preview._note_progress(chart, note, (spawn + tap.beat) * 0.5), 0.5, 0.01,
+			"%s falls at the same speed as tap" % note.type)
+		near(preview._note_progress(chart, note, tap.beat), 1.0, 0.001, "%s lands on the beat" % note.type)
+	# Anchor 的提示框位置也走这条曲线（视图未初始化时圆心是原点）。
+	var landing := Vector2(120.0, 0.0)
+	var half: float = lerpf(Note.SPAWN_LENGTH_RATIO, 1.0, 0.5)
+	near(preview._anchor_gem_position(landing, half).x, 120.0 * half, 0.001,
+		"anchor gem travels on the shared 1/6 → 1 curve")
+	preview.free()
+	return true
+
+
+func test_seek_warning_order() -> bool:
+	var preview: Preview3D = Preview3D.new()
+	var chart: Chart = Chart.new()
+	var inward: Note = Note.new("seek", chart.timing.chart_ms_to_beat(1000.0), 0.0)
+	inward.seek_orien = 1
+	var outward: Note = Note.new("seek", chart.timing.chart_ms_to_beat(1120.0), 0.0)
+	outward.seek_orien = 0
+	chart.notes.assign([inward, outward])
+	var early: Array[Dictionary] = preview._seek_warnings(chart, chart.timing.chart_ms_to_beat(690.0), 690.0)
+	ok(early.is_empty(), "Seek rim is idle more than 300ms before judgment")
+	var ramp: Array[Dictionary] = preview._seek_warnings(chart, chart.timing.chart_ms_to_beat(760.0), 760.0)
+	ok(ramp.size() == 1 and int(ramp[0]["orien"]) == 1 and float(ramp[0]["strength"]) > 0.5,
+		"the Seek rim is already bright early in the warning window")
+	var first: Array[Dictionary] = preview._seek_warnings(chart, chart.timing.chart_ms_to_beat(950.0), 950.0)
+	ok(first.size() == 1 and int(first[0]["orien"]) == 1, "overlapping windows present the earlier Seek first")
+	var second: Array[Dictionary] = preview._seek_warnings(chart, chart.timing.chart_ms_to_beat(1060.0), 1060.0)
+	ok(second.size() == 1 and int(second[0]["orien"]) == 0, "the next Seek gets its own pre-judgment cue")
+	var end: Array[Dictionary] = preview._seek_warnings(chart, outward.beat, 1120.0)
+	ok(end.is_empty(), "the Seek warning ends at judgment")
+	inward.beat = outward.beat
+	chart.mark_dirty()
+	preview._on_chart_changed()
+	var together: Array[Dictionary] = preview._seek_warnings(chart, chart.timing.chart_ms_to_beat(1060.0), 1060.0)
+	ok(together.size() == 2, "opposite Seek notes at one time keep both colors")
+	# 窄 Seek 的警示带着自己的中心角/弧宽，绘制时只画这一段。
+	outward.width = 60.0
+	outward.angle = 120.0
+	var narrow: Array[Dictionary] = preview._seek_warnings(chart, chart.timing.chart_ms_to_beat(1060.0), 1060.0)
+	ok(narrow.size() == 2 and absf(float(narrow[1]["width"]) - 60.0) < 0.001
+		and absf(float(narrow[1]["angle"]) - 120.0) < 0.001, "a narrow Seek keeps its own arc in the warning")
+	preview.free()
 	return true
 
 
@@ -6709,13 +6911,11 @@ func test_playtest_ui_builds() -> bool:
 func test_retry_clears_playtest_visuals() -> bool:
 	var preview := Preview3D.new()
 	preview._pulses = [{"age": 0.2}, {"age": 0.4}]
-	preview._arc_flashes = [{"age": 0.1}]
 	preview._hud_combo_prev = 37
 	preview._hud_combo_broken = 37
 	preview._hud_combo_break_at = 1234
 	preview.reset_path_cuts()
 	eq(preview._pulses.size(), 0, "重试清空上一局的判定文字/火花")
-	eq(preview._arc_flashes.size(), 0, "重试清空上一局的命中弧闪")
 	eq(preview._hud_combo_prev, 0, "重试复位连击动画缓存")
 	eq(preview._hud_combo_broken, 0, "重试不再显示上一局的断连数字")
 	preview.free()

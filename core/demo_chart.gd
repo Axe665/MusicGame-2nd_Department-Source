@@ -124,7 +124,6 @@ static func _add_hold(chart: Chart, beat: float, end_beat: float, angle: float, 
 	note.id = chart.next_note_id()
 	note.end_beat = end_beat
 	note.hold = true
-	note.hold_style = "straight"
 	chart.notes.append(note)
 
 

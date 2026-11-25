@@ -47,6 +47,12 @@ var path_wait_indicator: String = "progress"
 var note_skin: String = "candy"
 ## 画质选项（视图 → 画质）。全部只影响渲染，不碰判定。
 var quality_preset: String = "high"
+## 「自动」档当前落到哪一档；实测超预算时逐级下降并保存。
+var auto_quality_preset: String = "high"
+## 「自动」档有没有被实测降过档；没降过才允许用先验值猜一次。
+var auto_quality_measured: bool = false
+## 渲染后端：auto / vulkan / opengl3。启动时由 main 读，切换后需要重启。
+var renderer_mode: String = "auto"
 ## 0 = 关，1 = 2×，2 = 4×（2D 层的 MSAA）。高画质用 2×，极高才上 4×。
 var aa_2d_level: int = 1
 ## 3D 环抗锯齿：0 = 关，1 = 2x，2 = 4x
@@ -55,8 +61,7 @@ var msaa_3d_level: int = 1
 var ring_pad_rect: Array = []
 var note_detail_fine: bool = true
 var note_glow: bool = true
-## path 身体画法："tread"（粗 chevron 履带，默认）/ "ribbon"（半透明丝带）。
-var path_style: String = "tread"
+var path_style: String = Preview3D.PATH_STYLES[0]
 ## 时间页：改 BPM 时让后面的音符/事件保持真实毫秒位置（而不是保持拍位）。
 var bpm_lock_ms: bool = false
 ## long / short / off
@@ -98,9 +103,8 @@ var preview_width: float = 340.0
 ## 检查器（右栏）宽度；两条分割线都可拖，宽度跨会话记住。
 var inspector_width: float = 310.0
 var preview_collapsed: bool = false
-var hit_fx_style: String = "burst"
-## 试玩时是否绘制 PERFECT 命中爆点/弧光；判定字仍保留。默认关。
-var show_perfect_fx: bool = false
+## PERFECT 特效：只有 PERFECT 命中才在判定环外侧亮光扇 + 碎屑。默认开。
+var show_perfect_fx: bool = true
 var hit_sfx_style: String = "default"
 ## 试玩光标大小倍率（1.0 = 默认）。
 var cursor_scale: float = 1.0
@@ -347,7 +351,6 @@ func open_import_source(source: String, star_hints: Dictionary = {}) -> bool:
 		import_kind = "osu"
 		for i in diffs.size():
 			var item: Dictionary = diffs[i]
-			var mode_label := "taiko" if int(item.get("mode", 0)) == 1 else "std"
 			var version := String(item.get("version", ""))
 			var stars := float(item.get("stars", -1.0))
 			import_difficulties.append({
@@ -355,7 +358,7 @@ func open_import_source(source: String, star_hints: Dictionary = {}) -> bool:
 				"index": int(item.get("index", i)),
 				"name": version if not version.is_empty() else "未命名难度",
 				"stars": stars,
-				"label": import_label(version, String(item.get("title", "")), String(item.get("creator", "")), mode_label, stars),
+				"label": import_label(version, String(item.get("title", "")), String(item.get("creator", "")), "std", stars),
 			})
 	# 一次性把每个难度都转出来：切换是瞬时的，也不会因为重新导入丢改动。
 	for i in import_difficulties.size():
@@ -507,25 +510,97 @@ func switch_difficulty(index: int) -> bool:
 	return true
 
 
+## 难度组还不存在时，先把当前谱面当成第 1 个难度放进去。
+func _ensure_difficulties() -> void:
+	if not difficulties.is_empty() or chart == null:
+		return
+	var current_name := String(chart.metadata.get("version", "难度 1"))
+	difficulties.append({
+		"name": current_name if not current_name.is_empty() else "难度 1",
+		"stars": -1.0, "chart": chart,
+	})
+	difficulty_index = 0
+
+
+func _append_difficulty(copy: Chart, name: String) -> int:
+	copy.metadata["version"] = name
+	copy.difficulty = name
+	difficulties.append({"name": name, "stars": -1.0, "chart": copy})
+	difficulty_index = difficulties.size() - 1
+	switch_difficulty(difficulty_index)
+	difficulties_changed.emit()
+	import_set_changed.emit()
+	return difficulty_index
+
+
 ## 给同一首歌加一个难度：把当前谱面复制一份放进难度组。
 func add_difficulty_copy(label: String) -> int:
 	if chart == null:
 		return -1
-	# 组还不存在时，先把当前谱面当成第 1 个难度放进去，才有“同一首歌”的容器。
-	if difficulties.is_empty():
-		var current_name := String(chart.metadata.get("version", "难度 1"))
-		difficulties.append({"name": current_name if not current_name.is_empty() else "难度 1", "chart": chart})
-		difficulty_index = 0
+	_ensure_difficulties()
 	var copy := ChartIO.chart_from_dict(ChartIO.chart_to_dict(chart))
 	var name := label.strip_edges()
 	if name.is_empty():
 		name = "难度 %d" % (difficulties.size() + 1)
-	copy.metadata["version"] = name
-	difficulties.append({"name": name, "chart": copy})
-	difficulty_index = difficulties.size() - 1
+	return _append_difficulty(copy, name)
+
+
+## 新建空白难度：继承曲目信息、音频/视频、BPM、边界动画与配色，音符/红区/指令清空。
+func add_difficulty_blank(label: String) -> int:
+	if chart == null:
+		return -1
+	_ensure_difficulties()
+	var blank := ChartIO.chart_from_dict(ChartIO.chart_to_dict(chart))
+	blank.notes.clear()
+	blank.regions.clear()
+	blank.commands.clear()
+	blank.refresh_ids()
+	var name := label.strip_edges()
+	if name.is_empty():
+		name = "难度 %d" % (difficulties.size() + 1)
+	return _append_difficulty(blank, name)
+
+
+func rename_difficulty(index: int, name: String) -> bool:
+	if index < 0 or index >= difficulties.size():
+		return false
+	var clean := name.strip_edges()
+	if clean.is_empty():
+		return false
+	var entry: Dictionary = difficulties[index]
+	entry["name"] = clean
+	var target: Chart = entry.get("chart", null)
+	if target != null:
+		target.metadata["version"] = clean
 	difficulties_changed.emit()
 	import_set_changed.emit()
-	return difficulty_index
+	if index == difficulty_index and target != null:
+		_update_window_title()
+	return true
+
+
+func set_difficulty_stars(index: int, stars: float) -> bool:
+	if index < 0 or index >= difficulties.size():
+		return false
+	(difficulties[index] as Dictionary)["stars"] = snappedf(stars, 0.01)
+	difficulties_changed.emit()
+	import_set_changed.emit()
+	return true
+
+
+## 调整难度顺序；上下移后当前难度跟着它移动。
+func move_difficulty(index: int, delta: int) -> bool:
+	var target := index + delta
+	if index < 0 or index >= difficulties.size() or target < 0 or target >= difficulties.size():
+		return false
+	var entry: Dictionary = difficulties[index]
+	difficulties.remove_at(index)
+	difficulties.insert(target, entry)
+	if difficulty_index == index:
+		difficulty_index = target
+	difficulties_changed.emit()
+	import_set_changed.emit()
+	return true
 
 
 func remove_difficulty(index: int) -> bool:
@@ -633,7 +708,7 @@ func _load_settings() -> void:
 			note_detail_fine = bool(data.get("note_detail_fine", note_detail_fine))
 			note_glow = bool(data.get("note_glow", note_glow))
 			var style_mode := String(data.get("path_style", path_style))
-			path_style = style_mode if style_mode in ["tread", "ribbon"] else "tread"
+			path_style = style_mode if style_mode in Preview3D.PATH_STYLES else Preview3D.PATH_STYLES[0]
 			bpm_lock_ms = bool(data.get("bpm_lock_ms", bpm_lock_ms))
 			var trail_mode := String(data.get("cursor_trail", cursor_trail))
 			cursor_trail = trail_mode if trail_mode in ["long", "short", "off"] else "long"
@@ -642,8 +717,13 @@ func _load_settings() -> void:
 			var ring_scale := String(data.get("ring_3d_scale", ring_3d_scale))
 			ring_3d_scale = ring_scale if ring_scale in ["high", "mid", "low"] else "high"
 			bar_lines = bool(data.get("bar_lines", bar_lines))
+			var backend := String(data.get("renderer_mode", "auto"))
+			renderer_mode = backend if backend in ["auto", "vulkan", "opengl3"] else "auto"
 			var preset := String(data.get("quality_preset", "high"))
-			quality_preset = preset if preset in ["ultra", "high", "mid", "low", "custom"] else "high"
+			quality_preset = preset if preset in ["auto", "ultra", "high", "mid", "low", "custom"] else "high"
+			var auto_preset := String(data.get("auto_quality_preset", "high"))
+			auto_quality_preset = auto_preset if auto_preset in ["ultra", "high", "mid", "low"] else "high"
+			auto_quality_measured = bool(data.get("auto_quality_measured", false))
 			hud_scale = int(data.get("hud_scale", hud_scale))
 			hud_scale = hud_scale if hud_scale in [80, 100, 120] else 100
 			var combo_mode := String(data.get("hud_combo_mode", hud_combo_mode))
@@ -667,8 +747,10 @@ func _load_settings() -> void:
 			preview_width = clampf(float(data.get("preview_width", preview_width)), 280.0, 720.0)
 			inspector_width = clampf(float(data.get("inspector_width", inspector_width)), 260.0, 720.0)
 			preview_collapsed = bool(data.get("preview_collapsed", preview_collapsed))
-			hit_fx_style = String(data.get("hit_fx_style", hit_fx_style))
 			show_perfect_fx = bool(data.get("show_perfect_fx", show_perfect_fx))
+			# 旧版的「命中光环」开关并进 PERFECT 特效：以前关掉的，升级后也不亮。
+			if not bool(data.get("hit_ring_light", true)):
+				show_perfect_fx = false
 			hit_sfx_style = String(data.get("hit_sfx_style", hit_sfx_style))
 			ffmpeg_path = String(data.get("ffmpeg", ffmpeg_path))
 			frame_cap = String(data.get("frame_cap", frame_cap))
@@ -746,7 +828,9 @@ func apply_visual_quality() -> void:
 ## 预设：一次把画质项调成一组常用组合（单项改动后预设显示为「自定义」）。
 func apply_quality_preset(name: String) -> void:
 	quality_preset = name
-	match name:
+	# 自动档不写死：用 auto_quality_preset 记住实测推荐到的那一档。
+	var base := auto_quality_preset if name == "auto" else name
+	match base:
 		"ultra":
 			aa_2d_level = 3
 			msaa_3d_level = 2
@@ -775,7 +859,6 @@ func apply_quality_preset(name: String) -> void:
 			ring_3d_scale = "mid"
 			bar_lines = true
 		_:
-			quality_preset = "high"
 			aa_2d_level = 1
 			msaa_3d_level = 1
 			note_detail_fine = true
@@ -784,6 +867,37 @@ func apply_quality_preset(name: String) -> void:
 			fx_budget = "full"
 			ring_3d_scale = "high"
 			bar_lines = true
+
+
+## 先验画质（对齐 Estella 的 PerformanceAdvisor）：还没实测降过档时，按 GPU 类型 + 输出像素
+## 先猜一档，免得弱机开局先卡两个判定窗口才降档。这是个粗猜，实测之后仍由降档结果覆盖。
+func recommend_quality_tier() -> String:
+	var gpu := RenderingServer.get_video_adapter_name().to_lower()
+	var pixels := 1920 * 1080
+	var win := get_window()
+	if win != null and win.size.x > 0 and win.size.y > 0:
+		pixels = win.size.x * win.size.y
+	var integrated := gpu.contains("intel") or gpu.contains("iris") or gpu.contains("uhd") \
+		or gpu.contains("radeon graphics") or gpu.contains("vega")
+	if integrated:
+		return "low" if pixels > 2560 * 1440 else "mid"
+	if pixels > 3840 * 2160:
+		return "mid"
+	return "high"
+
+
+## 实测超预算时给「自动」档降一级并保存；返回新档位（没变则返回空串）。
+func step_down_auto_quality() -> String:
+	var order := ["ultra", "high", "mid", "low"]
+	var at := order.find(auto_quality_preset)
+	if at < 0 or at >= order.size() - 1:
+		return ""
+	auto_quality_preset = order[at + 1]
+	auto_quality_measured = true
+	if quality_preset == "auto":
+		apply_quality_preset("auto")
+	save_settings()
+	return auto_quality_preset
 
 
 ## 帧率选项：60 / 120 保留垂直同步（跑不满就自动落到下一个整除，稳定优先）；
@@ -846,7 +960,7 @@ func effective_latency_sec() -> float:
 
 
 func save_settings() -> void:
-	var data := {"settings_version": 1, "path_wait_indicator": path_wait_indicator, "note_skin": note_skin, "hit_fx_style": hit_fx_style, "show_perfect_fx": show_perfect_fx, "hit_sfx_style": hit_sfx_style, "ffmpeg": ffmpeg_path, "frame_cap": frame_cap, "video_encoder": video_encoder, "audio_buffer_ms": audio_buffer_ms, "playtest_offset_ms": playtest_offset_ms, "audio_latency_ms": audio_latency_ms, "music_volume": music_volume, "sfx_volume": sfx_volume, "dynamic_offset": dynamic_offset, "playtest_auto": playtest_auto, "playtest_mirror": playtest_mirror, "playback_scroll": playback_scroll, "background_brightness": background_brightness, "mouse_tilt": mouse_tilt, "startup_tabs": startup_tabs, "osu_favorites": osu_favorites, "last_bias_ms": last_bias_ms, "cursor_scale": cursor_scale, "flow_scale": flow_scale, "aa_2d_level": aa_2d_level, "msaa_3d_level": msaa_3d_level, "ring_pad_rect": ring_pad_rect, "angle_divisions": angle_divisions, "note_detail_fine": note_detail_fine, "note_glow": note_glow, "path_style": path_style, "bpm_lock_ms": bpm_lock_ms, "cursor_trail": cursor_trail, "fx_budget": fx_budget, "ring_3d_scale": ring_3d_scale, "bar_lines": bar_lines, "quality_preset": quality_preset,
+	var data := {"settings_version": 1, "path_wait_indicator": path_wait_indicator, "note_skin": note_skin, "show_perfect_fx": show_perfect_fx, "hit_sfx_style": hit_sfx_style, "ffmpeg": ffmpeg_path, "frame_cap": frame_cap, "video_encoder": video_encoder, "audio_buffer_ms": audio_buffer_ms, "playtest_offset_ms": playtest_offset_ms, "audio_latency_ms": audio_latency_ms, "music_volume": music_volume, "sfx_volume": sfx_volume, "dynamic_offset": dynamic_offset, "playtest_auto": playtest_auto, "playtest_mirror": playtest_mirror, "playback_scroll": playback_scroll, "background_brightness": background_brightness, "mouse_tilt": mouse_tilt, "startup_tabs": startup_tabs, "osu_favorites": osu_favorites, "last_bias_ms": last_bias_ms, "cursor_scale": cursor_scale, "flow_scale": flow_scale, "aa_2d_level": aa_2d_level, "msaa_3d_level": msaa_3d_level, "ring_pad_rect": ring_pad_rect, "angle_divisions": angle_divisions, "note_detail_fine": note_detail_fine, "note_glow": note_glow, "path_style": path_style, "bpm_lock_ms": bpm_lock_ms, "cursor_trail": cursor_trail, "fx_budget": fx_budget, "ring_3d_scale": ring_3d_scale, "bar_lines": bar_lines, "quality_preset": quality_preset, "auto_quality_preset": auto_quality_preset, "auto_quality_measured": auto_quality_measured, "renderer_mode": renderer_mode,
 		"hud_scale": hud_scale, "hud_combo_mode": hud_combo_mode, "hud_progress_style": hud_progress_style,
 		"hud_judge_position": hud_judge_position, "hud_judge_filter": hud_judge_filter, "hud_opacity": hud_opacity,
 		"hud_show_title": hud_show_title, "hud_show_difficulty": hud_show_difficulty,
@@ -1116,6 +1230,25 @@ func _flush_live_change() -> void:
 	else:
 		chart_live_changed.emit()
 	status_changed.emit()
+
+
+## 鼠标回报率：只统计 1 秒。≥800Hz 的鼠标每秒产生上千个 motion 事件，
+## 是「明明帧率够却觉得拖」的常见原因（Estella 也单独检测这一项）。
+var mouse_poll_hz: int = 0
+var _poll_events: int = 0
+var _poll_since_usec: int = 0
+
+
+func _input(event: InputEvent) -> void:
+	if event is InputEventMouseMotion:
+		var now := Time.get_ticks_usec()
+		if _poll_since_usec == 0:
+			_poll_since_usec = now
+		_poll_events += 1
+		if now - _poll_since_usec >= 1000000:
+			mouse_poll_hz = _poll_events
+			_poll_events = 0
+			_poll_since_usec = now
 
 
 func _process(delta: float) -> void:
@@ -1555,7 +1688,10 @@ func export_lbp(path: String) -> bool:
 	if err != OK:
 		notice.emit("导出 .lbp 失败：%s" % LBPIO.last_error, "error")
 		return false
-	notice.emit("已导出 %s" % path.get_file(), "info")
+	if not LBPIO.last_warning.is_empty():
+		notice.emit("已导出 %s，但%s" % [path.get_file(), LBPIO.last_warning], "warning")
+	else:
+		notice.emit("已导出 %s" % path.get_file(), "info")
 	return true
 
 

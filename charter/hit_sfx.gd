@@ -4,7 +4,7 @@ extends Node
 ## Shared hit-sound pool for editor playback and playtest.
 
 const VOLUME_DB := -3.0
-const KIND_DB := {"don": -3.0, "kat": -3.5, "hold_end": -4.0, "path": -3.5, "anchor": -2.0, "bell": -4.0, "tail": -3.5, "slide": 0.0}
+const KIND_DB := {"don": -3.0, "hold_end": -4.0, "path": -3.5, "anchor": -2.0, "bell": -4.0, "tail": -3.5, "slide": 0.0}
 const STYLE_PITCH := {"default": 1.0, "crisp": 1.18, "deep": 0.84}
 const STYLE_DB := {"default": 0.0, "crisp": -1.0, "deep": 1.5}
 const PATHS := {
@@ -12,7 +12,6 @@ const PATHS := {
 	"hold_end": "res://audio/sfx/hold_end.ogg",
 	"path": "res://audio/sfx/path.wav",
 	"anchor": "res://audio/sfx/anchor.wav",
-	"kat": "res://audio/sfx/tap_kat.wav",
 	"bell": "res://audio/sfx/bell.ogg",
 	"tail": "res://audio/sfx/path_tail.wav",
 	# 星星可以开始划的提示音（比 path 头音更高更亮）。
@@ -60,6 +59,3 @@ func play(kind: String, pitch: float = 1.0) -> void:
 	player.pitch_scale = pitch * float(STYLE_PITCH.get(style, 1.0))
 	player.play()
 
-
-static func kind_for_note(note: Note) -> String:
-	return "kat" if note.width >= 70.0 and note.width < 85.0 else "don"

@@ -26,7 +26,9 @@ var mirror_mode := "off"
 
 var _running := false
 var _cancel := false
-var _chosen: Dictionary = {}
+## 编码器探测要真编码一帧（~2s）。缓存跨实例复用：同一台机器反复导出不必重探。
+static var _chosen: Dictionary = {}
+static var _listed: Dictionary = {}
 
 
 ## 当前机器上能用的编码器（先真编码一帧，结果缓存）。
@@ -90,13 +92,16 @@ func _ffmpeg() -> String:
 
 
 func _list_encoders(ffmpeg: String) -> Dictionary:
+	if not _listed.is_empty():
+		return _listed
 	var out: Array = []
 	OS.execute(ffmpeg, ["-hide_banner", "-encoders"], out, true, false)
 	var text := "\n".join(out)
 	var names := {}
 	for cand in _candidates():
 		names[String(cand["name"])] = text.contains(String(cand["name"]))
-	return names
+	_listed = names
+	return _listed
 
 
 ## VAAPI 的设备名各机器不同，逐个 renderD* 试一遍。
@@ -522,6 +527,8 @@ func _fail(stdin: FileAccess, viewport: SubViewport, playtest: Node, temp: Strin
 func _write_frame(stdin: FileAccess, data: PackedByteArray) -> bool:
 	var offset := 0
 	var start := Time.get_ticks_msec()
+	# 4KB 一块不是性能选择：管道一次 store_buffer 只吃下有限字节且返回值不报
+	# 实际写入量，块再大就会悄悄丢帧（实测 256KB 只写进 565KB/2.7MB）。
 	while offset < data.size():
 		var chunk := data.slice(offset, mini(offset + 4096, data.size()))
 		if stdin.store_buffer(chunk):

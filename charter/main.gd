@@ -6,6 +6,8 @@ const TOOL_ORDER := [
 	["event", "事件 E"],
 ]
 
+const AsyncChartLoad = preload("res://core/async_chart_load.gd")
+
 var _app: Node = null
 var _preview: Preview3D
 var _preview_box: VBoxContainer
@@ -25,10 +27,11 @@ var _preview_drag_start_x: float = 0.0
 var _preview_drag_width: float = 340.0
 var _preview_manual_open: bool = false
 var _audio_popup: PopupPanel = null
-## 静止降帧：没有任何输入/播放/试玩 1.5 秒后把帧率压到 10，
+## 静止降帧：前台静置 3 秒压到 60fps，后台 1.5 秒压到 30fps，
 ## 避免窗口以 120fps 重画同一张静止画面（GPU 空转的主量级）。
 var _last_activity_ms: int = 0
-var _idle_capped: bool = false
+## 当前生效的空闲限帧（-1 = 不干预，跟随用户设置）。
+var _idle_cap_fps: int = -1
 var _playtest_validation_pending: bool = false
 var _settings_dialog: AcceptDialog = null
 var _quality_widgets: Dictionary = {}
@@ -36,13 +39,14 @@ var _hud_widgets: Dictionary = {}
 
 ## 画质菜单：每项一行子菜单，行标题带当前值，子项打勾。只影响渲染，不碰判定。
 const QUALITY_OPTIONS := [
-	{"key": "preset", "label": "预设", "choices": [["极高（4× 抗锯齿）", 80], ["高（2× 抗锯齿）", 81], ["中", 82], ["低", 83]]},
+	{"key": "preset", "label": "预设", "choices": [["极高（4× 抗锯齿）", 80], ["高（2× 抗锯齿）", 81], ["中", 82], ["低", 83], ["自动（按实测帧时间）", 84]]},
 	{"key": "frame_cap", "label": "帧率上限", "choices": [["60", 90], ["120", 91], ["144", 92], ["240", 93], ["垂直同步", 94], ["不限", 95]]},
 	{"key": "aa_2d_level", "label": "2D 抗锯齿", "choices": [["关", 60], ["MSAA 2×", 61], ["MSAA 4×", 62], ["MSAA 8×", 84]]},
 	{"key": "msaa_3d_level", "label": "3D 抗锯齿", "choices": [["关", 150], ["MSAA 2×", 151], ["MSAA 4×", 152], ["MSAA 8×", 153], ["FXAA（便宜）", 154], ["TAA（平滑，可能拖影）", 155], ["MSAA 2× + FXAA", 156], ["MSAA 4× + FXAA", 157]]},
 	{"key": "use_3d_ring", "label": "3D 环", "choices": [["开", 158], ["关", 159]]},
 	{"key": "note_detail_fine", "label": "音符精细度", "choices": [["全画质", 63], ["省电", 64]]},
 	{"key": "note_glow", "label": "音符光晕", "choices": [["开", 65], ["关", 66]]},
+	{"key": "perfect_fx", "label": "PERFECT 特效", "choices": [["开", 73], ["关", 74]]},
 	{"key": "path_style", "label": "Path 画法", "choices": [["履带（粗，默认）", 180], ["丝带（半透明）", 181]]},
 	{"key": "cursor_trail", "label": "光标拖尾", "choices": [["长", 67], ["短", 68], ["关", 69]]},
 	{"key": "fx_budget", "label": "命中特效", "choices": [["完整", 70], ["精简", 71], ["关", 72]]},
@@ -51,6 +55,7 @@ const QUALITY_OPTIONS := [
 	{"key": "background_brightness", "label": "背景明暗", "choices": [["关", 96], ["25%", 97], ["50%", 98], ["75%", 99], ["100%（默认）", 100]]},
 	{"key": "show_storyboard", "label": "故事板", "choices": [["开", 166], ["关", 167]]},
 	{"key": "show_storyboard_background", "label": "故事板背景层", "choices": [["开", 168], ["关", 169]]},
+	{"key": "renderer_backend", "label": "渲染后端（重启生效）", "choices": [["自动", 176], ["Vulkan", 177], ["OpenGL 兼容", 178]]},
 	{"key": "video_encoder", "label": "视频导出编码器", "choices": [["自动（优先硬件）", 170], ["NVENC", 171], ["QSV", 172], ["VideoToolbox", 173], ["VAAPI（Linux）", 174], ["libx264（软件）", 175]]},
 ]
 
@@ -141,6 +146,12 @@ var _lbp_dialog: FileDialog
 var _report_dialog: AcceptDialog
 var _difficulty_dialog: ConfirmationDialog
 var _difficulty_list: ItemList
+var _difficulty_edit: ConfirmationDialog = null
+var _difficulty_name_edit: LineEdit = null
+var _difficulty_stars_spin: SpinBox = null
+var _difficulty_confirm: ConfirmationDialog = null
+var _difficulty_delete_index: int = -1
+var _save_all_dialog: FileDialog = null
 var _pending_osz: String = ""
 var _pending_kind: String = "osu"
 var _import_dir_dialog: FileDialog
@@ -156,6 +167,13 @@ var _osu_browser: OsuBrowser
 ## 设置里「转码缓存」体积显示。
 var _cache_label: Label = null
 var _import_progress: AcceptDialog = null
+## 单谱异步解析：遮罩 + 进度，避免打开大谱时卡住主线程。
+var _load_task: RefCounted = null
+var _load_overlay: Control = null
+var _load_label: Label = null
+var _load_bar: ProgressBar = null
+## 解析通常 20–40ms：超过这个时间才弹遮罩，避免闪一下。
+var _load_show_at_msec: int = 0
 var _import_progress_label: Label = null
 var _import_progress_bar: ProgressBar = null
 var _new_dialog: NewChartDialog
@@ -197,7 +215,16 @@ var _volume_sliders: Array = []
 
 
 func _ready() -> void:
+	if OS.is_debug_build():
+		print("[hw] gpu=%s vendor=%s api=%s" % [
+			RenderingServer.get_video_adapter_name(),
+			RenderingServer.get_video_adapter_vendor(),
+			RenderingServer.get_video_adapter_api_version(),
+		])
 	_app = get_node_or_null("/root/App")
+	# 保存的渲染后端和当前进程不一致时，先重启到目标后端再建界面。
+	if _apply_saved_renderer():
+		return
 	# 启动就算「刚活动过」，否则开局直接进 10fps 静止档。
 	_last_activity_ms = Time.get_ticks_msec()
 	theme = UITheme.build()
@@ -214,6 +241,7 @@ func _ready() -> void:
 	_sfx.set_style(String(_app.hit_sfx_style) if _app != null else "default")
 	_build_dialogs()
 	_build_audio_popup()
+	call_deferred("_check_gpu_crash_loop")
 	if _app != null:
 		_app.chart_changed.connect(_on_chart_changed)
 		_app.chart_live_changed.connect(_on_chart_live_changed)
@@ -253,6 +281,109 @@ func _ready() -> void:
 	for arg in OS.get_cmdline_user_args():
 		if arg.begins_with("--replay="):
 			call_deferred("_open_replay_file", arg.get_slice("=", 1))
+
+
+## ── 渲染后端与 GPU 崩溃回退（仿 Estella 的 RendererFallback）──────────────
+## 记录跨进程的启动状态：上一进程没走到 _exit_tree（崩溃/掉驱动）且存活不足 20 秒，
+## 就累计一次；连续两次就在下次启动时提示改用 OpenGL 兼容模式。
+const GPU_STATE_PATH := "user://gpu_state.json"
+const GPU_SHORT_RUN_SEC := 20
+
+
+func _renderer_driver() -> String:
+	var args := OS.get_cmdline_args()
+	for i in args.size() - 1:
+		if args[i] == "--rendering-driver":
+			return args[i + 1]
+	return ""
+
+
+## 保存的后端和当前进程不一致时重启一次；由 --renderer-applied 防止循环。
+func _apply_saved_renderer() -> bool:
+	var applied := "--renderer-applied" in OS.get_cmdline_args()
+	if applied or _app == null:
+		return false
+	var want := String(_app.renderer_mode)
+	var want_driver := ""
+	if want == "opengl3":
+		want_driver = "opengl3"
+	elif want == "vulkan":
+		want_driver = "vulkan"
+	if want_driver.is_empty() or want_driver == _renderer_driver():
+		return false
+	return _relaunch_with_driver(want_driver)
+
+
+func _relaunch_with_driver(driver: String) -> bool:
+	if driver.is_empty():
+		return false
+	var args: Array[String] = ["--rendering-driver", driver, "--renderer-applied", "--"]
+	args.append_array(OS.get_cmdline_user_args())
+	var pid := OS.create_process(OS.get_executable_path(), args)
+	if pid <= 0:
+		push_warning("重启失败：无法启动新进程")
+		return false
+	get_tree().quit()
+	return true
+
+
+func _check_gpu_crash_loop() -> void:
+	var state := {}
+	if FileAccess.file_exists(GPU_STATE_PATH):
+		var f := FileAccess.open(GPU_STATE_PATH, FileAccess.READ)
+		if f != null:
+			var parsed: Variant = JSON.parse_string(f.get_as_text())
+			f.close()
+			if parsed is Dictionary:
+				state = parsed
+	var now := int(Time.get_unix_time_from_system())
+	var short_runs := int(state.get("short_runs", 0))
+	if bool(state.get("running", false)):
+		var started := int(state.get("started_at", 0))
+		short_runs = short_runs + 1 if now - started < GPU_SHORT_RUN_SEC else 0
+	_write_gpu_state({"running": true, "started_at": now, "short_runs": short_runs})
+	if short_runs < 2 or _renderer_driver() == "opengl3":
+		return
+	_show_gpu_fallback_dialog(short_runs)
+
+
+func _write_gpu_state(state: Dictionary) -> void:
+	var f := FileAccess.open(GPU_STATE_PATH, FileAccess.WRITE)
+	if f == null:
+		return
+	f.store_string(JSON.stringify(state))
+	f.close()
+
+
+func _show_gpu_fallback_dialog(short_runs: int) -> void:
+	var dlg := ConfirmationDialog.new()
+	dlg.title = "显卡兼容提示"
+	dlg.dialog_text = "上次启动在 %d 秒内退出了 %d 次，可能是显卡驱动或渲染后端不稳定。\n\n要改用 OpenGL 兼容模式重启吗？" % [GPU_SHORT_RUN_SEC, short_runs]
+	dlg.ok_button_text = "改用 OpenGL 并重启"
+	dlg.cancel_button_text = "继续使用当前设置"
+	dlg.confirmed.connect(func() -> void:
+		_app.renderer_mode = "opengl3"
+		_app.save_settings()
+		_relaunch_with_driver("opengl3"))
+	dlg.canceled.connect(func() -> void: _write_gpu_state({"running": true, "started_at": int(Time.get_unix_time_from_system()), "short_runs": 0}))
+	add_child(dlg)
+	dlg.popup_centered()
+
+
+func _offer_renderer_restart(driver: String) -> void:
+	var dlg := ConfirmationDialog.new()
+	dlg.title = "渲染后端"
+	dlg.dialog_text = "切换渲染后端需要重启制谱器。现在重启吗？"
+	dlg.ok_button_text = "立即重启"
+	dlg.cancel_button_text = "稍后"
+	dlg.confirmed.connect(func() -> void: _relaunch_with_driver(driver))
+	add_child(dlg)
+	dlg.popup_centered()
+
+
+## 正常退出：清掉“正在运行”标记和崩溃计数。
+func _exit_tree() -> void:
+	_write_gpu_state({"running": false, "started_at": 0, "short_runs": 0})
 
 
 ## 无人值守性能基准：载入 Apollo 谱，从扫圈段自动打 25 秒后退出。
@@ -492,6 +623,12 @@ func _build_ui() -> void:
 		["新建", 0], ["打开", 1], ["保存", 2], ["另存为", 3], ["-", 0],
 		["导入", [["歌曲 / 识别 BPM…", 9], ["导入视频…", 19], ["谱面 (.osz/.zip/.txt)", 6], ["舞萌文件夹", 8], ["在线舞萌谱面…", 15], ["故事板 (.osb)…", 28], ["在线 osu! 谱面…", 18], ["回放 (.replay)…", 57]]],
 		["导出", [["导出 .lbp", 7]]],
+		["难度", [
+			["新建空白难度", 58], ["复制当前难度", 16], ["-", 0],
+			["重命名…", 59], ["星数…", 60], ["-", 0],
+			["上移", 62], ["下移", 63], ["-", 0],
+			["删除当前难度", 61], ["保存全部难度", 17],
+		]],
 		["-", 0], ["恢复自动保存", 4], ["-", 0], ["退出", 5],
 	]))
 	brand_row.add_child(_menu("编辑", [
@@ -1235,7 +1372,7 @@ func _set_hud_index(key: String, index: int) -> void:
 func _quality_index(key: String) -> int:
 	match key:
 		"preset":
-			return ["ultra", "high", "mid", "low"].find(_app.quality_preset)
+			return ["ultra", "high", "mid", "low", "auto"].find(_app.quality_preset)
 		"frame_cap":
 			return ["60", "120", "144", "240", "vsync", "unlimited"].find(_app.frame_cap)
 		"aa_2d_level":
@@ -1248,8 +1385,10 @@ func _quality_index(key: String) -> int:
 			return 0 if _app.note_detail_fine else 1
 		"note_glow":
 			return 0 if _app.note_glow else 1
+		"perfect_fx":
+			return 0 if _app.show_perfect_fx else 1
 		"path_style":
-			return 0 if _app.path_style == "tread" else 1
+			return Preview3D.PATH_STYLES.find(_app.path_style)
 		"cursor_trail":
 			return ["long", "short", "off"].find(_app.cursor_trail)
 		"fx_budget":
@@ -1266,14 +1405,22 @@ func _quality_index(key: String) -> int:
 			return 0 if _app.show_storyboard_background else 1
 		"video_encoder":
 			return ["auto", "nvenc", "qsv", "videotoolbox", "vaapi", "libx264"].find(_app.video_encoder)
+		"renderer_backend":
+			return ["auto", "vulkan", "opengl3"].find(_app.renderer_mode)
 	return -1
 
 
 func _set_quality_index(key: String, index: int) -> void:
 	if key == "preset":
-		_app.apply_quality_preset(["ultra", "high", "mid", "low"][clampi(index, 0, 3)])
+		_app.apply_quality_preset(["ultra", "high", "mid", "low", "auto"][clampi(index, 0, 4)])
 		return
 	match key:
+		"renderer_backend":
+			_app.renderer_mode = ["auto", "vulkan", "opengl3"][clampi(index, 0, 2)]
+			_app.save_settings()
+			if _app.renderer_mode != "auto":
+				_offer_renderer_restart(_app.renderer_mode)
+			return
 		"frame_cap":
 			_app.frame_cap = ["60", "120", "144", "240", "vsync", "unlimited"][clampi(index, 0, 5)]
 			_app.apply_frame_cap()
@@ -1288,8 +1435,10 @@ func _set_quality_index(key: String, index: int) -> void:
 			_app.note_detail_fine = index == 0
 		"note_glow":
 			_app.note_glow = index == 0
+		"perfect_fx":
+			_app.show_perfect_fx = index == 0
 		"path_style":
-			_app.path_style = "tread" if index == 0 else "ribbon"
+			_app.path_style = Preview3D.PATH_STYLES[clampi(index, 0, Preview3D.PATH_STYLES.size() - 1)]
 			# 画法只影响画面，不该把「预设」打成自定义。
 			_apply_visual_options()
 			return
@@ -1330,6 +1479,7 @@ func _apply_visual_options() -> void:
 		return
 	_preview.note_detail_fine = _app.note_detail_fine
 	_preview.note_glow = _app.note_glow
+	_preview.show_perfect_fx = _app.show_perfect_fx
 	_preview.path_style = _app.path_style
 	_preview.cursor_trail_mode = _app.cursor_trail
 	_preview.fx_budget = _app.fx_budget
@@ -1346,6 +1496,7 @@ func _apply_visual_options() -> void:
 		var inner: Preview3D = _playtest._preview
 		inner.note_detail_fine = _app.note_detail_fine
 		inner.note_glow = _app.note_glow
+		inner.show_perfect_fx = _app.show_perfect_fx
 		inner.path_style = _app.path_style
 		inner.cursor_trail_mode = _app.cursor_trail
 		inner.fx_budget = _app.fx_budget
@@ -1402,7 +1553,7 @@ func _build_quality_rows(parent: Control) -> void:
 		if key == "preset":
 			pick.add_item("自定义")
 		pick.item_selected.connect(func(index: int) -> void:
-			if key == "preset" and index > 3:
+			if key == "preset" and index > 4:
 				return
 			_set_quality_index(key, index)
 			_app.save_settings()
@@ -1615,6 +1766,9 @@ func _build_dialogs() -> void:
 	_open_dialog.title = "打开谱面文件夹 / 单文件 / 谱面包"
 	var open_selected := func(path: String) -> void:
 		_app.ensure_tab()
+		if _can_async_open(path):
+			_begin_async_open(path)
+			return
 		if _app.load_chart(path):
 			_app.add_tab_from_current()
 			_sync_from_app()
@@ -1735,7 +1889,6 @@ func _sync_appearance() -> void:
 	_preview.note_skin = _app.note_skin
 	_apply_visual_options()
 	_refresh_view_menu()
-	_preview.hit_fx_style = _app.hit_fx_style
 	_preview.show_perfect_fx = _app.show_perfect_fx
 	_preview.cursor_scale = _app.cursor_scale
 	_preview.refresh_style()
@@ -1755,7 +1908,6 @@ func _sync_from_app() -> void:
 	_preview.show_debug = _app.debug_overlay
 	_preview.flow_scale = _app.flow_scale
 	_preview.note_skin = _app.note_skin
-	_preview.hit_fx_style = _app.hit_fx_style
 	_preview.show_perfect_fx = _app.show_perfect_fx
 	_preview.cursor_scale = _app.cursor_scale
 	_sfx.set_style(_app.hit_sfx_style)
@@ -2052,11 +2204,11 @@ func _build_sfx_events() -> void:
 	for note in _app.chart.notes:
 		match note.type:
 			"tap":
-				_add_sfx_event(note.beat, HitSfx.kind_for_note(note))
+				_add_sfx_event(note.beat, "don")
 			"hold":
 				_add_sfx_event(note.beat, "don")
 			"path":
-				_add_sfx_event(note.beat, HitSfx.kind_for_note(note))
+				_add_sfx_event(note.beat, "don")
 				_add_sfx_event(note.end_beat, "tail")
 			"anchor":
 				_add_sfx_event(note.beat, "anchor", 1.0)
@@ -2095,23 +2247,32 @@ func _fire_editor_sfx(beat: float) -> void:
 	_sfx_last_beat = beat
 
 
-## 只给后台静止窗口限帧。前台输入继续按用户选择的帧率响应。
+## 静止档：前台静置 3s 降到 60fps（操作手感不变，少烧 90% CPU），
+## 后台 1.5s 降到 30fps。任何输入/播放/试玩都立刻恢复用户设置的帧率。
 func _update_idle_cap() -> void:
 	if _app == null or DisplayServer.get_name() == "headless":
 		return
-	var busy := get_window().has_focus() or _playing or _playtest != null \
-		or Time.get_ticks_msec() - _last_activity_ms < 1500
-	if busy:
-		if _idle_capped:
-			_idle_capped = false
-			_app.apply_frame_cap()
+	var target := -1
+	if _playing or _playtest != null:
+		target = -1
+	else:
+		var idle_ms := Time.get_ticks_msec() - _last_activity_ms
+		if not get_window().has_focus():
+			if idle_ms >= 1500:
+				target = 30
+		elif idle_ms >= 3000:
+			target = 60
+	if target == _idle_cap_fps:
 		return
-	if not _idle_capped:
-		_idle_capped = true
-		Engine.max_fps = 30
+	_idle_cap_fps = target
+	if target < 0:
+		_app.apply_frame_cap()
+	else:
+		Engine.max_fps = target
 
 
 func _process(_delta: float) -> void:
+	_poll_async_open()
 	_update_idle_cap()
 	if _app == null or _app.chart == null:
 		return
@@ -2729,6 +2890,97 @@ func _prepare_import_media() -> void:
 	_app.save_set_file()
 
 
+## 只有「单谱 JSON」走异步；工程集/三文件/lbp 还带素材处理，保持原来的同步路径。
+func _can_async_open(path: String) -> bool:
+	if not path.to_lower().ends_with(".json"):
+		return false
+	if _app._is_set_file(path) or ChartIO.is_project_path(path):
+		return false
+	if ChartIO.is_three_file_path(path):
+		return false
+	return true
+
+
+func _begin_async_open(path: String) -> void:
+	if _load_task != null:
+		return
+	_load_task = AsyncChartLoad.new()
+	_load_task.begin(path)
+	_load_show_at_msec = Time.get_ticks_msec() + 120
+	if _load_label != null:
+		_load_label.text = "正在解析 %s…" % path.get_file()
+	if _load_bar != null:
+		_load_bar.value = 0.0
+
+
+func _poll_async_open() -> void:
+	if _load_task == null:
+		return
+	var done: int = _load_task.poll()
+	if done == 0:
+		if _load_overlay == null and Time.get_ticks_msec() >= _load_show_at_msec:
+			_ensure_load_overlay()
+			_load_overlay.visible = true
+		if _load_bar != null:
+			var total := ChartIO.parse_total
+			_load_bar.value = 0.0 if total <= 0 else clampf(float(ChartIO.parse_done) / float(total), 0.0, 1.0) * 100.0
+		return
+	var task := _load_task
+	_load_task = null
+	if _load_overlay != null:
+		_load_overlay.visible = false
+	if task.chart == null:
+		_show_toast("打开失败：%s" % task.error, "error")
+		_app.restore_active_tab()
+		return
+	_app.set_chart(task.chart, task.path)
+	_app.add_tab_from_current()
+	_sync_from_app()
+	_refresh_tabs()
+	_show_toast("已打开 %s" % task.path.get_file())
+
+
+func _ensure_load_overlay() -> void:
+	if _load_overlay != null:
+		return
+	_load_overlay = Control.new()
+	_load_overlay.name = "LoadOverlay"
+	_load_overlay.mouse_filter = Control.MOUSE_FILTER_STOP
+	_load_overlay.visible = false
+	add_child(_load_overlay)
+	_load_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	var dim := ColorRect.new()
+	dim.color = Color(0.02, 0.03, 0.05, 0.55)
+	dim.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_load_overlay.add_child(dim)
+	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	var center := CenterContainer.new()
+	center.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_load_overlay.add_child(center)
+	center.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	var panel := PanelContainer.new()
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.05, 0.06, 0.08, 0.97)
+	sb.border_color = Color(1, 1, 1, 0.12)
+	sb.set_border_width_all(1)
+	sb.set_corner_radius_all(10)
+	sb.set_content_margin_all(18)
+	panel.add_theme_stylebox_override("panel", sb)
+	panel.custom_minimum_size = Vector2(380, 0)
+	center.add_child(panel)
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 10)
+	panel.add_child(box)
+	_load_label = UITheme.style_label(Label.new(), 13, UITheme.INK)
+	_load_label.text = "正在解析…"
+	box.add_child(_load_label)
+	_load_bar = ProgressBar.new()
+	_load_bar.max_value = 100.0
+	_load_bar.show_percentage = false
+	_load_bar.custom_minimum_size = Vector2(344, 8)
+	box.add_child(_load_bar)
+
+
 func _show_import_progress() -> void:
 	if _import_progress == null:
 		_import_progress = AcceptDialog.new()
@@ -2789,7 +3041,7 @@ func _refresh_import_difficulty() -> void:
 	if _import_diff == null:
 		return
 	var names: Array[String] = _app.difficulty_names() if _app != null else []
-	var show: bool = names.size() > 1
+	var show: bool = names.size() >= 1
 	if _import_diff_label != null:
 		_import_diff_label.visible = show
 	_import_diff.visible = show
@@ -2805,7 +3057,7 @@ func _refresh_import_difficulty() -> void:
 func _add_difficulty_copy() -> void:
 	if _app == null or _app.chart == null:
 		return
-	var index: int = _app.add_difficulty_copy("难度 %d" % (_app.difficulties.size() + 1))
+	var index: int = _app.add_difficulty_copy("")
 	if index < 0:
 		_show_toast("复制难度失败", "error")
 		return
@@ -2813,9 +3065,137 @@ func _add_difficulty_copy() -> void:
 	_show_toast("已新增难度 %s（改完记得「保存全部难度」）" % _app.difficulty_name(index), "info")
 
 
+## 新建空白难度：同曲同音频同 BPM 同边界动画，但不带音符。
+func _add_difficulty_blank() -> void:
+	if _app == null or _app.chart == null:
+		return
+	var index: int = _app.add_difficulty_blank("")
+	if index < 0:
+		_show_toast("新建难度失败", "error")
+		return
+	_sync_from_app()
+	_show_toast("已新建空白难度 %s（改完记得「保存全部难度」）" % _app.difficulty_name(index), "info")
+
+
+func _build_difficulty_dialogs() -> void:
+	if _difficulty_edit != null:
+		return
+	_difficulty_edit = ConfirmationDialog.new()
+	_difficulty_edit.ok_button_text = "应用"
+	_difficulty_edit.cancel_button_text = "取消"
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 6)
+	var name_row := HBoxContainer.new()
+	var name_label := Label.new()
+	name_label.text = "名字"
+	UITheme.style_mono(name_label, 11, UITheme.MUTED)
+	name_row.add_child(name_label)
+	_difficulty_name_edit = LineEdit.new()
+	_difficulty_name_edit.custom_minimum_size = Vector2(240, 24)
+	name_row.add_child(_difficulty_name_edit)
+	box.add_child(name_row)
+	var stars_row := HBoxContainer.new()
+	var stars_label := Label.new()
+	stars_label.text = "星数"
+	UITheme.style_mono(stars_label, 11, UITheme.MUTED)
+	stars_row.add_child(stars_label)
+	_difficulty_stars_spin = SpinBox.new()
+	_difficulty_stars_spin.min_value = 0.0
+	_difficulty_stars_spin.max_value = 20.0
+	_difficulty_stars_spin.step = 0.1
+	_difficulty_stars_spin.custom_minimum_size = Vector2(100, 24)
+	stars_row.add_child(_difficulty_stars_spin)
+	var stars_hint := Label.new()
+	stars_hint.text = "0 = 未知"
+	UITheme.style_mono(stars_hint, 10, UITheme.MUTED)
+	stars_row.add_child(stars_hint)
+	box.add_child(stars_row)
+	_difficulty_edit.add_child(box)
+	_difficulty_edit.confirmed.connect(func() -> void:
+		if _app == null or _app.difficulties.is_empty():
+			return
+		var index := clampi(_app.difficulty_index, 0, _app.difficulties.size() - 1)
+		var name := _difficulty_name_edit.text.strip_edges()
+		if not name.is_empty():
+			_app.rename_difficulty(index, name)
+		_app.set_difficulty_stars(index, _difficulty_stars_spin.value)
+		_sync_from_app()
+	)
+	add_child(_difficulty_edit)
+
+	_difficulty_confirm = ConfirmationDialog.new()
+	_difficulty_confirm.title = "删除难度"
+	_difficulty_confirm.ok_button_text = "删除"
+	_difficulty_confirm.cancel_button_text = "取消"
+	_difficulty_confirm.confirmed.connect(func() -> void:
+		if _app == null or _difficulty_delete_index < 0:
+			return
+		if _app.remove_difficulty(_difficulty_delete_index):
+			_sync_from_app()
+			_show_toast("已删除难度", "info")
+		_difficulty_delete_index = -1
+	)
+	add_child(_difficulty_confirm)
+
+	_save_all_dialog = FileDialog.new()
+	_save_all_dialog.file_mode = FileDialog.FILE_MODE_OPEN_DIR
+	_save_all_dialog.access = FileDialog.ACCESS_FILESYSTEM
+	_save_all_dialog.title = "保存全部难度到工程文件夹"
+	_save_all_dialog.dir_selected.connect(func(path: String) -> void:
+		if _app != null and _app.save_set_file(path):
+			_sync_from_app()
+		elif _app != null:
+			_show_toast("保存难度工程失败", "error")
+	)
+	add_child(_save_all_dialog)
+
+
+func _open_difficulty_edit(edit_name: bool) -> void:
+	if _app == null or _app.difficulties.is_empty():
+		_show_toast("还没有难度组：先用「复制当前难度」或「新建空白难度」建一个", "warning")
+		return
+	_build_difficulty_dialogs()
+	var index := clampi(_app.difficulty_index, 0, _app.difficulties.size() - 1)
+	var entry: Dictionary = _app.difficulties[index]
+	_difficulty_name_edit.text = String(entry.get("name", ""))
+	var stars := float(entry.get("stars", -1.0))
+	_difficulty_stars_spin.value = maxf(0.0, stars)
+	_difficulty_edit.title = "重命名难度（%d / %d）" % [index + 1, _app.difficulties.size()] if edit_name \
+		else "设置星数（%d / %d）" % [index + 1, _app.difficulties.size()]
+	_difficulty_edit.popup_centered()
+	if edit_name:
+		_difficulty_name_edit.grab_focus()
+		_difficulty_name_edit.select_all()
+	else:
+		_difficulty_stars_spin.get_line_edit().grab_focus()
+
+
+func _delete_difficulty() -> void:
+	if _app == null or _app.difficulties.size() <= 1:
+		_show_toast("至少保留一个难度", "warning")
+		return
+	_build_difficulty_dialogs()
+	_difficulty_delete_index = clampi(_app.difficulty_index, 0, _app.difficulties.size() - 1)
+	_difficulty_confirm.dialog_text = "删除难度「%s」？不会动其它难度。" % _app.difficulty_name(_difficulty_delete_index)
+	_difficulty_confirm.popup_centered()
+
+
+func _move_difficulty(delta: int) -> void:
+	if _app == null or _app.difficulties.size() < 2:
+		return
+	if not _app.move_difficulty(_app.difficulty_index, delta):
+		return
+	_sync_from_app()
+	_show_toast("难度顺序已调整（%d / %d）" % [_app.difficulty_index + 1, _app.difficulties.size()], "info")
+
+
 func _save_all_difficulties() -> void:
 	if _app == null or _app.difficulties.is_empty():
 		_show_toast("当前没有多难度组，先导入或新增一个难度", "warning")
+		return
+	if _app.set_path.is_empty():
+		_build_difficulty_dialogs()
+		_save_all_dialog.popup_centered_ratio(0.7)
 		return
 	if _app.save_set_file():
 		_sync_from_app()
@@ -2897,6 +3277,18 @@ func _on_menu(id: int) -> void:
 			_add_difficulty_copy()
 		17:
 			_save_all_difficulties()
+		58:
+			_add_difficulty_blank()
+		59:
+			_open_difficulty_edit(true)
+		60:
+			_open_difficulty_edit(false)
+		61:
+			_delete_difficulty()
+		62:
+			_move_difficulty(-1)
+		63:
+			_move_difficulty(1)
 		4:
 			_app.load_autosave()
 			_sync_from_app()
@@ -2969,6 +3361,12 @@ func _on_menu(id: int) -> void:
 
 
 func _save() -> void:
+	if _app == null or _app.chart == null:
+		return
+	# 多难度但还没存过整组：必须走「保存全部难度」，否则其余难度会丢。
+	if _app.difficulties.size() > 1 and _app.set_path.is_empty():
+		_save_all_difficulties()
+		return
 	if _app.chart_path.is_empty():
 		_save_dialog.popup_centered_ratio(0.75)
 	else:
@@ -3255,7 +3653,7 @@ func _build_playtest_dialog() -> void:
 	box.add_child(_playtest_mouse)
 	_playtest_perfect_fx = CheckBox.new()
 	_playtest_perfect_fx.text = "显示 PERFECT 特效"
-	_playtest_perfect_fx.tooltip_text = "关闭后 PERFECT 不再画命中爆点和弧光，只保留判定字；默认关闭"
+	_playtest_perfect_fx.tooltip_text = "关闭后 PERFECT 命中不再出爆点、环外光扇和碎屑，只留判定字；默认开启"
 	box.add_child(_playtest_perfect_fx)
 
 	box.add_child(HSeparator.new())
@@ -3535,6 +3933,9 @@ func _start_playtest(from_start: bool) -> void:
 	editor_root.hide()
 	editor_root.process_mode = Node.PROCESS_MODE_DISABLED
 	_preview.set_suspended(true)
+	if _app.quality_preset == "auto" and not _app.auto_quality_measured:
+		_app.auto_quality_preset = _app.recommend_quality_tier()
+		_app.apply_quality_preset("auto")
 	_playtest = Playtest.new()
 	_playtest.bench_mode = "--bench" in OS.get_cmdline_user_args()
 	_playtest.auto_play = bool(_app.playtest_auto) or "--auto" in OS.get_cmdline_user_args()

@@ -697,7 +697,6 @@ static func _degrade_path(note: Note, counts: Dictionary, stats: Dictionary, for
 		note.type = "hold"
 		note.end_beat = note.beat + duration
 		note.hold = true
-		note.hold_style = "straight"
 		counts["path"] = maxi(0, int(counts.get("path", 0)) - 1)
 		counts["hold"] = int(counts.get("hold", 0)) + 1
 	else:

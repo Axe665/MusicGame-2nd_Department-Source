@@ -67,8 +67,6 @@ func _build_chart() -> Chart:
 			note.tail_width = 52.0
 			note.tolerance = 0.24
 			note.wait_beat = 0.25
-		if note.type == "hold":
-			note.hold_style = "straight"
 		chart.notes.append(note)
 	# 模拟历史脏数据：6.5 秒后那颗 Tap 的 end_beat 写成 0，必须靠 target_ms 兜底。
 	for note in chart.notes:
