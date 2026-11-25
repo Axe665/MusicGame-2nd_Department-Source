@@ -2792,6 +2792,78 @@ func _invalidate_layers(layers: Array) -> void:
 			node.queue_redraw()
 
 
+## ── 着色器管线预热 ────────────────────────────────────────────────
+## Godot 在某个材质/混合模式第一次被绘制时才编译管线，第一次出现的 Tap、
+## Anchor 会卡一帧。Estella 用 GameplayPipelineWarmup + PrewarmProbe 在载入时
+## 把材质逐个"演"一遍；这里用一张合成谱在 READY 层后面画 4 帧，覆盖所有音符
+## 类型、Limit 与命中特效，再恢复真实谱面。
+var _warmup_state: Dictionary = {}
+
+
+func begin_shader_warmup() -> void:
+	if not _warmup_state.is_empty():
+		return
+	var t := get_time_beat()
+	var warm: Chart = DemoChart.make_empty({"title": "warmup", "bpm": 120.0})
+	var notes: Array[Note] = []
+	notes.append(Note.new("tap", t, 0.0, 48.0))
+	notes.append(Note.new("tap", t, 120.0, 72.0))
+	var hold := Note.new("hold", t - 0.5, 240.0, 30.0)
+	hold.end_beat = t + 1.0
+	notes.append(hold)
+	var seek := Note.new("seek", t, 0.0, 360.0)
+	seek.seek_orien = 1
+	notes.append(seek)
+	notes.append(Note.new("anchor", t, 180.0, 24.0))
+	notes.append(Note.new("bell", t, 300.0, 26.0))
+	var path := Note.new("path", t - 0.5, 60.0, 60.0)
+	path.end_beat = t + 1.0
+	path.space = "plane"
+	path.tail_angle = 200.0
+	path.generate_path_shape()
+	notes.append(path)
+	warm.notes.assign(notes)
+	warm.refresh_ids()
+	var region := Region.new()
+	region.kind = "limit"
+	region.start_beat = t - 1.0
+	region.end_beat = t + 1.0
+	region.angle = 0.0
+	region.width = 120.0
+	warm.regions.append(region)
+	_warmup_state = {
+		"chart": chart_override,
+		"time": time_beat,
+		"modulate": modulate,
+		"follow_app": follow_app,
+	}
+	chart_override = warm
+	time_beat = t
+	follow_app = false
+	# alpha=0 会被整层剔除、不提交绘制；留 1% 仍然肉眼看不出（还被 READY 层盖住）。
+	modulate = Color(1, 1, 1, 0.01)
+	add_note_pop("perfect", warm.notes[0], t)
+	add_ring_light(warm.notes[0], true)
+	_invalidate_layers(OVERLAY_LAYERS)
+
+
+func shader_warmup_active() -> bool:
+	return not _warmup_state.is_empty()
+
+
+func end_shader_warmup() -> void:
+	if _warmup_state.is_empty():
+		return
+	chart_override = _warmup_state["chart"]
+	time_beat = float(_warmup_state["time"])
+	follow_app = bool(_warmup_state["follow_app"])
+	modulate = _warmup_state["modulate"]
+	_note_pops.clear()
+	_ring_lights.clear()
+	_warmup_state.clear()
+	_invalidate_layers(OVERLAY_LAYERS)
+
+
 ## 光标层：鼠标移动时只重绘这里。
 func draw_cursor_overlay(canvas: Control) -> void:
 	var chart := get_chart()

@@ -119,6 +119,8 @@ var _countdown_beats: int = 4
 var _countdown_bpm: float = 120.0
 var _ready_layer: Control = null
 var _ready_phase: String = "idle"     # load / fill / countdown / done
+## 着色器预热帧计数（0 开始，画满 4 帧后恢复真实谱面）。
+var _shader_warmup_frames: int = 0
 var _ready_progress: float = 0.0
 var _ready_delay: float = 0.0
 var _countdown_left: float = 0.0
@@ -461,6 +463,8 @@ func _start_countdown() -> void:
 	# 最后一拍就是开始提示音：GO 本身算第 N 拍，所以只数 N-1 个间隔；画面从 N-1 开始。
 	_countdown_sec = float(_countdown_beats - 1) * 60.0 / _countdown_bpm
 	_countdown_left = _countdown_sec
+	if _preview != null and _preview.shader_warmup_active():
+		_preview.end_shader_warmup()
 	_ready_phase = "countdown"
 	_tick_index = 0
 	_play_tick(_countdown_beats - 1)
@@ -469,6 +473,13 @@ func _start_countdown() -> void:
 func _process_ready(delta: float) -> void:
 	if _ready_layer == null:
 		return
+	# READY 层后面先把每种音符/红区/命中特效画一遍，避免第一次出现时编译管线卡帧。
+	if _shader_warmup_frames <= 4 and _preview != null:
+		if _shader_warmup_frames == 0:
+			_preview.begin_shader_warmup()
+		elif _shader_warmup_frames == 4:
+			_preview.end_shader_warmup()
+		_shader_warmup_frames += 1
 	var opening_end_ms: float = _timeline_start_ms - chart.offset_ms + 2000.0 * playback_rate
 	var storyboard_ready: bool = _preview == null or _preview.preload_storyboard_textures(opening_end_ms)
 	if _ready_phase == "load":
