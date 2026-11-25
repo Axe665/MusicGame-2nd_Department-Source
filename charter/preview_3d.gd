@@ -713,7 +713,8 @@ func _build_layers() -> void:
 	(_layer_nodes["bars"] as Control).add_child(_bars_node)
 	# 音符圆头/中心点也走实例化：壳（黑+白）与芯（染色）各一个 MultiMesh。
 	var cap_tex := _cap_textures()
-	_cap_shell_multi = _make_dot_multimesh(false)
+	# 壳也要吃实例 alpha：贴图是黑白环，透明度跟着音符淡入淡出。
+	_cap_shell_multi = _make_dot_multimesh(true)
 	_cap_core_multi = _make_dot_multimesh(true)
 	var shell_node := MultiMeshInstance2D.new()
 	shell_node.name = "NoteCaps"
