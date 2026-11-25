@@ -3653,7 +3653,7 @@ func _build_playtest_dialog() -> void:
 	box.add_child(_playtest_mouse)
 	_playtest_perfect_fx = CheckBox.new()
 	_playtest_perfect_fx.text = "显示 PERFECT 特效"
-	_playtest_perfect_fx.tooltip_text = "关闭后 PERFECT 不再在判定环外侧亮光扇和碎屑；默认开启"
+	_playtest_perfect_fx.tooltip_text = "关闭后 PERFECT 命中不再出爆点、环外光扇和碎屑，只留判定字；默认开启"
 	box.add_child(_playtest_perfect_fx)
 
 	box.add_child(HSeparator.new())

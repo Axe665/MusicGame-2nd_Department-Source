@@ -231,9 +231,9 @@ var _overlay: Control
 var _cursor_layer: Control
 ## 分层 overlay：每层一个 CanvasItem，只有内容变化的层才 queue_redraw。
 ## 顺序就是绘制顺序（下 → 上），和 draw_overlay() 的历史顺序一致。
-const OVERLAY_LAYERS: Array[String] = ["stage", "bars", "combo", "seek", "limit", "path", "hold", "notes", "fx", "hud_live", "hud_static"]
+const OVERLAY_LAYERS: Array[String] = ["stage", "combo", "seek", "limit", "path", "hold", "bars", "notes", "fx", "hud_live", "hud_static"]
 ## 时间/镜头/几何变化时，这些层都要重画。
-const OVERLAY_SCENE_LAYERS: Array[String] = ["stage", "bars", "combo", "seek", "limit", "path", "hold", "notes", "fx"]
+const OVERLAY_SCENE_LAYERS: Array[String] = ["stage", "combo", "seek", "limit", "path", "hold", "bars", "notes", "fx"]
 ## HUD 拆两层只为绘制顺序（连击要压在轨迹下面），和场景层同帧重画。
 ## 早先按 16.7ms/50ms 门限限频：60Hz 屏上 16.7ms 门限会隔帧通过，HUD 实际只有 30Hz；
 ## 信息列 20Hz 更是和画面明显脱节，所以门限整个去掉。
@@ -3050,7 +3050,8 @@ func _update_bar_multimesh(chart: Chart, beat: float) -> void:
 		var alpha := 0.92 * smoothstep(0.0, 0.15, progress)
 		if alpha <= 0.001:
 			continue
-		var color := Color(1, 1, 1, alpha)
+		# 纯白在深色背景上太抢眼，压一层浅灰；和判定环的冷白区分开。
+		var color := Color(0.82, 0.85, 0.89, alpha)
 		var previous := Vector2(INF, INF)
 		for item in boundary:
 			var point := project_design((item["point"] as Vector2) * progress)
@@ -6070,7 +6071,10 @@ func _draw_pulses(canvas: Control) -> void:
 		var kind := String(pulse.get("kind", "tap"))
 		# 星头和 Seek 的功能性提示自带一套，不受「命中特效」三档影响；其余按档位缩放爆点。
 		var own_fx := kind in ["path", "seek", "lock"]
-		if fx_budget != "off" or own_fx:
+		# 「PERFECT 特效」关掉时，PERFECT 命中只留判定字：环外的光扇/碎屑早就不画了，
+		# 但爆点还在，看起来就像开关没生效。
+		var perfect_burst := String(pulse.get("label", "")) in ["PERFECT", "FULL"] and not show_perfect_fx
+		if (fx_budget != "off" or own_fx) and not perfect_burst:
 			if not own_fx and crowded and index < _pulses.size() - 6:
 				canvas.draw_arc(point, 16.0 + age * 30.0, 0.0, TAU, 16, Color(color.r, color.g, color.b, 0.5 * alpha), 2.0, false)
 				continue
