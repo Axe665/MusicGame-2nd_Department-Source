@@ -318,8 +318,6 @@ var _indexed_path_roots: Array[Note] = []
 var _path_index: Array[VisiblePath] = []
 var _path_prefix_end := PackedFloat64Array()
 var _path_strokes: Dictionary[Note, PathStroke] = {}
-## 箭头退场：记录每条轨迹的擦除前沿速度（fraction/拍），用来算 180ms 的退场进度。
-var _path_front: Dictionary = {}
 var _path_overlap_samples: Dictionary[Note, PackedVector2Array] = {}
 var _overlap_paths: Array[Note] = []
 var _overlap_any: bool = false
@@ -1420,10 +1418,11 @@ static var _edge_fade_tex: ImageTexture
 
 static func _edge_fade_texture() -> Texture2D:
 	if _edge_fade_tex == null:
-		var img := Image.create(8, 1, false, Image.FORMAT_RGBA8)
+		# 渐变必须放在 UV.y（横跨带宽）上：UV.x 是沿路径方向，放错会让接缝处整段透明。
+		var img := Image.create(1, 8, false, Image.FORMAT_RGBA8)
 		var ramp := [0.0, 0.45, 1.0, 1.0, 1.0, 1.0, 0.45, 0.0]
-		for x in 8:
-			img.set_pixel(x, 0, Color(1, 1, 1, float(ramp[x])))
+		for y in 8:
+			img.set_pixel(0, y, Color(1, 1, 1, float(ramp[y])))
 		_edge_fade_tex = ImageTexture.create_from_image(img)
 	return _edge_fade_tex
 
@@ -4045,7 +4044,6 @@ func _draw_paths(canvas: Control, chart: Chart, t: float, _pre: float) -> void:
 		for note: Note in _path_strokes.keys():
 			if not visible.has(note):
 				_path_strokes.erase(note)
-				_path_front.erase(note.id)
 	if visible.is_empty():
 		return
 	# 接力高亮：还没划完的星里，只有尾判定最早的那条（或几条同时到点）保持全亮。
@@ -4131,6 +4129,33 @@ func _has_path_overlap(visible: Array[Note]) -> bool:
 	return false
 
 
+## osu!lazer 的 snake-out 是按 ball 的精确位置裁轨迹，不是按采样点裁。
+## 采样点被擦除后第一段可见 run 从 idx+1 开始，这里把它往回补到精确的切口。
+func _trim_run_head_to_cut(stroke: PathStroke, note: Note, count: int) -> void:
+	var cuts: Array = path_cuts.get(note.id, [])
+	if cuts.size() != 1 or float(cuts[0].get("from", 0.0)) > 0.001:
+		return
+	var cut := clampf(float(cuts[0].get("to", 0.0)), 0.0, 1.0)
+	if cut <= 0.0005 or cut >= 0.9995 or count <= 0:
+		return
+	var idx := mini(count - 1, int(floor(cut * float(count))))
+	var a := stroke.points[idx]
+	var b := stroke.points[idx + 1]
+	if not is_finite(a.x) or not is_finite(b.x) or a.x > 1.0e9 or b.x > 1.0e9:
+		return
+	var f0 := float(idx) / float(count)
+	var f1 := float(idx + 1) / float(count)
+	var k := clampf((cut - f0) / maxf(0.0001, f1 - f0), 0.0, 1.0)
+	var head := a.lerp(b, k)
+	for i in stroke.runs.size():
+		if i < stroke.run_starts.size() and int(stroke.run_starts[i]) == idx + 1:
+			var run: PackedVector2Array = stroke.runs[i]
+			var patched := PackedVector2Array([head])
+			patched.append_array(run)
+			stroke.runs[i] = patched
+			return
+
+
 static func split_path_runs(points: PackedVector2Array, erased: Array, starts: Array[int] = []) -> Array[PackedVector2Array]:
 	# 只在真正擦除/无效点处分段；不再用像素距离阈值，避免长轨迹被误切。
 	starts.clear()
@@ -4150,39 +4175,6 @@ static func split_path_runs(points: PackedVector2Array, erased: Array, starts: A
 		result.append(run)
 		starts.append(points.size() - run.size())
 	return result
-
-
-## 手划过之后的一小段（180ms 内走过的距离）里，箭头按年龄放大 + 淡出。
-func _draw_path_exit_chevrons(canvas: Control, chart: Chart, note: Note, t: float, target: float,
-		accent: Color, dim: float, ns: float) -> void:
-	var total := note.duration()
-	if total <= 0.001 or target <= 0.0001:
-		return
-	var info: Dictionary = _path_front.get(note.id, {})
-	var prev_t := float(info.get("t", t))
-	var prev_f := float(info.get("f", target))
-	var speed := float(info.get("speed", 0.0))
-	if t > prev_t + 0.00005:
-		var inst := maxf(0.0, (target - prev_f) / (t - prev_t))
-		speed = lerpf(speed, inst, 0.4)
-	_path_front[note.id] = {"t": t, "f": target, "speed": speed}
-	var per_sec := speed * maxf(1.0, chart.timing.bpm_at(note.beat)) / 60.0
-	if per_sec <= 0.0005:
-		return
-	var back := minf(target, per_sec * 0.12)
-	if back <= 0.0005:
-		return
-	var tail := PackedVector2Array()
-	for i in 5:
-		var f := lerpf(target - back, target, float(i) / 4.0)
-		tail.append(_path_screen_point(chart, note, total * f, t, true, 1.0))
-	var size := 12.0 * ns * PATH_SIZE_SCALE
-	var spacing := maxf(18.0, size * 1.4)
-	for sample in _chevron_samples(tail, spacing, size * 1.6):
-		var age := clampf(1.0 - sample.fraction, 0.0, 1.0)
-		_draw_chevron(canvas, sample.point, sample.direction,
-			Color(accent.r, accent.g, accent.b, clampf(1.7 * (1.0 - age), 0.0, 1.0) * dim),
-			size * (1.0 + 0.2 * age))
 
 
 func _path_stroke_runs(chart: Chart, note: Note, beat: float, projection_key: String, count: int) -> Array[PackedVector2Array]:
@@ -4215,6 +4207,7 @@ func _path_stroke_runs(chart: Chart, note: Note, beat: float, projection_key: St
 		stroke.cut_version = cut_version
 	if reproject or recut:
 		stroke.runs = split_path_runs(stroke.points, stroke.erased, stroke.run_starts)
+		_trim_run_head_to_cut(stroke, note, count)
 		stroke.count = count
 	return stroke.runs
 
@@ -4276,12 +4269,6 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, project
 				# 试玩时轨迹已经被擦到光标处，剩下的每一段都在前方，不该再按“piece 内比例”压暗。
 				var chevron_color := future if playtest_mode else (passed if sample.fraction < progress else future)
 				_draw_chevron(canvas, sample.point, sample.direction, chevron_color, chevron_size)
-	# 箭头退场：手刚划过的 180ms 内，箭头逐个放大淡出（AstroDX ExitSequence 的语义）。
-	if playtest_mode and trail_dim > 0.001:
-		var cuts: Array = path_cuts.get(note.id, [])
-		if cuts.size() == 1 and float(cuts[0].get("from", 0.0)) <= 0.001:
-			_draw_path_exit_chevrons(canvas, chart, note, t, float(cuts[0].get("to", 0.0)),
-				accent, trail_dim, ns)
 	if selected:
 		# 中间判定点只在选中时绘制，避免多星星铺满采样点拖慢编辑器。
 		for sample_beat in note.path_sample_beats():

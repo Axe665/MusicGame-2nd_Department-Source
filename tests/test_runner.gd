@@ -1233,7 +1233,9 @@ func test_path_stroke_cache() -> bool:
 	eq(initial[0].size(), 9, "the stroke includes both endpoints at its requested sampling density")
 	preview.set_path_erased_to(note, 0.5)
 	var cut: Array[PackedVector2Array] = preview._path_stroke_runs(chart, note, 0.1, "static", 8)
-	eq(cut[0][0], Vector2(0.625, 0.0), "erasing splits the existing projected points")
+	# osu!lazer 式精确裁切：切口落在 0.5（擦除位置），而不是下一个采样点 0.625。
+	eq(cut[0][0], Vector2(0.5, 0.0), "the cut edge lands on the exact erase position")
+	eq(cut[0][1], Vector2(0.625, 0.0), "the next sample still follows the original projection")
 	eq(preview.projections, 9, "changing only the cut reuses the projection")
 	var moved: Array[PackedVector2Array] = preview._path_stroke_runs(chart, note, 0.2, "moved", 8)
 	eq(moved, cut, "changing the projection keeps the cut")
