@@ -9,8 +9,8 @@ signal ring_rotate(degrees: float)
 ## 环编辑：在预览里点中文本指令时通知工作区同步选择。
 signal command_selected(command: AlphaCommand)
 
-const RING_WIDTH := 4.0
-const GLOW_WIDTH := 18.0
+const RING_WIDTH := 5.0
+const GLOW_WIDTH := 26.0
 const PREVIEW_MARGIN := 1.24
 ## 鼠标视差的最大倾斜角（度）。试玩固定 7°，编辑器预览用这个值。
 const MOUSE_TILT_DEGREES := 11.0
@@ -259,6 +259,10 @@ static var _cap_shell_tex: Texture2D
 static var _cap_core_tex: Texture2D
 var _ring_material: StandardMaterial3D
 var _glow_material: StandardMaterial3D
+## 判定环的实体底盘：宽环带把 4px 的亮线变成有厚度的轨道。
+var _band_mesh: MeshInstance3D
+var _band_material: ShaderMaterial
+const RING_BAND_WIDTH := 46.0
 var _stage_material: StandardMaterial3D
 var _bezel_material: StandardMaterial3D
 var _shadow_material: StandardMaterial3D
@@ -885,6 +889,9 @@ func _build_3d() -> void:
 	_bezel_material.albedo_color = Color(0.95, 0.90, 0.78, 0.80)
 	_bezel_material.render_priority = 4
 
+	_band_material = ShaderMaterial.new()
+	_band_material.shader = load("res://charter/ring_band.gdshader")
+
 	_shadow_material = StandardMaterial3D.new()
 	_shadow_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	_shadow_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
@@ -919,6 +926,8 @@ func _build_3d() -> void:
 	_ring_root.add_child(_shadow_mesh)
 	_glow_mesh = MeshInstance3D.new()
 	_ring_root.add_child(_glow_mesh)
+	_band_mesh = MeshInstance3D.new()
+	_ring_root.add_child(_band_mesh)
 	_ring_mesh = MeshInstance3D.new()
 	_ring_root.add_child(_ring_mesh)
 
@@ -1200,8 +1209,9 @@ func _update_camera_fit(chart: Chart, zoom: float, ellipse: float, dolly: float 
 
 
 func _update_ring_mesh(chart: Chart, beat: float) -> void:
-	var points := _frame_for(chart, beat).sample_points(96)
+	var points := _frame_for(chart, beat).sample_points(192)
 	_ring_mesh.mesh = _build_ribbon(points, _ring_line_width, _ring_material)
+	_band_mesh.mesh = _build_ribbon(points, RING_BAND_WIDTH, _band_material)
 	_glow_mesh.mesh = _build_ribbon(points, _ring_glow_width, _glow_material)
 	_shadow_mesh.mesh = _build_ribbon(points, 30.0, _shadow_material)
 	_last_mesh_beat = beat
@@ -1409,7 +1419,7 @@ func _build_bezel_gpu() -> void:
 	_bezel_mesh.mesh = mesh
 
 
-func _build_ribbon(points: Array[Dictionary], width: float, material: Material) -> ImmediateMesh:
+func _build_ribbon(points: Array[Dictionary], width: float, material: Material, offset: float = 0.0) -> ImmediateMesh:
 	var mesh := ImmediateMesh.new()
 	mesh.surface_begin(Mesh.PRIMITIVE_TRIANGLES, material)
 	var half := width * 0.5
@@ -1440,15 +1450,27 @@ func _build_ribbon(points: Array[Dictionary], width: float, material: Material) 
 			continue
 		var na: Vector2 = normals[i]
 		var nb: Vector2 = normals[(i + 1) % count]
+		if offset != 0.0:
+			na += na.normalized() * offset
+			nb += nb.normalized() * offset
 		var v0 := pa + na
 		var v1 := pa - na
 		var v2 := pb + nb
 		var v3 := pb - nb
+		# UV.y: 1 = 内缘（法线朝圆心），0 = 外缘。环带着色器靠它画边缘高光。
+		var u0 := float(i) / float(count)
+		var u1 := float(i + 1) / float(count)
+		mesh.surface_set_uv(Vector2(u0, 1.0))
 		mesh.surface_add_vertex(Vector3(v0.x, v0.y, 0.0))
+		mesh.surface_set_uv(Vector2(u0, 0.0))
 		mesh.surface_add_vertex(Vector3(v1.x, v1.y, 0.0))
+		mesh.surface_set_uv(Vector2(u1, 1.0))
 		mesh.surface_add_vertex(Vector3(v2.x, v2.y, 0.0))
+		mesh.surface_set_uv(Vector2(u0, 0.0))
 		mesh.surface_add_vertex(Vector3(v1.x, v1.y, 0.0))
+		mesh.surface_set_uv(Vector2(u1, 0.0))
 		mesh.surface_add_vertex(Vector3(v3.x, v3.y, 0.0))
+		mesh.surface_set_uv(Vector2(u1, 1.0))
 		mesh.surface_add_vertex(Vector3(v2.x, v2.y, 0.0))
 	mesh.surface_end()
 	return mesh
@@ -2986,7 +3008,7 @@ func _draw_bar_lines(canvas: Control, chart: Chart, beat: float, pre: float) -> 
 	boundary.append(boundary[0])
 	for target in bars:
 		var progress := clampf(1.0 - (target - beat) / pre, 0.0, 1.0)
-		var alpha := 0.58 * smoothstep(0.0, 0.15, progress)
+		var alpha := 0.92 * smoothstep(0.0, 0.15, progress)
 		if alpha <= 0.001:
 			continue
 		var run := PackedVector2Array()
@@ -3017,8 +3039,9 @@ func _update_bar_multimesh(chart: Chart, beat: float) -> void:
 		return
 	var frame := _frame_for(chart, beat)
 	var boundary: Array[Dictionary] = []
-	for i in 72:
-		boundary.append(frame.point_at(float(i) / 72.0))
+	# 144 段：段越短，实例化直线的接缝台阶越小。
+	for i in 144:
+		boundary.append(frame.point_at(float(i) / 144.0))
 	# 复用首点，避免 u=1 取到相邻段时在接缝处冒出一根小刺。
 	boundary.append(boundary[0])
 	var need := bars.size() * (boundary.size() - 1)
@@ -3028,7 +3051,7 @@ func _update_bar_multimesh(chart: Chart, beat: float) -> void:
 	var count := 0
 	for target in bars:
 		var progress := clampf(1.0 - (target - beat) / pre, 0.0, 1.0)
-		var alpha := 0.58 * smoothstep(0.0, 0.15, progress)
+		var alpha := 0.92 * smoothstep(0.0, 0.15, progress)
 		if alpha <= 0.001:
 			continue
 		var color := Color(1, 1, 1, alpha)
@@ -3042,7 +3065,8 @@ func _update_bar_multimesh(chart: Chart, beat: float) -> void:
 				var delta := point - previous
 				var length := delta.length()
 				if length >= 0.01:
-					var xf := Transform2D(delta.angle(), Vector2(length + 1.0, 1.0), 0.0, (previous + point) * 0.5)
+					# Y 固定 3px：着色器在里面画 1px 实体线，多出来的高度用于抗锯齿。
+					var xf := Transform2D(delta.angle(), Vector2(length + 1.0, 3.0), 0.0, (previous + point) * 0.5)
 					_bars_multi.set_instance_transform_2d(count, xf)
 					_bars_multi.set_instance_color(count, color)
 					count += 1
@@ -3708,7 +3732,6 @@ func _draw_flat_ring(canvas: Control, chart: Chart, t: float) -> void:
 	var jline := jline_state(chart, t)
 	var main_color := Color(0.55, 0.60, 0.70, 0.95)
 	var glow_color := Color(0.37, 0.85, 0.81, 0.10)
-	var highlight := Color(1, 1, 1, 0.18)
 	var main_width := RING_WIDTH
 	var glow_width := GLOW_WIDTH
 	if bool(jline.get("active", false)):
@@ -3716,25 +3739,29 @@ func _draw_flat_ring(canvas: Control, chart: Chart, t: float) -> void:
 		var alpha := clampf(float(jline.get("alpha", 1.0)), 0.0, 1.0)
 		main_color = Color(color.r, color.g, color.b, 0.95 * alpha)
 		glow_color = Color(color.r, color.g, color.b, 0.16 * alpha)
-		highlight = Color(1, 1, 1, 0.18 * alpha)
 		main_width = clampf(float(jline.get("width", RING_WIDTH)), 0.5, 24.0)
 		glow_width = maxf(GLOW_WIDTH, main_width * 3.0 + float(jline.get("expand", 0.0)) * 24.0)
 	var run := PackedVector2Array()
 	for item in points:
 		if bool(item.get("gap", false)):
 			if run.size() > 1:
-				canvas.draw_polyline(run, glow_color, glow_width, true)
-				canvas.draw_polyline(run, main_color, main_width, true)
-				canvas.draw_polyline(run, highlight, 1.0, true)
+				_draw_flat_ring_run(canvas, run, glow_color, glow_width, main_color, main_width)
 			run = PackedVector2Array()
 			continue
 		var p := project_design(item.point)
 		if _valid_point(p):
 			run.append(p)
 	if run.size() > 1:
-		canvas.draw_polyline(run, glow_color, glow_width, true)
-		canvas.draw_polyline(run, main_color, main_width, true)
-		canvas.draw_polyline(run, highlight, 1.0, true)
+		_draw_flat_ring_run(canvas, run, glow_color, glow_width, main_color, main_width)
+
+
+## 2D 回退环套用和 3D 一样的结构：深色底盘 + 发光 + 判定线 + 内缘高光。
+func _draw_flat_ring_run(canvas: Control, run: PackedVector2Array, glow_color: Color,
+		glow_width: float, main_color: Color, main_width: float) -> void:
+	canvas.draw_polyline(run, Color(0.03, 0.04, 0.06, 0.55), RING_BAND_WIDTH, true)
+	canvas.draw_polyline(run, glow_color, glow_width, true)
+	canvas.draw_polyline(run, main_color, main_width, true)
+	canvas.draw_polyline(run, Color(1, 1, 1, 0.38), 1.0, true)
 
 
 func _draw_bezel(canvas: Control, chart: Chart, t: float) -> void:
@@ -4120,6 +4147,36 @@ static func split_path_runs(points: PackedVector2Array, erased: Array, starts: A
 	return result
 
 
+## 光标后方 120ms 的轨迹淡出 + 前沿亮边。
+## 轨迹时长按拍算，先换成秒才能知道 120ms 对应多长一段。
+func _draw_path_erase_tail(canvas: Control, chart: Chart, note: Note, t: float, target: float,
+		accent: Color, dim: float, ns: float) -> void:
+	target = clampf(target, 0.0, 1.0)
+	if target <= 0.001:
+		return
+	var total := note.duration()
+	var seconds := total * 60.0 / maxf(1.0, chart.timing.bpm_at(note.beat))
+	var fade := clampf(0.12 / maxf(0.05, seconds), 0.004, 0.25)
+	var from := maxf(0.0, target - fade)
+	var steps := 10
+	var points := PackedVector2Array()
+	var colors := PackedColorArray()
+	for i in steps + 1:
+		var k := float(i) / float(steps)
+		points.append(_path_screen_point(chart, note, total * lerpf(from, target, k), t, true, 1.0))
+		colors.append(Color(accent.r, accent.g, accent.b, pow(k, 0.65) * dim))
+	if points.size() < 2:
+		return
+	var band := 5.0 * PATH_SIZE_SCALE * ns * float(_skin()["band"]) * 1.7
+	canvas.draw_polyline_colors(points, colors, band, false)
+	# 前沿亮边：最后两段加一条细白线，划过去的地方亮一下就灭。
+	var front := PackedVector2Array()
+	for i in range(maxi(0, steps - 2), steps + 1):
+		front.append(points[i])
+	if front.size() >= 2:
+		canvas.draw_polyline(front, Color(1, 1, 1, 0.55 * dim), 2.0, true)
+
+
 func _path_stroke_runs(chart: Chart, note: Note, beat: float, projection_key: String, count: int) -> Array[PackedVector2Array]:
 	var stroke: PathStroke = _path_strokes.get(note)
 	if stroke == null:
@@ -4211,6 +4268,12 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, project
 				# 试玩时轨迹已经被擦到光标处，剩下的每一段都在前方，不该再按“piece 内比例”压暗。
 				var chevron_color := future if playtest_mode else (passed if sample.fraction < progress else future)
 				_draw_chevron(canvas, sample.point, sample.direction, chevron_color, chevron_size)
+	# 削除动画：光标后方 120ms 的轨迹还在淡出，前沿一道亮边——像被"吃掉"，不是硬切。
+	if playtest_mode and not decorative and trail_dim > 0.001:
+		var cuts: Array = path_cuts.get(note.id, [])
+		if cuts.size() == 1 and float(cuts[0].get("from", 0.0)) <= 0.001:
+			_draw_path_erase_tail(canvas, chart, note, t, float(cuts[0].get("to", 0.0)),
+				accent, trail_dim, ns)
 	if selected:
 		# 中间判定点只在选中时绘制，避免多星星铺满采样点拖慢编辑器。
 		for sample_beat in note.path_sample_beats():

@@ -1,11 +1,10 @@
 shader_type canvas_item;
 
-// 实例化小节线：每个实例是一段细长四边形，沿 UV.y 做约 1px 的抗锯齿。
-// 实例的 Y 缩放固定为 3px（见 preview_3d._add_bar_segment），
-// half_width=0.2 表示中间 0.6px 全不透明、向外淡到 1.2px。
-uniform float half_width : hint_range(0.05, 0.49) = 0.2;
-
+// 实例化小节线：每个实例是一段 3px 高的细长四边形（见 preview_3d._update_bar_multimesh）。
+// 渲染成 1px 实体白线，两侧各留 1px 做抗锯齿；线宽不随四边形长度变化。
 void fragment() {
+	float half_px = 0.5 / 3.0;
 	float d = abs(UV.y - 0.5);
-	COLOR.a *= 1.0 - smoothstep(half_width, 0.5, d);
+	float aa = max(fwidth(UV.y) * 0.75, 0.0005);
+	COLOR.a *= 1.0 - smoothstep(half_px - aa, half_px + aa, d);
 }

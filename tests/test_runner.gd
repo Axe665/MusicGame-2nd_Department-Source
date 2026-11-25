@@ -4234,12 +4234,13 @@ func test_hold_stack_alpha() -> bool:
 
 
 func test_judgement_text_font() -> bool:
-	# 判定提示里的“早/晚”必须用含中文的字体：等宽字体缺中文字形，
-	# 每个不同的提示串都会触发一次系统字体回退（单次 ~18ms），判定密集时卡顿。
+	# 等宽字体本身没有中文字形。必须显式挂 fallback：否则每个含中文的新串都会
+	# 触发一次系统字体回退（实测单次 ~18ms，HUD 每次数值变化就是一帧卡死）。
 	var regular := UITheme.FONT_REGULAR
-	var mono := UITheme.FONT_MONO
+	var mono := UITheme.mono_font()
 	ok(regular.has_char("早".unicode_at(0)), "judgement detail font has CJK glyphs")
-	ok(not mono.has_char("早".unicode_at(0)), "mono font still lacks CJK (do not use it for judgement text)")
+	ok(not mono.fallbacks.is_empty(), "mono font has an explicit CJK fallback")
+	ok(mono.has_char("早".unicode_at(0)), "mono font resolves CJK through the fallback")
 	return true
 
 
