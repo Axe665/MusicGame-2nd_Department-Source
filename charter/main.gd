@@ -2899,7 +2899,7 @@ func _begin_async_open(path: String) -> void:
 	_load_task.begin(path)
 	_load_show_at_msec = Time.get_ticks_msec() + 120
 	if _load_label != null:
-		_load_label.text = "正在解析 %%s…" % path.get_file()
+		_load_label.text = "正在解析 %s…" % path.get_file()
 	if _load_bar != null:
 		_load_bar.value = 0.0
 
@@ -2921,14 +2921,14 @@ func _poll_async_open() -> void:
 	if _load_overlay != null:
 		_load_overlay.visible = false
 	if task.chart == null:
-		_show_toast("打开失败：%%s" %% task.error, "error")
+		_show_toast("打开失败：%s" % task.error, "error")
 		_app.restore_active_tab()
 		return
 	_app.set_chart(task.chart, task.path)
 	_app.add_tab_from_current()
 	_sync_from_app()
 	_refresh_tabs()
-	_show_toast("已打开 %%s" %% task.path.get_file())
+	_show_toast("已打开 %s" % task.path.get_file())
 
 
 func _ensure_load_overlay() -> void:
