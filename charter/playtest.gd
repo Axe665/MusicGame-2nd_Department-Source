@@ -133,7 +133,6 @@ var _ordered_notes: Array[Note] = []
 ## 双押 Anchor：每对的 owner id（较小的一方负责判定），按 id 取 Note。
 var _anchor_owner_ids: Array[int] = []
 var _note_index: Dictionary = {}
-var _ui_accum: float = 0.0
 
 var _states: Dictionary = {}
 var _key_presses: Array[Dictionary] = []
@@ -1238,11 +1237,8 @@ func _process(delta: float) -> void:
 		if absf(beat - _frame_last_beat) < 0.000001:
 			_beat_stalls += 1
 	_frame_last_beat = beat
-	_ui_accum += delta
-	if _ui_accum >= 0.05:
-		_ui_accum = 0.0
-		_update_hud_state()
-		_update_replay_bar()
+	_update_hud_state()
+	_update_replay_bar()
 	if beat > chart.duration_beats() + 2.0 and not offline_mode:
 		# osu 口径：对局和回放都在「最后一颗 +2 拍」结束，结果页立刻出来；
 		# 音乐不在这里停，继续放到尾（见 _finish），离开时淡出。
@@ -2828,7 +2824,7 @@ func _add_log(line: String) -> void:
 		print("[playtest] %s" % line)
 
 
-## 把本局状态推给 Preview3D 的 HUD（20Hz，和原来顶栏刷新同频）。
+## 把本局状态推给 Preview3D 的 HUD（每帧）。值没变时 TextLine 走缓存，重画很便宜。
 func _update_hud_state() -> void:
 	if _preview == null or chart == null:
 		return

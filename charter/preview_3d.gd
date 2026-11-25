@@ -232,13 +232,11 @@ var _cursor_layer: Control
 ## 分层 overlay：每层一个 CanvasItem，只有内容变化的层才 queue_redraw。
 ## 顺序就是绘制顺序（下 → 上），和 draw_overlay() 的历史顺序一致。
 const OVERLAY_LAYERS: Array[String] = ["stage", "bars", "combo", "seek", "limit", "path", "hold", "notes", "fx", "hud_live", "hud_static"]
-## 时间/镜头/几何变化时，这些层都要重画。HUD 拆成两层单独限频（见 HUD_LIVE_MS/HUD_STATIC_MS）。
+## 时间/镜头/几何变化时，这些层都要重画。
 const OVERLAY_SCENE_LAYERS: Array[String] = ["stage", "bars", "combo", "seek", "limit", "path", "hold", "notes", "fx"]
-## 实时层（环进度/判定环动画）最多 60Hz；静态层（左右信息列）最多 20Hz，和 HUD 数值刷新同频。
-const HUD_LIVE_MS := 16.667
-const HUD_STATIC_MS := 50.0
-var _hud_live_usec: int = 0
-var _hud_static_usec: int = 0
+## HUD 拆两层只为绘制顺序（连击要压在轨迹下面），和场景层同帧重画。
+## 早先按 16.7ms/50ms 门限限频：60Hz 屏上 16.7ms 门限会隔帧通过，HUD 实际只有 30Hz；
+## 信息列 20Hz 更是和画面明显脱节，所以门限整个去掉。
 var _layer_nodes: Dictionary = {}
 ## 小节线：所有线段的实例化绘制（一条 MultiMesh，一次 draw call）。
 var _bars_multi: MultiMesh
@@ -2824,16 +2822,9 @@ func _redraw_all() -> void:
 	_invalidate_hud()
 
 
-## HUD 两层按时间门限重画。判定每命中一个音符都会 _redraw_all，
-## 这里再挡一层：HUD 数值本来就只 20Hz 刷新，没必要跟着每个判定重画。
+## HUD 两层跟主画面同帧重画。queue_redraw 每帧只合并一次，所以判定再密也只是一帧一次。
 func _invalidate_hud() -> void:
-	var hud_now := Time.get_ticks_usec()
-	if _hud_live_usec == 0 or float(hud_now - _hud_live_usec) / 1000.0 >= HUD_LIVE_MS:
-		_hud_live_usec = hud_now
-		_invalidate_layers(["hud_live"])
-	if _hud_static_usec == 0 or float(hud_now - _hud_static_usec) / 1000.0 >= HUD_STATIC_MS:
-		_hud_static_usec = hud_now
-		_invalidate_layers(["hud_static"])
+	_invalidate_layers(["hud_live", "hud_static"])
 
 
 func _invalidate_layers(layers: Array) -> void:
@@ -6659,11 +6650,19 @@ func _hud_arc(canvas: Control, affine: Array, from_deg: float, to_deg: float, ra
 	if span < 0.01:
 		return
 	var scale := (affine[1] as Vector2).length()
-	var steps := clampi(int(span * radius * scale / 3.0), 6, 240)
+	var steps := clampi(int(span * radius * scale / 8.0), 6, 96)
+	# 逐点调用 _affine_point / deg_to_rad 在 GDScript 里比三角本身还贵：
+	# 这里把仿射轴预先乘进半径，循环里只做两次乘加。
+	var center: Vector2 = affine[0]
+	var x_axis: Vector2 = affine[1] * radius
+	var y_axis: Vector2 = affine[2] * radius
+	var start := deg_to_rad(from_deg)
+	var step := (deg_to_rad(to_deg) - start) / float(steps)
 	var points := PackedVector2Array()
+	points.resize(steps + 1)
 	for i in steps + 1:
-		var a := deg_to_rad(lerpf(from_deg, to_deg, float(i) / float(steps)))
-		points.append(_affine_point(Vector2(cos(a), sin(a)) * radius, affine))
+		var a := start + step * float(i)
+		points[i] = center + x_axis * cos(a) + y_axis * sin(a)
 	canvas.draw_polyline(points, color, width, true)
 
 
