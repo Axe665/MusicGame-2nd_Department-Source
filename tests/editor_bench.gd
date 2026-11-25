@@ -39,11 +39,14 @@ func _ready() -> void:
 	preview.show_hud = true
 	preview.time_beat = 400.0
 	await _frames(12)
+	var frames_before: int = preview._perf_frames
+	var draw_before: int = preview._perf_draw_usec
 	for i in 60:
 		preview.time_beat = 400.0 + float(i) * 0.016
 		await get_tree().process_frame
-	var preview_ms := float(preview.total_us) / float(maxi(1, preview.draw_count)) / 1000.0
-	print("BENCH preview_overlay_ms=%.2f frames=%d" % [preview_ms, preview.draw_count])
+	var preview_frames := maxi(1, preview._perf_frames - frames_before)
+	var preview_ms := float(preview._perf_draw_usec - draw_before) / float(preview_frames) / 1000.0
+	print("BENCH preview_overlay_ms=%.2f frames=%d" % [preview_ms, preview_frames])
 	print("BENCH preview_sections_ms ", preview.summary())
 	var counts := {"path": 0, "hold": 0, "tap": 0}
 	for note in chart.notes:

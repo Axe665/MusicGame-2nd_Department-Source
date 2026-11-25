@@ -11,6 +11,9 @@ const PROJECT_VERSION := 1
 static var last_error: String = ""
 
 
+const LoadTrace = preload("res://core/load_trace.gd")
+
+
 static func chart_to_dict(chart: Chart) -> Dictionary:
 	# 序列化前补稳定 id：旧内存谱面也能写出可往返的 v2。
 	chart.ensure_key_ids()
@@ -354,8 +357,15 @@ static func _note_code(note: Note, by_id: Dictionary) -> String:
 	return "[%d]path{%s}" % [note.id, ";".join(segments)]
 
 
+## 解析进度：WorkerThreadPool 里的构建阶段写、主线程只读（单个写者，仅用于进度条）。
+static var parse_done: int = 0
+static var parse_total: int = 0
+
+
 static func chart_from_dict(data: Dictionary) -> Chart:
 	last_error = ""
+	parse_done = 0
+	parse_total = 0
 	if String(data.get("format", FORMAT)) != FORMAT:
 		last_error = "不是 Tamaki₃ 谱面文件"
 		return null
@@ -532,7 +542,10 @@ static func chart_from_dict(data: Dictionary) -> Chart:
 			if raw is Dictionary:
 				chart.palette.append(_palette_row(raw))
 	chart.notes.clear()
-	for raw in data.get("notes", []):
+	var notes_raw: Variant = data.get("notes", [])
+	parse_total = notes_raw.size() if notes_raw is Array else 0
+	for raw in notes_raw:
+		parse_done += 1
 		if raw is String:
 			var code: String = raw.strip_edges()
 			if code.contains("path{"):
@@ -613,16 +626,21 @@ static func load_chart(path: String) -> Chart:
 			return load_chart(project_dir_for(path))
 		last_error = "文件不存在：%s" % path
 		return null
+	LoadTrace.begin("open %s" % path.get_file())
 	var file := FileAccess.open(path, FileAccess.READ)
 	if file == null:
 		last_error = "无法读取：%s" % path
+		LoadTrace.end("失败")
 		return null
 	var text := file.get_as_text()
 	file.close()
+	LoadTrace.mark("读文件")
 	var chart := from_json(text)
+	LoadTrace.mark("构建谱面")
 	if chart != null:
 		chart.project_dir = ""
 		chart.project_main_path = ""
+	LoadTrace.end("%d 音符" % (chart.notes.size() if chart != null else 0))
 	return chart
 
 

@@ -1233,7 +1233,9 @@ func test_path_stroke_cache() -> bool:
 	eq(initial[0].size(), 9, "the stroke includes both endpoints at its requested sampling density")
 	preview.set_path_erased_to(note, 0.5)
 	var cut: Array[PackedVector2Array] = preview._path_stroke_runs(chart, note, 0.1, "static", 8)
-	eq(cut[0][0], Vector2(0.625, 0.0), "erasing splits the existing projected points")
+	# osu!lazer 式精确裁切：切口落在 0.5（擦除位置），而不是下一个采样点 0.625。
+	eq(cut[0][0], Vector2(0.5, 0.0), "the cut edge lands on the exact erase position")
+	eq(cut[0][1], Vector2(0.625, 0.0), "the next sample still follows the original projection")
 	eq(preview.projections, 9, "changing only the cut reuses the projection")
 	var moved: Array[PackedVector2Array] = preview._path_stroke_runs(chart, note, 0.2, "moved", 8)
 	eq(moved, cut, "changing the projection keeps the cut")
@@ -4234,12 +4236,13 @@ func test_hold_stack_alpha() -> bool:
 
 
 func test_judgement_text_font() -> bool:
-	# 判定提示里的“早/晚”必须用含中文的字体：等宽字体缺中文字形，
-	# 每个不同的提示串都会触发一次系统字体回退（单次 ~18ms），判定密集时卡顿。
+	# 等宽字体本身没有中文字形。必须显式挂 fallback：否则每个含中文的新串都会
+	# 触发一次系统字体回退（实测单次 ~18ms，HUD 每次数值变化就是一帧卡死）。
 	var regular := UITheme.FONT_REGULAR
-	var mono := UITheme.FONT_MONO
+	var mono := UITheme.mono_font()
 	ok(regular.has_char("早".unicode_at(0)), "judgement detail font has CJK glyphs")
-	ok(not mono.has_char("早".unicode_at(0)), "mono font still lacks CJK (do not use it for judgement text)")
+	ok(not mono.fallbacks.is_empty(), "mono font has an explicit CJK fallback")
+	ok(mono.has_char("早".unicode_at(0)), "mono font resolves CJK through the fallback")
 	return true
 
 

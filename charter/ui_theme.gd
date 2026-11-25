@@ -36,7 +36,17 @@ const GREEN := Color("#86C97A")
 const WHITE := Color("#FFFFFF")
 
 
+## 等宽字体没有中文字形。挂上正文字体做显式 fallback：否则 Godot 每次排版都会去
+## 系统字体里找兜底，实测让「进度 42%」这种短文本单次排版花 ~18ms（一帧卡死）。
+static func prepare_fonts() -> void:
+	# const preload 不能直接写属性；先取一份引用再改，改的是同一个资源。
+	var mono: Font = FONT_MONO
+	if mono != null and mono.fallbacks.is_empty():
+		mono.fallbacks = [FONT_REGULAR]
+
+
 static func build() -> Theme:
+	prepare_fonts()
 	var theme := Theme.new()
 	var regular: Font = FONT_REGULAR
 	var bold: Font = load("res://assets/fonts/NotoSansSC-Bold.ttf")
@@ -179,6 +189,7 @@ static func _box(
 
 
 static func mono_font() -> Font:
+	prepare_fonts()
 	return FONT_MONO
 
 

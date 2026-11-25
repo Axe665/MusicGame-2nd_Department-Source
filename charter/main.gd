@@ -6,6 +6,8 @@ const TOOL_ORDER := [
 	["event", "事件 E"],
 ]
 
+const AsyncChartLoad = preload("res://core/async_chart_load.gd")
+
 var _app: Node = null
 var _preview: Preview3D
 var _preview_box: VBoxContainer
@@ -25,10 +27,11 @@ var _preview_drag_start_x: float = 0.0
 var _preview_drag_width: float = 340.0
 var _preview_manual_open: bool = false
 var _audio_popup: PopupPanel = null
-## 静止降帧：没有任何输入/播放/试玩 1.5 秒后把帧率压到 10，
+## 静止降帧：前台静置 3 秒压到 60fps，后台 1.5 秒压到 30fps，
 ## 避免窗口以 120fps 重画同一张静止画面（GPU 空转的主量级）。
 var _last_activity_ms: int = 0
-var _idle_capped: bool = false
+## 当前生效的空闲限帧（-1 = 不干预，跟随用户设置）。
+var _idle_cap_fps: int = -1
 var _playtest_validation_pending: bool = false
 var _settings_dialog: AcceptDialog = null
 var _quality_widgets: Dictionary = {}
@@ -36,7 +39,7 @@ var _hud_widgets: Dictionary = {}
 
 ## 画质菜单：每项一行子菜单，行标题带当前值，子项打勾。只影响渲染，不碰判定。
 const QUALITY_OPTIONS := [
-	{"key": "preset", "label": "预设", "choices": [["极高（4× 抗锯齿）", 80], ["高（2× 抗锯齿）", 81], ["中", 82], ["低", 83]]},
+	{"key": "preset", "label": "预设", "choices": [["极高（4× 抗锯齿）", 80], ["高（2× 抗锯齿）", 81], ["中", 82], ["低", 83], ["自动（按实测帧时间）", 84]]},
 	{"key": "frame_cap", "label": "帧率上限", "choices": [["60", 90], ["120", 91], ["144", 92], ["240", 93], ["垂直同步", 94], ["不限", 95]]},
 	{"key": "aa_2d_level", "label": "2D 抗锯齿", "choices": [["关", 60], ["MSAA 2×", 61], ["MSAA 4×", 62], ["MSAA 8×", 84]]},
 	{"key": "msaa_3d_level", "label": "3D 抗锯齿", "choices": [["关", 150], ["MSAA 2×", 151], ["MSAA 4×", 152], ["MSAA 8×", 153], ["FXAA（便宜）", 154], ["TAA（平滑，可能拖影）", 155], ["MSAA 2× + FXAA", 156], ["MSAA 4× + FXAA", 157]]},
@@ -52,6 +55,7 @@ const QUALITY_OPTIONS := [
 	{"key": "background_brightness", "label": "背景明暗", "choices": [["关", 96], ["25%", 97], ["50%", 98], ["75%", 99], ["100%（默认）", 100]]},
 	{"key": "show_storyboard", "label": "故事板", "choices": [["开", 166], ["关", 167]]},
 	{"key": "show_storyboard_background", "label": "故事板背景层", "choices": [["开", 168], ["关", 169]]},
+	{"key": "renderer_backend", "label": "渲染后端（重启生效）", "choices": [["自动", 176], ["Vulkan", 177], ["OpenGL 兼容", 178]]},
 	{"key": "video_encoder", "label": "视频导出编码器", "choices": [["自动（优先硬件）", 170], ["NVENC", 171], ["QSV", 172], ["VideoToolbox", 173], ["VAAPI（Linux）", 174], ["libx264（软件）", 175]]},
 ]
 
@@ -163,6 +167,13 @@ var _osu_browser: OsuBrowser
 ## 设置里「转码缓存」体积显示。
 var _cache_label: Label = null
 var _import_progress: AcceptDialog = null
+## 单谱异步解析：遮罩 + 进度，避免打开大谱时卡住主线程。
+var _load_task: RefCounted = null
+var _load_overlay: Control = null
+var _load_label: Label = null
+var _load_bar: ProgressBar = null
+## 解析通常 20–40ms：超过这个时间才弹遮罩，避免闪一下。
+var _load_show_at_msec: int = 0
 var _import_progress_label: Label = null
 var _import_progress_bar: ProgressBar = null
 var _new_dialog: NewChartDialog
@@ -204,7 +215,16 @@ var _volume_sliders: Array = []
 
 
 func _ready() -> void:
+	if OS.is_debug_build():
+		print("[hw] gpu=%s vendor=%s api=%s" % [
+			RenderingServer.get_video_adapter_name(),
+			RenderingServer.get_video_adapter_vendor(),
+			RenderingServer.get_video_adapter_api_version(),
+		])
 	_app = get_node_or_null("/root/App")
+	# 保存的渲染后端和当前进程不一致时，先重启到目标后端再建界面。
+	if _apply_saved_renderer():
+		return
 	# 启动就算「刚活动过」，否则开局直接进 10fps 静止档。
 	_last_activity_ms = Time.get_ticks_msec()
 	theme = UITheme.build()
@@ -221,6 +241,7 @@ func _ready() -> void:
 	_sfx.set_style(String(_app.hit_sfx_style) if _app != null else "default")
 	_build_dialogs()
 	_build_audio_popup()
+	call_deferred("_check_gpu_crash_loop")
 	if _app != null:
 		_app.chart_changed.connect(_on_chart_changed)
 		_app.chart_live_changed.connect(_on_chart_live_changed)
@@ -260,6 +281,109 @@ func _ready() -> void:
 	for arg in OS.get_cmdline_user_args():
 		if arg.begins_with("--replay="):
 			call_deferred("_open_replay_file", arg.get_slice("=", 1))
+
+
+## ── 渲染后端与 GPU 崩溃回退（仿 Estella 的 RendererFallback）──────────────
+## 记录跨进程的启动状态：上一进程没走到 _exit_tree（崩溃/掉驱动）且存活不足 20 秒，
+## 就累计一次；连续两次就在下次启动时提示改用 OpenGL 兼容模式。
+const GPU_STATE_PATH := "user://gpu_state.json"
+const GPU_SHORT_RUN_SEC := 20
+
+
+func _renderer_driver() -> String:
+	var args := OS.get_cmdline_args()
+	for i in args.size() - 1:
+		if args[i] == "--rendering-driver":
+			return args[i + 1]
+	return ""
+
+
+## 保存的后端和当前进程不一致时重启一次；由 --renderer-applied 防止循环。
+func _apply_saved_renderer() -> bool:
+	var applied := "--renderer-applied" in OS.get_cmdline_args()
+	if applied or _app == null:
+		return false
+	var want := String(_app.renderer_mode)
+	var want_driver := ""
+	if want == "opengl3":
+		want_driver = "opengl3"
+	elif want == "vulkan":
+		want_driver = "vulkan"
+	if want_driver.is_empty() or want_driver == _renderer_driver():
+		return false
+	return _relaunch_with_driver(want_driver)
+
+
+func _relaunch_with_driver(driver: String) -> bool:
+	if driver.is_empty():
+		return false
+	var args: Array[String] = ["--rendering-driver", driver, "--renderer-applied", "--"]
+	args.append_array(OS.get_cmdline_user_args())
+	var pid := OS.create_process(OS.get_executable_path(), args)
+	if pid <= 0:
+		push_warning("重启失败：无法启动新进程")
+		return false
+	get_tree().quit()
+	return true
+
+
+func _check_gpu_crash_loop() -> void:
+	var state := {}
+	if FileAccess.file_exists(GPU_STATE_PATH):
+		var f := FileAccess.open(GPU_STATE_PATH, FileAccess.READ)
+		if f != null:
+			var parsed: Variant = JSON.parse_string(f.get_as_text())
+			f.close()
+			if parsed is Dictionary:
+				state = parsed
+	var now := int(Time.get_unix_time_from_system())
+	var short_runs := int(state.get("short_runs", 0))
+	if bool(state.get("running", false)):
+		var started := int(state.get("started_at", 0))
+		short_runs = short_runs + 1 if now - started < GPU_SHORT_RUN_SEC else 0
+	_write_gpu_state({"running": true, "started_at": now, "short_runs": short_runs})
+	if short_runs < 2 or _renderer_driver() == "opengl3":
+		return
+	_show_gpu_fallback_dialog(short_runs)
+
+
+func _write_gpu_state(state: Dictionary) -> void:
+	var f := FileAccess.open(GPU_STATE_PATH, FileAccess.WRITE)
+	if f == null:
+		return
+	f.store_string(JSON.stringify(state))
+	f.close()
+
+
+func _show_gpu_fallback_dialog(short_runs: int) -> void:
+	var dlg := ConfirmationDialog.new()
+	dlg.title = "显卡兼容提示"
+	dlg.dialog_text = "上次启动在 %d 秒内退出了 %d 次，可能是显卡驱动或渲染后端不稳定。\n\n要改用 OpenGL 兼容模式重启吗？" % [GPU_SHORT_RUN_SEC, short_runs]
+	dlg.ok_button_text = "改用 OpenGL 并重启"
+	dlg.cancel_button_text = "继续使用当前设置"
+	dlg.confirmed.connect(func() -> void:
+		_app.renderer_mode = "opengl3"
+		_app.save_settings()
+		_relaunch_with_driver("opengl3"))
+	dlg.canceled.connect(func() -> void: _write_gpu_state({"running": true, "started_at": int(Time.get_unix_time_from_system()), "short_runs": 0}))
+	add_child(dlg)
+	dlg.popup_centered()
+
+
+func _offer_renderer_restart(driver: String) -> void:
+	var dlg := ConfirmationDialog.new()
+	dlg.title = "渲染后端"
+	dlg.dialog_text = "切换渲染后端需要重启制谱器。现在重启吗？"
+	dlg.ok_button_text = "立即重启"
+	dlg.cancel_button_text = "稍后"
+	dlg.confirmed.connect(func() -> void: _relaunch_with_driver(driver))
+	add_child(dlg)
+	dlg.popup_centered()
+
+
+## 正常退出：清掉“正在运行”标记和崩溃计数。
+func _exit_tree() -> void:
+	_write_gpu_state({"running": false, "started_at": 0, "short_runs": 0})
 
 
 ## 无人值守性能基准：载入 Apollo 谱，从扫圈段自动打 25 秒后退出。
@@ -1248,7 +1372,7 @@ func _set_hud_index(key: String, index: int) -> void:
 func _quality_index(key: String) -> int:
 	match key:
 		"preset":
-			return ["ultra", "high", "mid", "low"].find(_app.quality_preset)
+			return ["ultra", "high", "mid", "low", "auto"].find(_app.quality_preset)
 		"frame_cap":
 			return ["60", "120", "144", "240", "vsync", "unlimited"].find(_app.frame_cap)
 		"aa_2d_level":
@@ -1281,14 +1405,22 @@ func _quality_index(key: String) -> int:
 			return 0 if _app.show_storyboard_background else 1
 		"video_encoder":
 			return ["auto", "nvenc", "qsv", "videotoolbox", "vaapi", "libx264"].find(_app.video_encoder)
+		"renderer_backend":
+			return ["auto", "vulkan", "opengl3"].find(_app.renderer_mode)
 	return -1
 
 
 func _set_quality_index(key: String, index: int) -> void:
 	if key == "preset":
-		_app.apply_quality_preset(["ultra", "high", "mid", "low"][clampi(index, 0, 3)])
+		_app.apply_quality_preset(["ultra", "high", "mid", "low", "auto"][clampi(index, 0, 4)])
 		return
 	match key:
+		"renderer_backend":
+			_app.renderer_mode = ["auto", "vulkan", "opengl3"][clampi(index, 0, 2)]
+			_app.save_settings()
+			if _app.renderer_mode != "auto":
+				_offer_renderer_restart(_app.renderer_mode)
+			return
 		"frame_cap":
 			_app.frame_cap = ["60", "120", "144", "240", "vsync", "unlimited"][clampi(index, 0, 5)]
 			_app.apply_frame_cap()
@@ -1421,7 +1553,7 @@ func _build_quality_rows(parent: Control) -> void:
 		if key == "preset":
 			pick.add_item("自定义")
 		pick.item_selected.connect(func(index: int) -> void:
-			if key == "preset" and index > 3:
+			if key == "preset" and index > 4:
 				return
 			_set_quality_index(key, index)
 			_app.save_settings()
@@ -1634,6 +1766,9 @@ func _build_dialogs() -> void:
 	_open_dialog.title = "打开谱面文件夹 / 单文件 / 谱面包"
 	var open_selected := func(path: String) -> void:
 		_app.ensure_tab()
+		if _can_async_open(path):
+			_begin_async_open(path)
+			return
 		if _app.load_chart(path):
 			_app.add_tab_from_current()
 			_sync_from_app()
@@ -2112,23 +2247,32 @@ func _fire_editor_sfx(beat: float) -> void:
 	_sfx_last_beat = beat
 
 
-## 只给后台静止窗口限帧。前台输入继续按用户选择的帧率响应。
+## 静止档：前台静置 3s 降到 60fps（操作手感不变，少烧 90% CPU），
+## 后台 1.5s 降到 30fps。任何输入/播放/试玩都立刻恢复用户设置的帧率。
 func _update_idle_cap() -> void:
 	if _app == null or DisplayServer.get_name() == "headless":
 		return
-	var busy := get_window().has_focus() or _playing or _playtest != null \
-		or Time.get_ticks_msec() - _last_activity_ms < 1500
-	if busy:
-		if _idle_capped:
-			_idle_capped = false
-			_app.apply_frame_cap()
+	var target := -1
+	if _playing or _playtest != null:
+		target = -1
+	else:
+		var idle_ms := Time.get_ticks_msec() - _last_activity_ms
+		if not get_window().has_focus():
+			if idle_ms >= 1500:
+				target = 30
+		elif idle_ms >= 3000:
+			target = 60
+	if target == _idle_cap_fps:
 		return
-	if not _idle_capped:
-		_idle_capped = true
-		Engine.max_fps = 30
+	_idle_cap_fps = target
+	if target < 0:
+		_app.apply_frame_cap()
+	else:
+		Engine.max_fps = target
 
 
 func _process(_delta: float) -> void:
+	_poll_async_open()
 	_update_idle_cap()
 	if _app == null or _app.chart == null:
 		return
@@ -2744,6 +2888,97 @@ func _prepare_import_media() -> void:
 				chart.audio_path = prepared
 	_hide_import_progress()
 	_app.save_set_file()
+
+
+## 只有「单谱 JSON」走异步；工程集/三文件/lbp 还带素材处理，保持原来的同步路径。
+func _can_async_open(path: String) -> bool:
+	if not path.to_lower().ends_with(".json"):
+		return false
+	if _app._is_set_file(path) or ChartIO.is_project_path(path):
+		return false
+	if ChartIO.is_three_file_path(path):
+		return false
+	return true
+
+
+func _begin_async_open(path: String) -> void:
+	if _load_task != null:
+		return
+	_load_task = AsyncChartLoad.new()
+	_load_task.begin(path)
+	_load_show_at_msec = Time.get_ticks_msec() + 120
+	if _load_label != null:
+		_load_label.text = "正在解析 %s…" % path.get_file()
+	if _load_bar != null:
+		_load_bar.value = 0.0
+
+
+func _poll_async_open() -> void:
+	if _load_task == null:
+		return
+	var done: int = _load_task.poll()
+	if done == 0:
+		if _load_overlay == null and Time.get_ticks_msec() >= _load_show_at_msec:
+			_ensure_load_overlay()
+			_load_overlay.visible = true
+		if _load_bar != null:
+			var total := ChartIO.parse_total
+			_load_bar.value = 0.0 if total <= 0 else clampf(float(ChartIO.parse_done) / float(total), 0.0, 1.0) * 100.0
+		return
+	var task := _load_task
+	_load_task = null
+	if _load_overlay != null:
+		_load_overlay.visible = false
+	if task.chart == null:
+		_show_toast("打开失败：%s" % task.error, "error")
+		_app.restore_active_tab()
+		return
+	_app.set_chart(task.chart, task.path)
+	_app.add_tab_from_current()
+	_sync_from_app()
+	_refresh_tabs()
+	_show_toast("已打开 %s" % task.path.get_file())
+
+
+func _ensure_load_overlay() -> void:
+	if _load_overlay != null:
+		return
+	_load_overlay = Control.new()
+	_load_overlay.name = "LoadOverlay"
+	_load_overlay.mouse_filter = Control.MOUSE_FILTER_STOP
+	_load_overlay.visible = false
+	add_child(_load_overlay)
+	_load_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	var dim := ColorRect.new()
+	dim.color = Color(0.02, 0.03, 0.05, 0.55)
+	dim.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_load_overlay.add_child(dim)
+	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	var center := CenterContainer.new()
+	center.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_load_overlay.add_child(center)
+	center.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	var panel := PanelContainer.new()
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.05, 0.06, 0.08, 0.97)
+	sb.border_color = Color(1, 1, 1, 0.12)
+	sb.set_border_width_all(1)
+	sb.set_corner_radius_all(10)
+	sb.set_content_margin_all(18)
+	panel.add_theme_stylebox_override("panel", sb)
+	panel.custom_minimum_size = Vector2(380, 0)
+	center.add_child(panel)
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 10)
+	panel.add_child(box)
+	_load_label = UITheme.style_label(Label.new(), 13, UITheme.INK)
+	_load_label.text = "正在解析…"
+	box.add_child(_load_label)
+	_load_bar = ProgressBar.new()
+	_load_bar.max_value = 100.0
+	_load_bar.show_percentage = false
+	_load_bar.custom_minimum_size = Vector2(344, 8)
+	box.add_child(_load_bar)
 
 
 func _show_import_progress() -> void:
@@ -3418,7 +3653,7 @@ func _build_playtest_dialog() -> void:
 	box.add_child(_playtest_mouse)
 	_playtest_perfect_fx = CheckBox.new()
 	_playtest_perfect_fx.text = "显示 PERFECT 特效"
-	_playtest_perfect_fx.tooltip_text = "关闭后 PERFECT 不再在判定环外侧亮光扇和碎屑；默认开启"
+	_playtest_perfect_fx.tooltip_text = "关闭后 PERFECT 命中不再出爆点、环外光扇和碎屑，只留判定字；默认开启"
 	box.add_child(_playtest_perfect_fx)
 
 	box.add_child(HSeparator.new())
@@ -3698,6 +3933,9 @@ func _start_playtest(from_start: bool) -> void:
 	editor_root.hide()
 	editor_root.process_mode = Node.PROCESS_MODE_DISABLED
 	_preview.set_suspended(true)
+	if _app.quality_preset == "auto" and not _app.auto_quality_measured:
+		_app.auto_quality_preset = _app.recommend_quality_tier()
+		_app.apply_quality_preset("auto")
 	_playtest = Playtest.new()
 	_playtest.bench_mode = "--bench" in OS.get_cmdline_user_args()
 	_playtest.auto_play = bool(_app.playtest_auto) or "--auto" in OS.get_cmdline_user_args()

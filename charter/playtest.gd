@@ -80,6 +80,8 @@ const DYNAMIC_LIMIT_MS := 50.0
 const JUDGE_LOOKAHEAD_MS := 1500.0
 const JUDGE_LOOKBEHIND_MS := 6000.0
 
+const LoadTrace = preload("res://core/load_trace.gd")
+
 var _app: Node = null
 var chart: Chart = null
 ## 试玩用的原谱；chart 可能是它的镜像副本（重试必须从原谱重建）。
@@ -119,6 +121,8 @@ var _countdown_beats: int = 4
 var _countdown_bpm: float = 120.0
 var _ready_layer: Control = null
 var _ready_phase: String = "idle"     # load / fill / countdown / done
+## 着色器预热帧计数（0 开始，画满 4 帧后恢复真实谱面）。
+var _shader_warmup_done: bool = false
 var _ready_progress: float = 0.0
 var _ready_delay: float = 0.0
 var _countdown_left: float = 0.0
@@ -129,7 +133,6 @@ var _ordered_notes: Array[Note] = []
 ## 双押 Anchor：每对的 owner id（较小的一方负责判定），按 id 取 Note。
 var _anchor_owner_ids: Array[int] = []
 var _note_index: Dictionary = {}
-var _ui_accum: float = 0.0
 
 var _states: Dictionary = {}
 var _key_presses: Array[Dictionary] = []
@@ -142,6 +145,8 @@ var _last_seek_ms: float = -1.0e9
 var _last_frame_ms: float = 16.7
 ## 连续多少个统计窗口装不下目标帧：用来给弱机自动降画质。
 var _slow_windows: int = 0
+## 高回报率鼠标只提示一次。
+var _hw_warned: bool = false
 ## 每个键上一次按下的时间，用来吃掉手抖双击。
 var _last_press_ms: Dictionary = {}
 var _keys_held: Dictionary = {}
@@ -394,6 +399,7 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 		_open_path_input_log()
 		_start_play()
 		return
+	LoadTrace.begin("playtest %s" % chart_path.get_file())
 	_ready_phase = "load"
 	_ready_progress = 0.0
 	_tick_index = -1
@@ -407,6 +413,7 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	await _prepare_audio(token)
 	if token != _setup_token or not is_inside_tree():
 		return
+	LoadTrace.mark("音频")
 	_ready_phase = "fill"
 	_ready_progress = 0.0
 	_ready_delay = 0.3
@@ -444,6 +451,7 @@ static func run_mouse_mode(is_replay: bool) -> int:
 
 
 func _start_play() -> void:
+	LoadTrace.end("开始播放")
 	_ready_phase = "done"
 	_ready_layer.visible = false
 	_running = true
@@ -461,6 +469,9 @@ func _start_countdown() -> void:
 	# 最后一拍就是开始提示音：GO 本身算第 N 拍，所以只数 N-1 个间隔；画面从 N-1 开始。
 	_countdown_sec = float(_countdown_beats - 1) * 60.0 / _countdown_bpm
 	_countdown_left = _countdown_sec
+	if _preview != null and _preview.shader_warmup_active():
+		_preview.end_shader_warmup()
+	_shader_warmup_done = true
 	_ready_phase = "countdown"
 	_tick_index = 0
 	_play_tick(_countdown_beats - 1)
@@ -469,6 +480,15 @@ func _start_countdown() -> void:
 func _process_ready(delta: float) -> void:
 	if _ready_layer == null:
 		return
+	# READY 层后面分帧把每种音符/红区/命中特效画一遍，避免第一次出现时编译管线卡帧。
+	if not _shader_warmup_done and _preview != null:
+		if not _preview.shader_warmup_active():
+			_preview.begin_shader_warmup()
+		else:
+			_preview.shader_warmup_step()
+			if _preview.shader_warmup_done():
+				_preview.end_shader_warmup()
+				_shader_warmup_done = true
 	var opening_end_ms: float = _timeline_start_ms - chart.offset_ms + 2000.0 * playback_rate
 	var storyboard_ready: bool = _preview == null or _preview.preload_storyboard_textures(opening_end_ms)
 	if _ready_phase == "load":
@@ -1180,6 +1200,7 @@ func _start_audio() -> void:
 
 
 func _process(delta: float) -> void:
+	LoadTrace.frame_tick(delta)
 	if _ready_layer != null and _ready_layer.visible:
 		_process_ready(delta)
 		return
@@ -1216,11 +1237,8 @@ func _process(delta: float) -> void:
 		if absf(beat - _frame_last_beat) < 0.000001:
 			_beat_stalls += 1
 	_frame_last_beat = beat
-	_ui_accum += delta
-	if _ui_accum >= 0.05:
-		_ui_accum = 0.0
-		_update_hud_state()
-		_update_replay_bar()
+	_update_hud_state()
+	_update_replay_bar()
 	if beat > chart.duration_beats() + 2.0 and not offline_mode:
 		# osu 口径：对局和回放都在「最后一颗 +2 拍」结束，结果页立刻出来；
 		# 音乐不在这里停，继续放到尾（见 _finish），离开时淡出。
@@ -2806,7 +2824,7 @@ func _add_log(line: String) -> void:
 		print("[playtest] %s" % line)
 
 
-## 把本局状态推给 Preview3D 的 HUD（20Hz，和原来顶栏刷新同频）。
+## 把本局状态推给 Preview3D 的 HUD（每帧）。值没变时 TextLine 走缓存，重画很便宜。
 func _update_hud_state() -> void:
 	if _preview == null or chart == null:
 		return
@@ -2906,8 +2924,17 @@ func _probe_frame_time() -> void:
 		if _slow_windows >= 2 and _preview.quality_level == 0:
 			_preview.set_quality_level(1)
 			_add_log("画质降档：中位帧 %.1fms，超预算 %.1fms" % [median, budget])
+			# 「自动」档把实测结果落成具体档位并保存：下次开局直接是合适的画质。
+			if _app != null and _app.quality_preset == "auto":
+				var stepped: String = _app.step_down_auto_quality()
+				if not stepped.is_empty():
+					_add_log("自动画质降到 %s" % stepped)
+					_app.notice.emit("帧时间超出预算，自动画质已降到 %s" % stepped, "warning")
 	else:
 		_slow_windows = 0
+	if _app != null and not _hw_warned and _app.mouse_poll_hz >= 800:
+		_hw_warned = true
+		_app.notice.emit("检测到鼠标回报率约 %dHz：高回报率会增加输入事件开销" % _app.mouse_poll_hz, "info")
 	# 只在出现明显卡顿时打印，正常游玩不会刷屏。
 	if (worst > 8.0 or spikes > 20) and OS.is_debug_build():
 		print("[frame] t=%.1fs n=%d med=%.1fms p95=%.1fms max=%.1fms spikes=%d notes=%d" % [
