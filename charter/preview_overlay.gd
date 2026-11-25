@@ -7,6 +7,9 @@ extends Control
 var preview: Control
 ## true 时只画光标层（鼠标移动时不必重绘整个场景）。
 var cursor_only: bool = false
+## 只画某一层（stage/bars/combo/seek/limit/path/hold/notes/fx/hud）。
+## 空字符串 = 旧的全量 draw_overlay；Overlay 根节点不再自己绘制。
+var layer_name: String = ""
 ## true 时只画 storyboard 的背景层（垫在 3D 环下面）。
 var storyboard_background: bool = false
 ## true 时画 storyboard 的加色层（前景/背景由 additive_front 决定）。
@@ -42,5 +45,8 @@ func _draw() -> void:
 	elif cursor_only:
 		if preview.has_method("draw_cursor_overlay"):
 			preview.draw_cursor_overlay(self)
+	elif not layer_name.is_empty():
+		if preview.has_method("draw_layer"):
+			preview.draw_layer(layer_name, self)
 	elif preview.has_method("draw_overlay"):
 		preview.draw_overlay(self)

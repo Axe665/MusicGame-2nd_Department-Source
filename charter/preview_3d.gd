@@ -102,7 +102,7 @@ var use_3d_ring: bool = true:
 		_force_3d_frame = value
 		_mesh_dirty = true
 		if _overlay != null:
-			_overlay.queue_redraw()
+			_redraw_all()
 
 var _app: Node = null
 
@@ -229,6 +229,29 @@ var _amber_mesh: MeshInstance3D
 var _rim_mesh: MeshInstance3D
 var _overlay: Control
 var _cursor_layer: Control
+## 分层 overlay：每层一个 CanvasItem，只有内容变化的层才 queue_redraw。
+## 顺序就是绘制顺序（下 → 上），和 draw_overlay() 的历史顺序一致。
+const OVERLAY_LAYERS: Array[String] = ["stage", "bars", "combo", "seek", "limit", "path", "hold", "notes", "fx", "hud"]
+## 时间/镜头/几何变化时，这些层都要重画。
+const OVERLAY_SCENE_LAYERS: Array[String] = ["stage", "bars", "combo", "seek", "limit", "path", "hold", "notes", "fx", "hud"]
+var _layer_nodes: Dictionary = {}
+## 小节线：所有线段的实例化绘制（一条 MultiMesh，一次 draw call）。
+var _bars_multi: MultiMesh
+var _bars_node: MultiMeshInstance2D
+var _bars_capacity: int = 0
+var _bars_shader: ShaderMaterial
+## 兼容路径（测试/离屏基准）仍用旧的 draw_polyline 直接画。
+var _compat_drawing: bool = false
+## 音符端点/中心点：一张贴图 + 每实例变换和颜色，一次 draw call 画完全部。
+var _cap_shell_multi: MultiMesh
+var _cap_core_multi: MultiMesh
+var _cap_capacity: int = 0
+var _cap_pos: PackedVector2Array = []
+var _cap_rad: PackedFloat32Array = []
+var _cap_col: PackedColorArray = []
+var _cap_alpha: PackedFloat32Array = []
+static var _cap_shell_tex: Texture2D
+static var _cap_core_tex: Texture2D
 var _ring_material: StandardMaterial3D
 var _glow_material: StandardMaterial3D
 var _stage_material: StandardMaterial3D
@@ -497,7 +520,7 @@ func apply_ring_quality() -> void:
 			_subviewport.msaa_3d = Viewport.MSAA_4X
 			_subviewport.screen_space_aa = Viewport.SCREEN_SPACE_AA_FXAA
 	if _overlay != null:
-		_overlay.queue_redraw()
+		_redraw_all()
 
 
 ## 暂停 / 结算：冻结 3D 子视口（保留最后一帧），但不接管 _process 归属。
@@ -652,8 +675,52 @@ func _build_layers() -> void:
 	_overlay.name = "Overlay"
 	_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_overlay.set("preview", self)
+	# Overlay 根节点只当容器：绘制全部交给子层，避免和子层重复画一遍。
+	_overlay.set("layer_name", "none")
 	add_child(_overlay)
 	_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_layer_nodes.clear()
+	for layer in OVERLAY_LAYERS:
+		var node := Control.new()
+		node.name = "Layer_" + layer
+		node.set_script(load("res://charter/preview_overlay.gd"))
+		node.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		node.set("preview", self)
+		node.set("layer_name", layer)
+		_overlay.add_child(node)
+		node.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		_layer_nodes[layer] = node
+	# 小节线用一个 MultiMesh 画完：每个线段一个实例，一次 draw call。
+	_bars_multi = MultiMesh.new()
+	_bars_multi.transform_format = MultiMesh.TRANSFORM_2D
+	_bars_multi.use_colors = true
+	var bar_quad := QuadMesh.new()
+	bar_quad.size = Vector2(1.0, 3.0)
+	_bars_multi.mesh = bar_quad
+	_bars_multi.instance_count = 0
+	_bars_capacity = 0
+	_bars_shader = ShaderMaterial.new()
+	_bars_shader.shader = load("res://charter/bar_line.gdshader")
+	_bars_node = MultiMeshInstance2D.new()
+	_bars_node.name = "BarLines"
+	_bars_node.multimesh = _bars_multi
+	_bars_node.material = _bars_shader
+	(_layer_nodes["bars"] as Control).add_child(_bars_node)
+	# 音符圆头/中心点也走实例化：壳（黑+白）与芯（染色）各一个 MultiMesh。
+	var cap_tex := _cap_textures()
+	_cap_shell_multi = _make_dot_multimesh(false)
+	_cap_core_multi = _make_dot_multimesh(true)
+	var shell_node := MultiMeshInstance2D.new()
+	shell_node.name = "NoteCaps"
+	shell_node.multimesh = _cap_shell_multi
+	shell_node.material = _dot_material(cap_tex[0])
+	var core_node := MultiMeshInstance2D.new()
+	core_node.name = "NoteCores"
+	core_node.multimesh = _cap_core_multi
+	core_node.material = _dot_material(cap_tex[1])
+	var notes_layer := _layer_nodes["notes"] as Control
+	notes_layer.add_child(shell_node)
+	notes_layer.add_child(core_node)
 	# 光标单独一层：鼠标移动只重绘这一层，不再重画整个场景。
 	_cursor_layer = Control.new()
 	_cursor_layer.set_script(load("res://charter/preview_overlay.gd"))
@@ -958,10 +1025,19 @@ func _process(_delta: float) -> void:
 			_update_cursor()
 	_update_cursor_trail(_delta)
 	# 场景层只在时间/几何/特效变化时重绘；鼠标移动只触发光标层。
-	var needs_overlay := _playhead_redraw_pending or time_changed or view_changed or flat_dirty or not _pulses.is_empty() or not _note_pops.is_empty() or not _ring_lights.is_empty()
+	# 分层后：时间/镜头变化重画所有场景层；只有特效在动时只重画特效层。
+	var scene_dirty := _playhead_redraw_pending or time_changed or view_changed or flat_dirty
 	_playhead_redraw_pending = false
-	if needs_overlay:
-		_overlay.queue_redraw()
+	if scene_dirty:
+		_invalidate_layers(OVERLAY_SCENE_LAYERS)
+		_perf_frames += 1
+		if chart != null:
+			var bars_t := Time.get_ticks_usec()
+			_update_bar_multimesh(chart, t)
+			_perf_sections[6] += Time.get_ticks_usec() - bars_t
+	elif not _pulses.is_empty() or not _note_pops.is_empty() or not _ring_lights.is_empty():
+		_invalidate_layers(["fx"])
+		_perf_frames += 1
 	if show_storyboard and _storyboard != null and (time_changed or _sb_queued_ms < -1.0e8):
 		# 故事板有自己的 2D 坐标，环的形变/镜头变化不会影响它。
 		var sb_ms := chart.timing.beat_to_chart_ms(t) - chart.offset_ms
@@ -1558,7 +1634,7 @@ func reset_path_cuts() -> void:
 func set_path_head_state(note_id: int, hit: bool, beat: float) -> void:
 	_path_head_state[note_id] = {"hit": hit, "beat": beat}
 	if _overlay != null:
-		_overlay.queue_redraw()
+		_redraw_all()
 
 
 ## 试玩判定结果："hit" / "miss" 让音符当帧退场；"holding" 让 hold 收起头部。
@@ -1568,7 +1644,7 @@ func set_note_state(note_id: int, state: String, beat: float = NAN) -> void:
 	if not is_nan(beat):
 		note_state_beats[note_id] = beat
 	if _overlay != null:
-		_overlay.queue_redraw()
+		_redraw_all()
 
 
 func note_state(note_id: int) -> String:
@@ -1583,12 +1659,12 @@ func clear_note_states() -> void:
 	_note_pops.clear()
 	if note_states.is_empty():
 		if _overlay != null:
-			_overlay.queue_redraw()
+			_redraw_all()
 		return
 	note_states.clear()
 	note_state_beats.clear()
 	if _overlay != null:
-		_overlay.queue_redraw()
+		_redraw_all()
 
 
 func _on_chart_changed() -> void:
@@ -1633,7 +1709,7 @@ func _on_chart_live_changed() -> void:
 		_avg_radius_key = ""
 		_force_3d_frame = true
 	if _overlay != null:
-		_overlay.queue_redraw()
+		_redraw_all()
 
 
 ## 只动形状/镜头：音符缓存（排序、Path 切割）全部保留，只更新环几何。
@@ -1645,7 +1721,7 @@ func _on_ring_live_changed() -> void:
 		_avg_radius_key = ""
 		_force_3d_frame = true
 	if _overlay != null:
-		_overlay.queue_redraw()
+		_redraw_all()
 	# Note/region drags only change the overlay. Boundary dragging marks the
 	# mesh dirty in _update_drag(), where the actual geometry is edited.
 	if _mesh_dirty:
@@ -1654,7 +1730,7 @@ func _on_ring_live_changed() -> void:
 		_avg_radius_key = ""
 		_force_3d_frame = true
 	if _overlay != null:
-		_overlay.queue_redraw()
+		_redraw_all()
 
 
 ## 环编辑一次提交（改形状/镜头/指令）：只重建环几何，音符缓存全部保留。
@@ -1747,7 +1823,7 @@ func _gui_input(event: InputEvent) -> void:
 			_update_cursor()
 		_cursor_layer.queue_redraw()
 		if _drag_vertex >= 0 or _drag_visual >= 0 or _drag_note != null or _drawing_red:
-			_overlay.queue_redraw()
+			_redraw_all()
 		accept_event()
 		return
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
@@ -2014,7 +2090,7 @@ func _update_note_angle_drag(screen: Vector2) -> void:
 	_app.touch_chart()
 	queue_redraw()
 	if _overlay != null:
-		_overlay.queue_redraw()
+		_redraw_all()
 
 
 ## 环预览松手回吸：Anchor 整对旋转（组长吸竖线、伙伴跟转），其他音符不吸。
@@ -2614,68 +2690,106 @@ func project_u(u: float, beat: float) -> Vector2:
 
 
 func draw_overlay(canvas: Control) -> void:
+	# 兼容路径：测试/离屏基准仍可以把所有层画进同一个 CanvasItem。
+	_compat_drawing = true
+	for layer in OVERLAY_LAYERS:
+		draw_layer(layer, canvas)
+	_compat_drawing = false
+	_perf_frames += 1
+
+
+## 只画一层。正常运行时每层是一个独立 CanvasItem，谁变化谁重绘。
+func draw_layer(layer: String, canvas: Control) -> void:
 	var chart := get_chart()
 	var t := get_time_beat()
-	# 切换谱面或移出滤镜区间时也要隐藏处理层。
-	_apply_filters(chart, t)
+	if layer == "stage":
+		# 显隐/滤镜 uniform 每帧写一次即可（子层不重复写）。
+		_apply_filters(chart, t)
 	if chart == null:
 		return
-	var started_usec := Time.get_ticks_usec()
 	var pre := _pre_read_beats(chart, t)
-	if not use_3d_ring:
-		_draw_flat_stage(canvas, chart, t)
-		_draw_flat_ring(canvas, chart, t)
-	if not use_3d_ring:
-		_draw_bezel(canvas, chart, t)
-	var t_bar := Time.get_ticks_usec()
-	_draw_bar_lines(canvas, chart, t, pre)
-	_perf_sections[6] += Time.get_ticks_usec() - t_bar
-	# 图层顺序（下 → 上）：Seek → Limit → Path → Hold → Tap/Anchor/Bell → 命中反馈。
-	# Seek 只是预告环，红区是要回避的障碍，重合时红区盖住 Seek；
-	# 其余音符是要打的目标，永远压在红区上层。
-	# Combo 单独压在音符层下面，下落音符可以盖住它；左右两列仍在 HUD 层。
-	if playtest_mode and show_hud:
-		_draw_play_combo_layer(canvas)
 	var draw_note_layers := show_notes and not ring_drag_low_detail
-	var sec_usec := Time.get_ticks_usec()
-	if draw_note_layers:
-		_draw_seeks(canvas, chart, t)
-	var sec2 := Time.get_ticks_usec()
-	_perf_sections[0] += sec2 - sec_usec
-	_draw_red_regions(canvas, chart, t)
-	if draw_note_layers:
-		_draw_paths(canvas, chart, t, pre)
-	sec_usec = Time.get_ticks_usec()
-	_perf_sections[1] += sec_usec - sec2
-	if draw_note_layers:
-		_draw_holds(canvas, chart, t, pre)
-	sec2 = Time.get_ticks_usec()
-	_perf_sections[2] += sec2 - sec_usec
-	if draw_note_layers:
-		_draw_notes(canvas, chart, t, pre)
-	_draw_alpha_commands(canvas, chart, t)
-	if ring_edit_mode:
-		_draw_selected_command_guides(canvas, chart, t)
-	if show_path_judgement and draw_note_layers:
-		_draw_path_judgement(canvas, chart, t, pre)
-	_draw_ring_lights(canvas, t)
-	if draw_note_layers:
-		_draw_note_pops(canvas)
-	sec_usec = Time.get_ticks_usec()
-	_perf_sections[3] += sec_usec - sec2
-	var t_hud := Time.get_ticks_usec()
-	_draw_onion(canvas, chart, t)
-	_draw_boundary_controls(canvas, chart)
-	if show_hud:
-		_draw_hud(canvas, chart, t)
-	_perf_sections[5] += Time.get_ticks_usec() - t_hud
-	sec2 = Time.get_ticks_usec()
-	_draw_pulses(canvas)
-	_perf_sections[4] += Time.get_ticks_usec() - sec2
-	if show_debug:
-		_draw_debug(canvas, chart, t)
-	_perf_draw_usec += Time.get_ticks_usec() - started_usec
-	_perf_frames += 1
+	var started_usec := Time.get_ticks_usec()
+	match layer:
+		"stage":
+			if not use_3d_ring:
+				_draw_flat_stage(canvas, chart, t)
+				_draw_flat_ring(canvas, chart, t)
+				_draw_bezel(canvas, chart, t)
+		"bars":
+			# 真实运行走 MultiMesh（在 _process 里更新）；兼容路径保留旧的直接绘制。
+			if _compat_drawing:
+				_draw_bar_lines(canvas, chart, t, pre)
+		"combo":
+			# Combo 单独压在音符层下面，下落音符可以盖住它；左右两列仍在 HUD 层。
+			if playtest_mode and show_hud:
+				_draw_play_combo_layer(canvas)
+		"seek":
+			if draw_note_layers:
+				_draw_seeks(canvas, chart, t)
+		"limit":
+			_draw_red_regions(canvas, chart, t)
+		"path":
+			if draw_note_layers:
+				_draw_paths(canvas, chart, t, pre)
+		"hold":
+			if draw_note_layers:
+				_draw_holds(canvas, chart, t, pre)
+		"notes":
+			if draw_note_layers:
+				_draw_notes(canvas, chart, t, pre)
+			# 端点/中心点的实例缓冲在这里一次性提交，子节点随后绘制。
+			_flush_caps()
+		"fx":
+			# 全屏色调与编辑引导要盖住音符（包括实例化的圆头）。
+			_draw_alpha_commands(canvas, chart, t)
+			if ring_edit_mode:
+				_draw_selected_command_guides(canvas, chart, t)
+			if show_path_judgement and draw_note_layers:
+				_draw_path_judgement(canvas, chart, t, pre)
+			_draw_ring_lights(canvas, t)
+			if draw_note_layers:
+				_draw_note_pops(canvas)
+			_draw_pulses(canvas)
+		"hud":
+			_draw_onion(canvas, chart, t)
+			_draw_boundary_controls(canvas, chart)
+			if show_hud:
+				_draw_hud(canvas, chart, t)
+			if show_debug:
+				_draw_debug(canvas, chart, t)
+	var used := Time.get_ticks_usec() - started_usec
+	_perf_draw_usec += used
+	match layer:
+		"seek":
+			_perf_sections[0] += used
+		"path":
+			_perf_sections[1] += used
+		"hold":
+			_perf_sections[2] += used
+		"notes":
+			_perf_sections[3] += used
+		"fx":
+			_perf_sections[4] += used
+		"hud":
+			_perf_sections[5] += used
+		"bars":
+			_perf_sections[6] += used
+
+
+## 所有层都重画（判定/编辑状态变化时用；每帧路径只重画变化的那几层）。
+func _redraw_all() -> void:
+	for layer in OVERLAY_LAYERS:
+		var node: Control = _layer_nodes.get(layer)
+		if node != null:
+			node.queue_redraw()
+
+
+func _invalidate_layers(layers: Array) -> void:
+	for layer in layers:
+		var node: Control = _layer_nodes.get(layer)
+		if node != null:
+			node.queue_redraw()
 
 
 ## 光标层：鼠标移动时只重绘这里。
@@ -2740,6 +2854,130 @@ func _draw_bar_lines(canvas: Control, chart: Chart, beat: float, pre: float) -> 
 				run.append(point)
 		if run.size() > 1:
 			canvas.draw_polyline(run, Color(1, 1, 1, alpha), 1.2, true)
+
+
+## 小节线实例化：一帧的所有线段写进同一个 MultiMesh，只提交一次。
+## 逐段四边形 + 着色器做 1.2px 抗锯齿，替代每条线一根 AA polyline。
+func _update_bar_multimesh(chart: Chart, beat: float) -> void:
+	if _bars_multi == null:
+		return
+	if not bar_lines_visible:
+		_bars_multi.visible_instance_count = 0
+		return
+	var pre := _pre_read_beats(chart, beat)
+	var bars := bar_line_beats(chart.timing, beat, pre)
+	if bars.is_empty():
+		_bars_multi.visible_instance_count = 0
+		return
+	var frame := _frame_for(chart, beat)
+	var boundary: Array[Dictionary] = []
+	for i in 72:
+		boundary.append(frame.point_at(float(i) / 72.0))
+	# 复用首点，避免 u=1 取到相邻段时在接缝处冒出一根小刺。
+	boundary.append(boundary[0])
+	var need := bars.size() * (boundary.size() - 1)
+	if _bars_capacity < need:
+		_bars_capacity = maxi(need, maxi(256, _bars_capacity * 2))
+		_bars_multi.instance_count = _bars_capacity
+	var count := 0
+	for target in bars:
+		var progress := clampf(1.0 - (target - beat) / pre, 0.0, 1.0)
+		var alpha := 0.58 * smoothstep(0.0, 0.15, progress)
+		if alpha <= 0.001:
+			continue
+		var color := Color(1, 1, 1, alpha)
+		var previous := Vector2(INF, INF)
+		for item in boundary:
+			var point := project_design((item["point"] as Vector2) * progress)
+			if bool(item.get("gap", false)) or not _valid_point(point):
+				previous = Vector2(INF, INF)
+				continue
+			if _valid_point(previous):
+				var delta := point - previous
+				var length := delta.length()
+				if length >= 0.01:
+					var xf := Transform2D(delta.angle(), Vector2(length + 1.0, 1.0), 0.0, (previous + point) * 0.5)
+					_bars_multi.set_instance_transform_2d(count, xf)
+					_bars_multi.set_instance_color(count, color)
+					count += 1
+			previous = point
+	_bars_multi.visible_instance_count = count
+
+
+## 圆头贴图：壳 = 黑圈 + 白圈（烘焙成灰度+alpha），芯 = 白圆由实例颜色染色。
+## 64px 够 24px 显示，AA 用 1.6px 过渡；只在首次构建时生成一次。
+static func _cap_textures() -> Array:
+	if _cap_shell_tex == null:
+		var n := 64
+		var shell := Image.create(n, n, false, Image.FORMAT_RGBA8)
+		var core := Image.create(n, n, false, Image.FORMAT_RGBA8)
+		var aa := 1.6 / (float(n) * 0.5)
+		for y in n:
+			for x in n:
+				var p := (Vector2(float(x) + 0.5, float(y) + 0.5) / float(n)) * 2.0 - Vector2.ONE
+				var r := p.length()
+				var outer := 1.0 - smoothstep(1.0 - aa, 1.0, r)
+				var inner := 1.0 - smoothstep(0.79 - aa, 0.79, r)
+				var a_black := 0.66 * outer
+				var a_white := 0.94 * inner
+				var a_total := a_white + a_black * (1.0 - a_white)
+				var gray := 0.0 if a_total <= 0.0001 else a_white / a_total
+				shell.set_pixel(x, y, Color(gray, gray, gray, a_total))
+				var c := 1.0 - smoothstep(0.5 - aa, 0.5, r)
+				core.set_pixel(x, y, Color(1.0, 1.0, 1.0, c))
+		_cap_shell_tex = ImageTexture.create_from_image(shell)
+		_cap_core_tex = ImageTexture.create_from_image(core)
+	return [_cap_shell_tex, _cap_core_tex]
+
+
+func _make_dot_multimesh(colors: bool) -> MultiMesh:
+	var mm := MultiMesh.new()
+	mm.transform_format = MultiMesh.TRANSFORM_2D
+	mm.use_colors = colors
+	var quad := QuadMesh.new()
+	quad.size = Vector2(1.0, 1.0)
+	mm.mesh = quad
+	mm.instance_count = 0
+	return mm
+
+
+func _dot_material(tex: Texture2D) -> ShaderMaterial:
+	var mat := ShaderMaterial.new()
+	mat.shader = load("res://charter/cap_dot.gdshader")
+	mat.set_shader_parameter("dot_tex", tex)
+	return mat
+
+
+func _queue_cap(point: Vector2, radius: float, color: Color, alpha: float) -> void:
+	_cap_pos.append(point)
+	_cap_rad.append(radius)
+	_cap_col.append(color)
+	_cap_alpha.append(alpha)
+
+
+## 把本帧收集到的圆头写进两个 MultiMesh；实例数只增不减，可见数按实际。
+func _flush_caps() -> void:
+	if _cap_shell_multi == null:
+		return
+	var count := _cap_pos.size()
+	if _cap_capacity < count:
+		_cap_capacity = maxi(512, maxi(count, _cap_capacity * 2))
+		_cap_shell_multi.instance_count = _cap_capacity
+		_cap_core_multi.instance_count = _cap_capacity
+	for i in count:
+		var diameter := _cap_rad[i] * 2.0
+		var xf := Transform2D(0.0, Vector2(diameter, diameter), 0.0, _cap_pos[i])
+		_cap_shell_multi.set_instance_transform_2d(i, xf)
+		_cap_shell_multi.set_instance_color(i, Color(1, 1, 1, _cap_alpha[i]))
+		_cap_core_multi.set_instance_transform_2d(i, xf)
+		var c := _cap_col[i]
+		_cap_core_multi.set_instance_color(i, Color(c.r, c.g, c.b, _cap_alpha[i]))
+	_cap_shell_multi.visible_instance_count = count
+	_cap_core_multi.visible_instance_count = count
+	_cap_pos.resize(0)
+	_cap_rad.resize(0)
+	_cap_col.resize(0)
+	_cap_alpha.resize(0)
 
 
 func _screen_affine() -> Array:
@@ -2809,7 +3047,7 @@ func invalidate_storyboard() -> void:
 	if _storyboard_top != null:
 		_storyboard_top.queue_redraw()
 	if _overlay != null:
-		_overlay.queue_redraw()
+		_redraw_all()
 
 
 func _ensure_storyboard(chart: Chart) -> void:
@@ -4134,7 +4372,7 @@ func path_judgement_debug(note: Note, beat: float) -> Dictionary:
 func set_path_judgement_visible(value: bool) -> void:
 	show_path_judgement = value
 	if _overlay != null:
-		_overlay.queue_redraw()
+		_redraw_all()
 
 
 func _draw_path_judgement(canvas: Control, chart: Chart, beat: float, pre: float) -> void:
@@ -4223,7 +4461,7 @@ func set_path_erased_to(note: Note, fraction: float) -> void:
 	path_cuts[note.id] = [{"from": 0.0, "to": target}]
 	path_cut_versions[note.id] = int(path_cut_versions.get(note.id, 0)) + 1
 	if _overlay != null:
-		_overlay.queue_redraw()
+		_redraw_all()
 
 
 func _add_path_erase_range(note: Note, from_fraction: float, to_fraction: float) -> void:
@@ -4233,7 +4471,7 @@ func _add_path_erase_range(note: Note, from_fraction: float, to_fraction: float)
 	path_cuts[note.id] = merged
 	path_cut_versions[note.id] = int(path_cut_versions.get(note.id, 0)) + 1
 	if _overlay != null:
-		_overlay.queue_redraw()
+		_redraw_all()
 
 
 func path_erased(note: Note, relative_beat: float) -> bool:
@@ -4314,7 +4552,7 @@ func cut_path_sector(note: Note, sector: int) -> void:
 	path_sector_cuts[note.id] = cuts
 	path_cut_versions[note.id] = int(path_cut_versions.get(note.id, 0)) + 1
 	if _overlay != null:
-		_overlay.queue_redraw()
+		_redraw_all()
 
 
 func _path_local_screen(chart: Chart, local: Vector2, t: float, scale: float = 1.0) -> Vector2:
@@ -4354,7 +4592,7 @@ static func skin_presets() -> Dictionary:
 
 func refresh_style() -> void:
 	if _overlay != null:
-		_overlay.queue_redraw()
+		_redraw_all()
 
 
 func _skin() -> Dictionary:
@@ -4853,15 +5091,19 @@ func _draw_length_band(canvas: Control, chart: Chart, angle: float, width: float
 	_stroke_band(canvas, points, color, 18.0 * ns, alpha, -1.0, 0.35 if note_glow else 0.0)
 	var cap_scale := ns * float(_skin()["scale"])
 	var center_point := points[points.size() / 2]
-	# 两端圆头：让长条读成一根胶囊，而不是一段没有边界的弧。
-	for cap in [points[0], points[-1]]:
-		canvas.draw_circle(cap, 12.0 * cap_scale, Color(0, 0, 0, 0.66 * alpha))
-		canvas.draw_circle(cap, 9.5 * cap_scale, Color(1, 1, 1, 0.94 * alpha))
-		canvas.draw_circle(cap, 6.0 * cap_scale, Color(color.r, color.g, color.b, alpha))
-	# 中心命中点：宽度变化时仍然知道该按哪里。
-	canvas.draw_circle(center_point, 8.0 * cap_scale, Color(0, 0, 0, 0.55 * alpha))
-	canvas.draw_circle(center_point, 6.0 * cap_scale, Color(1, 1, 1, 0.96 * alpha))
-	canvas.draw_circle(center_point, 3.0 * cap_scale, color)
+	# 两端圆头 + 中心命中点：真实运行走实例化贴片，兼容路径保留逐个 draw_circle。
+	if _compat_drawing:
+		for cap in [points[0], points[-1]]:
+			canvas.draw_circle(cap, 12.0 * cap_scale, Color(0, 0, 0, 0.66 * alpha))
+			canvas.draw_circle(cap, 9.5 * cap_scale, Color(1, 1, 1, 0.94 * alpha))
+			canvas.draw_circle(cap, 6.0 * cap_scale, Color(color.r, color.g, color.b, alpha))
+		canvas.draw_circle(center_point, 8.0 * cap_scale, Color(0, 0, 0, 0.55 * alpha))
+		canvas.draw_circle(center_point, 6.0 * cap_scale, Color(1, 1, 1, 0.96 * alpha))
+		canvas.draw_circle(center_point, 3.0 * cap_scale, color)
+	else:
+		_queue_cap(points[0], 12.0 * cap_scale, color, alpha)
+		_queue_cap(points[-1], 12.0 * cap_scale, color, alpha)
+		_queue_cap(center_point, 8.0 * cap_scale, color, alpha)
 	return center_point
 
 
@@ -5253,7 +5495,7 @@ func _anim_ms() -> float:
 func request_redraw() -> void:
 	_mesh_dirty = true
 	if _overlay != null:
-		_overlay.queue_redraw()
+		_redraw_all()
 
 
 ## 播放头移动：只重画覆盖层 + 让 3D 出一帧，不强制重建环网格。
@@ -5263,7 +5505,7 @@ func request_playhead_redraw() -> void:
 	if is_processing():
 		_playhead_redraw_pending = true
 	elif _overlay != null:
-		_overlay.queue_redraw()
+		_redraw_all()
 	_force_3d_frame = true
 
 
@@ -5285,7 +5527,7 @@ func add_hit_pulse(point: Vector2, color: Color, label: String = "HIT", kind: St
 	while _pulses.size() > 20:
 		_pulses.pop_front()
 	if _overlay != null:
-		_overlay.queue_redraw()
+		_redraw_all()
 
 
 ## 命中退场的淡出时长换算成拍：绘制用的是拍时间，手感按秒算。
@@ -5355,7 +5597,7 @@ func add_note_pop(kind: String, note: Note, beat: float) -> void:
 	while _note_pops.size() > 24:
 		_note_pops.pop_front()
 	if _overlay != null:
-		_overlay.queue_redraw()
+		_redraw_all()
 
 
 ## 稳定伪随机：同一 index/salt 每帧结果一样，导出才可复现（不能用全局随机源）。
@@ -5398,7 +5640,7 @@ func add_ring_light(note: Note, perfect: bool) -> void:
 	while _ring_lights.size() > SHARD_GROUP_BUDGET:
 		_ring_lights.pop_front()
 	if _overlay != null:
-		_overlay.queue_redraw()
+		_redraw_all()
 
 
 func _draw_ring_lights(canvas: Control, beat: float) -> void:
@@ -6827,7 +7069,7 @@ func _drag_text(pos: Vector2) -> void:
 	_text_drag.params["y"] = ny
 	if _app != null:
 		_app.touch_chart()
-	_overlay.queue_redraw()
+	_redraw_all()
 
 
 ## 音符下落进度：HS 越大越早冲到判定环，只影响该音符自身。
