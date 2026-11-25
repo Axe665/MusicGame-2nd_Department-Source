@@ -248,7 +248,7 @@ func _audit_ui(app: Node) -> void:
 		for i in option.item_count:
 			all_text += option.get_item_text(i) + "|"
 	_check("设置页有皮肤选项", all_text.contains("糖霜胶囊") and all_text.contains("街机贴纸"))
-	_check("设置页有特效选项", all_text.contains("迸裂") and all_text.contains("墨滴"))
+	_check("设置页有特效选项", all_text.contains("命中特效") and all_text.contains("PERFECT 特效"))
 	_check("设置页有音效选项", all_text.contains("原声") and all_text.contains("静音"))
 	_check("设置页可持久化入口", app != null and app.has_method("save_settings"))
 	inspector.queue_free()

@@ -1,6 +1,6 @@
 # 导入与导出
 
-编辑器可以导入 osu!std 和舞萌（Simai）谱面，可以浏览在线谱面库，也可以导出 `.lbp` v2。
+编辑器可以导入 osu!std 和舞萌（Simai）谱面，可以浏览在线谱面库，也可以导出 `.lbp` 谱面包。
 
 导入外部谱面是一种**可玩性重解释**，不是对原谱 1:1 还原。为了单光标和单手可玩，导入时会做一系列转换和保护，下文逐一说明。
 
@@ -154,21 +154,16 @@ Tap 和 Path 头的宽度按相邻音符的角度差和时间差自动加宽，�
 - 下载使用 sayobot，失败时退回 `osu.direct`。
 - osu! 包里的 BGA 是 `.m4v`，已经加入直接解码的列表，不需要转码。
 
-## 导出 `.lbp` v2
+## 导出 `.lbp`
 
-按设计文档第 7 章输出以下段落：
-
-```text
-[General] / [Video] / [Metadata] / [TimingPoints] / [BoundaryShapes]
-[BoundaryEvents] / [ViewStates] / [Regions] / [Notes] / [Editor]
-```
+应用里导出的是**单个 zip 谱面包**（`LBPIO.export_package`）：`manifest.json` + 完整 `chart.json`（可往返）+ `assets/` 里的音频、曲绘、视频和故事板；素材缺失时会给警告而不是写出坏包。
 
 - 保留五角星 Path、Trace 的二维点、Bell、Anchor 配对以及颜色和锁定选项。
-- Tap 和 Hold 写入实际的弧宽；Bell 的行尾带 `width=` 选项。
+- Tap 和 Hold 写入实际的弧宽；Bell 的行尾带 `width=` 选项（`chart.json` 里同样的字段）。
 
 ## 不支持的格式
 
 - `.mcz`
 - osu!mania、osu!catch
-- `.lbp` 反向导入
+- 纯文本 `.lbp` 的反向导入（zip 谱面包可以）
 - Malody 4.3.7 运行时

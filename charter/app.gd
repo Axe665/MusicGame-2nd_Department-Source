@@ -900,8 +900,8 @@ func step_down_auto_quality() -> String:
 	return auto_quality_preset
 
 
-## 帧率选项：60 / 120 保留垂直同步（跑不满就自动落到下一个整除，稳定优先）；
-## vsync 完全跟随显示器；unlimited 才关垂直同步、能吃多少吃多少。
+## 帧率选项：60 / 120 / 144 / 240 / unlimited 都关垂直同步（显式上限才有意义）；
+## vsync 才跟随显示器刷新率。
 func apply_frame_cap() -> void:
 	match frame_cap:
 		# 显式档位关掉垂直同步：否则 120/144 在 60Hz 屏上永远不起作用。
