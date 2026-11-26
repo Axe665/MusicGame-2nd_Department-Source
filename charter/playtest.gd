@@ -385,6 +385,7 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	_preview.playing = true
 	_preview.visible = true
 	_preview.set_process(false)
+	_preview.warm_path_index()
 	_preview.prepare_playtest_frame(_timeline_start_beat, 0.0)
 	modulate.a = 1.0
 	# 无头测试/无头基准直接开打：没有屏幕可看，倒计时只会拖慢用例。
@@ -976,6 +977,9 @@ func _init_states() -> void:
 				break
 	for note in _ordered_notes:
 		var end_chart := chart.timing.beat_to_chart_ms(note.end_beat)
+		# 关闭轨迹的 Path 等同 Tap：只判头，过期时间也按头算。
+		if note.type == "path" and not note.show_trail:
+			end_chart = chart.timing.beat_to_chart_ms(note.beat)
 		_states[note.id] = {
 			"target_ms": chart.timing.beat_to_chart_ms(note.beat),
 			"end_ms": end_chart,
@@ -1779,6 +1783,8 @@ func _auto_body_point(note: Note, ms: float, beat: float, end_ms: float) -> Vect
 ## Path 的尾巴是「光标靠近就算」，半径 192px 很大：离判定时间还远时，
 ## 光标要沿着轨迹往回退一点，否则尾巴会被提前判成 BAD。
 func _auto_path_point(note: Note, ms: float, beat: float, end_ms: float) -> Vector2:
+	if not note.show_trail:
+		return _preview.path_point(note, 0.0, beat)
 	var total := note.duration()
 	var tail: Vector2 = _preview.path_point(note, total, beat)
 	if ms >= end_ms - 40.0:
@@ -2066,7 +2072,51 @@ static func slide_start_ms(chart: Chart, note: Note, offset_ms: float) -> float:
 	return chart.timing.beat_to_chart_ms(note.beat + wait) + offset_ms
 
 
+## 关闭轨迹的 Path：只判头，按 Tap 处理，星尾/中段完全不参与。
+func _judge_tap_path(note: Note, ms: float, beat: float) -> void:
+	var state: Dictionary = _states[note.id]
+	if bool(state.get("done", false)):
+		return
+	var head_ms := float(state["target_ms"])
+	if ms < head_ms - EARLY_MS:
+		return
+	if ms > head_ms + HIT_WINDOW_MS:
+		state["done"] = true
+		state["head_judged"] = true
+		state["tail_judged"] = true
+		state["head_hit"] = false
+		_miss_count += 1
+		_add_judgement("MISS")
+		_combo = 0
+		_pulse_at(note.path_head_angle(), beat, UITheme.RED, "MISS", note.arc_width())
+		_add_log("PATH #%d HEAD MISS (tap-like)" % note.id)
+		_preview.set_path_head_state(note.id, false, beat)
+		return
+	var press := _take_assigned_press(note.id)
+	if press.is_empty():
+		return
+	var head_error := press_error(press, head_ms)
+	var tier := _tier_for(head_error)
+	var head_point: Vector2 = _preview.note_head_screen(note, beat)
+	state["head_hit"] = true
+	state["head_judged"] = true
+	state["tail_judged"] = true
+	state["tail_hit"] = true
+	state["done"] = true
+	_register_hit(tier)
+	_play_hit("don", randf_range(0.98, 1.02))
+	_pulse_at(note.path_head_angle(), beat, _tier_color(tier), tier, note.arc_width(), "path",
+		_timing_detail(head_error, tier), head_point)
+	_record_error(head_error, "PATH #%d HEAD %s (tap-like)" % [note.id, tier], tier, float(press["time"]))
+	_preview.set_path_head_state(note.id, true, beat)
+	_preview.add_note_pop("path", note, beat)
+	_add_log("PATH #%d TAP-LIKE %s" % [note.id, tier])
+
+
 func _judge_path(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
+	if not note.show_trail:
+		_judge_tap_path(note, ms, beat)
+		return
 	var state: Dictionary = _states[note.id]
 	var tracker: PathProgress = state["path_tracker"]
 	var head_ms := float(state["target_ms"])
@@ -2095,7 +2145,7 @@ func _judge_path(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 				_register_hit(tier)
 				_play_hit("don", randf_range(0.98, 1.02))
 				# 星头用实际的星头屏幕位置，平面星星（V / 折线）也能炸在正确的位置。
-				_pulse_at(note.angle, beat, _tier_color(tier), tier, note.arc_width(), "path", _timing_detail(head_error, tier), head_point)
+				_pulse_at(note.path_head_angle(), beat, _tier_color(tier), tier, note.arc_width(), "path", _timing_detail(head_error, tier), head_point)
 				# 星头是按键时机，和 Tap 同源，可以喂给动态校准与散布图。
 				# 星尾不算：tail_error 量的是“进尾区”相对星星的时刻，早到是设计内行为。
 				_record_error(head_error, "PATH #%d HEAD %s" % [note.id, tier], tier, float(press["time"]))
@@ -2107,7 +2157,7 @@ func _judge_path(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 				_miss_count += 1
 				_add_judgement("MISS")
 				_combo = 0
-				_pulse_at(note.angle, beat, UITheme.RED, "MISS", note.arc_width())
+				_pulse_at(note.path_head_angle(), beat, UITheme.RED, "MISS", note.arc_width())
 				_add_log("PATH #%d HEAD MISS" % note.id)
 				_preview.set_path_head_state(note.id, false, beat)
 				state["head_judged"] = true

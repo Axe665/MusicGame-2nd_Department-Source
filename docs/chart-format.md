@@ -34,7 +34,7 @@ group_bpm_points, current_group, editor, note_extras
 
 - `commands`：演出指令，见 [环编辑器](ring-editor.md#演出指令)。
 - `editor`：保存编辑器状态，例如小节线细分、轨道吸附和 `editor.flow_down`（写谱方向）。
-- `note_extras`：音符修饰（`hs`、`sv`、`spawn` 等），旁挂保存，不改变紧凑代码。
+- `note_extras`：音符修饰（`hs`、`sv`、`spawn` 等），旁挂保存，不改变紧凑代码。Path 的 `show_trail`、`trail_rgb`、`custom_shape` 也在这里。
 - `metadata.storyboard`：故事板素材路径。
 
 JSON 往返（保存 → 加载 → 保存）是字节稳定的。

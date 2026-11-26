@@ -161,6 +161,12 @@ static func _note_line(chart: Chart, note: Note) -> String:
 				suffix += ",pts=%s" % _trace_points(note.trace_pts)
 			if note.path_speed != 1.0:
 				suffix += ",speed=%s" % _num(note.path_speed)
+			if note.path_custom_shape:
+				suffix += ",shape=free"
+			if not note.show_trail:
+				suffix += ",trail=0"
+			if note.has_trail_color:
+				suffix += ",trailrgb=#%s" % note.trail_color.to_html(false)
 			if not note.path_gaps.is_empty():
 				var ranges: Array[String] = []
 				for gap in note.path_gaps:

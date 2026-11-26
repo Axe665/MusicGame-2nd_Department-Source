@@ -141,6 +141,12 @@ static func chart_to_dict(chart: Chart) -> Dictionary:
 					extra["trace"] = Note._points_to_dict(note.trace_pts)
 				if not note.visual_pts.is_empty():
 					extra["visual"] = Note._points_to_dict(note.visual_pts)
+				if note.path_custom_shape:
+					extra["custom_shape"] = true
+				if not note.show_trail:
+					extra["show_trail"] = false
+				if note.has_trail_color:
+					extra["trail_rgb"] = "#" + note.trail_color.to_html(false)
 			"bell":
 				if absf(note.bell_radius - 1.0) > 0.0001:
 					extra["bell_radius"] = snappedf(note.bell_radius, 0.001)
@@ -250,6 +256,15 @@ static func _apply_note_extras(note: Note, extra: Dictionary) -> void:
 		note.path_gaps = Note._ranges_from_array(extra["path_gaps"])
 	if extra.has("trace"):
 		note.trace_pts = Note._points_from_array(extra["trace"])
+	if extra.has("custom_shape"):
+		note.path_custom_shape = bool(extra["custom_shape"])
+	if extra.has("show_trail"):
+		note.show_trail = bool(extra["show_trail"])
+	if extra.has("trail_rgb"):
+		var trail_text := String(extra["trail_rgb"])
+		if Color.html_is_valid(trail_text):
+			note.trail_color = Color(trail_text)
+			note.has_trail_color = true
 	if extra.has("visual"):
 		note.visual_pts = Note._points_from_array(extra["visual"])
 	if extra.has("bell_radius"):
