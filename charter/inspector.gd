@@ -545,11 +545,9 @@ func _build_note_page_for(page: VBoxContainer, note: Note) -> void:
 	var end_edit := _beat(common, "结束拍", note.end_beat, func(value: float) -> void:
 		var n := _active_note
 		if n != null:
+			n.end_beat = maxf(n.beat + 0.25, value)
 			if n.type == "path":
-				# 改时长不破坏形状：按比例缩放轨迹采样点的时间。
-				n.rescale_path_end(maxf(n.beat + 0.25, value))
-			else:
-				n.end_beat = maxf(n.beat + 0.25, value)
+				n.wait_beat = clampf(n.wait_beat, 0.0, maxf(0.0, n.duration() - 0.001))
 	)
 	_note_widgets["end"] = end_edit
 	_remember_row("end", end_edit)
@@ -563,8 +561,7 @@ func _build_note_page_for(page: VBoxContainer, note: Note) -> void:
 		if n.type == "bell":
 			n.center_u = fposmod(n.angle / 360.0, 1.0)
 		elif n.type == "path":
-			if not n.path_custom_shape:
-				n.generate_path_shape()
+			n.generate_path_shape()
 			_sync_path_chain(n)
 		# Anchor 整对转：伙伴走同样的角度增量，夹角不变。
 		var partner := _anchor_partner(n)
@@ -748,85 +745,30 @@ func _build_note_page_for(page: VBoxContainer, note: Note) -> void:
 	# New, minimal Path editor. The legacy controls above stay built for data
 	# compatibility but are hidden; authors now edit centrifuge + axis + parts.
 	var path_edit := _note_group(page, "path_edit", "Path")
-	var trail_check := _check(path_edit, "显示轨迹（关闭后等同 Tap，只判头）", note.show_trail, func(value: bool) -> void:
-		if _active_note != null:
-			_active_note.show_trail = value
-		_refresh_note_page()
-	)
-	_note_widgets["path_show_trail"] = trail_check
-	var trail_row := HBoxContainer.new()
-	trail_row.add_theme_constant_override("separation", 6)
-	var trail_label := Label.new()
-	trail_label.text = "轨迹颜色"
-	UITheme.style_mono(trail_label, 11, UITheme.MUTED)
-	trail_row.add_child(trail_label)
-	var trail_picker := ColorPickerButton.new()
-	trail_picker.custom_minimum_size = Vector2(96, 22)
-	trail_picker.edit_alpha = false
-	trail_picker.color = note.resolved_trail_color(_app.chart)
-	trail_picker.color_changed.connect(func(chosen: Color) -> void:
-		if _active_note == null:
-			return
-		_apply(func() -> void:
-			_active_note.has_trail_color = true
-			_active_note.trail_color = chosen
-		)
-		_refresh_note_page()
-	)
-	trail_row.add_child(trail_picker)
-	var trail_reset := Button.new()
-	trail_reset.text = "跟随头部"
-	trail_reset.pressed.connect(func() -> void:
-		if _active_note == null:
-			return
-		_apply(func() -> void: _active_note.has_trail_color = false)
-		_refresh_note_page()
-	)
-	trail_row.add_child(trail_reset)
-	path_edit.add_child(trail_row)
-	_note_widgets["path_trail_color"] = trail_picker
-	_note_rows["path_trail_color"] = trail_row
-	_label(path_edit, "星星颜色在「通用 → 自定义色」里；轨迹不单独设色时跟随头部。", 10, UITheme.MUTED)
-
-	var path_time_box := VBoxContainer.new()
-	path_time_box.add_theme_constant_override("separation", 4)
-	path_edit.add_child(path_time_box)
-	_note_widgets["path_time_box"] = path_time_box
-	var slide_start := _spin(path_time_box, "启动拍", note.beat + note.wait_beat, note.beat, note.beat + maxf(0.001, note.duration()), 0.125, func(value: float) -> void:
-		var n := _active_note
-		if n != null:
-			n.wait_beat = clampf(value - n.beat, 0.0, maxf(0.0, n.duration() - 0.001))
-	)
-	slide_start.tooltip_text = "星星开始沿轨迹滑动的拍；显示拍 = 出现并落到环上，启动拍 = 显示拍 + 等待。改它不会改形状。"
-	_note_widgets["path_slide_start"] = slide_start
-	var wait_edit := _spin(path_time_box, "等待拍数", note.wait_beat, 0.0, maxf(0.0, note.duration() - 0.001), 0.125, func(value: float) -> void:
+	var wait_edit := _spin(path_edit, "等待拍数", note.wait_beat, 0.0, maxf(0.0, note.duration() - 0.001), 0.125, func(value: float) -> void:
 		if _active_note != null:
 			_active_note.wait_beat = clampf(value, 0.0, maxf(0.0, _active_note.duration() - 0.001))
 	)
 	wait_edit.allow_greater = false
 	wait_edit.tooltip_text = "从头部落点到星星起划的拍数；包含在总时长内。0 表示立即起划。"
-	_note_widgets["path_wait2"] = wait_edit
-	_label(path_time_box, "显示拍落下，启动拍起划；等待包含在总时长内，只改滑动速度，不改形状。链式 Path 使用 part0 的等待。", 10, UITheme.MUTED)
-	var path_params := VBoxContainer.new()
-	path_params.add_theme_constant_override("separation", 4)
-	path_edit.add_child(path_params)
-	_note_widgets["path_params"] = path_params
-	var centrifuge := _spin_slider(path_params, "尾部离心 centrifuge", note.path_centrifuge, 0.0, 1.0, 0.01, func(value: float) -> void:
+	_note_widgets["path_wait"] = wait_edit
+	_label(path_edit, "等待包含在总时长内；增加等待会缩短滑动时间。链式 Path 的启动提示使用 part0 的等待。", 10, UITheme.MUTED)
+	var centrifuge := _spin_slider(path_edit, "尾部离心 centrifuge", note.path_centrifuge, 0.0, 1.0, 0.01, func(value: float) -> void:
 		var n := _active_note
 		if n != null:
 			n.set_path_centrifuge(value)
 			_sync_path_chain(n)
 	, true)
-	_note_widgets["path_centrifuge2"] = centrifuge["spin"]
-	_note_widgets["path_centrifuge_slider2"] = centrifuge["slider"]
-	var axis := _spin_slider(path_params, "轨迹轴长 axis", note.path_axis, -2.0, 2.0, 0.01, func(value: float) -> void:
+	_note_widgets["path_centrifuge"] = centrifuge["spin"]
+	_note_widgets["path_centrifuge_slider"] = centrifuge["slider"]
+	var axis := _spin_slider(path_edit, "轨迹轴长 axis", note.path_axis, -2.0, 2.0, 0.01, func(value: float) -> void:
 		var n := _active_note
 		if n != null:
 			n.set_path_axis(value)
 			_sync_path_chain(n)
 	, true)
-	_note_widgets["path_axis2"] = axis["spin"]
-	_note_widgets["path_axis_slider2"] = axis["slider"]
+	_note_widgets["path_axis"] = axis["spin"]
+	_note_widgets["path_axis_slider"] = axis["slider"]
 	var axis_bar := Control.new()
 	axis_bar.custom_minimum_size = Vector2(0, 36)
 	axis_bar.mouse_filter = Control.MOUSE_FILTER_STOP
@@ -858,37 +800,16 @@ func _build_note_page_for(page: VBoxContainer, note: Note) -> void:
 						_refresh_note_page()
 					break
 	)
-	path_params.add_child(axis_bar)
-	_note_widgets["path_axis_bar2"] = axis_bar
-	var end_angle := _spin(path_params, "尾部角度", note.tail_angle, 0.0, 360.0, 0.5, func(value: float) -> void:
+	path_edit.add_child(axis_bar)
+	_note_widgets["path_axis_bar"] = axis_bar
+	var end_angle := _spin(path_edit, "尾部角度", note.tail_angle, 0.0, 360.0, 0.5, func(value: float) -> void:
 		var n := _active_note
 		if n != null:
 			n.tail_angle = fposmod(value, 360.0)
 			n.generate_path_shape()
 			_sync_path_chain(n)
 	)
-	_note_widgets["path_end_angle2"] = end_angle
-	var custom_box := VBoxContainer.new()
-	custom_box.add_theme_constant_override("separation", 4)
-	path_edit.add_child(custom_box)
-	_note_widgets["path_custom_box"] = custom_box
-	_label(custom_box, "手绘轨迹：参数化滑块已隐藏。改开始/结束拍会按比例缩放时间，形状不变。", 10, UITheme.MUTED)
-	_buttons(custom_box, [{"text": "转为参数化曲线", "callback": func() -> void:
-		var n := _active_note
-		if n == null:
-			return
-		_apply(func() -> void:
-			n.path_custom_shape = false
-			n.path_controls_set = false
-			n.trace_pts.clear()
-			n.visual_pts.clear()
-			n.derive_path_controls()
-			n.path_controls_set = true
-			n.generate_path_shape()
-		)
-		_refresh_note_page()
-	}])
-	_buttons(path_edit, [{"text": "手绘重画", "callback": func() -> void: _app.set_tool("path")}])
+	_note_widgets["path_end_angle"] = end_angle
 	var part_label := _label(path_edit, "", 11, UITheme.MUTED)
 	_note_widgets["path_part_label"] = part_label
 	_label(path_edit, "右键单击 Path 尾部可在该处新建 part；各 part 可分别编辑，预览中整条链共用 part0 的星星。", 10, UITheme.MUTED)
@@ -1099,11 +1020,7 @@ func _refresh_note_page() -> void:
 	_update_tap_formula()
 	var is_bell := note.type == "bell"
 	_note_rows["end"].visible = note.type in ["hold", "path"]
-	var start_label := _note_rows["start"].get_child(0) as Label
-	if start_label != null:
-		start_label.text = "显示拍" if note.type == "path" else "开始拍"
-	_note_rows["angle"].visible = note.type in ["tap", "hold", "path", "anchor", "bell"] \
-		and not (note.type == "path" and note.path_custom_shape)
+	_note_rows["angle"].visible = note.type in ["tap", "hold", "path", "anchor", "bell"]
 	_note_rows["width"].visible = shows_width_row(note.type)
 	_note_rows["length"].visible = shows_length_row(note.type)
 	_note_groups["common"].visible = true
@@ -1119,9 +1036,6 @@ func _refresh_note_page() -> void:
 	_note_rows["custom_color"].visible = can_color
 	var fallback := UITheme.PINK if note.type == "tap" else (UITheme.GOLD if note.type == "hold" else Note.DEFAULT_PATH_COLOR)
 	_note_widgets["custom_color"].color = note.resolved_color(_app.chart, fallback)
-	var custom_label := _note_rows["custom_color"].get_child(0) as Label
-	if custom_label != null:
-		custom_label.text = "星星颜色" if note.type == "path" else "自定义色"
 	# 锁定是 _check 直接挂在组体上的；恢复显示，不改组体。
 	_note_widgets["lock"].visible = true
 	_note_groups["tapsize"].visible = shows_length_row(note.type)
@@ -1160,21 +1074,14 @@ func _refresh_note_page() -> void:
 		_note_widgets["path_counts"].text = "中间判定点：%d 个；平面点：%d 个" % [note.path_sample_beats().size(), note.trace_pts.size()]
 		_fill_visual_list(_note_widgets["path_list"], note)
 		_note_widgets["path_erase"].value = _path_erase_width(note) * 100.0
-		_note_widgets["path_show_trail"].button_pressed = note.show_trail
-		_note_rows["path_trail_color"].visible = note.show_trail
-		_note_widgets["path_trail_color"].color = note.resolved_trail_color(_app.chart)
-		_note_widgets["path_params"].visible = not note.path_custom_shape
-		_note_widgets["path_custom_box"].visible = note.path_custom_shape
-		_note_widgets["path_slide_start"].max_value = note.end_beat
-		_note_widgets["path_slide_start"].value = note.beat + note.wait_beat
-		_note_widgets["path_wait2"].max_value = maxf(0.0, note.duration() - 0.001)
-		_note_widgets["path_wait2"].value = note.wait_beat
-		_note_widgets["path_centrifuge2"].value = note.path_centrifuge
-		_note_widgets["path_centrifuge_slider2"].value = note.path_centrifuge
-		_note_widgets["path_axis2"].value = note.path_axis
-		_note_widgets["path_axis_slider2"].value = note.path_axis
-		_note_widgets["path_axis_bar2"].queue_redraw()
-		_note_widgets["path_end_angle2"].value = note.tail_angle
+		_note_widgets["path_wait"].max_value = maxf(0.0, note.duration() - 0.001)
+		_note_widgets["path_wait"].value = note.wait_beat
+		_note_widgets["path_centrifuge"].value = note.path_centrifuge
+		_note_widgets["path_centrifuge_slider"].value = note.path_centrifuge
+		_note_widgets["path_axis"].value = note.path_axis
+		_note_widgets["path_axis_slider"].value = note.path_axis
+		_note_widgets["path_axis_bar"].queue_redraw()
+		_note_widgets["path_end_angle"].value = note.tail_angle
 		var relation := ""
 		if note.path_prev_id >= 0:
 			relation += " ｜ 上一段 #%d" % note.path_prev_id
@@ -1271,8 +1178,7 @@ func _sync_path_chain(parent: Note) -> void:
 		child.path_head_local = head
 		child.path_prev_id = parent.id
 		child.angle = rad_to_deg(atan2(head.y, head.x))
-		if not child.path_custom_shape:
-			child.generate_path_shape()
+		child.generate_path_shape()
 		parent = child
 		next_id = child.path_next_id
 		guard += 1

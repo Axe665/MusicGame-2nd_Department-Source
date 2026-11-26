@@ -69,16 +69,9 @@ var group_id: int = 0
 var enabled: bool = true
 ## ID used inside a group block; `id` stays globally unique for editor lookups.
 var local_id: int = 0
-## 谱师自定义的颜色；默认 false 表示用类型默认色。
+## 谱师自定义的星星颜色（只对 Path 生效）；默认 false 表示用统一绿色。
 var has_custom_color: bool = false
 var custom_color: Color = DEFAULT_PATH_COLOR
-## Path 的轨迹颜色与头部颜色分开设置；未设置时跟随头部。
-var has_trail_color: bool = false
-var trail_color: Color = DEFAULT_PATH_COLOR
-## Path 是否画轨迹；关掉后只画星头，判定也按 Tap 只判头。
-var show_trail: bool = true
-## 手绘 / 外部导入的轨迹：为 true 时 centrifuge / axis 不覆盖它。
-var path_custom_shape: bool = false
 var lock: bool = false
 var center_u: float = 0.25
 ## Seek: 0 = outward (wheel up), 1 = inward (wheel down).
@@ -322,14 +315,6 @@ func path_head_point() -> Vector2:
 	if path_part > 0 and path_head_local.is_finite():
 		return path_head_local
 	return _unit_from_angle(angle)
-
-
-## 星头实际角度：手绘/导入轨迹以第一个采样点为准，参数化轨迹回退到 angle。
-func path_head_angle() -> float:
-	var head := path_head_point()
-	if head.length_squared() > 0.000001:
-		return fposmod(rad_to_deg(atan2(head.y, head.x)), 360.0)
-	return angle
 
 
 ## Fills the new editor values from the current trace for legacy charts. It does
@@ -590,8 +575,6 @@ func to_dict() -> Dictionary:
 		"local_id": local_id,
 		"enabled": enabled,
 	}
-	if has_custom_color:
-		data["rgb"] = [int(round(custom_color.r * 255.0)), int(round(custom_color.g * 255.0)), int(round(custom_color.b * 255.0))]
 	match type:
 		"tap":
 			if sized:
@@ -603,12 +586,9 @@ func to_dict() -> Dictionary:
 			if not visual_pts.is_empty():
 				data["visual"] = _points_to_dict(visual_pts)
 		"path":
-			if has_trail_color:
-				data["trail_rgb"] = [int(round(trail_color.r * 255.0)), int(round(trail_color.g * 255.0)), int(round(trail_color.b * 255.0))]
-			if not show_trail:
-				data["show_trail"] = false
-			if path_custom_shape:
-				data["custom_shape"] = true
+			# 谱师自定义的星星颜色（RGB 0–255）；不写就用默认绿。
+			if has_custom_color:
+				data["rgb"] = [int(round(custom_color.r * 255.0)), int(round(custom_color.g * 255.0)), int(round(custom_color.b * 255.0))]
 			data["space"] = "plane"
 			data["end_beat"] = snappedf(end_beat, 0.001)
 			if wait_beat > 0.0:
@@ -690,13 +670,6 @@ static func from_dict(raw: Dictionary) -> Note:
 		if rgb.size() >= 3:
 			note.custom_color = Color(float(rgb[0]) / 255.0, float(rgb[1]) / 255.0, float(rgb[2]) / 255.0)
 			note.has_custom_color = true
-	if raw.has("trail_rgb"):
-		var trail: Array = raw.get("trail_rgb", [])
-		if trail.size() >= 3:
-			note.trail_color = Color(float(trail[0]) / 255.0, float(trail[1]) / 255.0, float(trail[2]) / 255.0)
-			note.has_trail_color = true
-	note.show_trail = bool(raw.get("show_trail", true))
-	note.path_custom_shape = bool(raw.get("custom_shape", false))
 	if raw.has("visual"):
 		note.visual_pts = _points_from_array(raw.get("visual", []))
 	if raw.has("path_gaps"):
@@ -711,9 +684,6 @@ static func from_dict(raw: Dictionary) -> Note:
 		note.width = clampf(float(raw.get("width", 360.0)), SEEK_MIN_WIDTH, 360.0)
 		note.end_beat = note.beat
 	if note.type == "path":
-		if raw.has("trace") and not raw.has("centrifuge") and not raw.has("axis"):
-			# 老谱的手绘 / 导入轨迹没有显式标记，按自定义形状保护。
-			note.path_custom_shape = true
 		if raw.has("centrifuge"):
 			note.path_centrifuge = clampf(float(raw.get("centrifuge", 0.72)), 0.0, 1.0)
 			note.path_controls_set = true
@@ -964,7 +934,7 @@ static func _points_from_array(raw: Array) -> Array[Dictionary]:
 
 
 func supports_custom_color() -> bool:
-	return type in ["tap", "hold", "path", "bell", "seek", "anchor"]
+	return type in ["tap", "hold", "path"]
 
 
 ## 最终显示色：单音符覆盖 > 配色组 > 类型默认色。
@@ -976,31 +946,6 @@ func resolved_color(chart: Chart, fallback: Color) -> Color:
 		if picked.a > 0.0:
 			return picked
 	return fallback
-
-
-## Path 轨迹色：单独设置时用自己的，否则跟随头部。
-func resolved_trail_color(chart: Chart, fallback: Color = DEFAULT_PATH_COLOR) -> Color:
-	if has_trail_color:
-		return trail_color
-	return resolved_color(chart, fallback)
-
-
-## 改 Path 总时长而不改形状：按比例缩放轨迹采样点的时间；
-## 没有采样点时才用 centrifuge / axis 重算。
-func rescale_path_end(value: float) -> void:
-	var target := maxf(beat + 0.001, value)
-	var old_total := maxf(0.001, duration())
-	var ratio := (target - beat) / old_total
-	end_beat = target
-	if trace_pts.is_empty():
-		if path_controls_set:
-			generate_path_shape()
-	else:
-		for point in trace_pts:
-			point["db"] = float(point.get("db", 0.0)) * ratio
-		for point in visual_pts:
-			point["db"] = float(point.get("db", 0.0)) * ratio
-	wait_beat = clampf(wait_beat, 0.0, maxf(0.0, duration() - 0.001))
 
 
 static func relative_luminance(color: Color) -> float:
