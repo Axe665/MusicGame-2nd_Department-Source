@@ -882,6 +882,11 @@ static func load_project(path: String) -> Dictionary:
 		var jacket := String(main.get("jacket", ""))
 		var group_parts := _group_parts(part)
 		var groups_meta: Array = main.get("groups", [])
+		var saved_group_names := {}
+		if groups_meta is Array:
+			for saved in groups_meta:
+				if saved is Dictionary:
+					saved_group_names[int(saved.get("id", -1))] = String(saved.get("name", ""))
 		var current_group := int(main.get("current_group", 0))
 		var note_codes: Array = part.get("notes", [])
 		var local_map := {}
@@ -891,8 +896,10 @@ static func load_project(path: String) -> Dictionary:
 			current_group = int(part.get("current_group", 0))
 			for gp in group_parts:
 				var gid := int(gp.get("id", 0))
+				var saved_name := String(saved_group_names.get(gid, ""))
 				groups_meta.append({
-					"id": gid, "name": "组 %d" % gid, "bpm": float(gp.get("bpm", 120.0)),
+					"id": gid, "name": saved_name if not saved_name.is_empty() else "组 %d" % gid,
+					"bpm": float(gp.get("bpm", 120.0)),
 					"alpha": int(gp.get("alpha", 255)), "enabled": bool(gp.get("enabled", true)),
 				})
 				for code in gp.get("codes", []):
@@ -1052,6 +1059,7 @@ static func save_project(entries: Array, path: String, title: String = "", sourc
 		"chart_version": String(first.metadata.get("version", names[0])),
 		"widescreen": int(first.metadata.get("widescreen", 0)),
 		"face_camera": 1 if bool(first.metadata.get("face_camera", true)) else 0,
+		"groups": first.groups.duplicate(true),
 		"view": view,
 		"source": source,
 	}
@@ -1314,6 +1322,7 @@ static func _main_tmc(main: Dictionary) -> String:
 	lines.append("chart_version=" + String(main.get("chart_version", main.get("difficulty", ""))))
 	lines.append("widescreen=" + str(main.get("widescreen", 0)))
 	lines.append("face_camera=" + str(main.get("face_camera", 1)))
+	lines.append("groups=" + JSON.stringify(main.get("groups", [])))
 	lines.append("source=" + String(main.get("source", "")))
 	lines.append("default_shape=" + String(view.get("default_shape", "S0")))
 	lines.append("editor=" + JSON.stringify(view.get("editor", {})))
@@ -1461,6 +1470,7 @@ static func _parse_main_tmc(text: String) -> Dictionary:
 		"chart_version": str(fields.get("chart_version", fields.get("difficulty", ""))),
 		"widescreen": int(fields.get("widescreen", 0)),
 		"face_camera": int(fields.get("face_camera", 1)),
+		"groups": fields.get("groups", []),
 		"source": str(fields.get("source", "")),
 		"view": view,
 	}

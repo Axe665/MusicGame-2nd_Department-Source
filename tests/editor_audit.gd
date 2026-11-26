@@ -219,6 +219,24 @@ func _audit_note_inspector(app: Node) -> void:
 	app.select_note(path.id)
 	await get_tree().process_frame
 	_check("Inspector 切到 Path", inspector._note_groups["path_edit"].visible and not inspector._note_groups["hold"].visible)
+	var star_row: Control = inspector._note_rows.get("path_star_color")
+	_check("Path 区有星星颜色", star_row != null and star_row.visible)
+	var wait_spin: SpinBox = inspector._note_widgets.get("path_wait2")
+	_check("Path 区有落点后等待", wait_spin != null and wait_spin.suffix == "拍" and is_equal_approx(wait_spin.step, 0.0625))
+	var readout: Label = inspector._note_widgets.get("path_time_readout")
+	_check("Path 只读起划/滑动", readout != null and readout.text.contains("起划") and readout.text.contains("滑动"))
+	# 链式 Path 只认 part0 的等待：part1+ 不该出现可编辑的等待行。
+	var part := _make_note(chart, "path", 6.0)
+	part.path_part = 1
+	part.path_prev_id = path.id
+	path.path_next_id = part.id
+	app.select_note(part.id)
+	await get_tree().process_frame
+	_check("链式 part1 隐藏等待行", not inspector._note_rows["path_wait2"].visible)
+	_check("链式 part1 提示 part0", inspector._note_widgets["path_chain_hint"].visible)
+	app.select_note(path.id)
+	await get_tree().process_frame
+	_check("链式 part0 显示等待行", inspector._note_rows["path_wait2"].visible)
 	app.select_note(bell.id)
 	await get_tree().process_frame
 	_check("Inspector 切到 Bell", inspector._note_groups["bell"].visible and not inspector._note_groups["path"].visible)
