@@ -138,6 +138,7 @@ func _initialize() -> void:
 		"test_storyboard_timeline_rows",
 		"test_storyboard_timeline_snap_offset",
 		"test_storyboard_timeline_mouse",
+		"test_storyboard_timeline_playhead_only_redraws_overlay",
 		"test_storyboard_layer_toggle_reversible",
 		"test_storyboard_escape_cancels",
 		"test_storyboard_drag_cancel_restores",
@@ -3015,6 +3016,46 @@ func test_storyboard_timeline_mouse() -> bool:
 	timeline._gui_input(bar)
 	eq(seeks.size(), 1, "double-clicking a command bar seeks")
 	near(timeline.playhead_ms, 0.0, 0.01, "double-click jumps to the command start")
+	timeline.free()
+	return true
+
+
+## 播放时只刷新播放头覆盖层；缩放或自动跟随移动视窗才重画静态轨道。
+func test_storyboard_timeline_playhead_only_redraws_overlay() -> bool:
+	var timeline := StoryboardTimeline.new()
+	ok(timeline._playhead_overlay != null, "timeline creates a playhead overlay")
+	eq(timeline._playhead_overlay.mouse_filter, Control.MOUSE_FILTER_IGNORE, "overlay does not intercept timeline input")
+	timeline.follow_playhead = false
+	var static_before := timeline._static_invalidations
+	var overlay_before := timeline._playhead_invalidations
+	timeline.set_playhead(1000.0)
+	eq(timeline.playhead_ms, 1000.0, "playhead value updates")
+	eq(timeline._static_invalidations, static_before, "in-range playback does not invalidate static rows")
+	eq(timeline._playhead_invalidations, overlay_before + 1, "in-range playback invalidates only the overlay")
+	timeline.size = Vector2(800.0, 250.0)
+	timeline._drag_mode = 1
+	static_before = timeline._static_invalidations
+	overlay_before = timeline._playhead_invalidations
+	timeline._drag_to(Vector2(400.0, 100.0))
+	ok(timeline.playhead_ms > 1000.0, "dragging the playhead updates its position")
+	eq(timeline._static_invalidations, static_before, "dragging the playhead does not invalidate static rows")
+	eq(timeline._playhead_invalidations, overlay_before + 1, "dragging the playhead invalidates only the overlay")
+	static_before = timeline._static_invalidations
+	overlay_before = timeline._playhead_invalidations
+	ok(timeline.cancel_drag(), "playhead drag can be cancelled")
+	eq(timeline._static_invalidations, static_before, "cancelling a playhead drag does not invalidate static rows")
+	eq(timeline._playhead_invalidations, overlay_before + 1, "cancelling a playhead drag refreshes only the overlay")
+	static_before = timeline._static_invalidations
+	overlay_before = timeline._playhead_invalidations
+	timeline.set_zoom(0.0, 5000.0)
+	eq(timeline._static_invalidations, static_before + 1, "zoom invalidates static timeline content")
+	eq(timeline._playhead_invalidations, overlay_before + 1, "zoom also updates the overlay geometry")
+	timeline.follow_playhead = true
+	static_before = timeline._static_invalidations
+	overlay_before = timeline._playhead_invalidations
+	timeline.set_playhead(10000.0)
+	eq(timeline._static_invalidations, static_before + 1, "follow scrolling invalidates static content")
+	eq(timeline._playhead_invalidations, overlay_before + 1, "follow scrolling also updates the overlay")
 	timeline.free()
 	return true
 
@@ -7350,6 +7391,14 @@ func test_storyboard_cache_budget() -> bool:
 	eq(Preview3D._tex_cache.size(), 2, "an active scene can temporarily exceed the budget")
 	Preview3D._trim_storyboard_textures(now + 4000, bytes)
 	eq(Preview3D._tex_cache.size(), 1, "temporary overage is trimmed after the scene stops using its textures")
+
+	var old_touch := now - Preview3D.STORYBOARD_TEXTURE_GRACE_MS * 2
+	Preview3D._cache_storyboard_texture("touch_lru", image, 1.0, old_touch)
+	ok(Preview3D.storyboard_texture("touch_lru", false) != null, "a draw lookup still returns the cached storyboard texture")
+	eq(Preview3D._tex_last_used["touch_lru"], old_touch, "draw lookups can rely on periodic keepalive instead of touching LRU per sprite")
+	var touch_started := Time.get_ticks_msec()
+	Preview3D.storyboard_texture("touch_lru")
+	ok(int(Preview3D._tex_last_used["touch_lru"]) >= touch_started, "ordinary texture lookups still refresh the LRU timestamp")
 
 	for i in Preview3D.STORYBOARD_BOARD_CACHE_LIMIT:
 		Preview3D._cache_storyboard(str(i), Storyboard.new())

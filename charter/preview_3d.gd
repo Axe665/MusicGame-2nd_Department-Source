@@ -3439,11 +3439,13 @@ static func _get_cached_storyboard(dir: String) -> Storyboard:
 	return board
 
 
-static func storyboard_texture(full: String) -> Texture2D:
+## Per-frame preview draws may pass touch_lru=false; visible items are touched by _update_storyboard_textures() every 500 ms.
+static func storyboard_texture(full: String, touch_lru: bool = true) -> Texture2D:
 	if not _tex_cache.has(full):
 		request_storyboard_texture(full)
 		return null
-	_tex_last_used[full] = Time.get_ticks_msec()
+	if touch_lru:
+		_tex_last_used[full] = Time.get_ticks_msec()
 	return _tex_cache[full]
 
 
@@ -3672,7 +3674,7 @@ func _draw_storyboard_layers(canvas: Control, chart: Chart, t: float, layers: Ar
 			continue
 		for item in group:
 			var full: String = _storyboard_asset_path(String(item["path"]))
-			var texture: Texture2D = storyboard_texture(full)
+			var texture: Texture2D = storyboard_texture(full, false)
 			if texture == null:
 				continue
 			var sprite_size := Vector2(texture.get_width(), texture.get_height())

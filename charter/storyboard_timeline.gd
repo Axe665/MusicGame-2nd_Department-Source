@@ -28,6 +28,17 @@ const GUTTER := 196.0
 const EDGE := 4.0
 const LAYER_ORDER := ["Video", "Background", "Fail", "Pass", "Foreground", "Overlay"]
 
+
+class PlayheadOverlay:
+	extends Control
+
+	var timeline: Control = null
+
+	func _draw() -> void:
+		if timeline != null and is_instance_valid(timeline):
+			timeline.call("_draw_playhead_overlay", self)
+
+
 var board: Storyboard = null
 var chart: Chart = null
 var span_ms := 60000.0
@@ -42,6 +53,10 @@ var follow_playhead := true
 ## 时间轴选项：L 块（只读）可以隐藏。
 var show_blocks := true
 var _menu: MenuButton = null
+var _playhead_overlay: Control = null
+## 计数供性能测试确认播放头更新不会失效静态轨道。
+var _static_invalidations := 0
+var _playhead_invalidations := 0
 
 ## 图层状态（只在编辑器里生效，不写回 .osb）。
 var hidden_layers: Dictionary = {}
@@ -62,6 +77,16 @@ var _drag_origin_end := 0.0
 var _drag_origin_x := 0.0
 var _drag_origin_view := 0.0
 var _drag_origin_scroll := 0.0
+
+
+func _init() -> void:
+	var overlay := PlayheadOverlay.new()
+	overlay.name = "PlayheadOverlay"
+	overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	overlay.timeline = self
+	add_child(overlay)
+	_playhead_overlay = overlay
 
 
 func _ready() -> void:
@@ -85,16 +110,30 @@ func _ready() -> void:
 	popup.id_pressed.connect(_on_menu)
 	add_child(_menu)
 	_layout_menu()
+	_queue_timeline_redraw()
 
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_RESIZED:
 		_layout_menu()
+		_queue_timeline_redraw()
 
 
 func _layout_menu() -> void:
 	if _menu != null:
 		_menu.position = Vector2(size.x - 38.0, 1.0)
+
+
+func _queue_timeline_redraw() -> void:
+	_static_invalidations += 1
+	queue_redraw()
+	_queue_playhead_redraw()
+
+
+func _queue_playhead_redraw() -> void:
+	_playhead_invalidations += 1
+	if _playhead_overlay != null and is_instance_valid(_playhead_overlay):
+		_playhead_overlay.queue_redraw()
 
 
 func _on_menu(id: int) -> void:
@@ -103,9 +142,11 @@ func _on_menu(id: int) -> void:
 			set_zoom(0.0, 0.0)
 		2:
 			playhead_ms = 0.0
+			_queue_playhead_redraw()
 			seek.emit(0.0)
 		3:
 			playhead_ms = span_ms
+			_queue_playhead_redraw()
 			seek.emit(span_ms)
 		4:
 			follow_playhead = not follow_playhead
@@ -113,27 +154,29 @@ func _on_menu(id: int) -> void:
 		5:
 			show_blocks = not show_blocks
 			_menu.get_popup().set_item_checked(_menu.get_popup().get_item_index(5), show_blocks)
+			_queue_timeline_redraw()
 		6:
 			for layer in LAYER_ORDER:
 				expanded[layer] = true
 			_rebuild_rows()
+			_queue_timeline_redraw()
 		7:
 			for layer in LAYER_ORDER:
 				expanded[layer] = false
 			_rebuild_rows()
-	queue_redraw()
+			_queue_timeline_redraw()
 
 
 func set_chart(value: Chart) -> void:
 	chart = value
 	_recompute_span()
-	queue_redraw()
+	_queue_timeline_redraw()
 
 
 func set_board(value: Storyboard) -> void:
 	board = value
 	_rebuild_rows()
-	queue_redraw()
+	_queue_timeline_redraw()
 
 
 func set_selected(index: int) -> void:
@@ -144,17 +187,23 @@ func set_selected(index: int) -> void:
 			expanded[layer] = true
 			_rebuild_rows()
 	_ensure_visible(index)
-	queue_redraw()
+	_queue_timeline_redraw()
 
 
 func set_playhead(ms: float) -> void:
+	var old_view_from := view_from_ms
+	var old_view_to := view_to_ms
 	playhead_ms = maxf(0.0, ms)
 	if follow_playhead:
 		var span := visible_span()
 		if playhead_ms < view_from_ms or playhead_ms > view_from_ms + span:
 			view_from_ms = maxf(0.0, playhead_ms - span * 0.1)
 			view_to_ms = view_from_ms + span
-	queue_redraw()
+	var view_changed := not is_equal_approx(view_from_ms, old_view_from) or not is_equal_approx(view_to_ms, old_view_to)
+	if view_changed:
+		_queue_timeline_redraw()
+	else:
+		_queue_playhead_redraw()
 
 
 func set_zoom(from_ms: float, to_ms: float) -> void:
@@ -162,7 +211,7 @@ func set_zoom(from_ms: float, to_ms: float) -> void:
 	if to_ms <= view_from_ms:
 		to_ms = span_ms
 	view_to_ms = maxf(view_from_ms + 200.0, to_ms)
-	queue_redraw()
+	_queue_timeline_redraw()
 
 
 func visible_span() -> float:
@@ -335,19 +384,23 @@ func _draw() -> void:
 				_draw_layer_row(data, row, y)
 			else:
 				_draw_sprite_row(data, row, y)
-	# 播放头
+	# 底栏背景是静态内容；动态文字和滚动条由覆盖层重画。
+	draw_rect(Rect2(0.0, _rows_bottom(), size.x, FOOTER_H), Color(0.10, 0.11, 0.13, 1.0))
+
+
+func _draw_playhead_overlay(canvas: CanvasItem) -> void:
 	var px := _ms_to_x(playhead_ms)
 	if px >= GUTTER and playhead_ms >= view_from_ms and playhead_ms <= view_from_ms + visible_span():
-		draw_line(Vector2(px, HEADER_H), Vector2(px, _rows_bottom()), Color(1.0, 0.32, 0.38, 0.95), 1.5)
-		draw_colored_polygon(PackedVector2Array([
+		canvas.draw_line(Vector2(px, HEADER_H), Vector2(px, _rows_bottom()), Color(1.0, 0.32, 0.38, 0.95), 1.5)
+		canvas.draw_colored_polygon(PackedVector2Array([
 			Vector2(px - 4.0, HEADER_H + 1.0), Vector2(px + 4.0, HEADER_H + 1.0), Vector2(px, HEADER_H + 8.0),
 		]), Color(1.0, 0.32, 0.38, 1.0))
-	_draw_scrollbar()
-	# 底部信息
-	draw_rect(Rect2(0.0, _rows_bottom(), size.x, FOOTER_H), Color(0.10, 0.11, 0.13, 1.0))
-	draw_string(UITheme.FONT_REGULAR, Vector2(8.0, _rows_bottom() + 16.0), _footer_text(),
+		# 原来底栏背景画在播放头之后；覆盖层最后绘制时重涂播放头端点，保持原来的遮挡。
+		canvas.draw_rect(Rect2(px - 1.0, _rows_bottom(), 2.0, FOOTER_H), Color(0.10, 0.11, 0.13, 1.0))
+	_draw_scrollbar(canvas)
+	canvas.draw_string(UITheme.FONT_REGULAR, Vector2(8.0, _rows_bottom() + 16.0), _footer_text(),
 		HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(0.66, 0.7, 0.75, 1.0))
-	draw_string(UITheme.FONT_REGULAR, Vector2(size.x - 250.0, _rows_bottom() + 16.0),
+	canvas.draw_string(UITheme.FONT_REGULAR, Vector2(size.x - 250.0, _rows_bottom() + 16.0),
 		"滚轮滚动 · Ctrl+滚轮缩放 · Shift+滚轮平移", HORIZONTAL_ALIGNMENT_LEFT, -1, 9,
 		Color(0.45, 0.49, 0.54, 1.0))
 
@@ -471,17 +524,17 @@ func _draw_diamond(center: Vector2, radius: float, colour: Color) -> void:
 	]), colour)
 
 
-func _draw_scrollbar() -> void:
+func _draw_scrollbar(canvas: CanvasItem) -> void:
 	var width := size.x - GUTTER - 10.0
 	if width <= 1.0:
 		return
 	var y := size.y - FOOTER_H - 5.0
-	draw_rect(Rect2(GUTTER, y, width, 3.0), Color(0.16, 0.18, 0.21, 1.0))
+	canvas.draw_rect(Rect2(GUTTER, y, width, 3.0), Color(0.16, 0.18, 0.21, 1.0))
 	var ratio := clampf(visible_span() / maxf(1.0, span_ms), 0.02, 1.0)
 	var left := clampf(view_from_ms / maxf(1.0, span_ms), 0.0, 1.0)
 	var bar_w := maxf(18.0, width * ratio)
 	var bar_x := GUTTER + clampf(left * width, 0.0, width - bar_w)
-	draw_rect(Rect2(bar_x, y - 1.0, bar_w, 5.0), Color(0.42, 0.46, 0.52, 1.0))
+	canvas.draw_rect(Rect2(bar_x, y - 1.0, bar_w, 5.0), Color(0.42, 0.46, 0.52, 1.0))
 
 
 func _pick_step() -> float:
@@ -557,7 +610,7 @@ func _gui_input(event: InputEvent) -> void:
 				else:
 					_scroll = clampf(_scroll + direction, 0.0,
 						maxf(0.0, float(_rows.size()) - _visible_row_count()))
-				queue_redraw()
+				_queue_timeline_redraw()
 			accept_event()
 			return
 		if button.button_index == MOUSE_BUTTON_MIDDLE:
@@ -572,12 +625,16 @@ func _gui_input(event: InputEvent) -> void:
 			_begin_drag(button.position, button.double_click)
 		else:
 			if _drag_mode != 0:
+				var redraw_static := _drag_mode != 1
 				_drag_mode = 0
 				_drag_command = null
 				_drag_sprite = null
 				_recompute_span()
 				drag_finished.emit()
-				queue_redraw()
+				if redraw_static:
+					_queue_timeline_redraw()
+				else:
+					_queue_playhead_redraw()
 				accept_event()
 		return
 	if event is InputEventMouseMotion and _drag_mode != 0:
@@ -597,7 +654,7 @@ func _begin_drag(pos: Vector2, double_click: bool = false) -> void:
 		_drag_mode = 1
 		playhead_ms = snap_ms(_x_to_ms(pos.x))
 		seek.emit(playhead_ms)
-		queue_redraw()
+		_queue_playhead_redraw()
 		accept_event()
 		return
 	var row := _row_at(pos.y)
@@ -605,7 +662,7 @@ func _begin_drag(pos: Vector2, double_click: bool = false) -> void:
 		_drag_mode = 1
 		playhead_ms = snap_ms(_x_to_ms(pos.x))
 		seek.emit(playhead_ms)
-		queue_redraw()
+		_queue_playhead_redraw()
 		accept_event()
 		return
 	var data := _rows[row]
@@ -613,6 +670,7 @@ func _begin_drag(pos: Vector2, double_click: bool = false) -> void:
 		var layer := String(data["layer"])
 		# 左侧栏：眼睛 / 锁 / 展开；右侧时间区：跳播放头。
 		var hit := _layer_button_at(pos.x) if pos.x < GUTTER else ""
+		var redraw_static := true
 		if hit == "eye":
 			# 用 erase 表示“关”：留一个 false 值进去后 has() 仍然为真，
 			# 第二次点眼睛就永远取消不掉隐藏。
@@ -634,7 +692,11 @@ func _begin_drag(pos: Vector2, double_click: bool = false) -> void:
 			_drag_mode = 1
 			playhead_ms = snap_ms(_x_to_ms(pos.x))
 			seek.emit(playhead_ms)
-		queue_redraw()
+			redraw_static = false
+		if redraw_static:
+			_queue_timeline_redraw()
+		else:
+			_queue_playhead_redraw()
 		accept_event()
 		return
 	var index := int(data["index"])
@@ -657,14 +719,14 @@ func _begin_drag(pos: Vector2, double_click: bool = false) -> void:
 		command_picked.emit(index, c)
 		if c.in_block:
 			# L 块展开副本只读，不拖。
-			queue_redraw()
+			_queue_timeline_redraw()
 			accept_event()
 			return
 		if double_click:
 			# 双击命令条：跳到这条命令的起点，而不是跟着拖动改时间。
 			playhead_ms = c.start
 			seek.emit(c.start)
-			queue_redraw()
+			_queue_timeline_redraw()
 			accept_event()
 			return
 		drag_started.emit()
@@ -678,7 +740,7 @@ func _begin_drag(pos: Vector2, double_click: bool = false) -> void:
 			_drag_mode = 3
 		elif x1 - pos.x <= EDGE:
 			_drag_mode = 4
-		queue_redraw()
+		_queue_timeline_redraw()
 		accept_event()
 		return
 	# 空白：跳播放头并选中这一行
@@ -687,7 +749,7 @@ func _begin_drag(pos: Vector2, double_click: bool = false) -> void:
 	sprite_picked.emit(index)
 	playhead_ms = snap_ms(ms)
 	seek.emit(playhead_ms)
-	queue_redraw()
+	_queue_timeline_redraw()
 	accept_event()
 
 
@@ -696,6 +758,7 @@ func _begin_drag(pos: Vector2, double_click: bool = false) -> void:
 func cancel_drag() -> bool:
 	if _drag_mode == 0:
 		return false
+	var redraw_static := _drag_mode != 1
 	if _drag_mode >= 2 and _drag_mode <= 4 and _drag_command != null and _drag_sprite != null:
 		_drag_command.start = _drag_origin_start
 		_drag_command.end = _drag_origin_end
@@ -703,7 +766,10 @@ func cancel_drag() -> bool:
 	_drag_mode = 0
 	_drag_command = null
 	_drag_sprite = null
-	queue_redraw()
+	if redraw_static:
+		_queue_timeline_redraw()
+	else:
+		_queue_playhead_redraw()
 	return true
 
 
@@ -712,20 +778,20 @@ func _drag_to(pos: Vector2) -> void:
 		view_from_ms = clampf(_drag_origin_view - (pos.x - _drag_origin_x) / maxf(1.0, size.x - GUTTER) * visible_span(),
 			0.0, maxf(0.0, span_ms - visible_span()))
 		view_to_ms = view_from_ms + visible_span()
-		queue_redraw()
+		_queue_timeline_redraw()
 		return
 	if _drag_mode == 6:
 		var width := maxf(1.0, size.x - GUTTER - 10.0)
 		var shift := (pos.x - _drag_origin_x) / width * span_ms
 		view_from_ms = clampf(_drag_origin_view + shift, 0.0, maxf(0.0, span_ms - visible_span()))
 		view_to_ms = view_from_ms + visible_span()
-		queue_redraw()
+		_queue_timeline_redraw()
 		return
 	var ms := snap_ms(_x_to_ms(pos.x))
 	if _drag_mode == 1:
 		playhead_ms = ms
 		seek.emit(playhead_ms)
-		queue_redraw()
+		_queue_playhead_redraw()
 		return
 	if _drag_command == null or _drag_sprite == null:
 		return
@@ -743,7 +809,7 @@ func _drag_to(pos: Vector2) -> void:
 		4:
 			_drag_command.end = maxf(_drag_command.start, snap_ms(_drag_origin_end + delta))
 	_drag_sprite.build()
-	queue_redraw()
+	_queue_timeline_redraw()
 	changed.emit()
 
 
