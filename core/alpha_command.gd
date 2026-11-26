@@ -286,16 +286,56 @@ const CATALOG := [
 			{"key": "y", "label": "Y", "type": "float", "default": 0.0, "min": -1.0, "max": 1.0, "step": 0.01},
 		],
 	},
+	{
+		"name": "GAUSSIAN",
+		"label": "高斯模糊",
+		"category": CATEGORY_FILTER,
+		"duration": 1.0,
+		"params": [
+			{"key": "strength", "label": "强度", "type": "float", "default": 0.5, "min": 0.0, "max": 1.0, "step": 0.05},
+		],
+	},
+	{
+		"name": "TRAIL",
+		"label": "残影",
+		"category": CATEGORY_FILTER,
+		"duration": 1.0,
+		"params": [
+			{"key": "strength", "label": "强度", "type": "float", "default": 0.6, "min": 0.0, "max": 1.0, "step": 0.05},
+		],
+	},
+	{
+		"name": "TVNOISE",
+		"label": "雪花噪点",
+		"category": CATEGORY_FILTER,
+		"duration": 1.0,
+		"params": [
+			{"key": "strength", "label": "强度", "type": "float", "default": 0.5, "min": 0.0, "max": 1.0, "step": 0.05},
+		],
+	},
+	{
+		"name": "SHATTER",
+		"label": "玻璃碎裂",
+		"category": CATEGORY_FILTER,
+		"duration": 1.0,
+		"params": [
+			{"key": "strength", "label": "强度", "type": "float", "default": 0.5, "min": 0.0, "max": 1.0, "step": 0.05},
+		],
+	},
+	{
+		"name": "STRIPS",
+		"label": "横带错位",
+		"category": CATEGORY_FILTER,
+		"duration": 1.0,
+		"params": [
+			{"key": "strength", "label": "强度", "type": "float", "default": 0.4, "min": 0.0, "max": 1.0, "step": 0.05},
+			{"key": "bands", "label": "条数", "type": "float", "default": 8.0, "min": 2.0, "max": 24.0, "step": 1.0},
+		],
+	},
 ]
 
-## 旧谱面里已经写下的近义指令，读取时折叠到保留的那一条。
-## 雪花噪点/碎裂 归到故障，高斯模糊/拖影 归到径向模糊，避免同一效果四五个名字。
-const ALIASES := {
-	"TVNOISE": "GLITCH",
-	"SHATTER": "GLITCH",
-	"GAUSSIAN": "RADIALBLUR",
-	"TRAIL": "RADIALBLUR",
-}
+## 旧谱面里已经写下的近义指令。真实效果补齐后，这四个名字直接就是指令本身。
+const ALIASES := {}
 
 var id: String = ""
 var name: String = ""
@@ -511,6 +551,8 @@ static func defaults(command_name: String) -> Dictionary:
 	# 滤镜区域是每条滤镜自己的可选遮罩；旧指令没有这些键时按“未启用”读。
 	if String(spec_entry.get("category", "")) == CATEGORY_FILTER:
 		result.merge({
+			"attack": 0.25,
+			"release": 0.25,
 			"region_on": false,
 			"region_angle": 0.0,
 			"region_span": 360.0,
@@ -551,6 +593,9 @@ static func normalize(command_name: String, raw: Dictionary) -> Dictionary:
 		result["region_inner"] = clampf(float(raw.get("region_inner", 0.0)), 0.0, 2.0)
 		result["region_outer"] = clampf(float(raw.get("region_outer", 1.0)), 0.0, 2.0)
 		result["region_feather"] = clampf(float(raw.get("region_feather", 0.1)), 0.0, 0.5)
+	if String(spec_of(command_name).get("category", "")) == CATEGORY_FILTER:
+		result["attack"] = clampf(float(raw.get("attack", result.get("attack", 0.25))), 0.0, 0.9)
+		result["release"] = clampf(float(raw.get("release", result.get("release", 0.25))), 0.0, 0.9)
 	return result
 
 

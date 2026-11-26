@@ -156,6 +156,7 @@ func _initialize() -> void:
 		"test_note_color_palette",
 		"test_note_color_contrast",
 		"test_note_color_round_trip",
+		"test_path_trail_fields_round_trip",
 		"test_note_color_lbp",
 		"test_osu_std_import",
 		"test_osu_std_curves",
@@ -2032,6 +2033,14 @@ func test_lbp_export_covers_all_types() -> bool:
 		ok(text.contains(needle), "LBP 导出包含 %s" % needle)
 	ok(text.contains("erase="), "LBP 导出带擦除缺口")
 	ok(text.contains("lock=1"), "LBP 导出带锁定")
+	for note in chart.notes:
+		if note.type == "path":
+			note.wait_beat = 0.5
+			note.visual_pts = [{"db": 0.25, "da": 3.0}]
+			break
+	var path_text := LBPIO.export_chart(chart)
+	ok(path_text.contains("wait=0.500"), "LBP 文本导出带 Path 等待拍")
+	ok(path_text.contains("visual=("), "LBP 文本导出带 Path 设计点")
 	var path := "user://roundtrip_check.lbp.txt"
 	eq(LBPIO.export_to_file(chart, path), OK, "LBP 导出到文件")
 	ok(FileAccess.file_exists(path), "LBP 文件存在")
@@ -3761,8 +3770,49 @@ func test_note_color_contrast() -> bool:
 
 	var note := Note.new("tap", 0.0, 0.0, 60.0)
 	ok(note.supports_custom_color(), "tap supports custom color")
-	ok(not Note.new("bell", 0.0, 0.0, 60.0).supports_custom_color(), "bell keeps fixed color")
-	ok(not Note.new("seek", 0.0, 0.0, 60.0).supports_custom_color(), "seek keeps fixed color")
+	ok(Note.new("bell", 0.0, 0.0, 60.0).supports_custom_color(), "bell supports custom color")
+	ok(Note.new("seek", 0.0, 0.0, 60.0).supports_custom_color(), "seek supports custom color")
+	return true
+
+
+func test_path_trail_fields_round_trip() -> bool:
+	var chart := DemoChart.make_demo()
+	var path: Note = Note.new("path", 1.0, 0.0, 60.0)
+	path.id = 9001
+	path.end_beat = 3.0
+	path.trace_pts = [
+		{"x": 1.0, "y": 0.0, "db": 0.0},
+		{"x": 0.5, "y": 0.5, "db": 1.0},
+		{"x": 0.0, "y": 0.0, "db": 2.0},
+	]
+	path.path_custom_shape = true
+	path.show_trail = false
+	path.has_trail_color = true
+	path.trail_color = Color("#ff8800")
+	chart.notes.append(path)
+	var restored := ChartIO.chart_from_dict(ChartIO.chart_to_dict(chart))
+	var loaded: Note = null
+	for note in restored.notes:
+		if note.type == "path" and note.trace_pts.size() == 3:
+			loaded = note
+	ok(loaded != null, "path survives save")
+	if loaded == null:
+		return false
+	ok(not loaded.show_trail, "show_trail survives save")
+	ok(loaded.has_trail_color, "trail color survives save")
+	eq(loaded.trail_color, Color("#ff8800"), "trail rgb survives save")
+	ok(loaded.path_custom_shape, "custom shape flag survives save")
+	var direct := Note.from_dict(path.to_dict())
+	ok(not direct.show_trail and direct.has_trail_color and direct.path_custom_shape, "clipboard keeps path flags")
+	# 改时长只缩放时间，形状位置不变。
+	var samples: Array[Vector2] = []
+	for i in 5:
+		samples.append(path.path_local_at(path.duration() * float(i) / 4.0))
+	path.rescale_path_end(5.0)
+	near(path.duration(), 4.0, 0.001, "rescale path duration")
+	for i in 5:
+		var after := path.path_local_at(path.duration() * float(i) / 4.0)
+		ok(after.distance_to(samples[i]) < 0.0001, "rescale keeps shape point %d" % i)
 	return true
 
 
@@ -4373,6 +4423,8 @@ func test_chart_project_format() -> bool:
 	var chart := DemoChart.make_demo()
 	chart.notes[0].color = 2
 	var group_id := chart.add_group(140.0)
+	chart.groups[0]["name"] = "主组"
+	chart.groups[chart.group_index(group_id)]["name"] = "副组"
 	chart.notes[0].group_id = group_id
 	var group_points := chart.group_bpm_points_for(group_id)
 	group_points.append(TimingPoint.new(8.0, 180.0, 3))
@@ -4415,6 +4467,8 @@ func test_chart_project_format() -> bool:
 			eq(grouped_note.color, 2, "note color survives")
 			eq(grouped_note.group_id, group_id, "note group survives project")
 		eq(first.groups.size(), 2, "groups survive project")
+		eq(String(first.groups[0].get("name", "")), "主组", "group 0 name survives project")
+		eq(String(first.groups[1].get("name", "")), "副组", "group 1 name survives project")
 		near(first.group_bpm_at(group_id, 9.0), 180.0, 0.001, "group bpm change survives project")
 		eq(first.timing.points.size(), 2, "bpm change survives")
 		eq(bool(first.metadata.get("face_camera", true)), false, "face_camera survives project")
@@ -7113,8 +7167,8 @@ func test_osu_pill_rows() -> bool:
 
 
 func test_alpha_command_catalog() -> bool:
-	eq(AlphaCommand.CATALOG.size(), 27, "catalog has 27 commands")
-	eq(AlphaCommand.names("filter").size(), 24, "24 filter commands")
+	eq(AlphaCommand.CATALOG.size(), 32, "catalog has 32 commands")
+	eq(AlphaCommand.names("filter").size(), 29, "29 filter commands")
 	eq(AlphaCommand.names("jline").size(), 1, "one judge line command")
 	eq(AlphaCommand.names("text").size(), 2, "two text commands")
 	var seen := {}

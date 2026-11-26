@@ -155,12 +155,20 @@ static func _note_line(chart: Chart, note: Note) -> String:
 			return "hold,%s,%s,%s,%s%s%s" % [_beat(chart, note.beat), _num(note.angle), _num(note.arc_width()), _beat(chart, note.end_beat), suffix, options]
 		"path":
 			var suffix := ",tol=%s,samples=%s" % [_num(note.tolerance), _num(note.samples_per_beat)]
+			if note.wait_beat > 0.0:
+				suffix += ",wait=%s" % _num(note.wait_beat)
 			if not note.visual_pts.is_empty():
 				suffix += ",visual=%s" % _points(note.visual_pts)
 			if not note.trace_pts.is_empty():
 				suffix += ",pts=%s" % _trace_points(note.trace_pts)
 			if note.path_speed != 1.0:
 				suffix += ",speed=%s" % _num(note.path_speed)
+			if note.path_custom_shape:
+				suffix += ",shape=free"
+			if not note.show_trail:
+				suffix += ",trail=0"
+			if note.has_trail_color:
+				suffix += ",trailrgb=#%s" % note.trail_color.to_html(false)
 			if not note.path_gaps.is_empty():
 				var ranges: Array[String] = []
 				for gap in note.path_gaps:

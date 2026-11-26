@@ -219,10 +219,35 @@ func _audit_note_inspector(app: Node) -> void:
 	app.select_note(path.id)
 	await get_tree().process_frame
 	_check("Inspector 切到 Path", inspector._note_groups["path_edit"].visible and not inspector._note_groups["hold"].visible)
+	var star_row: Control = inspector._note_rows.get("path_star_color")
+	_check("Path 区有星星颜色", star_row != null and star_row.visible)
+	var wait_spin: SpinBox = inspector._note_widgets.get("path_wait2")
+	_check("Path 区有落点后等待", wait_spin != null and wait_spin.suffix == "拍" and is_equal_approx(wait_spin.step, 0.0625))
+	var readout: Label = inspector._note_widgets.get("path_time_readout")
+	_check("Path 只读起划/滑动", readout != null and readout.text.contains("起划") and readout.text.contains("滑动"))
+	# 链式 Path 只认 part0 的等待：part1+ 不该出现可编辑的等待行。
+	var part := _make_note(chart, "path", 6.0)
+	part.path_part = 1
+	part.path_prev_id = path.id
+	path.path_next_id = part.id
+	app.select_note(part.id)
+	await get_tree().process_frame
+	_check("链式 part1 隐藏等待行", not inspector._note_rows["path_wait2"].visible)
+	_check("链式 part1 提示 part0", inspector._note_widgets["path_chain_hint"].visible)
+	app.select_note(path.id)
+	await get_tree().process_frame
+	_check("链式 part0 显示等待行", inspector._note_rows["path_wait2"].visible)
 	app.select_note(bell.id)
 	await get_tree().process_frame
 	_check("Inspector 切到 Bell", inspector._note_groups["bell"].visible and not inspector._note_groups["path"].visible)
 	inspector.queue_free()
+
+
+func _collect_options(node: Node, out: Array[OptionButton]) -> void:
+	for child in node.get_children():
+		if child is OptionButton:
+			out.append(child)
+		_collect_options(child, out)
 
 
 func _audit_ui(app: Node) -> void:
@@ -236,19 +261,16 @@ func _audit_ui(app: Node) -> void:
 	await get_tree().process_frame
 	var page: VBoxContainer = inspector._pages["视图"]
 	var options: Array[OptionButton] = []
-	for child in page.get_children():
-		if child is OptionButton:
-			options.append(child)
-		elif child is HBoxContainer:
-			for sub in child.get_children():
-				if sub is OptionButton:
-					options.append(sub)
+	_collect_options(page, options)
 	var all_text := ""
 	for option in options:
 		for i in option.item_count:
 			all_text += option.get_item_text(i) + "|"
 	_check("设置页有皮肤选项", all_text.contains("糖霜胶囊") and all_text.contains("街机贴纸"))
-	_check("设置页有特效选项", all_text.contains("命中特效") and all_text.contains("PERFECT 特效"))
+	var quality_labels: Array[String] = []
+	for entry in load("res://charter/main.gd").QUALITY_OPTIONS:
+		quality_labels.append(String(entry.get("label", "")))
+	_check("画质设置有命中特效", quality_labels.has("命中特效") and quality_labels.has("PERFECT 特效"))
 	_check("设置页有音效选项", all_text.contains("原声") and all_text.contains("静音"))
 	_check("设置页可持久化入口", app != null and app.has_method("save_settings"))
 	inspector.queue_free()

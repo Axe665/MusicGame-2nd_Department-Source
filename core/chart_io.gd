@@ -141,6 +141,12 @@ static func chart_to_dict(chart: Chart) -> Dictionary:
 					extra["trace"] = Note._points_to_dict(note.trace_pts)
 				if not note.visual_pts.is_empty():
 					extra["visual"] = Note._points_to_dict(note.visual_pts)
+				if note.path_custom_shape:
+					extra["custom_shape"] = true
+				if not note.show_trail:
+					extra["show_trail"] = false
+				if note.has_trail_color:
+					extra["trail_rgb"] = "#" + note.trail_color.to_html(false)
 			"bell":
 				if absf(note.bell_radius - 1.0) > 0.0001:
 					extra["bell_radius"] = snappedf(note.bell_radius, 0.001)
@@ -250,6 +256,15 @@ static func _apply_note_extras(note: Note, extra: Dictionary) -> void:
 		note.path_gaps = Note._ranges_from_array(extra["path_gaps"])
 	if extra.has("trace"):
 		note.trace_pts = Note._points_from_array(extra["trace"])
+	if extra.has("custom_shape"):
+		note.path_custom_shape = bool(extra["custom_shape"])
+	if extra.has("show_trail"):
+		note.show_trail = bool(extra["show_trail"])
+	if extra.has("trail_rgb"):
+		var trail_text := String(extra["trail_rgb"])
+		if Color.html_is_valid(trail_text):
+			note.trail_color = Color(trail_text)
+			note.has_trail_color = true
 	if extra.has("visual"):
 		note.visual_pts = Note._points_from_array(extra["visual"])
 	if extra.has("bell_radius"):
@@ -867,6 +882,11 @@ static func load_project(path: String) -> Dictionary:
 		var jacket := String(main.get("jacket", ""))
 		var group_parts := _group_parts(part)
 		var groups_meta: Array = main.get("groups", [])
+		var saved_group_names := {}
+		if groups_meta is Array:
+			for saved in groups_meta:
+				if saved is Dictionary:
+					saved_group_names[int(saved.get("id", -1))] = String(saved.get("name", ""))
 		var current_group := int(main.get("current_group", 0))
 		var note_codes: Array = part.get("notes", [])
 		var local_map := {}
@@ -876,8 +896,10 @@ static func load_project(path: String) -> Dictionary:
 			current_group = int(part.get("current_group", 0))
 			for gp in group_parts:
 				var gid := int(gp.get("id", 0))
+				var saved_name := String(saved_group_names.get(gid, ""))
 				groups_meta.append({
-					"id": gid, "name": "组 %d" % gid, "bpm": float(gp.get("bpm", 120.0)),
+					"id": gid, "name": saved_name if not saved_name.is_empty() else "组 %d" % gid,
+					"bpm": float(gp.get("bpm", 120.0)),
 					"alpha": int(gp.get("alpha", 255)), "enabled": bool(gp.get("enabled", true)),
 				})
 				for code in gp.get("codes", []):
@@ -1037,6 +1059,7 @@ static func save_project(entries: Array, path: String, title: String = "", sourc
 		"chart_version": String(first.metadata.get("version", names[0])),
 		"widescreen": int(first.metadata.get("widescreen", 0)),
 		"face_camera": 1 if bool(first.metadata.get("face_camera", true)) else 0,
+		"groups": first.groups.duplicate(true),
 		"view": view,
 		"source": source,
 	}
@@ -1299,6 +1322,7 @@ static func _main_tmc(main: Dictionary) -> String:
 	lines.append("chart_version=" + String(main.get("chart_version", main.get("difficulty", ""))))
 	lines.append("widescreen=" + str(main.get("widescreen", 0)))
 	lines.append("face_camera=" + str(main.get("face_camera", 1)))
+	lines.append("groups=" + JSON.stringify(main.get("groups", [])))
 	lines.append("source=" + String(main.get("source", "")))
 	lines.append("default_shape=" + String(view.get("default_shape", "S0")))
 	lines.append("editor=" + JSON.stringify(view.get("editor", {})))
@@ -1446,6 +1470,7 @@ static func _parse_main_tmc(text: String) -> Dictionary:
 		"chart_version": str(fields.get("chart_version", fields.get("difficulty", ""))),
 		"widescreen": int(fields.get("widescreen", 0)),
 		"face_camera": int(fields.get("face_camera", 1)),
+		"groups": fields.get("groups", []),
 		"source": str(fields.get("source", "")),
 		"view": view,
 	}
