@@ -421,6 +421,8 @@ var _ring_rot_last: float = 0.0
 var _drawing_path: bool = false
 ## 绘制中的原始鼠标轨迹（屏幕坐标）：先显示原始轨迹，松手再投影/平滑成 Path。
 var _path_points: Array[Vector2] = []
+## 每帧复用的可见音符缓冲，避免 _draw_notes 每次都新建数组。
+var _visible_notes_buf: Array[Note] = []
 var _path_head_angle: float = 0.0
 
 
@@ -456,6 +458,11 @@ func _exit_tree() -> void:
 ## 试玩里由实测帧时自动降档，只为让弱机也能稳住节奏。
 ## 全屏滤镜层（屏幕采样 shader）；由 <FLASH>/<HUE>/<ZOOM> 等滤镜指令逐帧驱动。
 var _filter_layer: ColorRect = null
+## TRAIL 用的历史帧：一个 SubViewport 每帧把预览区域拷成纹理，
+## 滤镜再采样上一帧的纹理做残影。
+var _trail_viewport: SubViewport = null
+var _trail_rect: TextureRect = null
+var _trail_active: bool = false
 ## 滤镜层是否常驻。false = 只在有滤镜生效时显示（默认，省掉每帧一次整屏拷贝 +
 ## 屏幕纹理 mip 链 + 全屏 pass）；true = 旧行为，调试用。
 const FILTER_ALWAYS_ON := false
@@ -973,6 +980,17 @@ func _process(_delta: float) -> void:
 	var t := get_time_beat()
 	# 显隐必须在绘制之前定下来（在 _draw 里改 visible 会晚一帧），所以放在 _process。
 	_update_filter_visibility(chart, t)
+	# 残影历史帧必须在主视口这一帧画完之前抓上一帧；用 UPDATE_ONCE 每帧抓一次。
+	var trail_live := false
+	if not chart.commands.is_empty():
+		trail_live = float(_filter_state(chart, t).get("uniforms", {}).get("trail", 0.0)) > 0.001
+	if _trail_viewport != null:
+		if trail_live:
+			_sync_trail_viewport()
+			_trail_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
+		else:
+			_trail_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
+			_trail_active = false
 	var time_changed := absf(t - _last_process_time) > 0.0005
 	var jline := jline_state(chart, t)
 	var jline_key := _jline_key(jline)
@@ -1707,6 +1725,7 @@ func clear_note_states() -> void:
 
 
 func _on_chart_changed() -> void:
+	warm_path_index()
 	_sorted_notes_chart = null
 	path_cuts.clear()
 	path_sector_cuts.clear()
@@ -2334,16 +2353,18 @@ func _create_path() -> void:
 	var start: float = _app.snap_beat(get_time_beat())
 	var note := Note.new("path", start, _path_head_angle, 62.0)
 	note.id = chart.next_note_id()
-	note.end_beat = start + 1.0
 	note.tail_width = 45.0
 	note.tolerance = 0.24
 	note.samples_per_beat = 4.0
 	note.space = "plane"
+	note.path_custom_shape = true
 	note.tail_angle = fposmod(rad_to_deg(atan2(points[-1].y, points[-1].x)), 360.0)
 	# db 按弧长分配：按索引均分会让画得慢的一段滑得更快，判定手感跟着变。
 	var total_length := 0.0
 	for i in range(1, points.size()):
 		total_length += points[i].distance_to(points[i - 1])
+	# 时长按绘制总长定：环半径归一后 × 1.5 拍，限 0.5–8 拍，对齐 1/16。
+	note.end_beat = start + snappedf(clampf(total_length * 1.5, 0.5, 8.0), 0.0625)
 	var walked := 0.0
 	for i in points.size():
 		var point := points[i]
@@ -4007,6 +4028,13 @@ func _update_path_index(chart: Chart) -> void:
 		_path_prefix_end.append(latest_end)
 
 
+## 提前建好 Path 索引，避免第一次进试玩时在首帧里一次建完（万音符谱约十几毫秒）。
+func warm_path_index() -> void:
+	var chart := get_chart()
+	if chart != null:
+		_update_path_index(chart)
+
+
 func _visible_paths(chart: Chart, beat: float) -> Array[Note]:
 	_update_path_index(chart)
 	var visible: Array[Note] = []
@@ -4030,7 +4058,6 @@ func _visible_paths(chart: Chart, beat: float) -> Array[Note]:
 				entry.note = build_path_chain_note(entry.parts[0], entry.parts)
 			visible.append(entry.note)
 			break
-	visible.sort_custom(func(a: Note, b: Note) -> bool: return a.beat < b.beat)
 	return visible
 
 
@@ -4061,11 +4088,13 @@ func _draw_paths(canvas: Control, chart: Chart, t: float, _pre: float) -> void:
 			if active != active_pass:
 				continue
 			var tint: Color = _note_tint(note, Note.DEFAULT_PATH_COLOR)
+			var trail_tint: Color = note.resolved_trail_color(chart, Note.DEFAULT_PATH_COLOR)
 			if _overlap_any:
 				tint = tint.darkened(0.18 * float(i % 4))
+				trail_tint = trail_tint.darkened(0.18 * float(i % 4))
 			var dim: float = 1.0 if active else PATH_RELAY_DIM
 			var selected: bool = selected_note != null and selected_note.id == note.id
-			_draw_one_path(canvas, chart, note, t, projection_key, visible.size(), tint, dim, active, selected)
+			_draw_one_path(canvas, chart, note, t, projection_key, visible.size(), tint, trail_tint, dim, active, selected)
 
 
 ## One synthetic Path for a part chain: one head, one guide ball, one tail.
@@ -4081,6 +4110,10 @@ static func build_path_chain_note(root: Note, chain: Array[Note]) -> Note:
 	result.samples_per_beat = root.samples_per_beat
 	result.has_custom_color = root.has_custom_color
 	result.custom_color = root.custom_color
+	result.has_trail_color = root.has_trail_color
+	result.trail_color = root.trail_color
+	result.show_trail = root.show_trail
+	result.path_custom_shape = root.path_custom_shape
 	result.path_chain = true
 	result.path_next_id = root.path_next_id
 	result.trace_pts = []
@@ -4210,12 +4243,13 @@ func _path_stroke_runs(chart: Chart, note: Note, beat: float, projection_key: St
 	return stroke.runs
 
 
-func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, projection_key: String, visible_count: int, accent: Color, dim: float, active: bool, selected: bool) -> void:
+func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, projection_key: String, visible_count: int, accent: Color, trail_accent: Color, dim: float, active: bool, selected: bool) -> void:
 	var total := note.duration()
 	if total <= 0.001:
 		return
 	var group_mul := chart.group_alpha(note.group_id) / 255.0
 	var decorative := not chart.note_enabled(note)
+	var trail_on := note.show_trail
 	# 尾判后 0.1s 内整条轨迹（轨迹 / 进度球 / 尾环）一起淡出，不再等到 end+0.5 拍硬消失。
 	var end_span := end_fade_beats(chart.timing.bpm_at(note.beat))
 	var end_fade := clampf(1.0 - (t - note.end_beat) / end_span, 0.0, 1.0)
@@ -4223,7 +4257,7 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, project
 	var spawn_beat := _spawn_beat(chart, note.beat, note.group_id)
 	var fall_beat := _fall_beat(chart, note.beat, note.group_id)
 	var trail_fade := smoothstep(0.0, 1.0, chart.timing.ms_fraction(spawn_beat, fall_beat, t)) * group_mul
-	if decorative:
+	if not trail_on:
 		trail_fade = 0.0
 	var ns := _note_scale()
 	var wait := clampf(note.wait_beat, 0.0, maxf(0.0, total - 0.001))
@@ -4233,8 +4267,9 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, project
 	var ball_width: float = cursor_main_diameter(cursor_scale)
 	# 颜色由 _draw_paths 统一分配（自定义优先，重叠时同色系压明度）。
 	var trail_dim := dim * trail_fade * end_fade
-	var future := Color(accent.r, accent.g, accent.b, 0.98 * trail_dim)
-	var passed := Color(accent.r, accent.g, accent.b, 0.14 * trail_dim)
+	var dense_paths := visible_count > 24
+	var future := Color(trail_accent.r, trail_accent.g, trail_accent.b, 0.98 * trail_dim)
+	var passed := Color(trail_accent.r, trail_accent.g, trail_accent.b, 0.14 * trail_dim)
 	if trail_fade > 0.001 and end_fade > 0.0:
 		var count: int = clampi(int(total * 12.0), 28, 64) if visible_count >= 4 else clampi(int(total * 18.0), 40, 96)
 		var runs: Array[PackedVector2Array] = _path_stroke_runs(chart, note, t, projection_key, count)
@@ -4252,13 +4287,17 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, project
 			canvas.draw_polyline(piece, Color(0, 0, 0, 0.55 * trail_dim), band_width * 1.7 + 4.0, false)
 			if path_style == "ribbon":
 				# B 半透明丝带：宽而透的身体 + 一道亮边（Arcaea 式）。
-				canvas.draw_polyline(piece, Color(accent.r, accent.g, accent.b, 0.40 * trail_dim), band_width * 1.55, false)
-				canvas.draw_polyline(piece, Color(accent.r, accent.g, accent.b, 0.95 * trail_dim), band_width * 0.42, false)
+				canvas.draw_polyline(piece, Color(trail_accent.r, trail_accent.g, trail_accent.b, 0.40 * trail_dim), band_width * 1.55, false)
+				canvas.draw_polyline(piece, Color(trail_accent.r, trail_accent.g, trail_accent.b, 0.95 * trail_dim), band_width * 0.42, false)
 			else:
 				# A 粗 chevron 履带：实心带 + 内部箭头纹，方向一眼可读。
-				canvas.draw_polyline(piece, Color(accent.r, accent.g, accent.b, 0.95 * trail_dim), band_width * 1.7, false)
-				_draw_tread_marks(canvas, piece, band_width * 1.7, Color(0.04, 0.05, 0.08, 0.45 * trail_dim))
+				canvas.draw_polyline(piece, Color(trail_accent.r, trail_accent.g, trail_accent.b, 0.95 * trail_dim), band_width * 1.7, false)
+				if not dense_paths:
+					_draw_tread_marks(canvas, piece, band_width * 1.7, Color(0.04, 0.05, 0.08, 0.45 * trail_dim))
 			# 方向箭头：丝带靠它读方向；履带本身已经带纹，只在远处留少量箭头。
+			# 同屏 24 条以上时省略箭头/履带纹，保留轨迹本体（省掉大量小图元）。
+			if dense_paths:
+				continue
 			var chevron_size := 12.0 * ns * PATH_SIZE_SCALE
 			var chevron_spacing := maxf(36.0, chevron_size * 2.3)
 			if path_style == "tread":
@@ -4267,7 +4306,7 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, project
 				# 试玩时轨迹已经被擦到光标处，剩下的每一段都在前方，不该再按“piece 内比例”压暗。
 				var chevron_color := future if playtest_mode else (passed if sample.fraction < progress else future)
 				_draw_chevron(canvas, sample.point, sample.direction, chevron_color, chevron_size)
-	if selected:
+	if selected and trail_on:
 		# 中间判定点只在选中时绘制，避免多星星铺满采样点拖慢编辑器。
 		for sample_beat in note.path_sample_beats():
 			var rel := clampf(sample_beat - note.beat, 0.0, total)
@@ -4285,7 +4324,7 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, project
 			var p := _path_screen_point(chart, note, rel, t, true, 1.0)
 			if _valid_point(p):
 				_draw_diamond(canvas, p, 4.5, UITheme.GOLD)
-	if selected:
+	if selected and trail_on:
 		for point in note.trace_pts:
 			var node := _path_local_screen(chart, Vector2(float(point.get("x", 0.0)), float(point.get("y", 0.0))), t, 1.0)
 			if _valid_point(node):
@@ -4309,9 +4348,9 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, project
 		var cap_a := tail + normal * half
 		var cap_b := tail - normal * half
 		canvas.draw_line(cap_a, cap_b, Color(0, 0, 0, 0.55 * trail_dim), 7.0 * ns)
-		canvas.draw_line(cap_a, cap_b, Color(accent.r, accent.g, accent.b, 0.95 * trail_dim), 4.0 * ns)
-		canvas.draw_circle(cap_a, 2.4 * ns, Color(accent.r, accent.g, accent.b, 0.95 * trail_dim))
-		canvas.draw_circle(cap_b, 2.4 * ns, Color(accent.r, accent.g, accent.b, 0.95 * trail_dim))
+		canvas.draw_line(cap_a, cap_b, Color(trail_accent.r, trail_accent.g, trail_accent.b, 0.95 * trail_dim), 4.0 * ns)
+		canvas.draw_circle(cap_a, 2.4 * ns, Color(trail_accent.r, trail_accent.g, trail_accent.b, 0.95 * trail_dim))
+		canvas.draw_circle(cap_b, 2.4 * ns, Color(trail_accent.r, trail_accent.g, trail_accent.b, 0.95 * trail_dim))
 		# 多颗星同时在场时，终点再补 3 个反向箭头：一眼看出这条往哪儿结束。
 		if visible_count > 1:
 			for k in 3:
@@ -4322,13 +4361,13 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, project
 		var landing_radius: float = 13.0 * ns
 		var head_ring: float = lerpf(landing_radius + 33.0 * ns, landing_radius, fall_progress)
 		canvas.draw_arc(ring_head, head_ring, 0.0, TAU, 32, Color(1, 1, 1, 0.55 * trail_fade * end_fade), 2.2, false)
-	if _valid_point(tail) and t >= note.beat - 0.15:
+	if trail_on and _valid_point(tail) and t >= note.beat - 0.15:
 		var remain := note.end_beat - t
 		if remain <= 2.0 and remain > -end_span:
 			var k := clampf(1.0 - remain / 2.0, 0.0, 1.0)
 			var ring_radius := lerpf(52.0, 14.0, k) * ns
 			var ring_alpha := lerpf(0.10, 0.95, k * k) * maxf(dim, 0.75) * end_fade * group_mul
-			canvas.draw_arc(tail, ring_radius, 0.0, TAU, 40, Color(accent.r, accent.g, accent.b, ring_alpha), 2.6, false)
+			canvas.draw_arc(tail, ring_radius, 0.0, TAU, 40, Color(trail_accent.r, trail_accent.g, trail_accent.b, ring_alpha), 2.6, false)
 			if active:
 				canvas.draw_arc(tail, ring_radius + 3.5, 0.0, TAU, 40, Color(1, 1, 1, 0.30 * ring_alpha), 1.2, false)
 	# 星头拆成两部分：
@@ -4341,9 +4380,12 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, project
 	var fade_start := maxf(note.beat, state_beat) if head_hit else state_beat
 	var fade_beats := 0.3 * chart.timing.bpm_at(note.beat) / 60.0
 	var head_alpha := 1.0 - clampf((t - fade_start) / maxf(0.001, fade_beats), 0.0, 1.0)
-	# 假 Path：轨迹隐藏，星头直接从落点淡入一拍；真 Path 仍随轨迹淡入。
+	# 假装饰星：轨迹常驻，星头从落点淡入后一直亮着。
+	# 关掉轨迹：星头像 Tap 一样落下并淡出，没有轨迹参与。
 	var head_fade := 0.0
-	if decorative:
+	if not trail_on:
+		head_fade = head_alpha * dim * group_mul
+	elif decorative:
 		head_fade = clampf(t - note.beat, 0.0, 1.0) * dim * group_mul
 	else:
 		head_fade = head_alpha * dim * trail_fade * group_mul
@@ -4360,19 +4402,15 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, project
 		# 音符编号只在编辑器和调试叠层里显示，试玩时不添乱。
 		if not playtest_mode or show_debug:
 			canvas.draw_string(UITheme.mono_font(), ring_head + Vector2(14, -13), "#%d" % note.id, HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(accent.r, accent.g, accent.b, 0.9 * head_fade))
-		# 头部的白色箭头指向轨迹内侧，进一步区分头和尾。
+		# 头部的白色箭头指向轨迹内侧，进一步区分头和尾；没有轨迹时不画。
 		var ahead := _path_screen_point(chart, note, minf(total, maxf(0.05, total * 0.08)), t, true, 1.0)
-		if _valid_point(ahead):
+		if trail_on and _valid_point(ahead):
 			_draw_arrowhead(canvas, ring_head + (ahead - ring_head).normalized() * 29.0 * ns * PATH_SIZE_SCALE, ahead - ring_head, Color(1, 1, 1, 0.95 * head_fade))
 		if show_debug:
 			canvas.draw_string(UITheme.bold_font(), ring_head + Vector2(-12, -22), "PATH", HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(UITheme.CORAL.r, UITheme.CORAL.g, UITheme.CORAL.b, 0.85))
 	# 星头球：判定前从圆心飞到落点，判定后沿轨迹前进。
-	# 假 Path 的轨迹不画，判定后只在落点留一颗淡出的球。
-	if decorative:
-		var false_fade := clampf(t - note.beat, 0.0, 1.0) * group_mul * dim
-		if false_fade > 0.01 and _valid_point(ring_head):
-			_draw_path_head_ball(canvas, ring_head, Vector2.ZERO, ball_width, accent, false_fade)
-	elif t < note.beat:
+	# 关掉轨迹时只在落点留一颗像 Tap 一样淡出的球。
+	if t < note.beat:
 		var point: Vector2 = _path_screen_point(chart, note, note.path_motion_beat(progress), t, false)
 		var alpha: float = dim * end_fade * group_mul * head_alpha
 		if alpha > 0.001 and _valid_point(point):
@@ -4380,9 +4418,13 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, project
 			# 下落途中只画素圆，不画箭头；箭头等星头落到环上、开始划了才出现。
 			_draw_path_head_ball(canvas, center.lerp(point, fall_ratio), Vector2.ZERO,
 				ball_width, accent, alpha)
-	_draw_path_tail(canvas, tail, true, ns * PATH_SIZE_SCALE, accent, dim * trail_fade * end_fade)
-	# 轨迹球：到判定拍后沿轨迹前进。
-	if not decorative and t >= note.beat and t <= note.end_beat + end_span:
+	elif not trail_on:
+		var tap_fade: float = head_alpha * dim * group_mul
+		if tap_fade > 0.01 and _valid_point(ring_head):
+			_draw_path_head_ball(canvas, ring_head, Vector2.ZERO, ball_width, accent, tap_fade)
+	_draw_path_tail(canvas, tail, true, ns * PATH_SIZE_SCALE, trail_accent, dim * trail_fade * end_fade)
+	# 轨迹球：到判定拍后沿轨迹前进；装饰星同样照走，只是不判定。
+	if trail_on and t >= note.beat and t <= note.end_beat + end_span:
 		var ball_dim := dim * end_fade * group_mul
 		var rel := note.path_motion_beat(progress)
 		var point := _path_screen_point(chart, note, rel, t, false)
@@ -4400,7 +4442,7 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, project
 		var head_radius := 28.0 * ns * PATH_SIZE_SCALE * PATH_HEAD_SCALE * ring_mul
 		var wait_radius := head_radius if wait_mode == "shrink" else maxf(head_radius, 24.0 * ns * PATH_SIZE_SCALE)
 		_draw_path_wait_indicator(canvas, ring_head, wait_radius,
-			wait_state.x, wait_state.y * dim * trail_fade, wait_mode)
+			wait_state.x, wait_state.y * dim * trail_fade, wait_mode, accent)
 
 
 static func cursor_main_diameter(scale: float) -> float:
@@ -4454,14 +4496,14 @@ static func path_wait_indicator_state(timing: TimingMap, note: Note, beat: float
 	return Vector2(completion, opacity)
 
 
-func _draw_path_wait_indicator(canvas: Control, center: Vector2, radius: float, completion: float, opacity: float, mode: String) -> void:
+func _draw_path_wait_indicator(canvas: Control, center: Vector2, radius: float, completion: float, opacity: float, mode: String, tint: Color = Color(0.55, 0.75, 1.0)) -> void:
 	if mode == "shrink":
 		var ring_radius := radius * lerpf(2.5, 1.0, completion)
 		var alpha := opacity * completion
-		canvas.draw_arc(center, ring_radius, 0.0, TAU, 64, Color(0.55, 0.75, 1.0, 0.16 * alpha), 7.0, true)
-		canvas.draw_arc(center, ring_radius, 0.0, TAU, 64, Color(0.55, 0.75, 1.0, 0.95 * alpha), 2.4, true)
+		canvas.draw_arc(center, ring_radius, 0.0, TAU, 64, Color(tint.r, tint.g, tint.b, 0.16 * alpha), 7.0, true)
+		canvas.draw_arc(center, ring_radius, 0.0, TAU, 64, Color(tint.r, tint.g, tint.b, 0.95 * alpha), 2.4, true)
 		return
-	var color := Color(0.35, 1.0, 0.62, 0.95 * opacity)
+	var color := Color(tint.r, tint.g, tint.b, 0.95 * opacity)
 	canvas.draw_arc(center, radius, 0.0, TAU, 64, Color(0.02, 0.03, 0.05, 0.65 * opacity), 6.0, true)
 	canvas.draw_arc(center, radius, 0.0, TAU, 64, Color(0.65, 0.75, 0.85, 0.22 * opacity), 2.4, true)
 	if completion > 0.001:
@@ -5140,7 +5182,8 @@ func _draw_holds(canvas: Control, chart: Chart, t: float, pre: float) -> void:
 
 
 func _draw_notes(canvas: Control, chart: Chart, t: float, pre: float) -> void:
-	var visible: Array[Note] = []
+	var visible: Array[Note] = _visible_notes_buf
+	visible.clear()
 	# 试玩里音符留到判定出来为止（MISS 窗口最长 0.3s），编辑器预览仍只多留 0.3 拍。
 	var tail_beats := 2.0 if playtest_mode else 0.3
 	for note in _notes_around(chart, t, 0.1, 0.1):
@@ -5188,7 +5231,7 @@ func _draw_anchor(canvas: Control, chart: Chart, note: Note, beat: float) -> voi
 		return
 	var progress: float = _note_progress(chart, note, beat)
 	var ns: float = maxf(1.0, _note_scale())
-	var tint: Color = UITheme.VIOLET
+	var tint: Color = note.resolved_color(chart, UITheme.VIOLET)
 	# 靶子先浮现在环上：淡入 + 0.8→1 倍微放大，之后一直留到判定。
 	var marker: float = smoothstep(0.0, 0.16, progress)
 	if marker > 0.001:
@@ -5325,7 +5368,7 @@ func _draw_seeks(canvas: Control, chart: Chart, t: float) -> void:
 		var state_beat: float = float(note_state_beats.get(note.id, note.beat))
 		var exit_ms: float = now_ms - chart.timing.beat_to_chart_ms(state_beat)
 		var inward: bool = note.seek_orien == 1
-		var color: Color = UITheme.SEEK_IN if inward else UITheme.SEEK_OUT
+		var color: Color = note.resolved_color(chart, UITheme.SEEK_IN if inward else UITheme.SEEK_OUT)
 		var fade: float = 1.0
 		var ring_scale: float = 1.0
 		var push: float = 0.0
@@ -6913,18 +6956,19 @@ func _draw_bell(canvas: Control, chart: Chart, note: Note, t: float) -> void:
 	var half := BELL_BAND_HALF * _note_scale() * float(_skin()["scale"])
 	var group_mul := chart.group_alpha(note.group_id) / 255.0
 	var breathe := 0.5 + 0.5 * sin(_anim_ms() / 1000.0 * 2.4)
+	var tint: Color = note.resolved_color(chart, UITheme.KEY_YELLOW)
 	# 和 Tap / Hold 同一套语言：白色外壳 + 彩色核心，两端圆头。
 	_bell_capsule(canvas, note, t, q, -half - 5.0, half + 5.0,
-		Color(UITheme.KEY_YELLOW.r, UITheme.KEY_YELLOW.g, UITheme.KEY_YELLOW.b, (0.07 + 0.05 * breathe) * alpha))
+		Color(tint.r, tint.g, tint.b, (0.07 + 0.05 * breathe) * alpha))
 	_bell_capsule(canvas, note, t, q, -half - 2.0, half + 2.0, Color(0, 0, 0, 0.55 * alpha))
 	_bell_capsule(canvas, note, t, q, -half, half, Color(1, 1, 1, 0.94 * alpha))
-	_bell_capsule(canvas, note, t, q, -half * 0.62, half * 0.62, Color(UITheme.KEY_YELLOW.r, UITheme.KEY_YELLOW.g, UITheme.KEY_YELLOW.b, alpha))
+	_bell_capsule(canvas, note, t, q, -half * 0.62, half * 0.62, Color(tint.r, tint.g, tint.b, alpha))
 	# 扫键串的铃判定放宽到 75px，就把这个范围画出来：看到多大 = 能打多大。
 	if bool(path_judgement_states.get(note.id, {}).get("sweep_chain", false)):
 		var halo := _bell_ring_point(chart, note.center_u * 360.0, t, q)
 		if halo.is_finite():
 			canvas.draw_arc(halo, BELL_CHAIN_TOLERANCE * _note_scale(), 0.0, TAU, 64,
-				Color(UITheme.KEY_YELLOW.r, UITheme.KEY_YELLOW.g, UITheme.KEY_YELLOW.b, 0.2 * alpha), 1.6, true)
+				Color(tint.r, tint.g, tint.b, 0.2 * alpha), 1.6, true)
 
 
 ## 弧带 + 两端圆头：画成一根沿环的胶囊。
@@ -7105,6 +7149,9 @@ func note_head_screen(note: Note, beat: float) -> Vector2:
 	var chart := get_chart()
 	if chart == null:
 		return Vector2(INF, INF)
+	if note.type == "path":
+		# 手绘/导入的轨迹头未必在判定环上，判定点跟画面上的星头走。
+		return _path_screen_point(chart, note, 0.0, beat, false)
 	return _flying_position(chart, note.angle, note.beat, beat, _star_fall_beats(chart, beat), note.group_id)
 
 
@@ -7112,7 +7159,7 @@ func note_head_screen(note: Note, beat: float) -> Vector2:
 ## 判定按整段弧给点，不能只认弧中点：红弧两端到中点的距离远超容差，
 ## 玩家点在“看起来就是目标”的弧上却吃 MISS。
 func path_head_arc(note: Note, beat: float, pad: float = 0.0) -> PackedVector2Array:
-	return note_band_points(note.angle, note.width + pad, beat, 1.0)
+	return note_band_points(note.path_head_angle(), note.width + pad, beat, 1.0)
 
 
 ## 音符图形自身的屏幕半径（位置判定容差用）。
@@ -7361,6 +7408,14 @@ uniform float posterize = 0.0;
 uniform float split = 0.0;
 uniform float ripple = 0.0;
 uniform float radial = 0.0;
+uniform float gaussian = 0.0;
+uniform float shatter = 0.0;
+uniform float tvnoise = 0.0;
+uniform float strips = 0.0;
+uniform float strip_bands = 8.0;
+uniform float trail = 0.0;
+uniform float trail_reset = 1.0;
+uniform sampler2D trail_tex : filter_linear;
 uniform float kaleido = 0.0;
 uniform float kaleido_segments = 6.0;
 uniform float rotate = 0.0;
@@ -7428,38 +7483,64 @@ void fragment() {
 		warped.x += (noise - 0.5) * 0.12 * glitch * step(0.55, noise);
 	}
 
+	if (strips > 0.001) {
+		float band = floor(warped.y * max(strip_bands, 2.0));
+		warped.x += (mod(band, 2.0) * 2.0 - 1.0) * 0.05 * strips;
+	}
+
+	if (shatter > 0.001) {
+		vec2 d = warped - center;
+		float a = atan(d.y, d.x);
+		float cracks = pow(abs(sin(a * 7.0 + sin(a * 19.0) * 1.3)), 8.0);
+		warped += normalize(d + vec2(0.00001)) * cracks * 0.028 * shatter;
+		warped += d * 0.005 * shatter;
+	}
+
 	if (pixelate > 0.001) {
 		float cells = mix(640.0, 36.0, clamp(pixelate, 0.0, 1.0));
 		warped = floor(warped * cells) / cells;
 	}
 
-	vec3 col;
+	vec3 col = texture(screen_tex, warped).rgb;
 	if (split > 0.001) {
 		float shift = 0.004 * clamp(split, 0.0, 1.0);
 		col.r = texture(screen_tex, warped + vec2(shift, 0.0)).r;
 		col.g = texture(screen_tex, warped).g;
 		col.b = texture(screen_tex, warped - vec2(shift, 0.0)).b;
-	} else if (radial > 0.001) {
+	}
+	if (radial > 0.001) {
 		vec3 acc = vec3(0.0);
 		for (int i = 0; i < 6; i++) {
 			float scale = 1.0 - float(i) * 0.032 * clamp(radial, 0.0, 1.0);
 			acc += texture(screen_tex, center + (warped - center) * scale).rgb;
 		}
-		col = acc / 6.0;
-	} else if (bloom > 0.001) {
+		col = mix(col, acc / 6.0, clamp(radial, 0.0, 1.0));
+	}
+	if (gaussian > 0.001) {
+		float r = 0.005 * clamp(gaussian, 0.0, 1.0);
+		vec3 acc = col * 4.0;
+		acc += texture(screen_tex, warped + vec2(r, 0.0)).rgb;
+		acc += texture(screen_tex, warped - vec2(r, 0.0)).rgb;
+		acc += texture(screen_tex, warped + vec2(0.0, r)).rgb;
+		acc += texture(screen_tex, warped - vec2(0.0, r)).rgb;
+		acc += texture(screen_tex, warped + vec2(r, r) * 0.7).rgb;
+		acc += texture(screen_tex, warped - vec2(r, r) * 0.7).rgb;
+		acc += texture(screen_tex, warped + vec2(r, -r) * 0.7).rgb;
+		acc += texture(screen_tex, warped - vec2(r, -r) * 0.7).rgb;
+		col = mix(col, acc / 12.0, clamp(gaussian, 0.0, 1.0));
+	}
+	if (bloom > 0.001) {
 		float amount = clamp(bloom, 0.0, 4.0);
-		col = texture(screen_tex, warped).rgb;
+		vec3 glow = col;
 		for (int i = 1; i <= 3; i++) {
 			float spread = 0.0035 * float(i) * amount;
 			float weight = 0.4 / float(i);
-			col += texture(screen_tex, warped + vec2(spread, 0.0)).rgb * weight;
-			col += texture(screen_tex, warped - vec2(spread, 0.0)).rgb * weight;
-			col += texture(screen_tex, warped + vec2(0.0, spread)).rgb * weight;
-			col += texture(screen_tex, warped - vec2(0.0, spread)).rgb * weight;
+			glow += texture(screen_tex, warped + vec2(spread, 0.0)).rgb * weight;
+			glow += texture(screen_tex, warped - vec2(spread, 0.0)).rgb * weight;
+			glow += texture(screen_tex, warped + vec2(0.0, spread)).rgb * weight;
+			glow += texture(screen_tex, warped - vec2(0.0, spread)).rgb * weight;
 		}
-		col /= 1.0 + 1.6 * amount;
-	} else {
-		col = texture(screen_tex, warped).rgb;
+		col = mix(col, glow / (1.0 + 1.6 * amount), clamp(amount, 0.0, 1.0));
 	}
 
 	col = (col - 0.5) * contrast + 0.5;
@@ -7483,6 +7564,18 @@ void fragment() {
 
 	col = mix(col, flash.rgb, clamp(flash.a, 0.0, 1.0));
 	col = mix(col, fade.rgb, clamp(fade.a, 0.0, 1.0));
+
+	if (tvnoise > 0.001) {
+		float n = fract(sin(dot(SCREEN_UV * vec2(1920.0, 1080.0) + TIME * 60.0, vec2(12.9898, 78.233))) * 43758.5453);
+		float scan = 0.5 + 0.5 * sin(SCREEN_UV.y * 900.0);
+		col += (n - 0.5) * 0.35 * tvnoise + (scan - 0.5) * 0.06 * tvnoise;
+	}
+
+	if (trail > 0.001) {
+		float decay = mix(0.82, 0.96, clamp(trail, 0.0, 1.0));
+		vec3 hist = trail_reset > 0.5 ? col : texture(trail_tex, SCREEN_UV).rgb;
+		col = max(col, hist * decay);
+	}
 
 	float mask = 1.0;
 	if (mask_on > 0.5) {
@@ -7525,6 +7618,39 @@ func _build_filter_layer() -> void:
 	_filter_layer.visible = true
 	add_child(_filter_layer)
 	_filter_layer.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_trail_viewport = SubViewport.new()
+	_trail_viewport.name = "TrailHistory"
+	_trail_viewport.transparent_bg = false
+	_trail_viewport.disable_3d = true
+	_trail_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
+	_trail_viewport.size = Vector2i(maxi(1, int(size.x)), maxi(1, int(size.y)))
+	add_child(_trail_viewport)
+	_trail_rect = TextureRect.new()
+	_trail_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	_trail_rect.stretch_mode = TextureRect.STRETCH_SCALE
+	_trail_rect.texture = get_viewport().get_texture() if is_inside_tree() else null
+	_trail_rect.size = Vector2(_trail_viewport.size)
+	_trail_viewport.add_child(_trail_rect)
+	material.set_shader_parameter("trail_tex", _trail_viewport.get_texture())
+
+
+## 把预览区域映射到根视口的纹理坐标；窗口缩放或面板移动后重新同步。
+func _sync_trail_viewport() -> void:
+	if _trail_viewport == null:
+		return
+	var viewport := get_viewport()
+	if viewport == null:
+		return
+	var visible := viewport.get_visible_rect().size
+	if visible.x < 1.0 or visible.y < 1.0:
+		return
+	if _trail_rect != null and _trail_rect.texture == null:
+		_trail_rect.texture = viewport.get_texture()
+	var target := Vector2i(maxi(1, int(visible.x)), maxi(1, int(visible.y)))
+	if _trail_viewport.size != target:
+		_trail_viewport.size = target
+	if _trail_rect != null:
+		_trail_rect.size = Vector2(target)
 
 
 ## 只为带滤镜的试玩在准备层底下再预热几帧，把 shader 首次编译的卡顿吃掉。
@@ -7543,7 +7669,8 @@ func _filter_state(chart: Chart, t: float) -> Dictionary:
 		"brightness": 0.0, "contrast": 1.0, "saturation": 1.0, "hue_shift": 0.0,
 		"vignette": 0.0, "zoom": 1.0, "pixelate": 0.0, "glitch": 0.0, "invert": 0.0,
 		"posterize": 0.0, "split": 0.0, "ripple": 0.0, "radial": 0.0, "kaleido": 0.0,
-		"kaleido_segments": 6.0,
+		"kaleido_segments": 6.0, "gaussian": 0.0, "shatter": 0.0, "tvnoise": 0.0,
+		"strips": 0.0, "strip_bands": 8.0, "trail": 0.0,
 		"rotate": 0.0, "bloom": 0.0, "move": Vector2.ZERO, "shake": 0.0, "shake_freq": 12.0,
 		"tint": Color(1, 1, 1, 1), "tint_amount": 0.0,
 		"flash": Color(1, 1, 1, 0), "fade": Color(0, 0, 0, 0),
@@ -7599,14 +7726,25 @@ func _filter_state(chart: Chart, t: float) -> Dictionary:
 				state["posterize"] = maxf(float(state["posterize"]), maxf(command.number("levels", 6.0) * env, 2.0))
 			"PIXELATE":
 				state["pixelate"] = maxf(float(state["pixelate"]), clampf(command.number("size", 8.0) / 32.0, 0.05, 1.0) * env)
-			"GLITCH", "SHATTER", "TVNOISE":
+			"GLITCH":
 				state["glitch"] = maxf(float(state["glitch"]), clampf(strength, 0.0, 1.0))
 			"SPLIT":
 				state["split"] = maxf(float(state["split"]), clampf(command.number("offset", 0.1) / 0.1, 0.0, 1.0) * env)
 			"RIPPLE":
 				state["ripple"] = maxf(float(state["ripple"]), clampf(strength, 0.0, 1.0))
-			"RADIALBLUR", "GAUSSIAN", "TRAIL", "LENSDISTORT":
+			"RADIALBLUR", "LENSDISTORT":
 				state["radial"] = maxf(float(state["radial"]), clampf(strength, 0.0, 1.0))
+			"GAUSSIAN":
+				state["gaussian"] = maxf(float(state["gaussian"]), clampf(strength, 0.0, 1.0))
+			"SHATTER":
+				state["shatter"] = maxf(float(state["shatter"]), clampf(strength, 0.0, 1.0))
+			"TVNOISE":
+				state["tvnoise"] = maxf(float(state["tvnoise"]), clampf(strength, 0.0, 1.0))
+			"STRIPS":
+				state["strips"] = maxf(float(state["strips"]), clampf(strength, 0.0, 1.0))
+				state["strip_bands"] = clampf(command.number("bands", 8.0), 2.0, 24.0)
+			"TRAIL":
+				state["trail"] = maxf(float(state["trail"]), clampf(strength, 0.0, 1.0))
 			"TINT":
 				state["tint"] = command.color_value("color", Color(1, 0.4, 0.8))
 				state["tint_amount"] = maxf(float(state["tint_amount"]), clampf(strength, 0.0, 1.0))
@@ -7677,6 +7815,14 @@ func _apply_filters(chart: Chart, t: float) -> void:
 	var uniforms: Dictionary = state["uniforms"]
 	for key in uniforms:
 		material.set_shader_parameter(String(key), uniforms[key])
+	# 残影：只在 TRAIL 生效时每帧更新历史帧，其余时间停掉整个 SubViewport。
+	var trail_strength := float(uniforms.get("trail", 0.0))
+	if trail_strength > 0.001:
+		material.set_shader_parameter("trail_reset", 0.0 if _trail_active else 1.0)
+		_trail_active = true
+	else:
+		material.set_shader_parameter("trail_reset", 1.0)
+		_trail_active = false
 	var region: Dictionary = state.get("region", {})
 	var mask_on := bool(region.get("on", false))
 	material.set_shader_parameter("mask_on", 1.0 if mask_on else 0.0)

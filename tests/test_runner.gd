@@ -156,6 +156,7 @@ func _initialize() -> void:
 		"test_note_color_palette",
 		"test_note_color_contrast",
 		"test_note_color_round_trip",
+		"test_path_trail_fields_round_trip",
 		"test_note_color_lbp",
 		"test_osu_std_import",
 		"test_osu_std_curves",
@@ -3761,8 +3762,49 @@ func test_note_color_contrast() -> bool:
 
 	var note := Note.new("tap", 0.0, 0.0, 60.0)
 	ok(note.supports_custom_color(), "tap supports custom color")
-	ok(not Note.new("bell", 0.0, 0.0, 60.0).supports_custom_color(), "bell keeps fixed color")
-	ok(not Note.new("seek", 0.0, 0.0, 60.0).supports_custom_color(), "seek keeps fixed color")
+	ok(Note.new("bell", 0.0, 0.0, 60.0).supports_custom_color(), "bell supports custom color")
+	ok(Note.new("seek", 0.0, 0.0, 60.0).supports_custom_color(), "seek supports custom color")
+	return true
+
+
+func test_path_trail_fields_round_trip() -> bool:
+	var chart := DemoChart.make_demo()
+	var path: Note = Note.new("path", 1.0, 0.0, 60.0)
+	path.id = 9001
+	path.end_beat = 3.0
+	path.trace_pts = [
+		{"x": 1.0, "y": 0.0, "db": 0.0},
+		{"x": 0.5, "y": 0.5, "db": 1.0},
+		{"x": 0.0, "y": 0.0, "db": 2.0},
+	]
+	path.path_custom_shape = true
+	path.show_trail = false
+	path.has_trail_color = true
+	path.trail_color = Color("#ff8800")
+	chart.notes.append(path)
+	var restored := ChartIO.chart_from_dict(ChartIO.chart_to_dict(chart))
+	var loaded: Note = null
+	for note in restored.notes:
+		if note.type == "path" and note.trace_pts.size() == 3:
+			loaded = note
+	ok(loaded != null, "path survives save")
+	if loaded == null:
+		return false
+	ok(not loaded.show_trail, "show_trail survives save")
+	ok(loaded.has_trail_color, "trail color survives save")
+	eq(loaded.trail_color, Color("#ff8800"), "trail rgb survives save")
+	ok(loaded.path_custom_shape, "custom shape flag survives save")
+	var direct := Note.from_dict(path.to_dict())
+	ok(not direct.show_trail and direct.has_trail_color and direct.path_custom_shape, "clipboard keeps path flags")
+	# 改时长只缩放时间，形状位置不变。
+	var samples: Array[Vector2] = []
+	for i in 5:
+		samples.append(path.path_local_at(path.duration() * float(i) / 4.0))
+	path.rescale_path_end(5.0)
+	near(path.duration(), 4.0, 0.001, "rescale path duration")
+	for i in 5:
+		var after := path.path_local_at(path.duration() * float(i) / 4.0)
+		ok(after.distance_to(samples[i]) < 0.0001, "rescale keeps shape point %d" % i)
 	return true
 
 
@@ -7113,8 +7155,8 @@ func test_osu_pill_rows() -> bool:
 
 
 func test_alpha_command_catalog() -> bool:
-	eq(AlphaCommand.CATALOG.size(), 27, "catalog has 27 commands")
-	eq(AlphaCommand.names("filter").size(), 24, "24 filter commands")
+	eq(AlphaCommand.CATALOG.size(), 32, "catalog has 32 commands")
+	eq(AlphaCommand.names("filter").size(), 29, "29 filter commands")
 	eq(AlphaCommand.names("jline").size(), 1, "one judge line command")
 	eq(AlphaCommand.names("text").size(), 2, "two text commands")
 	var seen := {}

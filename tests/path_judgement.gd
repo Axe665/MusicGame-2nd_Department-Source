@@ -28,6 +28,7 @@ func _run() -> void:
 	if app != null:
 		app.playtest_offset_ms = 0.0
 	await _test_playtest()
+	await _test_tap_like_path()
 	await _test_bell_judgement()
 	await _test_bell_chain()
 	await _test_press_interval()
@@ -455,6 +456,34 @@ func _test_playtest() -> void:
 
 
 ## 金键：窗口内光标在场只预备，到判定线才结算；越界才是 MISS，且不进 BIA。
+func _test_tap_like_path() -> void:
+	var chart := _chart()
+	var note := chart.notes[0]
+	note.show_trail = false
+	var run := Playtest.new()
+	run.path_input_logging = false
+	root.add_child(run)
+	await process_frame
+	run.setup(chart, 0.0, "")
+	run.set_process(false)
+	run._preview.mouse_tilt = false
+	var tms := chart.timing.beat_to_chart_ms(note.beat)
+	run._states[note.id]["head_judged"] = false
+	run._press_assignments[note.id] = {"time": tms, "lo": tms, "hi": tms}
+	run._judge_path(note, tms, note.beat, Vector2.INF)
+	check(bool(run._states[note.id]["done"]), "tap-like path completes at the head")
+	check(bool(run._states[note.id]["tail_judged"]), "tap-like path has no tail phase")
+	check(int(run._tier_counts["PERFECT"]) == 1, "tap-like path scores one head judgement")
+	check(run._preview.path_cuts.is_empty(), "tap-like path never erases a trail")
+	run.setup(chart, 0.0, "")
+	run.set_process(false)
+	run._states[note.id]["head_judged"] = false
+	var late := tms + 500.0
+	run._judge_path(note, late, chart.timing.chart_ms_to_beat(late), Vector2.INF)
+	check(bool(run._states[note.id]["done"]) and not bool(run._states[note.id]["head_hit"]), "tap-like path misses after the head window")
+	run.queue_free()
+
+
 func _test_bell_judgement() -> void:
 	var chart := DemoChart.make_empty({"title": "bell judgement", "bpm": 120.0})
 	chart.notes.clear()
