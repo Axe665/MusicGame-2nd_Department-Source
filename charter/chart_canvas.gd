@@ -1081,8 +1081,10 @@ func _draw_path(note: Note) -> void:
 		tail_draw_angle = rad_to_deg(atan2(tail_local.y, tail_local.x))
 	var x1 := _u_to_x(fposmod(tail_draw_angle, 360.0) / 360.0)
 	var selected := _is_note_selected(note.id)
-	var tail_color := PATH_CHAIN_BLUE if note.path_next_id >= 0 else UITheme.GOLD
-	var head_color := PATH_CHAIN_BLUE if note.path_part > 0 else UITheme.CORAL
+	var fallback_head := PATH_CHAIN_BLUE if note.path_part > 0 else UITheme.CORAL
+	var head_color := note.resolved_color(_app.chart, fallback_head) if _app != null and _app.chart != null else fallback_head
+	var trail_color := note.resolved_trail_color(_app.chart, UITheme.CYAN) if _app != null and _app.chart != null else UITheme.CYAN
+	var tail_color := PATH_CHAIN_BLUE if note.path_next_id >= 0 else trail_color
 	var runs: Array[PackedVector2Array] = []
 	var run := PackedVector2Array()
 	# 采样点数按屏幕长度走：缩小看时 41 点已经是每像素一个点，白算。
@@ -1103,15 +1105,15 @@ func _draw_path(note: Note) -> void:
 		for i in piece.size() - 1:
 			_append_dashes(piece[i], piece[i + 1], 5.0, dashes)
 		if dashes.size() > 1:
-			draw_multiline(dashes, Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.90), 2.0)
+			draw_multiline(dashes, Color(trail_color.r, trail_color.g, trail_color.b, 0.90), 2.0)
 		for fraction in [0.33, 0.66]:
 			var sample := _polyline_sample(piece, fraction)
-			_draw_arrowhead(sample["point"], sample["direction"], UITheme.CYAN)
+			_draw_arrowhead(sample["point"], sample["direction"], trail_color)
 	for point in note.visual_pts:
 			var local := float(point.get("db", 0.0))
 			if note.erased_at(local):
 				continue
-			_draw_dot(_path_screen_point(note, local), 2.5, UITheme.CYAN)
+			_draw_dot(_path_screen_point(note, local), 2.5, trail_color)
 	_draw_width_band(head_draw_angle, note.width, y0, UITheme.CYAN)
 	_draw_width_band(tail_draw_angle, note.tail_width, y1, tail_color)
 	_draw_star(Vector2(x0, y0), 9.0 if selected else 8.0, head_color)

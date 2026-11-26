@@ -613,6 +613,7 @@ func _build_command(chart: Chart, command: AlphaCommand) -> void:
 	for entry in command.spec().get("params", []):
 		_build_command_param(command, entry as Dictionary)
 	if command.category() == AlphaCommand.CATEGORY_FILTER:
+		_build_filter_envelope(command)
 		_build_filter_region(command)
 	_add_sep()
 	_add_button("删除这条指令 (Del)", func() -> void:
@@ -650,6 +651,24 @@ func _change_filter_type(command: AlphaCommand, new_name: String) -> void:
 		command.name = new_name
 		command.params = AlphaCommand.defaults(new_name)
 	)
+
+
+func _build_filter_envelope(command: AlphaCommand) -> void:
+	_add_sep()
+	_add_title("包络")
+	_add_spin("进入比例", command.number("attack", 0.25), 0.0, 0.9, 0.05, func(value: float) -> void:
+		_edit(func() -> void:
+			if _command != null:
+				_command.params["attack"] = clampf(value, 0.0, 0.9)
+		)
+	, "cmd_attack")
+	_add_spin("退出比例", command.number("release", 0.25), 0.0, 0.9, 0.05, func(value: float) -> void:
+		_edit(func() -> void:
+			if _command != null:
+				_command.params["release"] = clampf(value, 0.0, 0.9)
+		)
+	, "cmd_release")
+	_add_hint("占整条指令时长的比例：0 = 硬切，0.25 = 前/后 1/4 时长做渐变。")
 
 
 func _build_filter_region(command: AlphaCommand) -> void:
