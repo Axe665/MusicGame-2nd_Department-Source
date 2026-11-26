@@ -39,6 +39,12 @@ const PATH_HEAD_BALL_RATIO := 1.15
 ## 判定环上的 Seek 弧带厚度：和 Tap 完全一致（18，按音符缩放）。
 const SEEK_BAND_WIDTH := 18.0
 const SEEK_WARNING_MS := 300.0
+## 预告：长出前整整一小节开始，像呼吸一样一亮一暗，两拍一个周期（即当前 BPM 的一半频率）。
+const SEEK_PREVIEW_FLASH_BEATS := 2.0
+## 呼吸最暗时仍保留这么多比例的不透明度，避免预告看起来像已经熄灭。
+const SEEK_PREVIEW_DIM := 0.35
+## 预告最多往前找这么多拍：拍号分子最大 16 拍，再留出长下落所用的拍数。
+const SEEK_PREVIEW_SCAN_BEATS := 24.0
 ## 就位环的显示窗口：和试玩的 Seek 判定窗口（HIT_WINDOW_MS = 200）对齐。
 const SEEK_ARM_MS := 200.0
 const LIMIT_INNER_SCALE := 0.68
@@ -5352,11 +5358,37 @@ func _draw_seeks(canvas: Control, chart: Chart, t: float) -> void:
 				canvas.draw_polyline(armed, Color(color.lightened(0.55), 0.95 * fade), 2.6 * size, true)
 
 
+## 预告段：音符长出前一小节就把判定弧亮起来，亮度按余弦呼吸（最暗时留一层淡影，不熄灭）。
+## 相位按拍位算，所以频率始终是播放头当刻 BPM 的一半；拖动播放头或换 BPM 都不会漂。
+## 长出之后交给音符本体，最后 300ms 的就位高亮仍由 _seek_warnings 的 ramp 负责。
+func _seek_previews(chart: Chart, beat: float) -> Array[Dictionary]:
+	var result: Array[Dictionary] = []
+	for note in _notes_in_range(chart, beat, beat + SEEK_PREVIEW_SCAN_BEATS):
+		if note.type != "seek" or not chart.note_enabled(note):
+			continue
+		var alpha: float = chart.group_alpha(note.group_id) / 255.0
+		if alpha <= 0.0 or note_is_retired(note_state(note.id)):
+			continue
+		var spawn_beat: float = _spawn_beat(chart, note.beat, note.group_id)
+		var preview_start: float = spawn_beat - float(chart.timing.beats_per_bar_at(note.beat))
+		if beat < preview_start or beat >= spawn_beat:
+			continue
+		var phase: float = fmod(beat - preview_start, SEEK_PREVIEW_FLASH_BEATS) / SEEK_PREVIEW_FLASH_BEATS
+		var breath: float = 0.5 + 0.5 * cos(TAU * phase)
+		result.append({
+			"angle": fposmod(note.angle, 360.0),
+			"width": note.seek_width(),
+			"orien": note.seek_orien,
+			"strength": alpha * lerpf(SEEK_PREVIEW_DIM, 1.0, breath),
+		})
+	return result
+
+
 ## Use chart time so the warning survives BPM changes and follows a scrubbed playhead.
 ## 只警示最近一档：同一时刻的多颗 Seek（含反向）一起返回。
 ## 窄 Seek 带自己的中心角和弧宽，警示弧也只画在那一段上。
 func _seek_warnings(chart: Chart, beat: float, now_ms: float) -> Array[Dictionary]:
-	var result: Array[Dictionary] = []
+	var result: Array[Dictionary] = _seek_previews(chart, beat)
 	var first_beat: float = chart.timing.chart_ms_to_beat(now_ms - SEEK_WARNING_MS)
 	var last_beat: float = chart.timing.chart_ms_to_beat(now_ms + SEEK_WARNING_MS)
 	var previous_ms: float = -INF
