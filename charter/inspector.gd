@@ -634,36 +634,6 @@ func _build_note_page_for(page: VBoxContainer, note: Note) -> void:
 	if note.type == "path":
 		note.derive_path_controls()
 	var path_body := _note_group(page, "path", "Path")
-	# 星星颜色：不设时用统一绿色；有重叠时预览会自动分配互不相同的颜色。
-	var color_row := HBoxContainer.new()
-	path_body.add_child(color_row)
-	var color_label := Label.new()
-	color_label.text = "星星颜色"
-	UITheme.style_mono(color_label, 11, UITheme.MUTED)
-	color_row.add_child(color_label)
-	var picker := ColorPickerButton.new()
-	picker.custom_minimum_size = Vector2(96, 22)
-	picker.edit_alpha = false
-	picker.color = note.custom_color if note.has_custom_color else Note.DEFAULT_PATH_COLOR
-	picker.color_changed.connect(func(chosen: Color) -> void:
-		if _active_note == null:
-			return
-		_apply(func() -> void:
-			_active_note.has_custom_color = true
-			_active_note.custom_color = chosen
-		)
-		_refresh_note_page()
-	)
-	color_row.add_child(picker)
-	var color_reset := Button.new()
-	color_reset.text = "默认绿"
-	color_reset.pressed.connect(func() -> void:
-		if _active_note == null:
-			return
-		_apply(func() -> void: _active_note.has_custom_color = false)
-		_refresh_note_page()
-	)
-	color_row.add_child(color_reset)
 	var tail_display := _path_tail_display(note)
 	var tail_radius := tail_display.x
 	var tail_degrees := tail_display.y
@@ -754,6 +724,38 @@ func _build_note_page_for(page: VBoxContainer, note: Note) -> void:
 		_refresh_note_page()
 	)
 	_note_widgets["path_show_trail"] = trail_check
+	var star_row := HBoxContainer.new()
+	star_row.add_theme_constant_override("separation", 6)
+	var star_label := Label.new()
+	star_label.text = "星星颜色"
+	UITheme.style_mono(star_label, 11, UITheme.MUTED)
+	star_row.add_child(star_label)
+	var star_picker := ColorPickerButton.new()
+	star_picker.custom_minimum_size = Vector2(96, 22)
+	star_picker.edit_alpha = false
+	star_picker.color = note.resolved_color(_app.chart, Note.DEFAULT_PATH_COLOR)
+	star_picker.color_changed.connect(func(chosen: Color) -> void:
+		if _active_note == null:
+			return
+		_apply(func() -> void:
+			_active_note.has_custom_color = true
+			_active_note.custom_color = chosen
+		)
+		_refresh_note_page()
+	)
+	star_row.add_child(star_picker)
+	var star_reset := Button.new()
+	star_reset.text = "默认色"
+	star_reset.pressed.connect(func() -> void:
+		if _active_note == null:
+			return
+		_apply(func() -> void: _active_note.has_custom_color = false)
+		_refresh_note_page()
+	)
+	star_row.add_child(star_reset)
+	path_edit.add_child(star_row)
+	_note_widgets["path_star_color"] = star_picker
+	_note_rows["path_star_color"] = star_row
 	var trail_row := HBoxContainer.new()
 	trail_row.add_theme_constant_override("separation", 6)
 	var trail_label := Label.new()
@@ -786,27 +788,26 @@ func _build_note_page_for(page: VBoxContainer, note: Note) -> void:
 	path_edit.add_child(trail_row)
 	_note_widgets["path_trail_color"] = trail_picker
 	_note_rows["path_trail_color"] = trail_row
-	_label(path_edit, "星星颜色在「通用 → 自定义色」里；轨迹不单独设色时跟随头部。", 10, UITheme.MUTED)
+	_label(path_edit, "轨迹不单独设色时跟随星星颜色。", 10, UITheme.MUTED)
 
 	var path_time_box := VBoxContainer.new()
 	path_time_box.add_theme_constant_override("separation", 4)
 	path_edit.add_child(path_time_box)
 	_note_widgets["path_time_box"] = path_time_box
-	var slide_start := _spin(path_time_box, "启动拍", note.beat + note.wait_beat, note.beat, note.beat + maxf(0.001, note.duration()), 0.125, func(value: float) -> void:
+	var wait_edit := _spin(path_time_box, "落点后等待", note.wait_beat, 0.0, maxf(0.0, note.duration() - 0.001), 0.0625, func(value: float) -> void:
 		var n := _active_note
 		if n != null:
-			n.wait_beat = clampf(value - n.beat, 0.0, maxf(0.0, n.duration() - 0.001))
+			n.wait_beat = clampf(value, 0.0, maxf(0.0, n.duration() - 0.001))
+			_update_path_time_readout(n)
 	)
-	slide_start.tooltip_text = "星星开始沿轨迹滑动的拍；显示拍 = 出现并落到环上，启动拍 = 显示拍 + 等待。改它不会改形状。"
-	_note_widgets["path_slide_start"] = slide_start
-	var wait_edit := _spin(path_time_box, "等待拍数", note.wait_beat, 0.0, maxf(0.0, note.duration() - 0.001), 0.125, func(value: float) -> void:
-		if _active_note != null:
-			_active_note.wait_beat = clampf(value, 0.0, maxf(0.0, _active_note.duration() - 0.001))
-	)
-	wait_edit.allow_greater = false
-	wait_edit.tooltip_text = "从头部落点到星星起划的拍数；包含在总时长内。0 表示立即起划。"
+	wait_edit.suffix = "拍"
+	wait_edit.tooltip_text = "星星头落到环上后等待多少拍才开始沿轨迹滑动；等待包含在总时长内，只改滑动速度，不改形状。"
 	_note_widgets["path_wait2"] = wait_edit
-	_label(path_time_box, "显示拍落下，启动拍起划；等待包含在总时长内，只改滑动速度，不改形状。链式 Path 使用 part0 的等待。", 10, UITheme.MUTED)
+	_note_rows["path_wait2"] = wait_edit.get_parent()
+	var time_readout := _label(path_time_box, "", 10, UITheme.MUTED)
+	_note_widgets["path_time_readout"] = time_readout
+	var chain_hint := _label(path_time_box, "链式 Path 使用 part0 的等待。", 10, UITheme.MUTED)
+	_note_widgets["path_chain_hint"] = chain_hint
 	var path_params := VBoxContainer.new()
 	path_params.add_theme_constant_override("separation", 4)
 	path_edit.add_child(path_params)
@@ -1161,14 +1162,18 @@ func _refresh_note_page() -> void:
 		_fill_visual_list(_note_widgets["path_list"], note)
 		_note_widgets["path_erase"].value = _path_erase_width(note) * 100.0
 		_note_widgets["path_show_trail"].button_pressed = note.show_trail
+		_note_widgets["path_star_color"].color = note.resolved_color(_app.chart, Note.DEFAULT_PATH_COLOR)
 		_note_rows["path_trail_color"].visible = note.show_trail
 		_note_widgets["path_trail_color"].color = note.resolved_trail_color(_app.chart)
 		_note_widgets["path_params"].visible = not note.path_custom_shape
 		_note_widgets["path_custom_box"].visible = note.path_custom_shape
-		_note_widgets["path_slide_start"].max_value = note.end_beat
-		_note_widgets["path_slide_start"].value = note.beat + note.wait_beat
+		var first_part := note.path_prev_id < 0
+		_note_rows["path_wait2"].visible = first_part
+		_note_widgets["path_time_readout"].visible = first_part
+		_note_widgets["path_chain_hint"].visible = not first_part
 		_note_widgets["path_wait2"].max_value = maxf(0.0, note.duration() - 0.001)
 		_note_widgets["path_wait2"].value = note.wait_beat
+		_update_path_time_readout(note)
 		_note_widgets["path_centrifuge2"].value = note.path_centrifuge
 		_note_widgets["path_centrifuge_slider2"].value = note.path_centrifuge
 		_note_widgets["path_axis2"].value = note.path_axis
@@ -1189,6 +1194,17 @@ func _refresh_note_page() -> void:
 		_note_widgets["anchor_pair_id"].text = note.pair_id
 	_note_widgets["lock"].button_pressed = note.lock
 	_applying = false
+
+
+func _update_path_time_readout(note: Note) -> void:
+	var label: Label = _note_widgets.get("path_time_readout")
+	if not is_instance_valid(label) or _app == null or _app.chart == null:
+		return
+	var slide := maxf(0.0, note.duration() - note.wait_beat)
+	label.text = "起划 %s ｜ 滑动 %s 拍" % [
+		_app.chart.timing.format_beat(note.beat + note.wait_beat),
+		str(snappedf(slide, 0.001)),
+	]
 
 
 func _update_tap_formula() -> void:
