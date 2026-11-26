@@ -2032,6 +2032,14 @@ func test_lbp_export_covers_all_types() -> bool:
 		ok(text.contains(needle), "LBP 导出包含 %s" % needle)
 	ok(text.contains("erase="), "LBP 导出带擦除缺口")
 	ok(text.contains("lock=1"), "LBP 导出带锁定")
+	for note in chart.notes:
+		if note.type == "path":
+			note.wait_beat = 0.5
+			note.visual_pts = [{"db": 0.25, "da": 3.0}]
+			break
+	var path_text := LBPIO.export_chart(chart)
+	ok(path_text.contains("wait=0.500"), "LBP 文本导出带 Path 等待拍")
+	ok(path_text.contains("visual=("), "LBP 文本导出带 Path 设计点")
 	var path := "user://roundtrip_check.lbp.txt"
 	eq(LBPIO.export_to_file(chart, path), OK, "LBP 导出到文件")
 	ok(FileAccess.file_exists(path), "LBP 文件存在")
