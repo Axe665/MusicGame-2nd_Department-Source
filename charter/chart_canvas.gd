@@ -1220,7 +1220,8 @@ func _draw_seek(note: Note) -> void:
 	var selected := _is_note_selected(note.id)
 	var color := UITheme.INK
 	if not note.seek_pending:
-		color = UITheme.SEEK_OUT if note.seek_orien == 0 else UITheme.SEEK_IN
+		var fallback := UITheme.SEEK_OUT if note.seek_orien == 0 else UITheme.SEEK_IN
+		color = note.resolved_color(_app.chart, fallback) if _app != null and _app.chart != null else fallback
 	var width := 3.0 if selected else 1.6
 	var span := note.seek_width()
 	# 窄 Seek 只画自己那段弧；整圈仍是贯穿整行。
@@ -1263,15 +1264,17 @@ func _draw_anchor(note: Note) -> void:
 		var partner := chart.anchor_partner(note)
 		if partner != null and note.id < partner.id:
 			var q := Vector2(_u_to_x(fposmod(partner.angle, 360.0) / 360.0), _beat_to_y(partner.beat))
-			draw_line(p, q, Color(UITheme.VIOLET.r, UITheme.VIOLET.g, UITheme.VIOLET.b, 0.55), 1.2, true)
+			var pair_tint := note.resolved_color(_app.chart, UITheme.VIOLET) if _app != null and _app.chart != null else UITheme.VIOLET
+			draw_line(p, q, Color(pair_tint.r, pair_tint.g, pair_tint.b, 0.55), 1.2, true)
 	var selected := _is_note_selected(note.id)
-	_draw_diamond(p, 8.0 if selected else 6.5, UITheme.VIOLET)
-	draw_line(p + Vector2(0, -2), p + Vector2(0, 4), UITheme.VIOLET, 1.2, true)
-	draw_line(p + Vector2(0, 4), p + Vector2(4, 6), UITheme.VIOLET, 1.2, true)
+	var tint := note.resolved_color(_app.chart, UITheme.VIOLET) if _app != null and _app.chart != null else UITheme.VIOLET
+	_draw_diamond(p, 8.0 if selected else 6.5, tint)
+	draw_line(p + Vector2(0, -2), p + Vector2(0, 4), tint, 1.2, true)
+	draw_line(p + Vector2(0, 4), p + Vector2(4, 6), tint, 1.2, true)
 	if not note.pair_id.is_empty():
-		draw_string(UITheme.mono_font(), p + Vector2(9, 12), "A %s" % note.pair_id, HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(UITheme.VIOLET.r, UITheme.VIOLET.g, UITheme.VIOLET.b, 0.85))
+		draw_string(UITheme.mono_font(), p + Vector2(9, 12), "A %s" % note.pair_id, HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(tint.r, tint.g, tint.b, 0.85))
 	if _show_type_label(note):
-		_draw_type_label("ANCHOR", p + Vector2(9, -9), UITheme.VIOLET)
+		_draw_type_label("ANCHOR", p + Vector2(9, -9), tint)
 
 
 func _draw_bell(note: Note) -> void:
@@ -1281,11 +1284,12 @@ func _draw_bell(note: Note) -> void:
 	var span := _bell_span(note)
 	var half := 7.0 if selected else 6.0
 	var tip := 4.5
+	var tint := note.resolved_color(_app.chart, UITheme.KEY_YELLOW) if _app != null and _app.chart != null else UITheme.KEY_YELLOW
 	if selected:
-		_draw_dot(p, span * 0.5 + 9.0, Color(UITheme.KEY_YELLOW.r, UITheme.KEY_YELLOW.g, UITheme.KEY_YELLOW.b, 0.16))
+		_draw_dot(p, span * 0.5 + 9.0, Color(tint.r, tint.g, tint.b, 0.16))
 	_bell_bar(p, span + 4.0, half + 2.0, Color(0, 0, 0, 0.5))
 	_bell_bar(p, span, half, Color(1, 1, 1, 0.94))
-	_bell_bar(p, span, half * 0.62, UITheme.KEY_YELLOW)
+	_bell_bar(p, span, half * 0.62, tint)
 	if selected:
 		for x in [p.x - span * 0.5, p.x + span * 0.5]:
 			var handle := Rect2(Vector2(x - 6.0, p.y - 6.0), Vector2(12.0, 12.0))
@@ -1294,7 +1298,7 @@ func _draw_bell(note: Note) -> void:
 
 
 	if _show_type_label(note):
-		_draw_type_label("BELL", p + Vector2(span * 0.5 + 10.0, 4.0), UITheme.KEY_YELLOW)
+		_draw_type_label("BELL", p + Vector2(span * 0.5 + 10.0, 4.0), tint)
 
 
 ## 金键在时间线上的可见长度（像素）：和检测/绘制共用，手柄才抓得准。
