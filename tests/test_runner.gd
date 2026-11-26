@@ -122,6 +122,7 @@ func _initialize() -> void:
 		"test_hit_ring_light",
 		"test_note_fall_curves_match_tap",
 		"test_seek_warning_order",
+		"test_seek_preview_breath",
 		"test_limit_dwell_once",
 		"test_bpm_snap_multipliers",
 		"test_path_zone_granularity",
@@ -6297,6 +6298,34 @@ func test_seek_warning_order() -> bool:
 		and absf(float(narrow[1]["angle"]) - 120.0) < 0.001, "a narrow Seek keeps its own arc in the warning")
 	preview.free()
 	return true
+
+
+## Seek 预告：长出前整整一小节开始，按当前 BPM 的一半频率呼吸，最暗时也不熄灭。
+func test_seek_preview_breath() -> bool:
+	var preview: Preview3D = Preview3D.new()
+	var chart: Chart = Chart.new()
+	var note: Note = Note.new("seek", 8.0, 0.0)
+	note.seek_orien = 1
+	chart.notes.assign([note])
+	var spawn: float = preview._spawn_beat(chart, note.beat, note.group_id)
+	var bar: float = float(chart.timing.beats_per_bar_at(note.beat))
+	var start: float = spawn - bar
+	ok(start > 0.0 and spawn < note.beat, "the preview starts a full bar before the note grows in")
+	ok(_seek_strength(preview, chart, start - 0.25) == 0.0, "no cue before the preview bar")
+	var full: float = _seek_strength(preview, chart, start)
+	ok(absf(full - 1.0) < 0.001, "the cue is fully lit at the start of the preview bar")
+	var dim: float = _seek_strength(preview, chart, start + 1.0)
+	ok(dim > 0.0 and dim < full, "the cue dims but never goes dark")
+	var back: float = _seek_strength(preview, chart, start + 2.0)
+	ok(absf(back - full) < 0.001, "the same breath returns two beats later")
+	ok(_seek_strength(preview, chart, spawn) == 0.0, "the cue hands over to the note body when it grows in")
+	preview.free()
+	return true
+
+
+func _seek_strength(preview: Preview3D, chart: Chart, beat: float) -> float:
+	var warnings: Array[Dictionary] = preview._seek_warnings(chart, beat, chart.timing.beat_to_chart_ms(beat))
+	return 0.0 if warnings.is_empty() else float(warnings[0]["strength"])
 
 
 ## 重试：上一局的判定文字、火花和连击断连动画不能活到新一局。
