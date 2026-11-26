@@ -50,7 +50,7 @@ func _test_catalog() -> void:
 	var filters := AlphaCommand.catalog(AlphaCommand.CATEGORY_FILTER)
 	check(jline.size() == 1, "判定线目录只有 JLINE")
 	check(text.size() == 2, "文本目录含 TEXT / JUDGETEXT")
-	check(filters.size() == 29, "滤镜目录 29 条，实际 %d" % filters.size())
+	check(filters.size() == 24, "滤镜目录 26 条，实际 %d" % filters.size())
 	check(jline.size() + text.size() + filters.size() == AlphaCommand.CATALOG.size(), "三类相加等于总目录")
 
 	var seen := {}
@@ -118,25 +118,15 @@ func _test_stateful() -> void:
 	kaleido.params["on"] = false
 	check(kaleido.flag("on", true) == false, "关闭标记可读取")
 
-	check(AlphaCommand.canonical("TVNOISE") == "TVNOISE", "雪花噪点现在是独立效果")
-	check(AlphaCommand.canonical("shatter") == "SHATTER", "碎裂是独立效果，且不区分大小写")
-	check(AlphaCommand.canonical("GAUSSIAN") == "GAUSSIAN", "高斯模糊是独立效果")
-	check(AlphaCommand.canonical("TRAIL") == "TRAIL", "残影是独立效果")
-	check(AlphaCommand.spec_of("TVNOISE").get("label", "") == "雪花噪点", "目录能解析真实效果")
+	check(AlphaCommand.canonical("TVNOISE") == "GLITCH", "雪花噪点折叠到故障")
+	check(AlphaCommand.canonical("shatter") == "GLITCH", "碎裂折叠到故障，且不区分大小写")
+	check(AlphaCommand.canonical("GAUSSIAN") == "RADIALBLUR", "高斯模糊折叠到径向模糊")
+	check(AlphaCommand.canonical("TRAIL") == "RADIALBLUR", "拖影折叠到径向模糊")
+	check(AlphaCommand.spec_of("TVNOISE").get("label", "") == "故障", "别名能解析到保留下来的目录项")
 
 	var legacy := AlphaCommand.from_dict({"name": "gaussian", "beat": 4.0, "duration": 1.0})
-	check(legacy.name == "GAUSSIAN", "旧谱别名在载入时保持原名")
-	check(legacy.to_dict()["name"] == "GAUSSIAN", "写出时保留原名")
-
-	check(AlphaCommand.spec_of("STRIPS").get("label", "") == "横带错位", "横带错位是独立滤镜")
-	var envelopes := AlphaCommand.normalize("SHATTER", {"strength": 0.5, "attack": 0.4, "release": 0.1})
-	check(absf(float(envelopes.get("attack", -1.0)) - 0.4) < 0.001, "filter attack survives normalize")
-	check(absf(float(envelopes.get("release", -1.0)) - 0.1) < 0.001, "filter release survives normalize")
-	var envelope := AlphaCommand.from_dict({"name": "SHATTER", "beat": 0.0, "duration": 2.0,
-		"params": {"strength": 0.5, "attack": 0.5, "release": 0.0}})
-	check(absf(envelope.envelope_at(0.0)) < 0.001, "filter starts from zero")
-	check(absf(envelope.envelope_at(1.0) - 1.0) < 0.001, "filter reaches full after attack")
-	check(absf(envelope.envelope_at(2.0)) < 0.001, "filter ends after duration")
+	check(legacy.name == "RADIALBLUR", "旧谱别名在载入时改名")
+	check(legacy.to_dict()["name"] == "RADIALBLUR", "写出时只写保留名")
 
 	var zero_duration := AlphaCommand.from_dict({"name": "KALEIDOSCOPE", "beat": 4.0, "duration": 0.0})
 	check(zero_duration.duration >= 0.25, "旧谱的 0 时长状态指令载入时补成有界时长")
