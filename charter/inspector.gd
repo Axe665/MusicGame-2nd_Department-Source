@@ -1099,6 +1099,9 @@ func _refresh_note_page() -> void:
 	_update_tap_formula()
 	var is_bell := note.type == "bell"
 	_note_rows["end"].visible = note.type in ["hold", "path"]
+	var start_label := _note_rows["start"].get_child(0) as Label
+	if start_label != null:
+		start_label.text = "显示拍" if note.type == "path" else "开始拍"
 	_note_rows["angle"].visible = note.type in ["tap", "hold", "path", "anchor", "bell"] \
 		and not (note.type == "path" and note.path_custom_shape)
 	_note_rows["width"].visible = shows_width_row(note.type)
