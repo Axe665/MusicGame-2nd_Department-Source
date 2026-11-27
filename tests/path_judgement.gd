@@ -31,6 +31,7 @@ func _run() -> void:
 	await _test_tap_like_path()
 	await _test_bell_judgement()
 	await _test_bell_chain()
+	await _test_seek_wysiwyg()
 	await _test_press_interval()
 	await _test_real_motion()
 	print("Path judgement: %d passed, %d failed" % [passed, failed])
@@ -623,6 +624,43 @@ func _test_bell_chain() -> void:
 	check(bool(run._states[chain_bell.id]["armed"]), "a chain bell tolerates 70px off the band")
 	run._judge_bell(far, far_target - 100.0, far.beat, far_point + (center - far_point).normalized() * 70.0)
 	check(not bool(run._states[far.id]["armed"]), "a bell outside the chain keeps the 55px band")
+	run.queue_free()
+	await process_frame
+
+
+
+## Seek 所见即所得：上侧弧认下滑、拒绝上滑；整圈两向都认。
+func _test_seek_wysiwyg() -> void:
+	var chart := DemoChart.make_empty({"bpm": 120.0})
+	chart.notes.clear()
+	var top := Note.new("seek", 2.0, 90.0)
+	top.id = 1
+	top.width = 60.0
+	top.seek_orien = 0
+	var full := Note.new("seek", 4.0, 0.0)
+	full.id = 2
+	full.width = 360.0
+	full.seek_orien = 0
+	chart.notes.assign([top, full])
+	var run := Playtest.new()
+	run.path_input_logging = false
+	root.add_child(run)
+	await process_frame
+	run.setup(chart, 0.0, "")
+	run.set_process(false)
+	run._preview.prepare_playtest_frame(2.0, 0.0)
+	var target := float(run._states[1]["target_ms"])
+	var point: Vector2 = run._preview.seek_screen(top, 2.0)
+	run._seek_presses.append({"time": target, "orien": 0, "mouse": point})
+	run._judge_seek(top, target, 2.0)
+	check(not bool(run._states[1]["done"]), "an upper seek rejects an up scroll")
+	run._seek_presses.append({"time": target, "orien": 1, "mouse": point})
+	run._judge_seek(top, target, 2.0)
+	check(bool(run._states[1]["done"]), "an upper seek accepts a down scroll")
+	var full_target := float(run._states[2]["target_ms"])
+	run._seek_presses.append({"time": full_target, "orien": 1})
+	run._judge_seek(full, full_target, 4.0)
+	check(bool(run._states[2]["done"]), "a full-circle seek accepts either scroll direction")
 	run.queue_free()
 	await process_frame
 

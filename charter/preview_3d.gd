@@ -3230,16 +3230,12 @@ func invalidate_storyboard() -> void:
 	_sb_all_textures_cached = false
 	_sb_paths.clear()
 	_sb_render_items = []
+	_sb_layer_items.clear()
+	_sb_additive_layer_items.clear()
 	_refresh_background_layering()
 	_update_storyboard_clip_rects()
-	if _storyboard_bg != null:
-		_storyboard_bg.queue_redraw()
-	if _storyboard_add_bg != null:
-		_storyboard_add_bg.queue_redraw()
-	if _storyboard_fg != null:
-		_storyboard_fg.queue_redraw()
-	if _storyboard_top != null:
-		_storyboard_top.queue_redraw()
+	# 五个故事板层都要重画：以前漏了 add_fg，切谱后加色元素会留在画面上。
+	_queue_storyboard_redraw()
 	if _overlay != null:
 		_redraw_all()
 
@@ -3260,12 +3256,16 @@ func _ensure_storyboard(chart: Chart) -> void:
 	_sb_priority_index = 0
 	_sb_all_textures_cached = false
 	_sb_paths.clear()
+	_sb_layer_items.clear()
+	_sb_additive_layer_items.clear()
 	if chart == null:
 		_refresh_background_layering()
+		_queue_storyboard_redraw()
 		return
 	var dir := String(chart.metadata.get("storyboard", ""))
 	if dir.is_empty():
 		_refresh_background_layering()
+		_queue_storyboard_redraw()
 		return
 	if not _board_cache.has(dir):
 		_start_parse(dir)
