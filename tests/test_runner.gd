@@ -122,6 +122,7 @@ func _initialize() -> void:
 		"test_hit_ring_light",
 		"test_note_fall_curves_match_tap",
 		"test_seek_warning_order",
+		"test_seek_wysiwyg_direction",
 		"test_seek_preview_breath",
 		"test_limit_dwell_once",
 		"test_bpm_snap_multipliers",
@@ -6423,6 +6424,55 @@ func test_note_fall_curves_match_tap() -> bool:
 	near(preview._anchor_gem_position(landing, half).x, 120.0 * half, 0.001,
 		"anchor gem travels on the shared 1/6 → 1 curve")
 	preview.free()
+	return true
+
+
+
+## 所见即所得：窄 Seek 认光标那一侧箭头的上下；整圈上下都认。
+func test_seek_wysiwyg_direction() -> bool:
+	eq(Preview3D.seek_wheel_orien(Vector2(0, -1), 0, Vector2(0, -1)), 1,
+		"an inward arrow on the upper side wants a down scroll")
+	eq(Preview3D.seek_wheel_orien(Vector2(0, -1), 1, Vector2(0, -1)), 0,
+		"an outward arrow on the upper side wants an up scroll")
+	eq(Preview3D.seek_wheel_orien(Vector2(0, 1), 0, Vector2(0, 1)), 0,
+		"an inward arrow on the lower side wants an up scroll")
+	eq(Preview3D.seek_wheel_orien(Vector2(1, 0), 0, Vector2(0, -1)), 1,
+		"a sideways arrow falls back to the arc's own side")
+	eq(Preview3D.seek_wheel_orien(Vector2(1, 0), 1, Vector2(0, -1)), 0,
+		"a sideways outward arrow mirrors the same rule")
+
+	var chart := DemoChart.make_empty({"bpm": 120.0})
+	chart.notes.clear()
+	var top := Note.new("seek", 2.0, 90.0)
+	top.id = 1
+	top.width = 60.0
+	top.seek_orien = 0
+	var full := Note.new("seek", 4.0, 0.0)
+	full.id = 2
+	full.width = 360.0
+	full.seek_orien = 0
+	chart.notes.assign([top, full])
+	var run := Playtest.new()
+	run.path_input_logging = false
+	root.add_child(run)
+	await process_frame
+	run.setup(chart, 0.0, "")
+	run.set_process(false)
+	run._preview.prepare_playtest_frame(2.0, 0.0)
+	var target := float(run._states[1]["target_ms"])
+	var point: Vector2 = run._preview.seek_screen(top, 2.0)
+	run._seek_presses.append({"time": target, "orien": 0, "mouse": point})
+	run._judge_seek(top, target, 2.0)
+	ok(not bool(run._states[1]["done"]), "the upper seek no longer accepts an up scroll")
+	run._seek_presses.append({"time": target, "orien": 1, "mouse": point})
+	run._judge_seek(top, target, 2.0)
+	ok(bool(run._states[1]["done"]), "the upper seek accepts a down scroll")
+	var full_target := float(run._states[2]["target_ms"])
+	run._seek_presses.append({"time": full_target, "orien": 1})
+	run._judge_seek(full, full_target, 4.0)
+	ok(bool(run._states[2]["done"]), "a full-circle seek accepts either scroll direction")
+	run.queue_free()
+	await process_frame
 	return true
 
 
