@@ -6183,7 +6183,8 @@ func _draw_pulses(canvas: Control) -> void:
 		var own_fx := kind in ["path", "seek", "lock"]
 		# 「PERFECT 特效」关掉时，PERFECT 命中只留判定字：环外的光扇/碎屑早就不画了，
 		# 但爆点还在，看起来就像开关没生效。
-		var perfect_burst := String(pulse.get("label", "")) in ["PERFECT", "FULL"] and not show_perfect_fx
+		# 「PERFECT 特效」只管额外装饰（光扇/碎屑）；星星头和 Seek 的功能性提示照常出。
+		var perfect_burst := String(pulse.get("label", "")) in ["PERFECT", "FULL"] and not show_perfect_fx and not own_fx
 		if (fx_budget != "off" or own_fx) and not perfect_burst:
 			if not own_fx and crowded and index < _pulses.size() - 6:
 				canvas.draw_arc(point, 16.0 + age * 30.0, 0.0, TAU, 16, Color(color.r, color.g, color.b, 0.5 * alpha), 2.0, false)
