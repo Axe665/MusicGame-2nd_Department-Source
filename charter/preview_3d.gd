@@ -5425,7 +5425,8 @@ func _draw_seeks(canvas: Control, chart: Chart, t: float) -> void:
 		var size: float = _note_scale() * seek_grow_scale(grow)
 		var emphasis: float = smoothstep(0.38, 1.0, grow)
 		var scale: float = seek_grow_scale(grow) * ring_scale
-		_draw_seek_ring(canvas, note, t, scale, size, color, fade, push, emphasis)
+		_draw_seek_ring(canvas, note, t, scale, size, color, fade, push, emphasis,
+			state == "miss" and exit_ms >= 0.0)
 		# 就位提示：窄 Seek 的光标已经站在弧上、且进入判定窗口时收一圈亮环。
 		if note.seek_width() < 359.5 and state.is_empty() \
 				and absf(now_ms - chart.timing.beat_to_chart_ms(note.beat)) <= SEEK_ARM_MS \
@@ -5521,8 +5522,9 @@ func _draw_seek_warnings(canvas: Control, warnings: Array[Dictionary]) -> void:
 		else:
 			outward = maxf(outward, strength)
 	if inward > 0.0 and outward > 0.0:
-		_draw_seek_warning_arc(canvas, PI * 0.5, PI, UITheme.SEEK_IN, inward)
-		_draw_seek_warning_arc(canvas, -PI * 0.5, PI, UITheme.SEEK_OUT, outward)
+		# 上半圈 = 里（蓝），下半圈 = 外（橙），和整圈 Seek 本体一致。
+		_draw_seek_warning_arc(canvas, -PI * 0.5, PI, UITheme.SEEK_IN, inward)
+		_draw_seek_warning_arc(canvas, PI * 0.5, PI, UITheme.SEEK_OUT, outward)
 	elif inward > 0.0 or outward > 0.0:
 		_draw_seek_warning_arc(canvas, 0.0, TAU, UITheme.SEEK_IN if inward > 0.0 else UITheme.SEEK_OUT,
 			maxf(inward, outward))
@@ -5558,6 +5560,33 @@ func seek_screen(note: Note, beat: float) -> Vector2:
 	return _arc_point_scaled(fposmod(note.angle, 360.0), beat, 1.0)
 
 
+## 所见即所得：窄 Seek 的滚轮方向按箭头在屏幕上的上下决定（下=1 下滑，上=0 上滑）。
+## radial 是光标相对环心的屏幕向量；箭头几乎横向时，按弧心在水平轴上/下来定。
+static func seek_wheel_orien(radial: Vector2, orien: int, arc_radial: Vector2) -> int:
+	var r := radial
+	if r.length() < 0.001:
+		r = arc_radial
+	if r.length() < 0.001:
+		return orien
+	r = r.normalized()
+	var inward := orien == 1
+	var direction := r if inward else -r
+	if absf(direction.y) < 0.2:
+		# 弧在左右两侧时箭头是横的：用弧心的竖直位置决定上下。
+		var side := signf(arc_radial.y)
+		if side == 0.0:
+			return orien
+		direction = Vector2(0.0, -side if not inward else side)
+	return 1 if direction.y > 0.0 else 0
+
+
+func seek_required_orien(note: Note, beat: float, point: Vector2) -> int:
+	var center: Vector2 = project_design(Vector2.ZERO)
+	var mid: Vector2 = seek_screen(note, beat)
+	var radial: Vector2 = (point - center) if point.is_finite() else (mid - center)
+	return seek_wheel_orien(radial, note.seek_orien, mid - center)
+
+
 func _draw_seek_warning_arc(canvas: Control, angle: float, span: float, tint: Color, alpha: float) -> void:
 	var points: PackedVector2Array = PackedVector2Array()
 	var steps: int = roundi(96.0 * span / TAU)
@@ -5575,7 +5604,7 @@ func _draw_seek_warning_arc(canvas: Control, angle: float, span: float, tint: Co
 	canvas.draw_polyline(points, Color(tint.lightened(0.44), 0.94 * alpha), 4.0 * size, true)
 
 
-func _draw_seek_ring(canvas: Control, note: Note, beat: float, scale: float, size: float, color: Color, alpha: float, push: float, emphasis: float) -> void:
+func _draw_seek_ring(canvas: Control, note: Note, beat: float, scale: float, size: float, color: Color, alpha: float, push: float, emphasis: float, red: bool = false) -> void:
 	var center: Vector2 = project_design(Vector2.ZERO)
 	var band_alpha: float = alpha * lerpf(0.72, 1.0, emphasis)
 	var arrow_alpha: float = alpha * lerpf(0.68, 1.0, emphasis)
@@ -5585,16 +5614,26 @@ func _draw_seek_ring(canvas: Control, note: Note, beat: float, scale: float, siz
 	var full: bool = width >= 359.5
 	# 弧带：整圈是一个闭合的圆（材质和 Tap 一样，只换颜色）；窄弧画成一整段。
 	if full:
-		var ring: PackedVector2Array = PackedVector2Array()
+		# 整圈：上里下外两色，箭头一律朝圆心；判定两向都收。
 		var ring_steps: int = 96 if note_detail_fine else 72
+		var lower := PackedVector2Array()
+		var upper := PackedVector2Array()
 		for j in ring_steps + 1:
-			var p: Vector2 = _arc_point_scaled(360.0 * float(j) / float(ring_steps), beat, scale)
+			var angle: float = 360.0 * float(j) / float(ring_steps)
+			var p: Vector2 = _arc_point_scaled(angle, beat, scale)
 			if not _valid_point(p):
-				_draw_seek_band(canvas, ring, size, color, band_alpha, true)
-				ring.clear()
+				_draw_seek_band(canvas, lower, size, color, band_alpha, true)
+				_draw_seek_band(canvas, upper, size, color, band_alpha, true)
+				lower.clear()
+				upper.clear()
 				continue
-			ring.append(p)
-		_draw_seek_band(canvas, ring, size, color, band_alpha, true)
+			if angle <= 180.0:
+				lower.append(p)
+			else:
+				upper.append(p)
+		# 角度 0..180 是屏幕上半圈：上里（蓝）下外（橙）。
+		_draw_seek_band(canvas, lower, size, color if red else UITheme.SEEK_IN, band_alpha, true)
+		_draw_seek_band(canvas, upper, size, color if red else UITheme.SEEK_OUT, band_alpha, true)
 	else:
 		var run: PackedVector2Array = PackedVector2Array()
 		var steps: int = clampi(int(width / 3.0), 8, 96)
@@ -5617,18 +5656,6 @@ func _draw_seek_ring(canvas: Control, note: Note, beat: float, scale: float, siz
 			spots.append(anchor)
 	# 超过半圈时只在下半侧画箭头，上半侧留白，免得整圈都是箭头；
 	# 弧整体在上半侧时至少留最靠下的一组，否则读不出方向。
-	if width > 180.0 and not spots.is_empty():
-		var lower: Array[Vector2] = []
-		for spot in spots:
-			if spot.y >= center.y:
-				lower.append(spot)
-		if lower.is_empty():
-			var lowest: Vector2 = spots[0]
-			for spot in spots:
-				if spot.y > lowest.y:
-					lowest = spot
-			lower.append(lowest)
-		spots = lower
 	for spot in spots:
 		var radial: Vector2 = (spot - center)
 		if radial.is_zero_approx():
@@ -5638,12 +5665,19 @@ func _draw_seek_ring(canvas: Control, note: Note, beat: float, scale: float, siz
 		# 都在环带外 16px 起步、60px 长，WACCA 式高挑箭形。
 		var depth: float = 60.0 * size
 		var tip: Vector2
+		var arrow_color := color
+		if full:
+			# 整圈：内外都不重要，箭头一律朝圆心，颜色跟上/下半环。
+			tip = spot - radial * (16.0 * size + depth - push * size)
+			arrow_color = color if red else (UITheme.SEEK_IN if spot.y < center.y else UITheme.SEEK_OUT)
+			_draw_seek_chevron(canvas, tip, -radial, depth, arrow_color, arrow_alpha)
+			continue
 		if inward:
 			tip = spot + radial * (16.0 * size + push * size + depth)
 		else:
 			tip = spot - radial * (16.0 * size + depth - push * size)
 		var direction: Vector2 = radial if inward else -radial
-		_draw_seek_chevron(canvas, tip, direction, depth, color, arrow_alpha)
+		_draw_seek_chevron(canvas, tip, direction, depth, arrow_color, arrow_alpha)
 
 
 ## 高挑的箭形：黑外描边 + 白壳 + 主题色芯（层次和 Tap 弧带一致），尾部留凹口。

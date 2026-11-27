@@ -1685,13 +1685,16 @@ func _auto_press_note(note: Note, state: Dictionary, beat: float) -> void:
 				seek_point = arc_point
 				_auto_cursor = arc_point
 				_preview.auto_cursor = arc_point
+		var auto_orien: int = note.seek_orien
+		if note.seek_width() < 359.5:
+			auto_orien = _preview.seek_required_orien(note, beat, seek_point)
 		_seek_presses.append({
 			"time": seek_ms,
-			"orien": note.seek_orien,
+			"orien": auto_orien,
 			"mouse": seek_point,
 		})
 		if _record != null:
-			_record.add_seek(seek_ms, seek_ms, seek_ms, note.seek_orien, _unit_point(seek_point))
+			_record.add_seek(seek_ms, seek_ms, seek_ms, auto_orien, _unit_point(seek_point))
 		return
 	var key := AUTO_KEY_A if _auto_key_phase % 2 == 0 else AUTO_KEY_B
 	_auto_key_phase += 1
@@ -1918,7 +1921,9 @@ func _judge_seek(note: Note, ms: float, beat: float) -> void:
 	var target := float(state["target_ms"])
 	if ms < target - HIT_WINDOW_MS:
 		return
-	var narrow: bool = note.seek_width() < 359.5
+	var width := note.seek_width()
+	var narrow: bool = width < 359.5
+	var full: bool = not narrow
 	var picked := -1
 	var best := INF
 	for i in _seek_presses.size():
@@ -1928,8 +1933,13 @@ func _judge_seek(note: Note, ms: float, beat: float) -> void:
 		var span_lo := float(press.get("lo", stamp))
 		if span_hi < target - HIT_WINDOW_MS or span_lo > target + HIT_WINDOW_MS:
 			continue
-		if int(press.get("orien", -1)) != note.seek_orien:
-			continue
+		var wheel := int(press.get("orien", -1))
+		if not full:
+			# 所见即所得：滚轮方向跟着光标那一侧的箭头走（超过半圈也一样）。
+			var required := _preview.seek_required_orien(note, beat,
+				press.get("mouse", Vector2.INF))
+			if wheel != required:
+				continue
 		# 窄 Seek：滚轮那一下光标必须已经站在这段弧上（旧回放没有坐标就不检查）。
 		if narrow and press.has("mouse") \
 				and not _preview.seek_contains(note, beat, press["mouse"] as Vector2):
