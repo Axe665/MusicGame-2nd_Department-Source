@@ -1437,6 +1437,9 @@ func _set_quality_index(key: String, index: int) -> void:
 			_app.note_glow = index == 0
 		"perfect_fx":
 			_app.show_perfect_fx = index == 0
+			# 试玩中途改设置要立刻生效；回放按录制时的快照走，不覆盖。
+			if _playtest != null and is_instance_valid(_playtest) and not _playtest.replay_mode:
+				_playtest._preview.show_perfect_fx = _app.show_perfect_fx
 		"path_style":
 			_app.path_style = Preview3D.PATH_STYLES[clampi(index, 0, Preview3D.PATH_STYLES.size() - 1)]
 			# 画法只影响画面，不该把「预设」打成自定义。

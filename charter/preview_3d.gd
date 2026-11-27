@@ -3358,18 +3358,41 @@ func _update_storyboard_textures(chart: Chart, beat: float, opening_end_ms: floa
 	return true
 
 
-## osu 允许图片放在子目录（sb\jpReg\0045.png）。以前只取文件名，子目录里的图
-## 一张都加载不到：CPU 照样采样，画面却是空的，看起来就像“开了故事板 GPU 反而更闲”。
+## 故事板图片路径：先按相对路径找（osu 的 sb/jpReg/x.png），找不到再退回扁平文件名
+## （应用内的故事板导入会把图片拍平到目录根部，.osb 里仍写着 sb/x.png）。
+## 只缓存确实存在的路径；缺失的先不缓存，等导入落盘后还能重新解析。
+static var _sb_asset_cache: Dictionary = {}
+
 static func storyboard_asset_path(dir: String, reference: String) -> String:
 	if reference.contains(".."):
 		return ""
-	return dir.path_join(reference)
+	var key := dir + "\n" + reference
+	var cached := String(_sb_asset_cache.get(key, ""))
+	if not cached.is_empty():
+		return cached
+	var full := dir.path_join(reference)
+	if FileAccess.file_exists(full):
+		_sb_asset_cache[key] = full
+		return full
+	var flat := dir.path_join(reference.get_file())
+	if FileAccess.file_exists(flat):
+		_sb_asset_cache[key] = flat
+		return flat
+	return full
+
+
+static func clear_asset_path_cache() -> void:
+	_sb_asset_cache.clear()
 
 
 func _storyboard_asset_path(reference: String) -> String:
-	if not _sb_paths.has(reference):
-		_sb_paths[reference] = storyboard_asset_path(_storyboard_dir, reference)
-	return _sb_paths[reference]
+	var hit := String(_sb_paths.get(reference, ""))
+	if not hit.is_empty():
+		return hit
+	var resolved := storyboard_asset_path(_storyboard_dir, reference)
+	if not resolved.is_empty() and FileAccess.file_exists(resolved):
+		_sb_paths[reference] = resolved
+	return resolved
 
 
 static func invalidate_storyboard_source(dir: String) -> void:
@@ -6160,7 +6183,8 @@ func _draw_pulses(canvas: Control) -> void:
 		var own_fx := kind in ["path", "seek", "lock"]
 		# 「PERFECT 特效」关掉时，PERFECT 命中只留判定字：环外的光扇/碎屑早就不画了，
 		# 但爆点还在，看起来就像开关没生效。
-		var perfect_burst := String(pulse.get("label", "")) in ["PERFECT", "FULL"] and not show_perfect_fx
+		# 「PERFECT 特效」只管额外装饰（光扇/碎屑）；星星头和 Seek 的功能性提示照常出。
+		var perfect_burst := String(pulse.get("label", "")) in ["PERFECT", "FULL"] and not show_perfect_fx and not own_fx
 		if (fx_budget != "off" or own_fx) and not perfect_burst:
 			if not own_fx and crowded and index < _pulses.size() - 6:
 				canvas.draw_arc(point, 16.0 + age * 30.0, 0.0, TAU, 16, Color(color.r, color.g, color.b, 0.5 * alpha), 2.0, false)
