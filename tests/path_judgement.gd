@@ -537,10 +537,10 @@ func _test_bell_judgement() -> void:
 		"a fast sweep across the gold band counts")
 	check(not run._preview.bell_swept_contains(band, beat, inner, point + inward * 300.0),
 		"a sweep that stays away from the band does not count")
-	run._judge_bell(band, target - 129.0, beat, inner)
+	run._judge_bell(band, target - 109.0, beat, inner)
 	check(not bool(run._states[1]["armed"]), "a cursor away from the gold note does not arm it")
 	# 一帧内从内侧跨到外侧：采样点没落在金键上，但扫过的线段穿过了。
-	run._judge_bell(band, target - 125.0, beat, outer)
+	run._judge_bell(band, target - 105.0, beat, outer)
 	check(bool(run._states[1]["armed"]) and not bool(run._states[1]["done"]),
 		"a single frame sweeping across the gold note arms it")
 	run._judge_bell(band, target, beat, point)
@@ -559,10 +559,10 @@ func _test_bell_judgement() -> void:
 	miss.set_process(false)
 	miss._preview.prepare_playtest_frame(beat, 0.0)
 	var far := point + (point - center) * 2.0
-	miss._judge_bell(band, target - 131.0, beat, far)
-	miss._judge_bell(band, target + 129.0, beat, far)
+	miss._judge_bell(band, target - 111.0, beat, far)
+	miss._judge_bell(band, target + 109.0, beat, far)
 	check(not bool(miss._states[1]["done"]), "the late window is still open")
-	miss._judge_bell(band, target + 131.0, beat, far)
+	miss._judge_bell(band, target + 111.0, beat, far)
 	check(bool(miss._states[1]["done"]) and miss._miss_count == 1, "an absent gold note misses after the window")
 	check(int(miss._tier_counts["MISS"]) == 1, "a missed gold note is judged")
 	check(miss._combo == 0, "a missed gold note breaks combo")
@@ -601,8 +601,8 @@ func _test_bell_chain() -> void:
 	var last_target: float = run._states[last.id]["target_ms"]
 	run._preview.prepare_playtest_frame(last.beat, 0.0)
 	var point: Vector2 = run._preview.bell_screen(last, last.beat)["center"]
-	var early := first_target - 120.0
-	check(early < last_target - 130.0, "the early contact is outside the note's own window")
+	var early := first_target - 100.0
+	check(early < last_target - 110.0, "the early contact is outside the note's own window")
 	run._judge_bell(last, early, last.beat, point)
 	check(bool(run._states[last.id]["armed"]), "a sweep chain arms later bells early")
 	run._judge_bell(last, last_target, last.beat, point)

@@ -116,7 +116,7 @@
 
 已完成：
 
-- [x] Tap 65 / 115 / 170ms，Great/Good 不断连；Hold 最后 1/4 拍内松手算 PERFECT。
+- [x] Tap 50 / 100 / 150ms，Great/Good 不断连；Hold 最后 1/4 拍内松手算 PERFECT。
 - [x] Hold 绑定起手键、端环、游标。
 - [x] Bell 112px 收取、300ms 窗口。
 - [x] 打击音整体 +4–6dB。
