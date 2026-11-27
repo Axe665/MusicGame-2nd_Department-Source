@@ -2739,8 +2739,8 @@ func _on_storyboard_saved(path: String) -> void:
 	_preview._ensure_storyboard(_app.chart)
 	_preview._refresh_background_layering()
 	_preview._overlay.queue_redraw()
-	if _preview._storyboard_bg != null:
-		_preview._storyboard_bg.queue_redraw()
+	# 五个故事板层一起重画：只重画背景层会让前景/覆盖层停在上一版。
+	_preview.refresh_storyboard_layers()
 	_show_toast("故事板已保存：%s" % path.get_file(), "info")
 
 

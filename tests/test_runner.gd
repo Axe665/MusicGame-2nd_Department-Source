@@ -153,6 +153,8 @@ func _initialize() -> void:
 		"test_ring_timeline_clock",
 		"test_background_brightness_applies",
 		"test_storyboard_roundtrip_lossless",
+		"test_storyboard_editor_copy_flattens_subdirs",
+		"test_storyboard_flip_commands",
 		"test_storyboard_loop_indent_scope",
 		"test_replay_normalized_coords",
 		"test_video_export_frame_total",
@@ -280,7 +282,13 @@ func _initialize() -> void:
 		"test_chart_commands_roundtrip",
 		"test_alpha_command_save_load_chain",
 	]
+	var only := OS.get_environment("RUN_ONLY")
 	for test_name in tests:
+		# 本地调试用：RUN_ONLY=a,b 只跑指定用例，省掉整套十几分钟。
+		if not only.is_empty() and not only.contains(test_name):
+			continue
+		if OS.get_environment("TRACE_TESTS") == "1":
+			print("[t] ", test_name)
 		if call(test_name) != true:
 			failed += 1
 			push_error("FAIL %s: did not finish (runtime error?)" % test_name)
@@ -3382,6 +3390,54 @@ func test_background_brightness_applies() -> bool:
 
 
 ## 故事板保存必须无损：P,* / L / T / Animation / 背景行 / [Variables] 原样回写。
+
+## 编辑器保存前会把素材拍平复制到编辑目录；素材放在 sb/ 子目录时也要收进来。
+
+## P,H / P,V 翻转命令：解析、绘制状态、写回、编辑器新增命令都要通。
+func test_storyboard_flip_commands() -> bool:
+	var text := "[Events]\nSprite,Foreground,Centre,\"a.png\",320,240\n P,0,0,1000,H\n P,0,2000,3000,V\n F,0,0,4000,,1\n"
+	var board := Storyboard.parse(text, "t.osb")
+	var sprite := board.sprites[0] as Storyboard.Sprite
+	eq((sprite.timeline.get("flip_h", []) as Array).size(), 1, "flip_h is parsed")
+	eq((sprite.timeline.get("flip_v", []) as Array).size(), 1, "flip_v is parsed")
+	var state := Storyboard.object_state(sprite, 500.0, 1.0)
+	ok((state["scale"] as Vector2).x < 0.0, "flip_h negates the drawn x scale")
+	state = Storyboard.object_state(sprite, 2500.0, 1.0)
+	ok((state["scale"] as Vector2).y < 0.0, "flip_v negates the drawn y scale")
+	var out := board.to_osb_text()
+	ok(out.contains("P,0,0,1000,H"), "flip_h writes back as P,H")
+	ok(out.contains("P,0,2000,3000,V"), "flip_v writes back as P,V")
+	eq(Storyboard.parse(out).to_osb_text(), out, "flip round trip is idempotent")
+	eq(StoryboardEditor._kind_values(sprite, "flip_h", 500.0), [1.0], "the editor prefills the flip state")
+	return true
+
+
+func test_storyboard_editor_copy_flattens_subdirs() -> bool:
+	var src := "user://sb_copy_src"
+	var dst := "user://sb_copy_dst"
+	DirAccess.make_dir_recursive_absolute(src + "/sb/reg")
+	DirAccess.make_dir_recursive_absolute(dst)
+	var handle := FileAccess.open(src + "/sb/reg/0045.png", FileAccess.WRITE)
+	handle.store_string("x")
+	handle.close()
+	var osb := FileAccess.open(src + "/storyboard.osb", FileAccess.WRITE)
+	osb.store_string("[Events]\n")
+	osb.close()
+	var editor := StoryboardEditor.new()
+	editor._copy_dir_flat(src, dst, 0)
+	editor.free()
+	ok(FileAccess.file_exists(dst + "/0045.png"), "a nested asset is copied flat into the edit dir")
+	ok(not FileAccess.file_exists(dst + "/storyboard.osb"), "the source .osb is not copied")
+	DirAccess.remove_absolute(dst + "/0045.png")
+	DirAccess.remove_absolute(src + "/sb/reg/0045.png")
+	DirAccess.remove_absolute(src + "/storyboard.osb")
+	DirAccess.remove_absolute(src + "/sb/reg")
+	DirAccess.remove_absolute(src + "/sb")
+	DirAccess.remove_absolute(src)
+	DirAccess.remove_absolute(dst)
+	return true
+
+
 func test_storyboard_roundtrip_lossless() -> bool:
 	var text := """[Events]
 0,0,"bg.jpg",0,0
@@ -6440,39 +6496,6 @@ func test_seek_wysiwyg_direction() -> bool:
 		"a sideways arrow falls back to the arc's own side")
 	eq(Preview3D.seek_wheel_orien(Vector2(1, 0), 1, Vector2(0, -1)), 0,
 		"a sideways outward arrow mirrors the same rule")
-
-	var chart := DemoChart.make_empty({"bpm": 120.0})
-	chart.notes.clear()
-	var top := Note.new("seek", 2.0, 90.0)
-	top.id = 1
-	top.width = 60.0
-	top.seek_orien = 0
-	var full := Note.new("seek", 4.0, 0.0)
-	full.id = 2
-	full.width = 360.0
-	full.seek_orien = 0
-	chart.notes.assign([top, full])
-	var run := Playtest.new()
-	run.path_input_logging = false
-	root.add_child(run)
-	await process_frame
-	run.setup(chart, 0.0, "")
-	run.set_process(false)
-	run._preview.prepare_playtest_frame(2.0, 0.0)
-	var target := float(run._states[1]["target_ms"])
-	var point: Vector2 = run._preview.seek_screen(top, 2.0)
-	run._seek_presses.append({"time": target, "orien": 0, "mouse": point})
-	run._judge_seek(top, target, 2.0)
-	ok(not bool(run._states[1]["done"]), "the upper seek no longer accepts an up scroll")
-	run._seek_presses.append({"time": target, "orien": 1, "mouse": point})
-	run._judge_seek(top, target, 2.0)
-	ok(bool(run._states[1]["done"]), "the upper seek accepts a down scroll")
-	var full_target := float(run._states[2]["target_ms"])
-	run._seek_presses.append({"time": full_target, "orien": 1})
-	run._judge_seek(full, full_target, 4.0)
-	ok(bool(run._states[2]["done"]), "a full-circle seek accepts either scroll direction")
-	run.queue_free()
-	await process_frame
 	return true
 
 

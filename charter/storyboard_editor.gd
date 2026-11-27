@@ -3,7 +3,8 @@ extends Control
 
 ## 故事板编辑器：全屏工作区（预览 / 对象 / 属性 / 时间轴），不再用受限的弹窗。
 ## 支持：新建 / 编辑对象（Sprite、Layer、Origin、位置）、给对象加命令
-## （F 淡入淡出 / M 移动 / MX / MY / S 缩放 / V 矢量缩放 / R 旋转 / C 颜色 / P,A 加色），
+## （F 淡入淡出 / M 移动 / MX / MY / S 缩放 / V 矢量缩放 / R 旋转 / C 颜色 / P,A 加色 /
+## P,H 水平翻转 / P,V 垂直翻转），
 ## 保存成 .osb 并挂到当前谱面，或导出到任意路径。
 
 signal saved(path: String)
@@ -37,6 +38,8 @@ const COMMANDS := [
 	["R 旋转（度）", "rotation"],
 	["C 颜色 (0-255)", "colour"],
 	["P,A 加色", "additive"],
+	["P,H 水平翻转", "flip_h"],
+	["P,V 垂直翻转", "flip_v"],
 ]
 
 var _app: Node = null
@@ -1265,6 +1268,10 @@ static func _kind_values(sprite: Storyboard.Sprite, kind: String, ms: float) -> 
 			return [colour.r * 255.0, colour.g * 255.0, colour.b * 255.0]
 		"additive":
 			return [1.0 if bool(state["additive"]) else 0.0]
+		"flip_h":
+			return [1.0 if scale.x < 0.0 else 0.0]
+		"flip_v":
+			return [1.0 if scale.y < 0.0 else 0.0]
 	return [0.0]
 
 
@@ -1653,24 +1660,41 @@ func _ensure_edit_dir() -> String:
 	var target := "user://storyboards/edit_%s" % key
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(target))
 	if not _dir.is_empty():
-		for file_name in DirAccess.get_files_at(_dir):
-			if file_name == "storyboard.osb":
-				continue
-			var destination := target + "/" + file_name
-			if FileAccess.file_exists(destination):
-				continue
-			var out := FileAccess.open(destination, FileAccess.WRITE)
-			if out != null:
-				out.store_buffer(FileAccess.get_file_as_bytes(_dir + "/" + file_name))
-				out.close()
+		_copy_dir_flat(_dir, target, 0)
 	_dir = target
 	if _canvas != null:
 		_canvas.set_board(_board, _canvas_dir())
 	return _dir
 
 
+## 把源目录的素材拍平复制到编辑目录（子目录也一起收）。
+## 以前只拷贝根目录：素材放在 sb/ 下的故事板，编辑后一张图都加载不到。
+func _copy_dir_flat(source: String, target: String, depth: int) -> void:
+	if depth > 4:
+		return
+	var dir := DirAccess.open(source)
+	if dir == null:
+		return
+	dir.list_dir_begin()
+	var entry := dir.get_next()
+	while not entry.is_empty():
+		if not entry.begins_with("."):
+			var full := source.path_join(entry)
+			if dir.current_is_dir():
+				_copy_dir_flat(full, target, depth + 1)
+			elif entry != "storyboard.osb":
+				var destination := target.path_join(entry)
+				if not FileAccess.file_exists(destination):
+					var out := FileAccess.open(destination, FileAccess.WRITE)
+					if out != null:
+						out.store_buffer(FileAccess.get_file_as_bytes(full))
+						out.close()
+		entry = dir.get_next()
+	dir.list_dir_end()
+
+
 func _on_save() -> void:
-	if _board == null or _board.sprites.is_empty():
+	if _board == null:
 		_status.text = "还没有对象"
 		return
 	_ensure_edit_dir()
