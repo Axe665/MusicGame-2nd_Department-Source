@@ -185,7 +185,7 @@ var _sb_sample_ms := -1.0e9
 var _sb_queued_ms := -1.0e9
 var _sb_waiting_dir := ""
 var _sb_wide_detected := false
-var _sb_render_items: Array[Dictionary] = []
+var _sb_render_items: Array = []
 ## 采样后按图层分桶：每层只遍历自己的对象，不用 7 个层各扫一遍全部 items。
 var _sb_layer_items: Dictionary = {}
 var _sb_additive_layer_items: Dictionary = {}
@@ -3306,9 +3306,9 @@ func _update_storyboard_textures(chart: Chart, beat: float, opening_end_ms: floa
 		_sb_keepalive_ms = now
 		# CanvasItem keeps its draw commands while paused, so a visible
 		# sprite can remain on screen without touching the texture getter.
-		for item in _sb_render_items:
-			if show_storyboard_background or String(item["layer"]) not in ["Background", "Video"]:
-				keep_storyboard_texture(_storyboard_asset_path(String(item["path"])), now)
+		for state: Storyboard.State in _sb_render_items:
+			if show_storyboard_background or state.layer not in ["Background", "Video"]:
+				keep_storyboard_texture(_storyboard_asset_path(state.path), now)
 		for full in _sb_priority:
 			keep_storyboard_texture(full, now)
 	pump_storyboard_textures()
@@ -3358,9 +3358,17 @@ func _update_storyboard_textures(chart: Chart, beat: float, opening_end_ms: floa
 	return true
 
 
+## osu 允许图片放在子目录（sb\jpReg\0045.png）。以前只取文件名，子目录里的图
+## 一张都加载不到：CPU 照样采样，画面却是空的，看起来就像“开了故事板 GPU 反而更闲”。
+static func storyboard_asset_path(dir: String, reference: String) -> String:
+	if reference.contains(".."):
+		return ""
+	return dir.path_join(reference)
+
+
 func _storyboard_asset_path(reference: String) -> String:
 	if not _sb_paths.has(reference):
-		_sb_paths[reference] = _storyboard_dir.path_join(reference.get_file())
+		_sb_paths[reference] = storyboard_asset_path(_storyboard_dir, reference)
 	return _sb_paths[reference]
 
 
@@ -3439,11 +3447,13 @@ static func _get_cached_storyboard(dir: String) -> Storyboard:
 	return board
 
 
-static func storyboard_texture(full: String) -> Texture2D:
+## Per-frame preview draws may pass touch_lru=false; visible items are touched by _update_storyboard_textures() every 500 ms.
+static func storyboard_texture(full: String, touch_lru: bool = true) -> Texture2D:
 	if not _tex_cache.has(full):
 		request_storyboard_texture(full)
 		return null
-	_tex_last_used[full] = Time.get_ticks_msec()
+	if touch_lru:
+		_tex_last_used[full] = Time.get_ticks_msec()
 	return _tex_cache[full]
 
 
@@ -3652,15 +3662,16 @@ func _draw_storyboard_layers(canvas: Control, chart: Chart, t: float, layers: Ar
 	var ms := chart.timing.beat_to_chart_ms(t) - chart.offset_ms
 	if absf(ms - _sb_sample_ms) >= maxf(0.0001, _sb_sample_interval):
 		_sb_sample_ms = ms
-		_sb_render_items = _storyboard.sample(ms)
+		# 热路径：State 对象原地复用，不再每帧给每个对象建 Dictionary。
+		_sb_render_items = _storyboard.sample_flat(ms).states
 		_sb_layer_items.clear()
 		_sb_additive_layer_items.clear()
-		for entry in _sb_render_items:
-			var key := String(entry["layer"])
-			var target := _sb_additive_layer_items if bool(entry.get("additive", false)) else _sb_layer_items
+		for state: Storyboard.State in _sb_render_items:
+			var target := _sb_additive_layer_items if state.additive else _sb_layer_items
+			var key: String = state.layer
 			if not target.has(key):
 				target[key] = []
-			(target[key] as Array).append(entry)
+			(target[key] as Array).append(state)
 	var view_size := canvas.size
 	var layout := _storyboard_layout(view_size)
 	var scale: float = layout["scale"]
@@ -3670,21 +3681,21 @@ func _draw_storyboard_layers(canvas: Control, chart: Chart, t: float, layers: Ar
 		var group: Array = source.get(layer_name, [])
 		if skip_background and (layer_name == "Background" or layer_name == "Video"):
 			continue
-		for item in group:
-			var full: String = _storyboard_asset_path(String(item["path"]))
-			var texture: Texture2D = storyboard_texture(full)
+		for state: Storyboard.State in group:
+			var full: String = _storyboard_asset_path(state.path)
+			var texture: Texture2D = storyboard_texture(full, false)
 			if texture == null:
 				continue
 			var sprite_size := Vector2(texture.get_width(), texture.get_height())
-			var anchor := _storyboard_anchor(int(item["origin"]), sprite_size)
-			var pos: Vector2 = offset + (item["pos"] as Vector2) * scale
-			var sprite_scale: Vector2 = item["scale"] * scale * float(_tex_boost.get(full, 1.0))
-			var rotation := deg_to_rad(float(item["rotation"]))
+			var anchor := _storyboard_anchor(state.origin, sprite_size)
+			var pos: Vector2 = offset + state.pos * scale
+			var sprite_scale: Vector2 = state.scale * scale * float(_tex_boost.get(full, 1.0))
+			var rotation := deg_to_rad(state.rotation)
 			# 屏幕外的 sprite 直接丢掉：storyboard 里数百张图会一直“可见”，
 			# 大部分已经被 M 命令挪出画面，不剔除的话每帧白画几百次。
 			if not storyboard_sprite_intersects(view_size, pos, sprite_size, anchor, sprite_scale, rotation):
 				continue
-			var colour := storyboard_item_colour(item, sprite_size, sprite_scale, view_size)
+			var colour := storyboard_item_colour(state.colour, state.alpha, state.additive, sprite_size, sprite_scale, view_size)
 			canvas.draw_set_transform(pos, rotation, sprite_scale)
 			canvas.draw_texture(texture, -anchor, colour)
 	canvas.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
@@ -3698,14 +3709,15 @@ static func storyboard_sprite_intersects(view: Vector2, pos: Vector2, sprite_siz
 ## 故事板对象的最终颜色（画布和预览必须共用这一份，否则两边观感对不上）。
 ## osu 里 P,A 是真正的加色；这里统一压到 35%，否则几百张全屏图叠加会把画面刷白。
 ## shortcut: 加色统一 0.35 增益，osu 精确混合后再调；等有人反馈“闪光不够亮”再改。
-static func storyboard_item_colour(item: Dictionary, sprite_size: Vector2, sprite_scale: Vector2, canvas_size: Vector2) -> Color:
-	var colour: Color = item["colour"]
+static func storyboard_item_colour(base: Color, alpha: float, additive: bool,
+		sprite_size: Vector2, sprite_scale: Vector2, canvas_size: Vector2) -> Color:
+	var colour := base
 	if colour.r > 0.94 and colour.g > 0.94 and colour.b > 0.94:
 		# 2x2 的白点放大铺满屏幕：原本是纯白遮罩，按纯白画会在转场时刺眼。
 		if sprite_size.x * sprite_size.y <= 16.0 and sprite_scale.x > canvas_size.x * 0.5:
 			colour = Color(0.0, 0.0, 0.0, colour.a)
-	colour.a = clampf(float(item["alpha"]), 0.0, 1.0) * colour.a
-	if bool(item.get("additive", false)):
+	colour.a = clampf(alpha, 0.0, 1.0) * colour.a
+	if additive:
 		colour.a *= 0.35
 	return colour
 

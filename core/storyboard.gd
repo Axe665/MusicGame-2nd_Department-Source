@@ -13,6 +13,38 @@ const FIELD_WIDTH := 640.0
 const FIELD_HEIGHT := 480.0
 const FIELD_WIDTH_WIDE := 854.0
 const MAX_SEGMENTS_PER_KIND := 2048
+## 热路径的命令种类下标：和 timeline 的字符串键一一对应。
+const MOVE := 0
+const X := 1
+const Y := 2
+const SCALE := 3
+const VECTOR := 4
+const ROTATION := 5
+const COLOUR := 6
+const ALPHA := 7
+const ADDITIVE := 8
+const FLIP_H := 9
+const FLIP_V := 10
+const KINDS := ["move", "x", "y", "scale", "vector", "rotation", "colour", "alpha", "additive", "flip_h", "flip_v"]
+## 一个可见对象的绘制状态。每个 Sprite 自持一份、原地更新，避免每帧分配。
+class State:
+	## 静态字段在 build() 时拷一份：绘制阶段不再回查 Sprite，也就不会和 Sprite 互成引用环。
+	var path := ""
+	var layer := "Background"
+	var origin := 0
+	var pos := Vector2.ZERO
+	var scale := Vector2.ONE
+	var rotation := 0.0
+	var alpha := 1.0
+	var colour := Color.WHITE
+	var additive := false
+	var frame := 0
+
+## 一帧按绘制顺序排好的可见对象。列表被 sample_flat() 复用，调用方要当场用完。
+class Frame:
+	var states: Array = []
+	var sprites: Array = []
+	var count := 0
 
 ## 一条命令：时间已展开为绝对 ms。
 class Command:
@@ -64,6 +96,14 @@ class Sprite:
 	var last_alpha := 1.0
 	## 每帧热路径用的预计算：只有一条命令的属性可以完全跳过二分查找。
 	var _single: Dictionary = {}
+	## 同一份数据按整数下标再存一份：热路径不再按字符串查 Dictionary。
+	var _lists: Array = []
+	var _ones: Array = []
+	var _cursor_ids := PackedInt32Array()
+	## 热路径：自持一份状态原地更新；首尾常量再各缓存一份，直接复用对象本身。
+	var _state := State.new()
+	var _fast_final: State = null
+	var _fast_initial: State = null
 	var _has_move := false
 	var _has_x := false
 	var _has_y := false
@@ -112,6 +152,19 @@ class Sprite:
 			var list: Array = timeline[key]
 			if list.size() == 1:
 				_single[key] = list[0]
+		_lists.resize(KINDS.size())
+		_ones.resize(KINDS.size())
+		_cursor_ids.resize(KINDS.size())
+		for i in KINDS.size():
+			var row: Array = timeline.get(KINDS[i], [])
+			_lists[i] = row
+			_ones[i] = row[0] if row.size() == 1 else null
+			_cursor_ids[i] = -1
+		_fast_final = null
+		_fast_initial = null
+		_state.path = path
+		_state.layer = layer
+		_state.origin = origin
 		_has_move = timeline.has("move")
 		_has_x = timeline.has("x")
 		_has_y = timeline.has("y")
@@ -293,6 +346,186 @@ class Sprite:
 		if progress >= 1.0:
 			return b
 		return a.lerp(b, progress if command.easing == 0 else Easing.apply(command.easing, progress))
+
+	## 整数下标版的命令查找：逻辑和 command_at() 完全一样，只是不再查 Dictionary。
+	func command_at_id(id: int, ms: float) -> Command:
+		var list: Array = _lists[id]
+		var count := list.size()
+		if count == 0:
+			return null
+		var cached := _cursor_ids[id]
+		if cached >= 0 and cached < count:
+			var c := list[cached] as Command
+			if c.start <= ms and (cached + 1 >= count or (list[cached + 1] as Command).start > ms):
+				return c
+			for step in range(1, 4):
+				var forward := cached + step
+				if forward < count:
+					var f := list[forward] as Command
+					if f.start <= ms and (forward + 1 >= count or (list[forward + 1] as Command).start > ms):
+						_cursor_ids[id] = forward
+						return f
+				var backward := cached - step
+				if backward >= 0:
+					var b := list[backward] as Command
+					if b.start <= ms and (backward + 1 >= count or (list[backward + 1] as Command).start > ms):
+						_cursor_ids[id] = backward
+						return b
+		var lo := 0
+		var hi := count - 1
+		var found := -1
+		if count <= 6:
+			for i in count:
+				if (list[i] as Command).start <= ms:
+					found = i
+				else:
+					break
+		else:
+			while lo <= hi:
+				var mid := (lo + hi) / 2
+				if (list[mid] as Command).start <= ms:
+					found = mid
+					lo = mid + 1
+				else:
+					hi = mid - 1
+		var result := found if found >= 0 else 0
+		_cursor_ids[id] = result
+		return list[result]
+
+
+	func sample_float_id(id: int, ms: float, fallback: float) -> float:
+		var command := command_at_id(id, ms)
+		if command == null:
+			return fallback
+		return Storyboard.sample_float_command(command, ms, fallback)
+
+
+	func sample_vec2_id(id: int, ms: float, fallback: Vector2) -> Vector2:
+		var command := command_at_id(id, ms)
+		if command == null:
+			return fallback
+		return Storyboard.sample_vec2_command(command, ms, fallback)
+
+
+	func sample_colour_id(id: int, ms: float) -> Color:
+		var command := command_at_id(id, ms)
+		if command == null:
+			return Color.WHITE
+		return Storyboard.sample_colour_command(command, ms)
+
+
+	func sample_flag_id(id: int, ms: float) -> bool:
+		var command := command_at_id(id, ms)
+		if command == null:
+			return false
+		return ms >= command.start and ms <= command.end
+
+
+	## 热路径：算出 ms 时刻的状态，原地写进 target。
+	func _fill_state(ms: float, alpha: float, target: State) -> void:
+		var pos := self.pos
+		var command: Command = _ones[MOVE]
+		if command != null:
+			pos = Storyboard.sample_vec2_command(command, ms, pos)
+		elif _has_move:
+			pos = sample_vec2_id(MOVE, ms, pos)
+		command = _ones[X]
+		if command != null:
+			pos.x = Storyboard.sample_float_command(command, ms, pos.x)
+		elif _has_x:
+			pos.x = sample_float_id(X, ms, pos.x)
+		command = _ones[Y]
+		if command != null:
+			pos.y = Storyboard.sample_float_command(command, ms, pos.y)
+		elif _has_y:
+			pos.y = sample_float_id(Y, ms, pos.y)
+		var scale := Vector2.ONE
+		command = _ones[SCALE]
+		if command != null:
+			var uniform := Storyboard.sample_float_command(command, ms, 1.0)
+			scale = Vector2(uniform, uniform)
+		elif _has_scale:
+			scale = Vector2.ONE * sample_float_id(SCALE, ms, 1.0)
+		command = _ones[VECTOR]
+		if command != null:
+			scale = Storyboard.sample_vec2_command(command, ms, scale)
+		elif _has_vector:
+			scale = sample_vec2_id(VECTOR, ms, scale)
+		var rotation := 0.0
+		command = _ones[ROTATION]
+		if command != null:
+			rotation = Storyboard.sample_float_command(command, ms, 0.0)
+		elif _has_rotation:
+			rotation = sample_float_id(ROTATION, ms, 0.0)
+		var colour := Color.WHITE
+		command = _ones[COLOUR]
+		if command != null:
+			colour = Storyboard.sample_colour_command(command, ms)
+		elif _has_colour:
+			colour = sample_colour_id(COLOUR, ms)
+		var additive := false
+		command = _ones[ADDITIVE]
+		if command != null:
+			additive = ms >= command.start and ms <= command.end
+		elif _has_additive:
+			additive = sample_flag_id(ADDITIVE, ms)
+		command = _ones[FLIP_H]
+		if command != null:
+			if ms >= command.start and ms <= command.end:
+				scale.x = -scale.x
+		elif _has_flip_h and sample_flag_id(FLIP_H, ms):
+			scale.x = -scale.x
+		command = _ones[FLIP_V]
+		if command != null:
+			if ms >= command.start and ms <= command.end:
+				scale.y = -scale.y
+		elif _has_flip_v and sample_flag_id(FLIP_V, ms):
+			scale.y = -scale.y
+		var index := 0
+		if frames > 1 and frame_delay > 0.0:
+			var elapsed := maxf(0.0, ms - first_ms)
+			index = int(elapsed / frame_delay)
+			if loop_type == 1:
+				index = mini(index, frames - 1)
+			else:
+				index = index % frames
+		target.pos = pos
+		target.scale = scale
+		target.rotation = rotation
+		target.alpha = alpha
+		target.colour = colour
+		target.additive = additive
+		target.frame = index
+
+
+	func _copy_meta(target: State) -> void:
+		target.path = path
+		target.layer = layer
+		target.origin = origin
+
+
+	## 热路径入口：不可见/全透明返回 null；首尾常量直接返回缓存对象，不再算。
+	func state_fast(ms: float) -> State:
+		if commands.is_empty() or ms < start_time or ms > end_time:
+			return null
+		if ms >= last_ms:
+			if _fast_final == null:
+				_fast_final = State.new()
+				_copy_meta(_fast_final)
+				_fill_state(last_ms + 0.0001, last_alpha, _fast_final)
+			return _fast_final if last_alpha > 0.004 else null
+		if ms <= first_ms:
+			if _fast_initial == null:
+				_fast_initial = State.new()
+				_copy_meta(_fast_initial)
+				_fill_state(first_ms, first_alpha, _fast_initial)
+			return _fast_initial if first_alpha > 0.004 else null
+		var alpha := sample_float_id(ALPHA, ms, 1.0)
+		if alpha <= 0.004:
+			return null
+		_fill_state(ms, alpha, _state)
+		return _state
+
 
 	## 某一类命令在 ms 时刻的插值结果（各分量分别插值）。
 	func sample(kind: String, ms: float) -> Array:
@@ -495,6 +728,11 @@ var _index_ready := false
 ## 同一帧里背景层和前景层会用同一个 ms 查两次，缓存一次结果。
 var _cache_ms := -INF
 var _cache_result: Array[Dictionary] = []
+## 热路径结果：复用同一份扁平数组和 Frame，避免每帧几百次分配。
+var _flat_ms := -INF
+var _flat_frame := Frame.new()
+var _flat_states: Array = []
+var _flat_sprites: Array = []
 
 
 func build_index() -> void:
@@ -525,6 +763,7 @@ func invalidate() -> void:
 	_persistent.clear()
 	_cache_ms = -INF
 	_cache_result = []
+	_flat_ms = -INF
 
 
 func index_stats() -> Dictionary:
@@ -980,54 +1219,67 @@ func add_command(sprite: Sprite, kind: String, easing: int, start: float, end: f
 	return command
 
 
-## 时刻 ms 的可见对象（已按图层顺序排好）。
-func sample(ms: float) -> Array[Dictionary]:
-	if ms == _cache_ms:
-		return _cache_result
+## 热路径采样：按图层顺序排好，返回可复用的 State 对象列表。
+## 返回的 Frame 会被复用，调用方要当场用完；预览/试玩走这条，编辑器画布走 sample()。
+func sample_flat(ms: float) -> Frame:
+	if ms == _flat_ms:
+		return _flat_frame
 	if not _index_ready:
 		build_index()
-	_cache_ms = ms
+	_flat_ms = ms
 	var bucket: Array = _buckets.get(int(floor(ms / BUCKET_MS)), [])
+	_flat_states.clear()
+	_flat_sprites.clear()
+	var n := 0
 	# 两个列表各自按文件顺序排好，这里归并一次，保证同图层里的遮挡关系不变。
-	var result: Array[Dictionary] = []
 	var i := 0
 	var j := 0
 	while i < _persistent.size() or j < bucket.size():
 		var a: Sprite = _persistent[i] if i < _persistent.size() else null
 		var b: Sprite = bucket[j] if j < bucket.size() else null
+		var s: Sprite
 		if b == null or (a != null and a.order <= b.order):
-			_collect(a, ms, result)
+			s = a
 			i += 1
 		else:
-			_collect(b, ms, result)
+			s = b
 			j += 1
+		var state := s.state_fast(ms)
+		if state != null:
+			_flat_states.append(state)
+			_flat_sprites.append(s)
+			n += 1
+	_flat_frame.states = _flat_states
+	_flat_frame.sprites = _flat_sprites
+	_flat_frame.count = n
+	return _flat_frame
+
+
+## 时刻 ms 的可见对象（已按图层顺序排好）。编辑器画布/测试用，比 sample_flat 多一层字典。
+func sample(ms: float) -> Array[Dictionary]:
+	if ms == _cache_ms:
+		return _cache_result
+	var frame := sample_flat(ms)
+	_cache_ms = ms
+	var result: Array[Dictionary] = []
+	for k in frame.count:
+		var state := frame.states[k] as State
+		var s := frame.sprites[k] as Sprite
+		result.append({
+			"path": s.path,
+			"layer": s.layer,
+			"origin": s.origin,
+			"pos": state.pos,
+			"scale": state.scale,
+			"rotation": state.rotation,
+			"alpha": state.alpha,
+			"colour": state.colour,
+			"additive": state.additive,
+			"frame": state.frame,
+			"sprite": s,
+		})
 	_cache_result = result
 	return result
-
-
-func _collect(s: Sprite, ms: float, out: Array[Dictionary]) -> void:
-	if not s.visible_at(ms):
-		return
-	# 命令窗口之外 alpha 是已知的（首/尾值），不用再查一次时间轴。
-	var alpha := 1.0
-	if s.commands.is_empty():
-		alpha = 1.0
-	elif ms >= s.last_ms:
-		alpha = s.last_alpha
-	elif ms <= s.first_ms:
-		alpha = s.first_alpha
-	else:
-		# 不要用 sample()：每帧几百个对象，每次返回一个 Array 光分配就够呛。
-		alpha = s.sample_float("alpha", ms, 1.0)
-	if alpha <= 0.004:
-		return
-	var state := s.state_at(ms, alpha)
-	# 可视化编辑器靠这个引用把画面上的对象映射回数据（order == sprites 下标）。
-	# 首尾状态由 sprite 持有，复制后再写引用，避免 sprite 引用自己。
-	if ms <= s.first_ms or ms >= s.last_ms:
-		state = state.duplicate()
-	state["sprite"] = s
-	out.append(state)
 
 
 ## 只有一条命令时的插值：跳过分组查找，直接算 from→to。

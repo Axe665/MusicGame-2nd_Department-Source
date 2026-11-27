@@ -139,7 +139,7 @@ func _compute_content_bounds(field_bounds: Rect2, ms: float) -> Rect2:
 		var sprite = item.get("sprite")
 		if sprite == null:
 			continue
-		var full: String = dir.path_join(String(item["path"]).get_file())
+		var full: String = Preview3D.storyboard_asset_path(dir, String(item["path"]))
 		if not _fit_texture_sizes.has(full):
 			if not Preview3D._tex_cache.has(full):
 				Preview3D.request_storyboard_texture(full)
@@ -283,7 +283,7 @@ func _process(_delta: float) -> void:
 		_texture_keepalive_ms = now
 		for item in _items:
 			if not hidden_layers.has(String(item["layer"])):
-				Preview3D.keep_storyboard_texture(dir.path_join(String(item["path"]).get_file()), now)
+				Preview3D.keep_storyboard_texture(Preview3D.storyboard_asset_path(dir, String(item["path"])), now)
 	Preview3D.pump_storyboard_textures()
 	if _texture_generation != Preview3D._tex_generation:
 		_texture_generation = Preview3D._tex_generation
@@ -304,7 +304,7 @@ func _process(_delta: float) -> void:
 
 ## 一个 item 的绘制参数（画、命中、框选共用一套）。
 func _item_geometry(item: Dictionary, layout: Dictionary) -> Dictionary:
-	var full: String = dir.path_join(String(item["path"]).get_file())
+	var full: String = Preview3D.storyboard_asset_path(dir, String(item["path"]))
 	var texture := _texture(full)
 	if texture == null:
 		return {}
@@ -382,7 +382,8 @@ func _draw_items(ci: Control, additive_only: bool) -> void:
 			var anchor: Vector2 = geo["anchor"]
 			if not Preview3D.storyboard_sprite_intersects(view, pos, sprite_size, anchor, sprite_scale, rot):
 				continue
-			var colour := Preview3D.storyboard_item_colour(item, sprite_size, sprite_scale, view)
+			var colour := Preview3D.storyboard_item_colour(item["colour"], float(item["alpha"]),
+				bool(item.get("additive", false)), sprite_size, sprite_scale, view)
 			ci.draw_set_transform(pos, rot, sprite_scale)
 			ci.draw_texture(geo["texture"], -anchor, colour)
 	ci.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)

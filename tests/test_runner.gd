@@ -135,9 +135,12 @@ func _initialize() -> void:
 		"test_storyboard_editor_transport",
 		"test_storyboard_build_recomputes_bounds",
 		"test_storyboard_command_cursor",
+		"test_storyboard_fast_state_matches_object_state",
+		"test_storyboard_subfolder_asset_path",
 		"test_storyboard_timeline_rows",
 		"test_storyboard_timeline_snap_offset",
 		"test_storyboard_timeline_mouse",
+		"test_storyboard_timeline_playhead_only_redraws_overlay",
 		"test_storyboard_layer_toggle_reversible",
 		"test_storyboard_escape_cancels",
 		"test_storyboard_drag_cancel_restores",
@@ -2946,6 +2949,55 @@ func test_storyboard_command_cursor() -> bool:
 	return true
 
 
+
+
+## 故事板图片放在子目录时不能只取文件名：osu 的图常见于 sb/jpReg/ 这类目录。
+func test_storyboard_subfolder_asset_path() -> bool:
+	eq(Preview3D.storyboard_asset_path("/maps/x", "sb/jpReg/0045.png"), "/maps/x/sb/jpReg/0045.png",
+		"subfolder storyboard assets keep their relative path")
+	eq(Preview3D.storyboard_asset_path("/maps/x", "a.png"), "/maps/x/a.png", "root-level assets still resolve")
+	eq(Preview3D.storyboard_asset_path("/maps/x", "../evil.png"), "", "parent traversal is rejected")
+	var board := Storyboard.parse("[Events]\nSprite,Background,Centre,\"sb\\jpReg\\0045.png\",320,240\n F,0,0,1000,,1\n", "t.osb")
+	eq((board.sprites[0] as Storyboard.Sprite).path, "sb/jpReg/0045.png", "backslashes are normalized")
+	return true
+
+
+## 热路径 state_fast 必须和 object_state 完全一致（改采样实现时最容易悄悄画错）。
+func test_storyboard_fast_state_matches_object_state() -> bool:
+	var text := "[Events]\nSprite,Background,Centre,\"a.png\",320,240\n M,0,0,1000,100,100,300,240\n S,0,0,1500,1,1.5\n R,0,0,2000,0,90\n C,0,0,1000,255,0,0,0,0,255\n F,0,0,1000,,1\n F,0,1200,2000,,0\n V,0,800,1200,1,1,2,2\n P,0,600,900\n A,0,700,800\n"
+	var board := Storyboard.parse(text, "t.osb")
+	board.build_index()
+	var sprite := board.sprites[0] as Storyboard.Sprite
+	var mismatches := 0
+	for step in 41:
+		var ms := float(step) * 50.0
+		var fast := sprite.state_fast(ms)
+		var slow := Storyboard.object_state(sprite, ms, fast.alpha if fast != null else 0.0)
+		if fast == null:
+			# 首帧 alpha 从 0 开始：不可见就不该出现，交给下面 sample_flat/sample 的条数对照。
+			continue
+		if fast.pos.distance_to(slow["pos"]) > 0.0001:
+			mismatches += 1
+		if fast.scale.distance_to(slow["scale"]) > 0.0001:
+			mismatches += 1
+		if absf(fast.rotation - float(slow["rotation"])) > 0.0001:
+			mismatches += 1
+		if fast.colour != (slow["colour"] as Color):
+			mismatches += 1
+		if fast.additive != bool(slow["additive"]):
+			mismatches += 1
+		if fast.frame != int(slow["frame"]):
+			mismatches += 1
+	eq(mismatches, 0, "fast sampling matches object_state")
+	var frame := board.sample_flat(1234.0)
+	var dict := board.sample(1234.0)
+	eq(frame.count, dict.size(), "flat sampling returns the same objects")
+	for i in frame.count:
+		eq(frame.sprites[i], dict[i]["sprite"], "flat sampling keeps file order")
+		eq(frame.states[i].alpha, float(dict[i]["alpha"]), "flat sampling keeps alpha")
+	return true
+
+
 ## 时间轴：默认一层一行；展开后追加这一层的 sprite 行。
 func test_storyboard_timeline_rows() -> bool:
 	var board := Storyboard.create_blank()
@@ -3015,6 +3067,46 @@ func test_storyboard_timeline_mouse() -> bool:
 	timeline._gui_input(bar)
 	eq(seeks.size(), 1, "double-clicking a command bar seeks")
 	near(timeline.playhead_ms, 0.0, 0.01, "double-click jumps to the command start")
+	timeline.free()
+	return true
+
+
+## 播放时只刷新播放头覆盖层；缩放或自动跟随移动视窗才重画静态轨道。
+func test_storyboard_timeline_playhead_only_redraws_overlay() -> bool:
+	var timeline := StoryboardTimeline.new()
+	ok(timeline._playhead_overlay != null, "timeline creates a playhead overlay")
+	eq(timeline._playhead_overlay.mouse_filter, Control.MOUSE_FILTER_IGNORE, "overlay does not intercept timeline input")
+	timeline.follow_playhead = false
+	var static_before := timeline._static_invalidations
+	var overlay_before := timeline._playhead_invalidations
+	timeline.set_playhead(1000.0)
+	eq(timeline.playhead_ms, 1000.0, "playhead value updates")
+	eq(timeline._static_invalidations, static_before, "in-range playback does not invalidate static rows")
+	eq(timeline._playhead_invalidations, overlay_before + 1, "in-range playback invalidates only the overlay")
+	timeline.size = Vector2(800.0, 250.0)
+	timeline._drag_mode = 1
+	static_before = timeline._static_invalidations
+	overlay_before = timeline._playhead_invalidations
+	timeline._drag_to(Vector2(400.0, 100.0))
+	ok(timeline.playhead_ms > 1000.0, "dragging the playhead updates its position")
+	eq(timeline._static_invalidations, static_before, "dragging the playhead does not invalidate static rows")
+	eq(timeline._playhead_invalidations, overlay_before + 1, "dragging the playhead invalidates only the overlay")
+	static_before = timeline._static_invalidations
+	overlay_before = timeline._playhead_invalidations
+	ok(timeline.cancel_drag(), "playhead drag can be cancelled")
+	eq(timeline._static_invalidations, static_before, "cancelling a playhead drag does not invalidate static rows")
+	eq(timeline._playhead_invalidations, overlay_before + 1, "cancelling a playhead drag refreshes only the overlay")
+	static_before = timeline._static_invalidations
+	overlay_before = timeline._playhead_invalidations
+	timeline.set_zoom(0.0, 5000.0)
+	eq(timeline._static_invalidations, static_before + 1, "zoom invalidates static timeline content")
+	eq(timeline._playhead_invalidations, overlay_before + 1, "zoom also updates the overlay geometry")
+	timeline.follow_playhead = true
+	static_before = timeline._static_invalidations
+	overlay_before = timeline._playhead_invalidations
+	timeline.set_playhead(10000.0)
+	eq(timeline._static_invalidations, static_before + 1, "follow scrolling invalidates static content")
+	eq(timeline._playhead_invalidations, overlay_before + 1, "follow scrolling also updates the overlay")
 	timeline.free()
 	return true
 
@@ -7350,6 +7442,14 @@ func test_storyboard_cache_budget() -> bool:
 	eq(Preview3D._tex_cache.size(), 2, "an active scene can temporarily exceed the budget")
 	Preview3D._trim_storyboard_textures(now + 4000, bytes)
 	eq(Preview3D._tex_cache.size(), 1, "temporary overage is trimmed after the scene stops using its textures")
+
+	var old_touch := now - Preview3D.STORYBOARD_TEXTURE_GRACE_MS * 2
+	Preview3D._cache_storyboard_texture("touch_lru", image, 1.0, old_touch)
+	ok(Preview3D.storyboard_texture("touch_lru", false) != null, "a draw lookup still returns the cached storyboard texture")
+	eq(Preview3D._tex_last_used["touch_lru"], old_touch, "draw lookups can rely on periodic keepalive instead of touching LRU per sprite")
+	var touch_started := Time.get_ticks_msec()
+	Preview3D.storyboard_texture("touch_lru")
+	ok(int(Preview3D._tex_last_used["touch_lru"]) >= touch_started, "ordinary texture lookups still refresh the LRU timestamp")
 
 	for i in Preview3D.STORYBOARD_BOARD_CACHE_LIMIT:
 		Preview3D._cache_storyboard(str(i), Storyboard.new())
