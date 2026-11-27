@@ -2960,6 +2960,18 @@ func test_storyboard_subfolder_asset_path() -> bool:
 	eq(Preview3D.storyboard_asset_path("/maps/x", "../evil.png"), "", "parent traversal is rejected")
 	var board := Storyboard.parse("[Events]\nSprite,Background,Centre,\"sb\\jpReg\\0045.png\",320,240\n F,0,0,1000,,1\n", "t.osb")
 	eq((board.sprites[0] as Storyboard.Sprite).path, "sb/jpReg/0045.png", "backslashes are normalized")
+	# 应用内的故事板导入会把图片拍平：osb 里仍写 sb/x.png，加载要能退回扁平名。
+	var dir := "user://sb_asset_probe"
+	DirAccess.make_dir_recursive_absolute(dir)
+	var flat := dir.path_join("flat.png")
+	var handle := FileAccess.open(flat, FileAccess.WRITE)
+	handle.store_string("x")
+	handle.close()
+	Preview3D.clear_asset_path_cache()
+	eq(Preview3D.storyboard_asset_path(dir, "sb/flat.png"), flat, "flattened imports fall back to the bare file name")
+	Preview3D.clear_asset_path_cache()
+	DirAccess.remove_absolute(flat)
+	DirAccess.remove_absolute(dir)
 	return true
 
 

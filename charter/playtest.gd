@@ -2108,7 +2108,9 @@ func _judge_tap_path(note: Note, ms: float, beat: float) -> void:
 		_timing_detail(head_error, tier), head_point)
 	_record_error(head_error, "PATH #%d HEAD %s (tap-like)" % [note.id, tier], tier, float(press["time"]))
 	_preview.set_path_head_state(note.id, true, beat)
-	_preview.add_note_pop("path", note, beat)
+	# 「PERFECT 特效」关掉时，星头命中也只留判定字，和 Tap 保持一致。
+	if tier != "PERFECT" or _preview.show_perfect_fx:
+		_preview.add_note_pop("path", note, beat)
 	_add_log("PATH #%d TAP-LIKE %s" % [note.id, tier])
 
 
@@ -2149,7 +2151,8 @@ func _judge_path(note: Note, ms: float, beat: float, mouse: Vector2) -> void:
 				# 星尾不算：tail_error 量的是“进尾区”相对星星的时刻，早到是设计内行为。
 				_record_error(head_error, "PATH #%d HEAD %s" % [note.id, tier], tier, float(press["time"]))
 				_preview.set_path_head_state(note.id, true, beat)
-				_preview.add_note_pop("path", note, beat)
+				if tier != "PERFECT" or _preview.show_perfect_fx:
+					_preview.add_note_pop("path", note, beat)
 				state["head_judged"] = true
 			elif ms > head_ms + HIT_WINDOW_MS:
 				state["head_hit"] = false
