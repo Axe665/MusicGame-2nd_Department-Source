@@ -135,6 +135,8 @@ func _initialize() -> void:
 		"test_storyboard_editor_transport",
 		"test_storyboard_build_recomputes_bounds",
 		"test_storyboard_command_cursor",
+		"test_storyboard_fast_state_matches_object_state",
+		"test_storyboard_subfolder_asset_path",
 		"test_storyboard_timeline_rows",
 		"test_storyboard_timeline_snap_offset",
 		"test_storyboard_timeline_mouse",
@@ -2944,6 +2946,55 @@ func test_storyboard_command_cursor() -> bool:
 	eq((sprite.command_at("alpha", 2500.0) as Storyboard.Command).start, 2000.0, "cursor moves forward again")
 	eq((sprite.command_at("alpha", 900.0) as Storyboard.Command).start, 0.0, "seek backward leaves the cursor")
 	eq((sprite.command_at("alpha", 9000.0) as Storyboard.Command).start, 2000.0, "past the end clamps to the last")
+	return true
+
+
+
+
+## 故事板图片放在子目录时不能只取文件名：osu 的图常见于 sb/jpReg/ 这类目录。
+func test_storyboard_subfolder_asset_path() -> bool:
+	eq(Preview3D.storyboard_asset_path("/maps/x", "sb/jpReg/0045.png"), "/maps/x/sb/jpReg/0045.png",
+		"subfolder storyboard assets keep their relative path")
+	eq(Preview3D.storyboard_asset_path("/maps/x", "a.png"), "/maps/x/a.png", "root-level assets still resolve")
+	eq(Preview3D.storyboard_asset_path("/maps/x", "../evil.png"), "", "parent traversal is rejected")
+	var board := Storyboard.parse("[Events]\nSprite,Background,Centre,\"sb\\jpReg\\0045.png\",320,240\n F,0,0,1000,,1\n", "t.osb")
+	eq((board.sprites[0] as Storyboard.Sprite).path, "sb/jpReg/0045.png", "backslashes are normalized")
+	return true
+
+
+## 热路径 state_fast 必须和 object_state 完全一致（改采样实现时最容易悄悄画错）。
+func test_storyboard_fast_state_matches_object_state() -> bool:
+	var text := "[Events]\nSprite,Background,Centre,\"a.png\",320,240\n M,0,0,1000,100,100,300,240\n S,0,0,1500,1,1.5\n R,0,0,2000,0,90\n C,0,0,1000,255,0,0,0,0,255\n F,0,0,1000,,1\n F,0,1200,2000,,0\n V,0,800,1200,1,1,2,2\n P,0,600,900\n A,0,700,800\n"
+	var board := Storyboard.parse(text, "t.osb")
+	board.build_index()
+	var sprite := board.sprites[0] as Storyboard.Sprite
+	var mismatches := 0
+	for step in 41:
+		var ms := float(step) * 50.0
+		var fast := sprite.state_fast(ms)
+		var slow := Storyboard.object_state(sprite, ms, fast.alpha if fast != null else 0.0)
+		if fast == null:
+			# 首帧 alpha 从 0 开始：不可见就不该出现，交给下面 sample_flat/sample 的条数对照。
+			continue
+		if fast.pos.distance_to(slow["pos"]) > 0.0001:
+			mismatches += 1
+		if fast.scale.distance_to(slow["scale"]) > 0.0001:
+			mismatches += 1
+		if absf(fast.rotation - float(slow["rotation"])) > 0.0001:
+			mismatches += 1
+		if fast.colour != (slow["colour"] as Color):
+			mismatches += 1
+		if fast.additive != bool(slow["additive"]):
+			mismatches += 1
+		if fast.frame != int(slow["frame"]):
+			mismatches += 1
+	eq(mismatches, 0, "fast sampling matches object_state")
+	var frame := board.sample_flat(1234.0)
+	var dict := board.sample(1234.0)
+	eq(frame.count, dict.size(), "flat sampling returns the same objects")
+	for i in frame.count:
+		eq(frame.sprites[i], dict[i]["sprite"], "flat sampling keeps file order")
+		eq(frame.states[i].alpha, float(dict[i]["alpha"]), "flat sampling keeps alpha")
 	return true
 
 

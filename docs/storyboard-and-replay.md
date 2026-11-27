@@ -14,6 +14,7 @@
   - `Animation` 帧序列
 - 素材按引用名解包到 `user://imports/<曲名>_<hash>/sb/`，路径记在 `chart.metadata.storyboard`。
 - 也可以单独导入：用 osu! 的编辑器做好 storyboard，导出 `.osb` 和图片，再通过「文件 → 导入 → 故事板 (.osb)…」挂到当前谱面上。图片按文件名拍平，复制到 `user://storyboards/`。
+- 图片引用可以带子目录（`sb\jpReg\0045.png`）：解析时反斜杠统一成 `/`，加载时保留相对路径，不会只认根目录。
 - 实现移植自 ppy/osu 的 `LegacyStoryboardDecoder` 和 osu-framework 的 `DefaultEasingFunction`。
 
 ### 绘制
