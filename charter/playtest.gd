@@ -7,16 +7,16 @@ signal settings_requested
 signal replay_requested(data: Replay)
 signal playtest_settings_requested
 
-const PERFECT_MS := 65.0
-const GREAT_MS := 115.0
-const GOOD_MS := 170.0
+const PERFECT_MS := 50.0
+const GREAT_MS := 100.0
+const GOOD_MS := 150.0
 ## BAD 档：超出 GOOD 但在这一档内算 BAD（不断连、不计命中）。
-## 收窄到 200ms：与下一颗的窗口重叠更少，前一颗不容易把按键吃掉。
+## 200ms 与下一颗的窗口重叠更少，前一颗不容易把按键吃掉。
 const BAD_MS := 200.0
 const HIT_WINDOW_MS := BAD_MS
 ## 早按只认这么多：更早的按键不消耗音符，可以再按一次。
-## 收到 GREAT 边界，误按早一点点不会把音符判成 GOOD。
-const EARLY_MS := 115.0
+## 和 GREAT 同界：误按早一点点不会把音符判成 GOOD。
+const EARLY_MS := GREAT_MS
 ## 按键只在按下这一帧参与判定：误按不会隔半秒被后面的音符捡走。
 const PRESS_KEEP_MS := 34.0
 ## 同一个键 50ms 内的重复按下只算一次（手抖双击）。
@@ -31,8 +31,8 @@ const MOUSE_KEY_RIGHT := -3
 ## Godot 4 的 InputEvent 不带时间戳：按键只可能在“上次输入刷新 → 现在”之间按下。
 ## 这段时间就是判定时的不确定度，区间长度上限取这一值（≈17fps，更慢就不再加长）。
 const INPUT_SPAN_MAX_MS := 60.0
-## 金键（黄键式）：判定线前后各 100ms 内光标在场就算，到线才结算。
-const BELL_WINDOW_MS := 130.0
+## 金键（黄键式）：判定线前后各 110ms 内光标在场就算，到线才结算。
+const BELL_WINDOW_MS := 110.0
 ## 扫键串：相邻 Bell 间隔在这个范围内、角度还在动，就算同一条链，共享提前量。
 const BELL_CHAIN_GAP_MS := 45.0
 const BELL_CHAIN_STEP_DEG := 10.0
@@ -45,15 +45,14 @@ const PathTracker = preload("res://core/path_progress.gd")
 const PATH_INPUT_CAPACITY := 2048
 const PATH_LOG_LIMIT_BYTES := 4 * 1024 * 1024
 ## 尾区早到 GOOD 的基础窗口；实际早到窗口取 max(这个, Perfect 扩展值)。
-const PATH_TAIL_SWEEP_EARLY_MS := 350.0
+const PATH_TAIL_SWEEP_EARLY_MS := 300.0
 ## 星尾自己的档位窗口（连续滑动有鼠标延迟，比 Tap 宽）。
-## 150/220/350 是 maimai ±233/366/600 的收紧版：真实日志里 83 条尾判
-## 全部落在 ±233 内，±150 已能覆盖绝大多数，同时保留本作的准度感。
-const TAIL_PERFECT_MS := 150.0
-const TAIL_GREAT_MS := 220.0
-const TAIL_GOOD_MS := 350.0
-## maimai 的尾区停留最多把 Perfect/Great 的早到窗口扩到 22 帧（366.7ms）。
-const TAIL_EXT_MAX_MS := 366.6667
+## 120/180/300 是 maimai ±233/366/600 的收紧版，并跟着 Tap 的 50/100/150 一起收紧。
+const TAIL_PERFECT_MS := 120.0
+const TAIL_GREAT_MS := 180.0
+const TAIL_GOOD_MS := 300.0
+## 尾区停留最多把 Perfect/Great 的早到窗口扩到 GOOD 窗口（300ms）。
+const TAIL_EXT_MAX_MS := 300.0
 ## 位置判定：鼠标到音符图形边缘外还有这么多像素也算命中。
 ## Tap / Hold 头 / Path 头 / Anchor 共用这一把尺子（再各自加上图形半径）。
 ## 瞄准辅助：像素距离超了，但鼠标落在音符角度 ±12° 内也算命中
