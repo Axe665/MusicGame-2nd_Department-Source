@@ -4025,6 +4025,11 @@ func _input(event: InputEvent) -> void:
 		# mutate the chart or other fields while the user is typing a value.
 		if spin_focus and event.keycode not in [KEY_F5, KEY_F6]:
 			return
+		# 焦点在时间页的 BPM 列表上时，Delete/Backspace 删 BPM 点，不删选中音符。
+		if event.keycode in [KEY_DELETE, KEY_BACKSPACE] and _inspector != null \
+				and _inspector.delete_timing_if_focused():
+			accept_event()
+			return
 		# 环编辑器打开时，主画布是隐藏的：Delete/Backspace 不能再删下面那层
 		# 仍然存在的选中音符；K 也不能把环编辑器重新打开一遍。
 		if _app != null and _app.ring_editor_open and event.keycode in [KEY_DELETE, KEY_BACKSPACE, KEY_K]:

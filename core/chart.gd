@@ -299,6 +299,19 @@ func ensure_note_local_ids() -> void:
 	reassign_note_ids()
 
 
+## 组 0 的 BPM 点就是全谱时间轴（timing）。新增/删除/排序后必须写回 timing，
+## 否则试玩和存盘还在用旧的速度表（删掉的点会“复活”、改的数值不生效）。
+## 两边共享同一批 TimingPoint，所以改 bpm 这类数值会自动一起变。
+func sync_group_bpm_points(group_id: int, points: Array[TimingPoint]) -> void:
+	group_bpm_points[group_id] = points
+	if group_id != 0:
+		return
+	timing.points.clear()
+	for point in points:
+		timing.points.append(point)
+	timing.sort_points()
+
+
 func group_bpm_points_for(group_id: int) -> Array[TimingPoint]:
 	ensure_groups()
 	var raw: Variant = group_bpm_points.get(group_id, [])
