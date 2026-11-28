@@ -282,6 +282,7 @@ func _initialize() -> void:
 		"test_chart_commands_roundtrip",
 		"test_alpha_command_save_load_chain",
 		"test_anchor_band_width",
+		"test_group_timing_sync",
 	]
 	var only := OS.get_environment("RUN_ONLY")
 	for test_name in tests:
@@ -6485,6 +6486,32 @@ func test_note_fall_curves_match_tap() -> bool:
 
 
 ## 所见即所得：窄 Seek 认光标那一侧箭头的上下；整圈上下都认。
+
+
+func test_group_timing_sync() -> bool:
+	var chart := DemoChart.make_empty({"bpm": 200.0})
+	chart.ensure_groups()
+	var points: Array[TimingPoint] = chart.group_bpm_points_for(0)
+	points.append(TimingPoint.new(16.0, 100.0, 4))
+	points.sort_custom(func(a: TimingPoint, b: TimingPoint) -> bool: return a.beat < b.beat)
+	chart.sync_group_bpm_points(0, points)
+	eq(chart.timing.points.size(), 2, "adding a group BPM point reaches the chart timeline")
+	eq(chart.timing.bpm_at(16.0), 100.0, "the new point changes the timeline BPM")
+	# 删除：以前只改组列表，timing 里会留下一个“复活”的点。
+	var kept: Array[TimingPoint] = chart.group_bpm_points_for(0)
+	kept.remove_at(1)
+	chart.sync_group_bpm_points(0, kept)
+	eq(chart.timing.points.size(), 1, "deleting a group BPM point removes it from the timeline")
+	var back: Chart = ChartIO.chart_from_dict(ChartIO.chart_to_dict(chart))
+	eq(back.timing.points.size(), 1, "the deleted point does not come back after save/load")
+	# 15 BPM（osu 的 4000ms/拍收尾速度）不再拦试玩。
+	back.timing.points.append(TimingPoint.new(16.0, 15.0, 4))
+	back.ensure_groups()
+	eq(Validator.errors(Validator.validate(back)).size(), 0, "15 BPM is accepted")
+	back.timing.points[1].bpm = 0.5
+	ok(Validator.errors(Validator.validate(back)).size() > 0, "sub-1 BPM is still an error")
+	return true
+
 
 func test_anchor_band_width() -> bool:
 	var note := Note.new("anchor", 1.0, 90.0, 0.0)

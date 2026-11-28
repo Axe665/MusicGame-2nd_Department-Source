@@ -439,6 +439,8 @@ static func chart_from_dict(data: Dictionary) -> Chart:
 			if not rows.is_empty():
 				chart.group_bpm_points[gid] = rows
 		chart.ensure_groups()
+	# 组 0 的 BPM 点才是全谱时间轴；旧版本删点只改了组列表，这里顺手修复。
+	chart.sync_group_bpm_points(0, chart.group_bpm_points_for(0))
 	chart.default_shape_id = String(data.get("default_shape", "S0"))
 	chart.shapes.clear()
 	var shapes_raw: Variant = data.get("shapes", [])

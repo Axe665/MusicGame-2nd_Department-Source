@@ -1469,7 +1469,7 @@ func _build_group_page(page: VBoxContainer) -> void:
 				var pts: Array[TimingPoint] = chart.group_bpm_points_for(gid)
 				if not pts.is_empty():
 					pts[0].bpm = value
-					chart.group_bpm_points[gid] = pts
+					chart.sync_group_bpm_points(gid, pts)
 				_app.finish_edit())
 		bpm_spin.editable = gid == chart.current_group
 		var alpha_spin := _spin(box, "组透明度", float(group.get("alpha", 255)), 0.0, 255.0, 1.0,
@@ -1622,7 +1622,7 @@ func _build_timing_page(page: VBoxContainer) -> void:
 			var pts: Array[TimingPoint] = chart.group_bpm_points_for(chart.current_group)
 			if not pts.is_empty():
 				pts[0].bpm = value
-				chart.group_bpm_points[chart.current_group] = pts
+				chart.sync_group_bpm_points(chart.current_group, pts)
 			_app.finish_edit())
 	_section(page, "速度与偏移")
 	_label(page, "BPM 点按拍定位；offset = 第 0 拍对应的音频时刻（正数 = 音频整体延后）。", 11, UITheme.MUTED)
@@ -1638,7 +1638,7 @@ func _build_timing_page(page: VBoxContainer) -> void:
 		first.bpm = value
 		var group: Dictionary = chart.group_data(chart.current_group)
 		group["bpm"] = value
-		chart.group_bpm_points[chart.current_group] = points
+		chart.sync_group_bpm_points(chart.current_group, points)
 		_refresh_timing_list_text()
 	)
 	_buttons(page, [
@@ -1694,7 +1694,7 @@ func _build_timing_page(page: VBoxContainer) -> void:
 	)
 	page.add_child(list)
 	var sync_points := func() -> void:
-		chart.group_bpm_points[chart.current_group] = points
+		chart.sync_group_bpm_points(chart.current_group, points)
 	_buttons(page, [
 		{"text": "在播放头添加", "callback": func() -> void: _add_timing_point()},
 		{"text": "删除选中", "callback": func() -> void: _delete_timing_point()},
@@ -1843,7 +1843,7 @@ func _apply_timing_bpm(point: TimingPoint, value: float) -> void:
 		points.sort_custom(func(a: TimingPoint, b: TimingPoint) -> bool: return a.beat < b.beat)
 		if not points.is_empty() and points[0] == point:
 			chart.group_data(chart.current_group)["bpm"] = target
-		chart.group_bpm_points[chart.current_group] = points
+		chart.sync_group_bpm_points(chart.current_group, points)
 	)
 	_refresh_timing_list_text()
 
@@ -1857,7 +1857,7 @@ func _set_timing_beat(point: TimingPoint) -> void:
 	_apply(func() -> void:
 		point.beat = _app.snap_beat(_app.playhead_beat)
 		points.sort_custom(func(a: TimingPoint, b: TimingPoint) -> bool: return a.beat < b.beat)
-		_app.chart.group_bpm_points[_app.chart.current_group] = points
+		_app.chart.sync_group_bpm_points(_app.chart.current_group, points)
 	)
 	for i in points.size():
 		if points[i] == point:
@@ -1876,7 +1876,7 @@ func _add_timing_point() -> void:
 	var point := TimingPoint.new(beat, bpm, bpb)
 	points.append(point)
 	points.sort_custom(func(a: TimingPoint, b: TimingPoint) -> bool: return a.beat < b.beat)
-	chart.group_bpm_points[chart.current_group] = points
+	chart.sync_group_bpm_points(chart.current_group, points)
 	_app.finish_edit()
 	_selected_timing = 0
 	for i in points.size():
@@ -1895,6 +1895,16 @@ func _refresh_timing_list_text() -> void:
 		_timing_list.set_item_text(i, _timing_row_text(_timing_chart, i, points[i]))
 
 
+## 焦点在时间页的 BPM 列表上时，Delete/Backspace 归 BPM 点，不能连带删掉选中音符。
+func delete_timing_if_focused() -> bool:
+	if _timing_list == null or not is_instance_valid(_timing_list):
+		return false
+	if not _timing_list.has_focus() or not _timing_list.is_visible_in_tree():
+		return false
+	_delete_timing_point()
+	return true
+
+
 func _delete_timing_point() -> void:
 	var chart: Chart = _app.chart
 	var points: Array[TimingPoint] = chart.group_bpm_points_for(chart.current_group)
@@ -1906,7 +1916,7 @@ func _delete_timing_point() -> void:
 	_app.begin_edit()
 	points.remove_at(_selected_timing)
 	points.sort_custom(func(a: TimingPoint, b: TimingPoint) -> bool: return a.beat < b.beat)
-	chart.group_bpm_points[chart.current_group] = points
+	chart.sync_group_bpm_points(chart.current_group, points)
 	_app.finish_edit()
 	_selected_timing = clampi(_selected_timing, 0, points.size() - 1)
 	_rebuild()
