@@ -2491,9 +2491,9 @@ func _pick_note(screen: Vector2) -> int:
 				var boundary := project_u(u, t)
 				var distance := minf(target.distance_to(screen), boundary.distance_to(screen))
 				if note.type == "anchor":
-					var progress: float = _note_progress(chart, note, t)
-					var gem: Vector2 = _anchor_gem_position(boundary, lerpf(Note.SPAWN_LENGTH_RATIO, 1.0, progress))
-					distance = minf(distance, gem.distance_to(screen))
+					# 胶囊整段都能点：取光标到这条弧带的最近距离。
+					for p in note_live_band(note, t):
+						distance = minf(distance, p.distance_to(screen))
 				if distance < best_distance:
 					best_distance = distance
 					best = note.id
@@ -5252,13 +5252,6 @@ static func _note_layer_rank(type: String) -> int:
 	return 2
 
 
-func _anchor_gem_position(landing: Vector2, fall_ratio: float) -> Vector2:
-	if not _valid_point(landing):
-		return landing
-	# 和 Tap / Bell / Seek 同一条下落曲线：出生 1/6 半径，判定拍落到锚点上。
-	return project_design(Vector2.ZERO).lerp(landing, fall_ratio)
-
-
 func _draw_anchor(canvas: Control, chart: Chart, note: Note, beat: float) -> void:
 	var alpha: float = chart.group_alpha(note.group_id) / 255.0
 	var landing: Vector2 = project_u(fposmod(note.angle, 360.0) / 360.0, beat)
@@ -5267,10 +5260,7 @@ func _draw_anchor(canvas: Control, chart: Chart, note: Note, beat: float) -> voi
 	var progress: float = _note_progress(chart, note, beat)
 	var ns: float = maxf(1.0, _note_scale())
 	var tint: Color = note.resolved_color(chart, UITheme.VIOLET)
-	# 靶子先浮现在环上：淡入 + 0.8→1 倍微放大，之后一直留到判定。
 	var marker: float = smoothstep(0.0, 0.16, progress)
-	if marker > 0.001:
-		_draw_anchor_cue(canvas, landing, lerpf(15.0, 23.0, marker) * ns, ns, tint, alpha * marker)
 	var partner: Note = chart.anchor_partner(note)
 	if partner != null and note.id < partner.id and not note_is_retired(note_state(partner.id)):
 		var partner_progress: float = _note_progress(chart, partner, beat)
@@ -5281,49 +5271,34 @@ func _draw_anchor(canvas: Control, chart: Chart, note: Note, beat: float) -> voi
 			var inset: Vector2 = offset.limit_length(68.0 * ns) * 0.25
 			var start: Vector2 = landing + inset
 			var end: Vector2 = partner_point - inset
-			# 双押线跟着宝石走：前半段只有四角靶框，宝石走近了才把两颗连起来。
+			# 双押线跟着胶囊走：前半段只有两颗音符，走近了才把两颗连起来。
 			var line_fade: float = smoothstep(0.50, 0.75, minf(progress, partner_progress))
 			var line_alpha: float = minf(marker * alpha, partner_marker * chart.group_alpha(partner.group_id) / 255.0) * line_fade
 			var tip: Color = Color(tint, 0.80 * line_alpha)
 			var middle: Color = Color(tint, 0.24 * line_alpha)
 			canvas.draw_polyline_colors(PackedVector2Array([start, start.lerp(end, 0.20), start.lerp(end, 0.80), end]),
 				PackedColorArray([tip, middle, middle, tip]), 2.0 * ns, true)
-	# 宝石：从圆心落到靶子上，路上由小变大。
-	var gem_point: Vector2 = _anchor_gem_position(landing, lerpf(Note.SPAWN_LENGTH_RATIO, 1.0, progress))
-	_draw_anchor_gem(canvas, gem_point, 29.0 * ns * lerpf(0.4, 1.0, progress), ns, tint,
-		alpha * smoothstep(0.0, 0.10, progress))
+	# 本体和 Tap 完全同一条胶囊（同一条 1/6 → 1 的下落曲线），只把中心圆点换成菱形。
+	var q: float = _note_radius_scale(note, progress)
+	var center_point: Vector2 = _draw_length_band(canvas, chart, note.angle, note.anchor_width(), q, beat, tint, alpha)
+	if _valid_point(center_point):
+		_draw_anchor_diamond(canvas, center_point, 9.0 * ns, tint, alpha)
 
 
-func _draw_anchor_cue(canvas: Control, point: Vector2, radius: float, size: float, tint: Color, alpha: float) -> void:
-	var corners: PackedVector2Array = PackedVector2Array()
-	for i in 4:
-		var radial: Vector2 = Vector2.UP.rotated(float(i) * PI * 0.5)
-		var tip: Vector2 = point + radial * radius
-		var foot: Vector2 = tip - radial * (0.34 * radius)
-		var across: Vector2 = radial.orthogonal() * (0.34 * radius)
-		corners.append_array(PackedVector2Array([foot - across, tip, tip, foot + across]))
-	canvas.draw_multiline(corners, Color(0.06, 0.03, 0.16, 0.85 * alpha), 4.5 * size, true)
-	canvas.draw_multiline(corners, Color(tint.lerp(Color.WHITE, 0.30), 0.96 * alpha), 2.1 * size, true)
+## 中间菱形：层次和 Tap 的中心圆点一致（黑边 + 白面 + 类型色芯）。
+func _draw_anchor_diamond(canvas: Control, point: Vector2, radius: float, tint: Color, alpha: float) -> void:
+	_diamond_fill(canvas, point, radius, Color(0.0, 0.0, 0.0, 0.62 * alpha))
+	_diamond_fill(canvas, point, radius * 0.78, Color(1.0, 1.0, 1.0, 0.96 * alpha))
+	_diamond_fill(canvas, point, radius * 0.40, tint)
 
 
-## 锚点的宝石沿用远端 main 的菱形：黑描边 + 白描边 + 半透明紫色填充 + 中心点。
-func _draw_anchor_gem(canvas: Control, point: Vector2, radius: float, _size: float, tint: Color, alpha: float) -> void:
-	if not _valid_point(point):
-		return
-	var points := PackedVector2Array([
+func _diamond_fill(canvas: Control, point: Vector2, radius: float, color: Color) -> void:
+	canvas.draw_colored_polygon(PackedVector2Array([
 		point + Vector2(0.0, -radius),
 		point + Vector2(radius, 0.0),
 		point + Vector2(0.0, radius),
 		point + Vector2(-radius, 0.0),
-	])
-	points.append(points[0])
-	canvas.draw_polyline(points, Color(0.0, 0.0, 0.0, 0.66 * alpha), 5.0, true)
-	canvas.draw_polyline(points, Color(1.0, 1.0, 1.0, 0.94 * alpha), 3.0, true)
-	canvas.draw_colored_polygon(PackedVector2Array([points[0], points[1], points[2], points[3]]),
-		Color(tint.r, tint.g, tint.b, 0.32 * alpha))
-	canvas.draw_polyline(points, Color(tint.r, tint.g, tint.b, alpha), 1.7, true)
-	canvas.draw_circle(point, maxf(2.0, radius * 0.26), Color(0.0, 0.0, 0.0, 0.68 * alpha))
-	canvas.draw_circle(point, maxf(1.2, radius * 0.14), Color(1.0, 1.0, 1.0, 0.92 * alpha))
+	]), color)
 
 
 func _draw_tap_note(canvas: Control, chart: Chart, note: Note, t: float, pre: float) -> void:

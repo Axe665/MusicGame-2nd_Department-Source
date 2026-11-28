@@ -2451,6 +2451,9 @@ func _judge_anchor_pairs(ms: float, beat: float) -> void:
 		var partner_note: Note = _note_index.get(partner_id)
 		var pa := _preview.note_head_screen(owner_note, beat)
 		var pb := _preview.note_head_screen(partner_note, beat)
+		# 判定区跟着胶囊：整段 Anchor 胶囊都接按键（和 Tap 的“看到多长 = 能打多长”一致）。
+		var band_a := _preview.note_live_band(owner_note, beat)
+		var band_b := _preview.note_live_band(partner_note, beat)
 		var tolerance := POSITION_TOLERANCE_PX + float(_preview.note_graphic_radius("anchor"))
 		var pending: Array = state.get("anchor_pending", [])
 		# 第一键只留 40ms 等第二键；超时就不算同一组多押。
@@ -2468,7 +2471,7 @@ func _judge_anchor_pairs(ms: float, beat: float) -> void:
 				kept_presses.append(press)
 				continue
 			var point: Vector2 = press.get("mouse", Vector2.INF)
-			if not _near_anchor(point, pa, pb, tolerance):
+			if not _near_anchor(point, band_a, band_b, tolerance):
 				kept_presses.append(press)
 				continue
 			pending.append(press)
@@ -2497,7 +2500,7 @@ func _judge_anchor_pairs(ms: float, beat: float) -> void:
 			var aim_mouse: Vector2 = press_a.get("mouse", pa)
 			if aim_mouse.distance_to(pb) < aim_mouse.distance_to(pa):
 				aim_angle = partner_note.angle
-			_pulse_at(aim_angle, beat, _tier_color(tier), tier, 70.0, "tap", _timing_detail(worse, tier))
+			_pulse_at(aim_angle, beat, _tier_color(tier), tier, owner_note.anchor_width(), "tap", _timing_detail(worse, tier))
 			_play_hit("anchor")
 			_record_error(worse, "ANCHOR PAIR #%d/#%d %s" % [owner_id, partner_id, tier], tier,
 				float(picked["time"]))
@@ -2511,7 +2514,7 @@ func _judge_anchor_pairs(ms: float, beat: float) -> void:
 			_miss_count += 1
 			_add_judgement("MISS")
 			_combo = 0
-			_pulse_at(owner_note.angle, beat, UITheme.RED, "MISS", 70.0)
+			_pulse_at(owner_note.angle, beat, UITheme.RED, "MISS", owner_note.anchor_width())
 			_add_log("MISS Anchor PAIR #%d/#%d" % [owner_id, partner_id])
 
 
@@ -2547,10 +2550,10 @@ static func _pick_anchor_pair(presses: Array, target: float) -> Dictionary:
 	return best
 
 
-static func _near_anchor(point: Vector2, a: Vector2, b: Vector2, tolerance: float) -> bool:
+static func _near_anchor(point: Vector2, band_a: PackedVector2Array, band_b: PackedVector2Array, tolerance: float) -> bool:
 	if not point.is_finite():
 		return false
-	return point.distance_to(a) <= tolerance or point.distance_to(b) <= tolerance
+	return _distance_to_polyline(point, band_a) <= tolerance or _distance_to_polyline(point, band_b) <= tolerance
 
 
 ## 成对的 Anchor 已经在 _judge_anchor_pairs 里整对结算；这里只兜底单颗旧谱。
@@ -2816,7 +2819,7 @@ func _take_assigned_press(note_id: int) -> Dictionary:
 	return press
 
 
-func _distance_to_polyline(point: Vector2, points: PackedVector2Array) -> float:
+static func _distance_to_polyline(point: Vector2, points: PackedVector2Array) -> float:
 	if points.is_empty():
 		return INF
 	if points.size() == 1:
