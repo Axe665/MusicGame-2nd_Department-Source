@@ -44,7 +44,7 @@ const PATH_WAIT_MODES: Array[String] = ["off", "progress", "shrink"]
 const PATH_WAIT_LABELS: Array[String] = ["关闭", "环形进度", "淡蓝收缩圆环"]
 var path_wait_indicator: String = "progress"
 ## Trace 门框主色（默认银白）。
-var note_skin: String = "glass"
+var note_skin: String = "candy"
 ## 画质选项（视图 → 画质）。全部只影响渲染，不碰判定。
 var quality_preset: String = "high"
 ## 「自动」档当前落到哪一档；实测超预算时逐级下降并保存。
@@ -696,8 +696,7 @@ func _load_settings() -> void:
 		var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(SETTINGS_PATH))
 		if parsed is Dictionary:
 			var data: Dictionary = parsed
-			note_skin = Preview3D.migrate_note_skin(int(data.get("settings_version", 1)),
-				String(data.get("note_skin", note_skin)))
+			note_skin = String(data.get("note_skin", note_skin))
 			# 旧版只有 aa_2d 布尔值，读进来换算成三档。
 			aa_2d_level = clampi(int(data.get("aa_2d_level", 2 if bool(data.get("aa_2d", true)) else 0)), 0, 3)
 			msaa_3d_level = clampi(int(data.get("msaa_3d_level", 1)), 0, 7)
@@ -961,7 +960,7 @@ func effective_latency_sec() -> float:
 
 
 func save_settings() -> void:
-	var data := {"settings_version": 2, "path_wait_indicator": path_wait_indicator, "note_skin": note_skin, "show_perfect_fx": show_perfect_fx, "hit_sfx_style": hit_sfx_style, "ffmpeg": ffmpeg_path, "frame_cap": frame_cap, "video_encoder": video_encoder, "audio_buffer_ms": audio_buffer_ms, "playtest_offset_ms": playtest_offset_ms, "audio_latency_ms": audio_latency_ms, "music_volume": music_volume, "sfx_volume": sfx_volume, "dynamic_offset": dynamic_offset, "playtest_auto": playtest_auto, "playtest_mirror": playtest_mirror, "playback_scroll": playback_scroll, "background_brightness": background_brightness, "mouse_tilt": mouse_tilt, "startup_tabs": startup_tabs, "osu_favorites": osu_favorites, "last_bias_ms": last_bias_ms, "cursor_scale": cursor_scale, "flow_scale": flow_scale, "aa_2d_level": aa_2d_level, "msaa_3d_level": msaa_3d_level, "ring_pad_rect": ring_pad_rect, "angle_divisions": angle_divisions, "note_detail_fine": note_detail_fine, "note_glow": note_glow, "path_style": path_style, "bpm_lock_ms": bpm_lock_ms, "cursor_trail": cursor_trail, "fx_budget": fx_budget, "ring_3d_scale": ring_3d_scale, "bar_lines": bar_lines, "quality_preset": quality_preset, "auto_quality_preset": auto_quality_preset, "auto_quality_measured": auto_quality_measured, "renderer_mode": renderer_mode,
+	var data := {"settings_version": 1, "path_wait_indicator": path_wait_indicator, "note_skin": note_skin, "show_perfect_fx": show_perfect_fx, "hit_sfx_style": hit_sfx_style, "ffmpeg": ffmpeg_path, "frame_cap": frame_cap, "video_encoder": video_encoder, "audio_buffer_ms": audio_buffer_ms, "playtest_offset_ms": playtest_offset_ms, "audio_latency_ms": audio_latency_ms, "music_volume": music_volume, "sfx_volume": sfx_volume, "dynamic_offset": dynamic_offset, "playtest_auto": playtest_auto, "playtest_mirror": playtest_mirror, "playback_scroll": playback_scroll, "background_brightness": background_brightness, "mouse_tilt": mouse_tilt, "startup_tabs": startup_tabs, "osu_favorites": osu_favorites, "last_bias_ms": last_bias_ms, "cursor_scale": cursor_scale, "flow_scale": flow_scale, "aa_2d_level": aa_2d_level, "msaa_3d_level": msaa_3d_level, "ring_pad_rect": ring_pad_rect, "angle_divisions": angle_divisions, "note_detail_fine": note_detail_fine, "note_glow": note_glow, "path_style": path_style, "bpm_lock_ms": bpm_lock_ms, "cursor_trail": cursor_trail, "fx_budget": fx_budget, "ring_3d_scale": ring_3d_scale, "bar_lines": bar_lines, "quality_preset": quality_preset, "auto_quality_preset": auto_quality_preset, "auto_quality_measured": auto_quality_measured, "renderer_mode": renderer_mode,
 		"hud_scale": hud_scale, "hud_combo_mode": hud_combo_mode, "hud_progress_style": hud_progress_style,
 		"hud_judge_position": hud_judge_position, "hud_judge_filter": hud_judge_filter, "hud_opacity": hud_opacity,
 		"hud_show_title": hud_show_title, "hud_show_difficulty": hud_show_difficulty,
