@@ -2407,7 +2407,8 @@ func _show_validation_popup(message: String, level: String, target: String) -> v
 	_validation_popup_key = key
 	var color := UITheme.RED if level == "error" else (UITheme.GOLD if level == "warning" else UITheme.CYAN)
 	var rect: Rect2 = _canvas.get_global_rect()
-	var base: Vector2 = _validation_popup_layer.to_local(rect.position)
+	# Control 没有 to_local：用画布变换的逆把全局坐标换回弹窗层的局部坐标。
+	var base: Vector2 = _validation_popup_layer.get_global_transform_with_canvas().affine_inverse() * rect.position
 	base.x += maxf(12.0, rect.size.x - VALIDATION_POPUP_WIDTH - 16.0)
 	base.y += 16.0
 	var y: float = base.y
@@ -2473,7 +2474,8 @@ func _reflow_validation_popups() -> void:
 	if _validation_popup_layer == null or _canvas == null:
 		return
 	var rect: Rect2 = _canvas.get_global_rect()
-	var base: Vector2 = _validation_popup_layer.to_local(rect.position)
+	# Control 没有 to_local：用画布变换的逆把全局坐标换回弹窗层的局部坐标。
+	var base: Vector2 = _validation_popup_layer.get_global_transform_with_canvas().affine_inverse() * rect.position
 	base.x += maxf(12.0, rect.size.x - VALIDATION_POPUP_WIDTH - 16.0)
 	base.y += 16.0
 	var y: float = base.y
