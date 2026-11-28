@@ -4,7 +4,8 @@ extends RefCounted
 const FORMAT := "tamaki3-chart"
 ## v3：形状/镜头关键帧的过渡改为「目标帧前完成」，新增镜头 dolly/入场过渡时长；
 ## 不再双写旧 events。v1/v2 读入时自动迁移，保持旧演出。
-const VERSION := 3
+## v4：Anchor 的 width 改成胶囊实际弧宽（8–120°，未设置为 30°）；v3 及更早的 0/60 收敛成未设置。
+const VERSION := 4
 const PROJECT_FORMAT := "tamaki3-project"
 const PROJECT_VERSION := 1
 
@@ -574,6 +575,12 @@ static func chart_from_dict(data: Dictionary) -> Chart:
 			if String(raw.get("type", "")) == "tap" and String(raw.get("space", "ring")) == "plane":
 				continue
 			chart.notes.append(Note.from_dict(raw))
+	# v3 及更早：anchor 的 width 从来没参与过绘制（代码格式解析成 0，JSON 里是默认 60）。
+	# v4 起 width 就是胶囊的实际弧宽，把旧数据里的 0/60 收敛成「未设置 = 30°」。
+	if file_version < 4:
+		for note in chart.notes:
+			if note.type == "anchor" and (note.width <= 0.001 or is_equal_approx(note.width, 60.0)):
+				note.width = 0.0
 	var extras_raw: Variant = data.get("note_extras", {})
 	if extras_raw is Dictionary:
 		for note in chart.notes:

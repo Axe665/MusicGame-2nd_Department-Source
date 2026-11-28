@@ -281,6 +281,7 @@ func _initialize() -> void:
 		"test_note_touch_zones",
 		"test_chart_commands_roundtrip",
 		"test_alpha_command_save_load_chain",
+		"test_anchor_band_width",
 	]
 	var only := OS.get_environment("RUN_ONLY")
 	for test_name in tests:
@@ -1547,10 +1548,14 @@ func test_press_space_priority() -> bool:
 		{"time": 1000.0, "lo": 1000.0, "hi": 1000.0, "key": 65},
 		{"time": 1010.0, "lo": 1010.0, "hi": 1010.0, "key": 65},
 	], 1000.0).is_empty(), "the same physical key cannot double-press")
-	ok(Playtest._near_anchor(Vector2(10, 0), Vector2(0, 0), Vector2(300, 0), 140.0),
-		"aiming at either anchor counts")
-	ok(not Playtest._near_anchor(Vector2(150, 0), Vector2(0, 0), Vector2(300, 0), 140.0),
-		"the midpoint between two anchors counts for neither")
+	var band_a := PackedVector2Array([Vector2(0, 0), Vector2(60, 0)])
+	var band_b := PackedVector2Array([Vector2(300, 0), Vector2(360, 0)])
+	ok(Playtest._near_anchor(Vector2(10, 0), band_a, band_b, 30.0),
+		"aiming at either anchor band counts")
+	ok(Playtest._near_anchor(Vector2(330, 0), band_a, band_b, 30.0),
+		"the whole capsule is hittable, not just its center")
+	ok(not Playtest._near_anchor(Vector2(150, 0), band_a, band_b, 30.0),
+		"a press between the two bands counts for neither")
 	# 放置 Anchor 时一次生成同拍反向的一对。
 	var pair_chart := Chart.new()
 	var pair := pair_chart.make_anchor_pair(2.0, 30.0)
@@ -2503,7 +2508,7 @@ func test_key_ids_and_v2_migration() -> bool:
 	near(float(BoundaryRuntime.eval_view(chart, 2.0)["zoom"]), 1.1, 0.001, "迁移后旧演出不变")
 	near(float(chart.shape_keys[1].get("morph", -1.0)), 4.0, 0.001, "v1 整段过渡迁移为显式 4 拍")
 	var data := ChartIO.chart_to_dict(chart)
-	eq(int(data["version"]), 3, "写回 v3")
+	eq(int(data["version"]), ChartIO.VERSION, "写回当前谱面版本")
 	ok(int((data["boundary_keys"] as Array)[0].get("id", 0)) > 0, "写回带 id")
 	chart.shape_keys[0]["curve"] = [0.2, 0.0, 0.8, 1.0]
 	chart.view_states[0].curve = [0.42, 0.0, 0.58, 1.0]
@@ -2623,7 +2628,7 @@ func test_v3_round_trip_fields() -> bool:
 	chart.view_states[1].curve = [0.42, 0.0, 0.58, 1.0]
 	chart.metadata["face_camera"] = false
 	var data := ChartIO.chart_to_dict(chart)
-	eq(int(data["version"]), 3, "写回 v3")
+	eq(int(data["version"]), ChartIO.VERSION, "写回当前谱面版本")
 	eq((data["events"] as Array).size(), 0, "现代谱不写旧 events")
 	var back := ChartIO.from_json(ChartIO.to_json(chart))
 	ok(back != null, "v3 往返不报错")
@@ -6474,17 +6479,40 @@ func test_note_fall_curves_match_tap() -> bool:
 		near(preview._note_progress(chart, note, (spawn + tap.beat) * 0.5), 0.5, 0.01,
 			"%s falls at the same speed as tap" % note.type)
 		near(preview._note_progress(chart, note, tap.beat), 1.0, 0.001, "%s lands on the beat" % note.type)
-	# Anchor 的提示框位置也走这条曲线（视图未初始化时圆心是原点）。
-	var landing := Vector2(120.0, 0.0)
-	var half: float = lerpf(Note.SPAWN_LENGTH_RATIO, 1.0, 0.5)
-	near(preview._anchor_gem_position(landing, half).x, 120.0 * half, 0.001,
-		"anchor gem travels on the shared 1/6 → 1 curve")
 	preview.free()
 	return true
 
 
 
 ## 所见即所得：窄 Seek 认光标那一侧箭头的上下；整圈上下都认。
+
+func test_anchor_band_width() -> bool:
+	var note := Note.new("anchor", 1.0, 90.0, 0.0)
+	eq(note.anchor_width(), Note.ANCHOR_DEFAULT_WIDTH, "an anchor without width renders at the default")
+	eq(note.arc_width(), Note.ANCHOR_DEFAULT_WIDTH, "the anchor's arc width is its capsule width")
+	note.width = 200.0
+	eq(note.anchor_width(), Note.ANCHOR_MAX_WIDTH, "anchor width clamps at the top")
+	note.width = 2.0
+	eq(note.anchor_width(), Note.ANCHOR_MIN_WIDTH, "anchor width clamps at the bottom")
+	note.width = 45.0
+	ok(note.to_code().ends_with(",0,45.0)"), "a custom anchor width is written as the 5th field")
+	var parsed := Note.from_code("[7]anchor(1,90,P1,0,45)")
+	eq(parsed.width, 45.0, "anchor width round-trips through the code format")
+	var legacy := Note.from_code("[8]anchor(1,90,P1,0)")
+	eq(legacy.anchor_width(), Note.ANCHOR_DEFAULT_WIDTH, "an old anchor code keeps the 30° default")
+	# 旧谱面（v3）里 anchor 的 60 从没参与过绘制，载入时收敛成默认宽度。
+	var chart := DemoChart.make_empty({"bpm": 120.0})
+	chart.notes.clear()
+	var legacy_note := Note.new("anchor", 1.0, 0.0, 60.0)
+	legacy_note.id = 1
+	chart.notes.append(legacy_note)
+	var data: Dictionary = ChartIO.chart_to_dict(chart)
+	data["version"] = 3
+	var loaded: Chart = ChartIO.chart_from_dict(data)
+	eq(loaded.notes[0].width, 0.0, "a v3 anchor width of 60 becomes the default")
+	return true
+
+
 func test_seek_wysiwyg_direction() -> bool:
 	eq(Preview3D.seek_wheel_orien(Vector2(0, -1), 0, Vector2(0, -1)), 1,
 		"an inward arrow on the upper side wants a down scroll")

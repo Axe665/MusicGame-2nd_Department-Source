@@ -9,7 +9,7 @@ const HoldPreviewScript = preload("res://charter/hold_preview.gd")
 ## 通用「宽度」行：Tap/Hold 的环上弧宽由它 × 长度比例决定。
 ## Bell 用专属「弧宽」；Limit 在区域页。
 static func shows_width_row(note_type: String) -> bool:
-	return note_type in ["tap", "hold"]
+	return note_type in ["tap", "hold", "anchor"]
 
 
 ## 通用「长度 ×l」行只给 Tap；改了就变成大小 Tap。
@@ -574,11 +574,19 @@ func _build_note_page_for(page: VBoxContainer, note: Note) -> void:
 	_note_widgets["angle"] = angle_spin
 	_remember_row("angle", angle_spin)
 	var width_spin := _spin(common, "基础宽度 °", note.width, 0.0, 360.0, 1.0, func(value: float) -> void:
-		if _active_note != null:
-			_active_note.width = value
-			if _active_note.type == "hold" and _note_widgets.has("hold_preview"):
-				_note_widgets["hold_preview"].set_state(_active_note.arc_width(), _active_note.duration())
-			_update_tap_formula()
+		if _active_note == null:
+			return
+		if _active_note.type == "anchor":
+			# Anchor 的宽度就是胶囊（和判定区）的实际弧宽：8–120°，超出直接夹住。
+			var clamped := clampf(value, Note.ANCHOR_MIN_WIDTH, Note.ANCHOR_MAX_WIDTH)
+			_active_note.width = clamped
+			if _note_widgets.has("width") and not is_equal_approx(_note_widgets["width"].value, clamped):
+				_note_widgets["width"].value = clamped
+			return
+		_active_note.width = value
+		if _active_note.type == "hold" and _note_widgets.has("hold_preview"):
+			_note_widgets["hold_preview"].set_state(_active_note.arc_width(), _active_note.duration())
+		_update_tap_formula()
 	)
 	width_spin.tooltip_text = "基础宽度：实际弧宽 = 基础宽度 × 长度倍率；普通 Tap/Hold 60° × 0.50 = 30°"
 	_note_widgets["width"] = width_spin
@@ -903,6 +911,7 @@ func _build_note_page_for(page: VBoxContainer, note: Note) -> void:
 	_note_widgets["hold_preview"] = hold_preview
 
 	var anchor_body := _note_group(page, "anchor", "Anchor")
+	_label(anchor_body, "紫色 Tap 胶囊 + 菱形芯。宽度 8–120°（默认 30°）就是环上的胶囊长度，判定区跟着变长。", 11, UITheme.MUTED)
 	var pair_id := _text(anchor_body, "pairId", note.pair_id, func(value: String) -> void:
 		if _active_note != null:
 			var partner: Note = _app.chart.anchor_partner(_active_note) if _app != null and _app.chart != null else null
@@ -1095,7 +1104,10 @@ func _refresh_note_page() -> void:
 	_note_widgets["start"].text = _app.chart.timing.format_beat(note.beat)
 	_note_widgets["end"].text = _app.chart.timing.format_beat(note.end_beat)
 	_note_widgets["angle"].value = note.angle
-	_note_widgets["width"].value = note.width
+	_note_widgets["width"].value = note.anchor_width() if note.type == "anchor" else note.width
+	_note_widgets["width"].tooltip_text = ("Anchor 宽度：" + str(Note.ANCHOR_MIN_WIDTH) + "–" + str(Note.ANCHOR_MAX_WIDTH)
+		+ "°，没设置时按 " + str(Note.ANCHOR_DEFAULT_WIDTH) + "°；判定区跟随胶囊长度") if note.type == "anchor" \
+		else "基础宽度：实际弧宽 = 基础宽度 × 长度倍率；普通 Tap/Hold 60° × 0.50 = 30°"
 	_note_widgets["length"].value = note.length_ratio()
 	_update_tap_formula()
 	var is_bell := note.type == "bell"

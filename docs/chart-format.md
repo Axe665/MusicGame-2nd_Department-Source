@@ -48,7 +48,7 @@ notes 和 shapes 使用紧凑代码。`timing` 位于 `notes` 之前。
 [id]hold(beat,end,angle[,width])
 [id]path{(part0,beat,angle,end,end_angle,centrifuge,axis[,wait,id]);...}
 [id]seek(beat,orien)
-[id]anchor(beat,angle,pair_id[,pair])
+[id]anchor(beat,angle,pair_id[,pair[,width]])
 [id]bell(beat,angle[,width[,radius]])
 [id]red(beat,end_beat,width[,angle][,shape=S][,polarity=N])
 shape{[id,closed,segments{...}];...}
@@ -59,6 +59,7 @@ shape{[id,closed,segments{...}];...}
   - 普通 Tap 不写宽度（60°，0.5 l）
   - 普通 Hold 不写宽度（60°）
   - 普通 Bell 不写宽度和半径（30°，26px）
+  - Anchor 不写宽度（30°）；写了就是胶囊的实际弧宽，读数会夹在 8–120°
 - 旧版程序读到这些追加的尾部字段时会忽略，旧谱面照常载入。
 - Path 的 `wait` 字段可选，没有这个字段的旧谱面同样兼容。
 

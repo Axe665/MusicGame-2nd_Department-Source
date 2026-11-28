@@ -16,6 +16,11 @@ const BELL_MIN_WIDTH := 24.0
 const BELL_MAX_WIDTH := 30.0
 ## Seek 的弧宽下限：再窄就分不清「要站在弧上」了。
 const SEEK_MIN_WIDTH := 10.0
+## Anchor 画成 Tap 胶囊后的弧宽：默认和普通 Tap 到达环时一样长（30°），
+## 8° 以下分不清是胶囊还是点，120° 以上一条会盖住很大一段环。
+const ANCHOR_DEFAULT_WIDTH := 30.0
+const ANCHOR_MIN_WIDTH := 8.0
+const ANCHOR_MAX_WIDTH := 120.0
 ## 舞萌星星的默认深蓝色。
 const DEFAULT_PATH_COLOR := Color(0.55, 0.75, 1.0)
 const SIZED_TAP_MIN := 0.0
@@ -144,8 +149,17 @@ func length_ratio() -> float:
 	return 1.0
 
 
+## Anchor 的可见/判定弧宽：没存过宽度（0）按 30° 渲染，和普通 Tap 同级。
+func anchor_width() -> float:
+	if width <= 0.001:
+		return ANCHOR_DEFAULT_WIDTH
+	return clampf(width, ANCHOR_MIN_WIDTH, ANCHOR_MAX_WIDTH)
+
+
 ## 到判定环时的实际角度宽度。绘制与判定都走这里，保证"看到多长 = 能打多长"。
 func arc_width() -> float:
+	if type == "anchor":
+		return anchor_width()
 	return maxf(0.0, width * length_ratio())
 
 
@@ -657,11 +671,14 @@ func to_dict() -> Dictionary:
 
 
 static func from_dict(raw: Dictionary) -> Note:
+	var kind := String(raw.get("type", "tap"))
+	# Anchor 以前没存过宽度：缺字段时按 0（= 默认 30°）读，而不是像 Tap 那样默认 60°。
+	var default_width := 0.0 if kind == "anchor" else 60.0
 	var note := Note.new(
-		String(raw.get("type", "tap")),
+		kind,
 		float(raw.get("beat", 0.0)),
 		float(raw.get("angle", 0.0)),
-		float(raw.get("width", 60.0))
+		float(raw.get("width", default_width))
 	)
 	note.id = int(raw.get("id", 1))
 	note.color = int(raw.get("color", 0))
@@ -794,6 +811,10 @@ func to_code() -> String:
 					_code_num(seek_width()), _code_num(fposmod(angle, 360.0))]
 			return "[%d]seek(%s,%d)" % [cid, b, 1 if seek_orien == 1 else 0]
 		"anchor":
+			# 宽度只在显式设置时追加（第 5 段）；旧格式 anchor(beat,angle,pair_id[,pair]) 仍然可用。
+			if width > 0.001:
+				return "[%d]anchor(%s,%s,%s,%d,%s)" % [cid, b, a, pair_id,
+					maxi(anchor_pair, 0), _code_num(anchor_width())]
 			if anchor_pair >= 0:
 				return "[%d]anchor(%s,%s,%s,%d)" % [cid, b, a, pair_id, anchor_pair]
 			return "[%d]anchor(%s,%s,%s)" % [cid, b, a, pair_id]
@@ -880,6 +901,8 @@ static func from_code(code: String) -> Note:
 			note.width = 0.0
 			if parts.size() > 3:
 				note.anchor_pair = int(parts[3])
+			if parts.size() > 4:
+				note.width = clampf(float(parts[4]), ANCHOR_MIN_WIDTH, ANCHOR_MAX_WIDTH)
 		"bell":
 			note.beat = float(parts[0]) if parts.size() > 0 else 0.0
 			note.end_beat = note.beat
