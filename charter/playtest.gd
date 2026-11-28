@@ -345,7 +345,7 @@ func setup(p_chart: Chart, p_start_beat: float, p_chart_path: String) -> void:
 	_preview.show_debug = false
 	_preview.flow_scale = flow
 	_preview.playback_rate = playback_rate
-	_preview.note_skin = String(_app.note_skin if _app != null else "candy")
+	_preview.note_skin = String(_app.note_skin if _app != null else "glass")
 	_preview.show_perfect_fx = bool(_app.show_perfect_fx if _app != null else true)
 	_preview.cursor_scale = float(_app.cursor_scale if _app != null else 1.0)
 	_preview.hud_title = String(chart.metadata.get("title", "")) if chart != null else ""
