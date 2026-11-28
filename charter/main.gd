@@ -938,7 +938,9 @@ func _build_ui() -> void:
 		if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
 			_jump_to_validation_target()
 	)
-	_validation_label.visible = false
+	# 校验状态常驻：没验证过之前先显示占位，验证跑完就变成通过/警告/错误。
+	_validation_label.text = "● 校验 —"
+	_validation_label.add_theme_color_override("font_color", UITheme.MUTED)
 	inspector_wrap.add_child(_validation_label)
 	_inspector = Inspector.new()
 	_inspector.size_flags_vertical = Control.SIZE_EXPAND_FILL
