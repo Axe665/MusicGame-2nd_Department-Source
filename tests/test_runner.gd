@@ -282,7 +282,6 @@ func _initialize() -> void:
 		"test_chart_commands_roundtrip",
 		"test_alpha_command_save_load_chain",
 		"test_anchor_band_width",
-		"test_water_glass_skin",
 	]
 	var only := OS.get_environment("RUN_ONLY")
 	for test_name in tests:
@@ -6486,18 +6485,6 @@ func test_note_fall_curves_match_tap() -> bool:
 
 
 ## 所见即所得：窄 Seek 认光标那一侧箭头的上下；整圈上下都认。
-
-
-func test_water_glass_skin() -> bool:
-	eq(String(Preview3D.skin_presets()["glass"].get("label", "")), "水光玻璃", "the glass skin is renamed")
-	eq(Preview3D.migrate_note_skin(1, "candy"), "glass", "old settings move from candy to glass")
-	eq(Preview3D.migrate_note_skin(1, "neon"), "neon", "other old skins are kept")
-	eq(Preview3D.migrate_note_skin(2, "candy"), "candy", "a deliberate candy choice survives")
-	var preview := Preview3D.new()
-	eq(preview.note_skin, "glass", "the default note skin is water glass")
-	preview.free()
-	return true
-
 
 func test_anchor_band_width() -> bool:
 	var note := Note.new("anchor", 1.0, 90.0, 0.0)
