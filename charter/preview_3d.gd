@@ -386,7 +386,7 @@ var _pulses: Array[Dictionary] = []
 var _ring_lights: Array[Dictionary] = []
 var _note_pops: Array[Dictionary] = []
 # 音符外观（网页 Note & Hit Lab 里可对比选择）。
-var note_skin: String = "candy"
+var note_skin: String = "glass"
 ## PERFECT 特效：只有 PERFECT 命中才在判定环外侧亮光扇 + 碎屑。
 var show_perfect_fx: bool = true
 var _skin_cache: Dictionary = {}
@@ -3154,6 +3154,8 @@ func _flush_caps() -> void:
 	if _cap_shell_multi == null:
 		return
 	var count := _cap_pos.size()
+	var glass := _glass()
+	var cap_mul: float = 1.0 if glass.is_empty() else float(glass["cap"])
 	if _cap_capacity < count:
 		_cap_capacity = maxi(512, maxi(count, _cap_capacity * 2))
 		_cap_shell_multi.instance_count = _cap_capacity
@@ -3162,10 +3164,10 @@ func _flush_caps() -> void:
 		var diameter := _cap_rad[i] * 2.0
 		var xf := Transform2D(0.0, Vector2(diameter, diameter), 0.0, _cap_pos[i])
 		_cap_shell_multi.set_instance_transform_2d(i, xf)
-		_cap_shell_multi.set_instance_color(i, Color(1, 1, 1, _cap_alpha[i]))
+		_cap_shell_multi.set_instance_color(i, Color(1, 1, 1, _cap_alpha[i] * cap_mul))
 		_cap_core_multi.set_instance_transform_2d(i, xf)
 		var c := _cap_col[i]
-		_cap_core_multi.set_instance_color(i, Color(c.r, c.g, c.b, _cap_alpha[i]))
+		_cap_core_multi.set_instance_color(i, Color(c.r, c.g, c.b, _cap_alpha[i] * cap_mul))
 	_cap_shell_multi.visible_instance_count = count
 	_cap_core_multi.visible_instance_count = count
 	_cap_pos.resize(0)
@@ -4283,6 +4285,7 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, project
 	if total <= 0.001:
 		return
 	var group_mul := chart.group_alpha(note.group_id) / 255.0
+	var glass := _glass()
 	var decorative := not chart.note_enabled(note)
 	var trail_on := note.show_trail
 	# 尾判后 0.1s 内整条轨迹（轨迹 / 进度球 / 尾环）一起淡出，不再等到 end+0.5 拍硬消失。
@@ -4322,11 +4325,14 @@ func _draw_one_path(canvas: Control, chart: Chart, note: Note, t: float, project
 			canvas.draw_polyline(piece, Color(0, 0, 0, 0.55 * trail_dim), band_width * 1.7 + 4.0, false)
 			if path_style == "ribbon":
 				# B 半透明丝带：宽而透的身体 + 一道亮边（Arcaea 式）。
-				canvas.draw_polyline(piece, Color(trail_accent.r, trail_accent.g, trail_accent.b, 0.40 * trail_dim), band_width * 1.55, false)
-				canvas.draw_polyline(piece, Color(trail_accent.r, trail_accent.g, trail_accent.b, 0.95 * trail_dim), band_width * 0.42, false)
+				canvas.draw_polyline(piece, Color(trail_accent.r, trail_accent.g, trail_accent.b,
+					(0.40 if glass.is_empty() else 0.28) * trail_dim), band_width * 1.55, false)
+				canvas.draw_polyline(piece, Color(trail_accent.r, trail_accent.g, trail_accent.b,
+					(0.95 if glass.is_empty() else 0.72) * trail_dim), band_width * 0.42, false)
 			else:
 				# A 粗 chevron 履带：实心带 + 内部箭头纹，方向一眼可读。
-				canvas.draw_polyline(piece, Color(trail_accent.r, trail_accent.g, trail_accent.b, 0.95 * trail_dim), band_width * 1.7, false)
+				canvas.draw_polyline(piece, Color(trail_accent.r, trail_accent.g, trail_accent.b,
+					(0.95 if glass.is_empty() else 0.62) * trail_dim), band_width * 1.7, false)
 				if not dense_paths:
 					_draw_tread_marks(canvas, piece, band_width * 1.7, Color(0.04, 0.05, 0.08, 0.45 * trail_dim))
 			# 方向箭头：丝带靠它读方向；履带本身已经带纹，只在远处留少量箭头。
@@ -4504,10 +4510,17 @@ func _path_head_tangent(chart: Chart, note: Note, beat: float, relative: float, 
 
 func _draw_path_head_ball(canvas: Control, point: Vector2, direction: Vector2, width: float, tint: Color, alpha: float) -> void:
 	var radius: float = width * PATH_HEAD_BALL_RATIO * 0.5
-	canvas.draw_circle(point, radius, Color(0.04, 0.055, 0.093, 0.98 * alpha), true, -1.0, true)
-	canvas.draw_circle(point, radius * 0.77, Color(tint.darkened(0.48), alpha), true, -1.0, true)
-	canvas.draw_arc(point, radius * 0.89, 0.0, TAU, 32, Color(tint.lerp(Color.WHITE, 0.52), 0.96 * alpha),
-		radius * 0.17, true)
+	var glass := _glass()
+	var ink := 0.98 if glass.is_empty() else float(glass["rim"]) + 0.10
+	var core := 1.0 if glass.is_empty() else float(glass["body"])
+	canvas.draw_circle(point, radius, Color(0.04, 0.055, 0.093, ink * alpha), true, -1.0, true)
+	var face := tint.darkened(0.48)
+	canvas.draw_circle(point, radius * 0.77, Color(face.r, face.g, face.b, core * alpha), true, -1.0, true)
+	canvas.draw_arc(point, radius * 0.89, 0.0, TAU, 32, Color(tint.lerp(Color.WHITE, 0.52),
+		(0.96 if glass.is_empty() else float(glass["shell"])) * alpha), radius * 0.17, true)
+	if not glass.is_empty():
+		canvas.draw_circle(point + Vector2(0.0, -radius * 0.32), radius * 0.26,
+			Color(1, 1, 1, float(glass["spec"]) * alpha), true, -1.0, true)
 	if direction.is_zero_approx():
 		return
 	var side: Vector2 = direction.orthogonal() * (radius * 0.33)
@@ -4864,8 +4877,33 @@ static func skin_presets() -> Dictionary:
 	return {
 		"candy": {"label": "糖霜胶囊", "scale": 1.20, "band": 1.14, "outline": 1.0, "glow": 1.3, "gloss": 0.6, "shadow": 0.8, "fill": 0.95},
 		"neon": {"label": "霓虹线框", "scale": 1.10, "band": 1.06, "outline": 0.45, "glow": 2.0, "gloss": 0.15, "shadow": 0.0, "fill": 0.70},
-		"glass": {"label": "玻璃棱镜", "scale": 1.16, "band": 1.10, "outline": 0.8, "glow": 0.9, "gloss": 0.9, "shadow": 0.35, "fill": 0.42},
+		# 水光玻璃：半透明壳 + 半透明色芯 + 细黑边 + 湿高光（Frutiger Aero 的那套 Aqua 按钮）。
+		"glass": {"label": "水光玻璃", "scale": 1.16, "band": 1.10, "outline": 0.8, "glow": 0.9, "gloss": 0.9, "shadow": 0.35, "fill": 0.42,
+			"rim": 0.30, "shell": 0.40, "body": 0.50, "spec": 0.55, "bounce": 0.20, "cap": 0.45},
 		"sticker": {"label": "街机贴纸", "scale": 1.28, "band": 1.20, "outline": 1.55, "glow": 0.15, "gloss": 0.0, "shadow": 1.0, "fill": 1.0},
+	}
+
+
+## 旧设置里 note_skin 存的是旧默认值 candy：一次性换到新的默认水光玻璃。
+## 之后手动选回糖果仍然有效（settings_version 已经是 2）。
+static func migrate_note_skin(saved_version: int, skin: String) -> String:
+	if saved_version < 2 and skin == "candy":
+		return "glass"
+	return skin
+
+
+## 水光玻璃的材质参数；别的皮肤返回空字典，走原来的实心画法。
+func _glass() -> Dictionary:
+	var skin := _skin()
+	if String(skin["id"]) != "glass":
+		return {}
+	return {
+		"rim": float(skin.get("rim", 0.30)),
+		"shell": float(skin.get("shell", 0.40)),
+		"body": float(skin.get("body", 0.50)),
+		"spec": float(skin.get("spec", 0.55)),
+		"bounce": float(skin.get("bounce", 0.20)),
+		"cap": float(skin.get("cap", 0.45)),
 	}
 
 
@@ -4899,6 +4937,28 @@ func _stroke_band(canvas: Control, points: PackedVector2Array, color: Color, wid
 	var gloss := float(skin["gloss"])
 	var shadow := float(skin["shadow"])
 	var w := width * k * band
+	var glass := _glass()
+	if not glass.is_empty():
+		# 玻璃层：柔光 → 投影 → 细黑边 → 半透明白壳 → 半透明色芯 → 湿高光 → 下缘回光。
+		if glow > 0.01 and glow_mul > 0.01:
+			canvas.draw_polyline(points, Color(color.r, color.g, color.b, 0.10 * glow * glow_mul * alpha), w + 16.0 * glow_mul, false)
+		if shadow > 0.01:
+			var cast := PackedVector2Array()
+			for p in points:
+				cast.append(p + Vector2(5, 7) * shadow)
+			canvas.draw_polyline(cast, Color(0, 0, 0, 0.26 * alpha), w + 10.0, false)
+		canvas.draw_polyline(points, Color(0, 0, 0, float(glass["rim"]) * alpha), w + 3.0, false)
+		canvas.draw_polyline(points, Color(1, 1, 1, float(glass["shell"]) * alpha), w, false)
+		canvas.draw_polyline(points, Color(color.r, color.g, color.b, float(glass["body"]) * alpha),
+			maxf(3.0, w * 0.62), false)
+		var high := PackedVector2Array()
+		var low := PackedVector2Array()
+		for p in points:
+			high.append(p + Vector2(0.0, -w * 0.22))
+			low.append(p + Vector2(0.0, w * 0.26))
+		canvas.draw_polyline(high, Color(1, 1, 1, float(glass["spec"]) * alpha), maxf(1.5, w * 0.20), false)
+		canvas.draw_polyline(low, Color(1, 1, 1, float(glass["bounce"]) * alpha), maxf(1.0, w * 0.10), false)
+		return
 	if glow > 0.01 and glow_mul > 0.01:
 		# 柔光层很宽、对比低，关掉 AA 省下的三角形很可观，观感几乎不变。
 		# glow_mul = 0 表示画质项关了柔光：只跳这一层，描边/白边/色带照画。
@@ -4922,9 +4982,12 @@ func _draw_path_circle(canvas: Control, point: Vector2, scale: float, color: Col
 	if not _valid_point(point):
 		return
 	var s := clampf(scale, 0.2, 2.0) * float(_skin()["scale"]) * PATH_SIZE_SCALE * PATH_HEAD_SCALE
-	canvas.draw_circle(point, 31.0 * s * ring_mul, Color(color.r, color.g, color.b, 0.16 * alpha))
-	canvas.draw_circle(point, 24.0 * s * ring_mul, Color(0, 0, 0, 0.30 * alpha))
-	canvas.draw_arc(point, 24.0 * s * ring_mul, 0.0, TAU, 30, Color(1, 1, 1, 0.30 * alpha), 2.0, false)
+	var glass := _glass()
+	var halo := 0.16 if glass.is_empty() else 0.10
+	var ink := 0.30 if glass.is_empty() else 0.18
+	canvas.draw_circle(point, 31.0 * s * ring_mul, Color(color.r, color.g, color.b, halo * alpha))
+	canvas.draw_circle(point, 24.0 * s * ring_mul, Color(0, 0, 0, ink * alpha))
+	canvas.draw_arc(point, 24.0 * s * ring_mul, 0.0, TAU, 30, Color(1, 1, 1, (0.30 if glass.is_empty() else 0.42) * alpha), 2.0, false)
 
 
 func _draw_star_filled(canvas: Control, point: Vector2, radius: float, color: Color) -> void:
@@ -4968,14 +5031,19 @@ func _hold_node_screen(chart: Chart, note: Note, relative_beat: float, relative_
 func _draw_hold_cap_band(canvas: Control, band_a: Vector2, band_b: Vector2, fade: float, tint: Color = UITheme.GOLD) -> void:
 	var ns := _note_scale()
 	var band_w := 16.0 * ns
-	canvas.draw_line(band_a, band_b, Color(0, 0, 0, 0.55 * fade), band_w + 6.0 * ns, false)
-	canvas.draw_line(band_a, band_b, Color(1, 1, 1, 0.92 * fade), band_w, false)
-	canvas.draw_line(band_a, band_b, Color(tint.r, tint.g, tint.b, 0.95 * fade), band_w * 0.62, false)
-	canvas.draw_circle(band_a, band_w * 0.5, Color(tint.r, tint.g, tint.b, 0.95 * fade))
-	canvas.draw_circle(band_b, band_w * 0.5, Color(tint.r, tint.g, tint.b, 0.95 * fade))
-	canvas.draw_circle(band_a, band_w * 0.5, Color(1, 1, 1, 0.92 * fade), false, 2.0, true)
-	canvas.draw_circle(band_b, band_w * 0.5, Color(1, 1, 1, 0.92 * fade), false, 2.0, true)
-	canvas.draw_line(band_a + Vector2(0, -band_w * 0.18), band_b + Vector2(0, -band_w * 0.18), Color(1, 1, 0.94, 0.45 * fade), band_w * 0.18, false)
+	var glass := _glass()
+	var rim := 0.55 if glass.is_empty() else float(glass["rim"])
+	var shell := 0.92 if glass.is_empty() else float(glass["shell"])
+	var body := 0.95 if glass.is_empty() else float(glass["body"])
+	canvas.draw_line(band_a, band_b, Color(0, 0, 0, rim * fade), band_w + 6.0 * ns, false)
+	canvas.draw_line(band_a, band_b, Color(1, 1, 1, shell * fade), band_w, false)
+	canvas.draw_line(band_a, band_b, Color(tint.r, tint.g, tint.b, body * fade), band_w * 0.62, false)
+	canvas.draw_circle(band_a, band_w * 0.5, Color(tint.r, tint.g, tint.b, body * fade))
+	canvas.draw_circle(band_b, band_w * 0.5, Color(tint.r, tint.g, tint.b, body * fade))
+	canvas.draw_circle(band_a, band_w * 0.5, Color(1, 1, 1, shell * fade), false, 2.0, true)
+	canvas.draw_circle(band_b, band_w * 0.5, Color(1, 1, 1, shell * fade), false, 2.0, true)
+	var spec := 0.45 if glass.is_empty() else float(glass["spec"])
+	canvas.draw_line(band_a + Vector2(0, -band_w * 0.18), band_b + Vector2(0, -band_w * 0.18), Color(1, 1, 0.94, spec * fade), band_w * 0.18, false)
 
 
 ## Hold 尾端：形状同头，但用多层柔光代替锐利描边，一眼就能分清头尾。
@@ -5029,6 +5097,8 @@ func _draw_hold_sector(canvas: Control, chart: Chart, note: Note, t: float, pre:
 	if outer.size() < 2:
 		return
 	if part == 0:
+		var glass := _glass()
+		var glass_mul := 0.72 if not glass.is_empty() else 1.0
 		var polygon := PackedVector2Array()
 		polygon.append_array(outer)
 		for i in range(inner.size() - 1, -1, -1):
@@ -5045,11 +5115,11 @@ func _draw_hold_sector(canvas: Control, chart: Chart, note: Note, t: float, pre:
 				quad.append(center.lerp(edges[k], s1))
 			for k in range(edges.size() - 1, -1, -1):
 				quad.append(center.lerp(edges[k], s0))
-			var alpha := lerpf(0.07, 0.42, float(s) / float(maxi(1, slices - 1)))
+			var alpha := lerpf(0.07, 0.42, float(s) / float(maxi(1, slices - 1))) * glass_mul
 			canvas.draw_colored_polygon(quad, Color(tint.r, tint.g, tint.b, alpha * fade))
 		# 外弧：贴着判定环的高亮边。
-		canvas.draw_polyline(outer, Color(1, 1, 1, 0.72 * fade), 2.0, false)
-		canvas.draw_polyline(outer, Color(tint.r, tint.g, tint.b, 0.95 * fade), 1.0, false)
+		canvas.draw_polyline(outer, Color(1, 1, 1, 0.72 * glass_mul * fade), 2.0, false)
+		canvas.draw_polyline(outer, Color(tint.r, tint.g, tint.b, 0.95 * glass_mul * fade), 1.0, false)
 		# 内弧：长条尾端，往判定环方向收缩；越窄越亮。
 		if inner.size() > 1 and inner_scale > 0.002:
 			var tail_alpha := lerpf(0.35, 1.0, clampf(inner_scale, 0.0, 1.0))
@@ -5685,10 +5755,18 @@ func _draw_seek_band(canvas: Control, points: PackedVector2Array, size: float, c
 	if closed:
 		return
 	var cap_scale: float = size * float(_skin()["scale"])
+	var glass := _glass()
 	for cap in [points[0], points[-1]]:
-		canvas.draw_circle(cap, 12.0 * cap_scale, Color(0, 0, 0, 0.66 * alpha))
-		canvas.draw_circle(cap, 9.5 * cap_scale, Color(1, 1, 1, 0.94 * alpha))
-		canvas.draw_circle(cap, 6.0 * cap_scale, Color(color.r, color.g, color.b, alpha))
+		if glass.is_empty():
+			canvas.draw_circle(cap, 12.0 * cap_scale, Color(0, 0, 0, 0.66 * alpha))
+			canvas.draw_circle(cap, 9.5 * cap_scale, Color(1, 1, 1, 0.94 * alpha))
+			canvas.draw_circle(cap, 6.0 * cap_scale, Color(color.r, color.g, color.b, alpha))
+		else:
+			canvas.draw_circle(cap, 12.0 * cap_scale, Color(0, 0, 0, float(glass["rim"]) * alpha))
+			canvas.draw_circle(cap, 9.5 * cap_scale, Color(1, 1, 1, float(glass["shell"]) * alpha))
+			canvas.draw_circle(cap, 6.0 * cap_scale, Color(color.r, color.g, color.b, float(glass["body"]) * alpha))
+			canvas.draw_circle(cap + Vector2(0.0, -4.0 * cap_scale), 2.6 * cap_scale,
+				Color(1, 1, 1, float(glass["spec"]) * alpha))
 
 
 func _draw_onion(canvas: Control, chart: Chart, beat: float) -> void:
@@ -7002,12 +7080,21 @@ func _draw_bell(canvas: Control, chart: Chart, note: Note, t: float) -> void:
 	var group_mul := chart.group_alpha(note.group_id) / 255.0
 	var breathe := 0.5 + 0.5 * sin(_anim_ms() / 1000.0 * 2.4)
 	var tint: Color = note.resolved_color(chart, UITheme.KEY_YELLOW)
+	var glass := _glass()
 	# 和 Tap / Hold 同一套语言：白色外壳 + 彩色核心，两端圆头。
 	_bell_capsule(canvas, note, t, q, -half - 5.0, half + 5.0,
 		Color(tint.r, tint.g, tint.b, (0.07 + 0.05 * breathe) * alpha))
-	_bell_capsule(canvas, note, t, q, -half - 2.0, half + 2.0, Color(0, 0, 0, 0.55 * alpha))
-	_bell_capsule(canvas, note, t, q, -half, half, Color(1, 1, 1, 0.94 * alpha))
-	_bell_capsule(canvas, note, t, q, -half * 0.62, half * 0.62, Color(tint.r, tint.g, tint.b, alpha))
+	if glass.is_empty():
+		_bell_capsule(canvas, note, t, q, -half - 2.0, half + 2.0, Color(0, 0, 0, 0.55 * alpha))
+		_bell_capsule(canvas, note, t, q, -half, half, Color(1, 1, 1, 0.94 * alpha))
+		_bell_capsule(canvas, note, t, q, -half * 0.62, half * 0.62, Color(tint.r, tint.g, tint.b, alpha))
+	else:
+		_bell_capsule(canvas, note, t, q, -half - 2.0, half + 2.0, Color(0, 0, 0, float(glass["rim"]) * alpha))
+		_bell_capsule(canvas, note, t, q, -half, half, Color(1, 1, 1, float(glass["shell"]) * alpha))
+		_bell_capsule(canvas, note, t, q, -half * 0.62, half * 0.62,
+			Color(tint.r, tint.g, tint.b, float(glass["body"]) * alpha))
+		# 湿高光贴着外缘，和胶囊、Seek 弧带同一侧。
+		_bell_capsule(canvas, note, t, q, half * 0.16, half * 0.66, Color(1, 1, 1, float(glass["spec"]) * alpha))
 	# 扫键串的铃判定放宽到 75px，就把这个范围画出来：看到多大 = 能打多大。
 	if bool(path_judgement_states.get(note.id, {}).get("sweep_chain", false)):
 		var halo := _bell_ring_point(chart, note.center_u * 360.0, t, q)
